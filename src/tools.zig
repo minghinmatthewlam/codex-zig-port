@@ -173,16 +173,17 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
     }
 
     if (lines.items.len < 2) return error.InvalidPatch;
-    if (!std.mem.eql(u8, lines.items[0], "*** Begin Patch")) return error.InvalidPatch;
+    if (!std.mem.eql(u8, patchDirective(lines.items[0]), "*** Begin Patch")) return error.InvalidPatch;
 
     var stats = PatchStats{};
     var index: usize = 1;
     while (index < lines.items.len) {
-        const line = lines.items[index];
+        const line = patchDirective(lines.items[index]);
         if (std.mem.eql(u8, line, "*** End Patch")) {
             for (lines.items[index + 1 ..]) |trailing| {
                 if (trailing.len != 0) return error.InvalidPatch;
             }
+            if (stats.added == 0 and stats.updated == 0 and stats.deleted == 0) return error.InvalidPatch;
             return stats;
         }
 
@@ -251,12 +252,27 @@ fn updateFileFromPatch(
     lines: []const []const u8,
     index: *usize,
 ) !void {
+    var target_path = path;
+    if (index.* < lines.len) {
+        const directive = patchDirective(lines[index.*]);
+        if (std.mem.startsWith(u8, directive, "*** Move to: ")) {
+            target_path = directive["*** Move to: ".len..];
+            try validateRelativePath(target_path);
+            index.* += 1;
+        }
+    }
+
     var current = try root.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
     defer allocator.free(current);
 
     var saw_hunk = false;
     while (index.* < lines.len and !isPatchSection(lines[index.*])) {
-        if (std.mem.startsWith(u8, lines[index.*], "@@")) {
+        const directive = patchDirective(lines[index.*]);
+        if (std.mem.eql(u8, directive, "*** End of File")) {
+            index.* += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, directive, "@@")) {
             index.* += 1;
             continue;
         }
@@ -266,7 +282,7 @@ fn updateFileFromPatch(
         var new = std.ArrayList(u8).empty;
         defer new.deinit(allocator);
 
-        while (index.* < lines.len and !isPatchSection(lines[index.*]) and !std.mem.startsWith(u8, lines[index.*], "@@")) : (index.* += 1) {
+        while (index.* < lines.len and !isPatchSection(lines[index.*]) and !isHunkBoundary(lines[index.*])) : (index.* += 1) {
             const line = lines[index.*];
             if (line.len == 0) return error.InvalidPatch;
             switch (line[0]) {
@@ -289,29 +305,51 @@ fn updateFileFromPatch(
         }
 
         if (old.items.len == 0 and new.items.len == 0) continue;
-        const replaced = try replaceOnce(allocator, current, old.items, new.items);
+        const replaced = if (old.items.len == 0)
+            try appendToEnd(allocator, current, new.items)
+        else
+            try replaceOnce(allocator, current, old.items, new.items);
         allocator.free(current);
         current = replaced;
         saw_hunk = true;
     }
 
     if (!saw_hunk) return error.InvalidPatch;
-    try ensureParentDir(root, path);
+    try ensureParentDir(root, target_path);
     try root.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
-        .sub_path = path,
+        .sub_path = target_path,
         .data = current,
     });
+    if (!std.mem.eql(u8, path, target_path)) {
+        try root.deleteFile(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+}
+
+fn appendToEnd(allocator: std.mem.Allocator, current: []const u8, addition: []const u8) ![]u8 {
+    if (addition.len == 0) return error.InvalidPatch;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, current);
+    if (current.len > 0 and current[current.len - 1] != '\n') {
+        try output.append(allocator, '\n');
+    }
+    try output.appendSlice(allocator, addition);
+    return output.toOwnedSlice(allocator);
 }
 
 fn replaceOnce(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
     if (needle.len == 0) return error.InvalidPatch;
-    const start = std.mem.indexOf(u8, haystack, needle) orelse return error.PatchContextNotFound;
+    const match = if (std.mem.indexOf(u8, haystack, needle)) |start|
+        TextMatch{ .start = start, .end = start + needle.len }
+    else
+        trailingNewlineMatch(haystack, needle) orelse return error.PatchContextNotFound;
 
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
-    try output.appendSlice(allocator, haystack[0..start]);
+    try output.appendSlice(allocator, haystack[0..match.start]);
     try output.appendSlice(allocator, replacement);
-    try output.appendSlice(allocator, haystack[start + needle.len ..]);
+    try output.appendSlice(allocator, haystack[match.end..]);
     return output.toOwnedSlice(allocator);
 }
 
@@ -335,10 +373,33 @@ fn validateRelativePath(path: []const u8) !void {
 }
 
 fn isPatchSection(line: []const u8) bool {
-    return std.mem.eql(u8, line, "*** End Patch") or
-        std.mem.startsWith(u8, line, "*** Add File: ") or
-        std.mem.startsWith(u8, line, "*** Update File: ") or
-        std.mem.startsWith(u8, line, "*** Delete File: ");
+    const directive = patchDirective(line);
+    return std.mem.eql(u8, directive, "*** End Patch") or
+        std.mem.startsWith(u8, directive, "*** Add File: ") or
+        std.mem.startsWith(u8, directive, "*** Update File: ") or
+        std.mem.startsWith(u8, directive, "*** Delete File: ");
+}
+
+fn isHunkBoundary(line: []const u8) bool {
+    const directive = patchDirective(line);
+    return std.mem.startsWith(u8, directive, "@@") or std.mem.eql(u8, directive, "*** End of File");
+}
+
+fn patchDirective(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line, " \t");
+}
+
+const TextMatch = struct {
+    start: usize,
+    end: usize,
+};
+
+fn trailingNewlineMatch(haystack: []const u8, needle: []const u8) ?TextMatch {
+    if (!std.mem.endsWith(u8, needle, "\n")) return null;
+    const trimmed = needle[0 .. needle.len - 1];
+    if (trimmed.len == 0) return null;
+    if (!std.mem.endsWith(u8, haystack, trimmed)) return null;
+    return .{ .start = haystack.len - trimmed.len, .end = haystack.len };
 }
 
 test "shell command creates output" {
@@ -413,4 +474,136 @@ test "apply_patch deletes files and rejects unsafe paths" {
         \\*** End Patch
     ;
     try std.testing.expectError(error.InvalidPatchPath, applyPatchInDir(allocator, dir.dir, unsafe_patch));
+}
+
+test "apply_patch supports moves and destination overwrite" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "old");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "renamed/dir");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "old/name.txt",
+        .data = "from\n",
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "renamed/dir/name.txt",
+        .data = "existing\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: old/name.txt
+        \\*** Move to: renamed/dir/name.txt
+        \\@@
+        \\-from
+        \\+new
+        \\*** End Patch
+    ;
+    const stats = try applyPatchInDir(allocator, dir.dir, patch);
+    try std.testing.expectEqual(@as(usize, 1), stats.updated);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "old/name.txt", .{}));
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "renamed/dir/name.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("new\n", content);
+}
+
+test "apply_patch handles EOF, pure additions, and padded markers" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "tail.txt",
+        .data = "first\nsecond\n",
+    });
+    const eof_patch =
+        \\*** Begin Patch
+        \\*** Update File: tail.txt
+        \\@@
+        \\ first
+        \\-second
+        \\+second updated
+        \\*** End of File
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, eof_patch);
+    const tail = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "tail.txt", allocator, .limited(1024));
+    defer allocator.free(tail);
+    try std.testing.expectEqualStrings("first\nsecond updated\n", tail);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "input.txt",
+        .data = "line1\nline2\n",
+    });
+    const addition_patch =
+        \\*** Begin Patch
+        \\*** Update File: input.txt
+        \\@@
+        \\+added line 1
+        \\+added line 2
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, addition_patch);
+    const input = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "input.txt", allocator, .limited(1024));
+    defer allocator.free(input);
+    try std.testing.expectEqualStrings("line1\nline2\nadded line 1\nadded line 2\n", input);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "no_newline.txt",
+        .data = "no newline at end",
+    });
+    const no_newline_patch =
+        \\*** Begin Patch
+        \\*** Update File: no_newline.txt
+        \\@@
+        \\-no newline at end
+        \\+first line
+        \\+second line
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, no_newline_patch);
+    const no_newline = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "no_newline.txt", allocator, .limited(1024));
+    defer allocator.free(no_newline);
+    try std.testing.expectEqualStrings("first line\nsecond line\n", no_newline);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "padded.txt",
+        .data = "one\n",
+    });
+    const padded_patch =
+        \\ *** Begin Patch
+        \\  *** Update File: padded.txt
+        \\@@
+        \\-one
+        \\+two
+        \\ *** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, padded_patch);
+    const padded = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "padded.txt", allocator, .limited(1024));
+    defer allocator.free(padded);
+    try std.testing.expectEqualStrings("two\n", padded);
+}
+
+test "apply_patch rejects empty patch and trailing content" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const empty_patch =
+        \\*** Begin Patch
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, empty_patch));
+
+    const trailing_patch =
+        \\*** Begin Patch
+        \\*** Add File: foo.txt
+        \\+ok
+        \\*** End Patch
+        \\extra
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, trailing_patch));
 }

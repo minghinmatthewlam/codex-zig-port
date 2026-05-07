@@ -15,7 +15,7 @@ Status values:
 | `tools` shell execution | partial | Supports minimal `shell` and `shell_command` calls with confirmation, cwd, timeout, stdout/stderr capture, and truncation. Approval profiles, sandboxing, hooks, and unified exec sessions are planned. |
 | `config` | partial | Resolves Codex home, installation id, and simple model/base URL config. Full TOML config stack and managed requirements are planned. |
 | `mcp` | planned | Not in first milestone. |
-| `apply-patch` | partial | Exposes an `apply_patch` function tool with approval and a Zig-native subset for Add File, Update File, and Delete File patch sections. Full freeform grammar parity is planned. |
+| `apply-patch` | partial | Exposes an `apply_patch` function tool with approval and a Zig-native parser for add, update, delete, move-to, multiple hunks, EOF markers, padded markers, and no-newline replacements. Full grammar and fixture parity are still planned. |
 | `exec` non-interactive mode | planned | Not in first milestone. |
 | `sandbox` macOS seatbelt | planned | First milestone uses explicit command confirmation but no seatbelt profile. |
 | `resume` / `fork` / session store | planned | Not in first milestone. |
