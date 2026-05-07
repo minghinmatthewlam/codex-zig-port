@@ -14,7 +14,10 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
-    printHeader(cfg, credentials);
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    printHeader(cfg, credentials, cwd);
 
     var input_buffer: [16 * 1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
@@ -39,7 +42,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     std.debug.print("\nbye\n", .{});
 }
 
-fn printHeader(cfg: config.Config, credentials: auth.Credentials) void {
+fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u8) void {
     std.debug.print(
         \\╭────────────────────────────────────────────╮
         \\│ Codex Zig                                  │
@@ -57,6 +60,6 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials) void {
             .chatgpt => cfg.chatgpt_base_url,
             .api_key => cfg.openai_base_url,
         },
-        ".",
+        cwd,
     });
 }

@@ -110,8 +110,9 @@ fn readTopLevelStringFromConfig(allocator: std.mem.Allocator, codex_home: []cons
         const lhs = std.mem.trim(u8, line[0..eq], " \t");
         if (!std.mem.eql(u8, lhs, key)) continue;
         const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        if (rhs.len >= 2 and rhs[0] == '"' and rhs[rhs.len - 1] == '"') {
-            return try allocator.dupe(u8, rhs[1 .. rhs.len - 1]);
+        if (rhs.len >= 2 and rhs[0] == '"') {
+            const end = std.mem.indexOfScalar(u8, rhs[1..], '"') orelse continue;
+            return try allocator.dupe(u8, rhs[1 .. 1 + end]);
         }
     }
     return null;
@@ -140,7 +141,7 @@ test "top-level model is read from config" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
-    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = "config.toml", .data = "model = \"demo-model\"\n[other]\nmodel = \"ignored\"\n" });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = "config.toml", .data = "model = \"demo-model\" # trailing comment\n[other]\nmodel = \"ignored\"\n" });
     const cwd_path = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(cwd_path);
     const model = try readTopLevelStringFromConfig(allocator, cwd_path, "model");

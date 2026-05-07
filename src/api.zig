@@ -53,11 +53,6 @@ pub const HistoryItem = struct {
     };
 };
 
-pub const ToolOutput = struct {
-    call_id: []const u8,
-    output: []const u8,
-};
-
 const ContentItem = struct {
     type: []const u8,
     text: []const u8,
