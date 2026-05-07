@@ -1,0 +1,7 @@
+.{
+    .name = .codex_zig_port,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0xa4ff9bdee8395f0c,
+}

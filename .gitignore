@@ -1,0 +1,4 @@
+.zig-cache/
+zig-out/
+codex_zig_mock_demo.txt
+plans/
