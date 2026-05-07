@@ -28,6 +28,10 @@ pub fn main(init: std.process.Init) !void {
             try runMockDemo(allocator);
             return;
         }
+        if (std.mem.eql(u8, cmd, "mock-apply-patch")) {
+            try runMockApplyPatch(allocator);
+            return;
+        }
         std.debug.print("unknown command: {s}\n\n", .{cmd});
         try printHelp();
         return error.UnknownCommand;
@@ -44,6 +48,8 @@ fn printHelp() !void {
         \\  codex-zig              Start interactive TUI
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig mock-demo    Run deterministic local tool demo
+        \\  codex-zig mock-apply-patch
+        \\                          Run deterministic apply_patch demo
         \\
         \\Environment:
         \\  CODEX_HOME             Override Codex home (default: ~/.codex)
@@ -87,6 +93,33 @@ fn runMockDemo(allocator: std.mem.Allocator) !void {
     defer allocator.free(content);
     if (!std.mem.eql(u8, content, "zig-port-ok")) {
         return error.MockDemoFileMismatch;
+    }
+}
+
+fn runMockApplyPatch(allocator: std.mem.Allocator) !void {
+    const demo_file = "codex_zig_apply_patch_demo.txt";
+    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), demo_file) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
+    const call = api.FunctionCall{
+        .call_id = "call_mock_apply_patch",
+        .name = "apply_patch",
+        .arguments =
+        \\{"patch":"*** Begin Patch\n*** Add File: codex_zig_apply_patch_demo.txt\n+zig-apply-patch-ok\n*** End Patch"}
+        ,
+    };
+    const result = try tools.runFunctionCall(allocator, call, true);
+    defer result.deinit(allocator);
+
+    std.debug.print("tool: {s}\n", .{result.summary});
+    std.debug.print("output: {s}\n", .{result.output});
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), demo_file, allocator, .limited(1024));
+    defer allocator.free(content);
+    if (!std.mem.eql(u8, content, "zig-apply-patch-ok\n")) {
+        return error.MockApplyPatchFileMismatch;
     }
 }
 

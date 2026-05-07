@@ -70,16 +70,17 @@ const InputItem = struct {
 
 const FunctionParameters = struct {
     type: []const u8 = "object",
-    properties: Properties,
+    properties: ToolProperties,
     required: []const []const u8,
     additionalProperties: bool = false,
 };
 
-const Properties = struct {
-    command: CommandProperty,
+const ToolProperties = struct {
+    command: ?ToolProperty = null,
+    patch: ?ToolProperty = null,
 };
 
-const CommandProperty = struct {
+const ToolProperty = struct {
     type: []const u8,
     description: []const u8,
     items: ?CommandItems = null,
@@ -228,7 +229,8 @@ pub fn buildRequestBody(
         }
     }
 
-    const required = [_][]const u8{"command"};
+    const command_required = [_][]const u8{"command"};
+    const patch_required = [_][]const u8{"patch"};
     const shell_tool = Tool{
         .name = "shell",
         .description = "Run a command as an argv array in the current workspace.",
@@ -238,7 +240,7 @@ pub fn buildRequestBody(
                 .description = "Command and arguments to execute.",
                 .items = .{},
             } },
-            .required = required[0..],
+            .required = command_required[0..],
         },
     };
     const shell_command_tool = Tool{
@@ -249,10 +251,21 @@ pub fn buildRequestBody(
                 .type = "string",
                 .description = "Shell command to execute.",
             } },
-            .required = required[0..],
+            .required = command_required[0..],
         },
     };
-    const tools = [_]Tool{ shell_tool, shell_command_tool };
+    const apply_patch_tool = Tool{
+        .name = "apply_patch",
+        .description = "Apply a Codex-style patch to files in the current workspace. The patch must start with *** Begin Patch and end with *** End Patch.",
+        .parameters = .{
+            .properties = .{ .patch = .{
+                .type = "string",
+                .description = "Patch text with Add File, Update File, or Delete File sections.",
+            } },
+            .required = patch_required[0..],
+        },
+    };
+    const tools = [_]Tool{ shell_tool, shell_command_tool, apply_patch_tool };
     const include = [_][]const u8{};
 
     const req = Request{
@@ -326,7 +339,8 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
 
 const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
-    \\When you need to inspect or modify files, call shell_command or shell.
+    \\When you need to inspect files or run commands, call shell_command or shell.
+    \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\Keep answers concise and report command outcomes.
 ;
 
@@ -387,4 +401,5 @@ test "builds chronological request input from owned history" {
     try std.testing.expectEqualStrings("function_call", input.items[1].object.get("type").?.string);
     try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
 }

@@ -13,6 +13,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
 - send a Responses API turn
 - execute basic `shell` / `shell_command` tool calls after user confirmation
+- apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
 
 Long-term exact parity is tracked in `docs/parity.md`.
