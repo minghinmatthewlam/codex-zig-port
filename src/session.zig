@@ -9,7 +9,72 @@ pub const Transcript = struct {
     history: std.ArrayList(api.HistoryItem) = .empty,
 
     pub fn deinit(self: *Transcript, allocator: std.mem.Allocator) void {
+        for (self.history.items) |item| item.deinit(allocator);
         self.history.deinit(allocator);
+    }
+
+    pub fn appendUserMessage(self: *Transcript, allocator: std.mem.Allocator, text: []const u8) !void {
+        try self.appendMessage(allocator, "user", "input_text", text);
+    }
+
+    pub fn appendAssistantMessage(self: *Transcript, allocator: std.mem.Allocator, text: []const u8) !void {
+        try self.appendMessage(allocator, "assistant", "output_text", text);
+    }
+
+    fn appendMessage(
+        self: *Transcript,
+        allocator: std.mem.Allocator,
+        role: []const u8,
+        content_type: []const u8,
+        text: []const u8,
+    ) !void {
+        const role_copy = try allocator.dupe(u8, role);
+        errdefer allocator.free(role_copy);
+        const content_type_copy = try allocator.dupe(u8, content_type);
+        errdefer allocator.free(content_type_copy);
+        const text_copy = try allocator.dupe(u8, text);
+        errdefer allocator.free(text_copy);
+
+        try self.history.append(allocator, .{
+            .kind = .message,
+            .role = role_copy,
+            .content_type = content_type_copy,
+            .text = text_copy,
+        });
+    }
+
+    pub fn appendFunctionCall(self: *Transcript, allocator: std.mem.Allocator, call: api.FunctionCall) !void {
+        const call_id_copy = try allocator.dupe(u8, call.call_id);
+        errdefer allocator.free(call_id_copy);
+        const name_copy = try allocator.dupe(u8, call.name);
+        errdefer allocator.free(name_copy);
+        const arguments_copy = try allocator.dupe(u8, call.arguments);
+        errdefer allocator.free(arguments_copy);
+
+        try self.history.append(allocator, .{
+            .kind = .function_call,
+            .call_id = call_id_copy,
+            .name = name_copy,
+            .arguments = arguments_copy,
+        });
+    }
+
+    pub fn appendFunctionOutput(
+        self: *Transcript,
+        allocator: std.mem.Allocator,
+        call_id: []const u8,
+        output: []const u8,
+    ) !void {
+        const call_id_copy = try allocator.dupe(u8, call_id);
+        errdefer allocator.free(call_id_copy);
+        const output_copy = try allocator.dupe(u8, output);
+        errdefer allocator.free(output_copy);
+
+        try self.history.append(allocator, .{
+            .kind = .function_call_output,
+            .call_id = call_id_copy,
+            .output = output_copy,
+        });
     }
 };
 
@@ -20,13 +85,13 @@ pub fn runTurn(
     transcript: *Transcript,
     prompt: []const u8,
 ) ![]const u8 {
-    var current_prompt = prompt;
+    try transcript.appendUserMessage(allocator, prompt);
     var final_text = std.ArrayList(u8).empty;
     errdefer final_text.deinit(allocator);
 
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
-        var response = try api.createTurn(allocator, cfg, credentials, current_prompt, transcript.history.items);
+        var response = try api.createTurn(allocator, cfg, credentials, transcript.history.items);
         defer response.deinit(allocator);
 
         if (response.text.len > 0) {
@@ -34,7 +99,10 @@ pub fn runTurn(
         }
 
         if (response.function_calls.len == 0) {
-            return final_text.toOwnedSlice(allocator);
+            const answer = try final_text.toOwnedSlice(allocator);
+            errdefer allocator.free(answer);
+            if (answer.len > 0) try transcript.appendAssistantMessage(allocator, answer);
+            return answer;
         }
 
         for (response.function_calls) |call| {
@@ -44,20 +112,9 @@ pub fn runTurn(
 
             std.debug.print("[tool result] {s}\n", .{tool_result.summary});
 
-            try transcript.history.append(allocator, .{
-                .kind = .function_call,
-                .call_id = call.call_id,
-                .name = call.name,
-                .arguments = call.arguments,
-            });
-            try transcript.history.append(allocator, .{
-                .kind = .function_call_output,
-                .call_id = tool_result.call_id,
-                .output = tool_result.output,
-            });
+            try transcript.appendFunctionCall(allocator, call);
+            try transcript.appendFunctionOutput(allocator, tool_result.call_id, tool_result.output);
         }
-
-        current_prompt = "";
     }
 
     return error.TooManyToolRounds;

@@ -28,12 +28,26 @@ pub const ParsedResponse = struct {
 
 pub const HistoryItem = struct {
     kind: Kind,
+    role: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
     call_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
 
+    pub fn deinit(self: HistoryItem, allocator: std.mem.Allocator) void {
+        if (self.role) |value| allocator.free(value);
+        if (self.text) |value| allocator.free(value);
+        if (self.content_type) |value| allocator.free(value);
+        if (self.call_id) |value| allocator.free(value);
+        if (self.name) |value| allocator.free(value);
+        if (self.arguments) |value| allocator.free(value);
+        if (self.output) |value| allocator.free(value);
+    }
+
     pub const Kind = enum {
+        message,
         function_call,
         function_call_output,
     };
@@ -45,7 +59,7 @@ pub const ToolOutput = struct {
 };
 
 const ContentItem = struct {
-    type: []const u8 = "input_text",
+    type: []const u8,
     text: []const u8,
 };
 
@@ -115,10 +129,9 @@ pub fn createTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
     credentials: auth.Credentials,
-    prompt: []const u8,
     history: []const HistoryItem,
 ) !ParsedResponse {
-    const body = try buildRequestBody(allocator, cfg, prompt, history);
+    const body = try buildRequestBody(allocator, cfg, history);
     defer allocator.free(body);
 
     const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, cfg.base_url, "/")});
@@ -171,21 +184,37 @@ pub fn createTurn(
 pub fn buildRequestBody(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    prompt: []const u8,
     history: []const HistoryItem,
 ) ![]const u8 {
     var inputs = std.ArrayList(InputItem).empty;
     defer inputs.deinit(allocator);
 
-    const content = [_]ContentItem{.{ .text = prompt }};
-    try inputs.append(allocator, .{
-        .type = "message",
-        .role = "user",
-        .content = content[0..],
-    });
+    var message_count: usize = 0;
+    for (history) |item| {
+        if (item.kind == .message) message_count += 1;
+    }
+
+    const message_content = try allocator.alloc([1]ContentItem, message_count);
+    defer allocator.free(message_content);
+    var message_index: usize = 0;
 
     for (history) |item| {
         switch (item.kind) {
+            .message => {
+                const role = item.role orelse return error.InvalidMessageHistory;
+                const text = item.text orelse return error.InvalidMessageHistory;
+                const content_type = item.content_type orelse return error.InvalidMessageHistory;
+                message_content[message_index][0] = .{
+                    .type = content_type,
+                    .text = text,
+                };
+                try inputs.append(allocator, .{
+                    .type = "message",
+                    .role = role,
+                    .content = message_content[message_index][0..],
+                });
+                message_index += 1;
+            },
             .function_call => try inputs.append(allocator, .{
                 .type = "function_call",
                 .call_id = item.call_id,
@@ -313,4 +342,49 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("hi", parsed.text);
     try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
+}
+
+test "builds chronological request input from owned history" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .model = "demo-model",
+        .base_url = "https://example.invalid/v1",
+        .installation_id = "install-test",
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "create a file",
+        },
+        .{
+            .kind = .function_call,
+            .call_id = "call-1",
+            .name = "shell_command",
+            .arguments = "{\"command\":\"pwd\"}",
+        },
+        .{
+            .kind = .function_call_output,
+            .call_id = "call-1",
+            .output = "stdout:\n/tmp\nstderr:\n",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const input = parsed.value.object.get("input").?.array;
+
+    try std.testing.expectEqual(@as(usize, 3), input.items.len);
+    try std.testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
+    try std.testing.expectEqualStrings("input_text", input.items[0].object.get("content").?.array.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("create a file", input.items[0].object.get("content").?.array.items[0].object.get("text").?.string);
+    try std.testing.expectEqualStrings("function_call", input.items[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
 }
