@@ -62,6 +62,10 @@ fn runAuthStatus(allocator: std.mem.Allocator) !void {
     std.debug.print("codex_home: {s}\n", .{cfg.codex_home});
     std.debug.print("model: {s}\n", .{cfg.model});
     std.debug.print("auth: {s}\n", .{credentials.describe()});
+    std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
+        .chatgpt => cfg.chatgpt_base_url,
+        .api_key => cfg.openai_base_url,
+    }});
     if (credentials.account_id) |account_id| {
         std.debug.print("chatgpt_account_id: {s}\n", .{account_id});
     }

@@ -134,7 +134,11 @@ pub fn createTurn(
     const body = try buildRequestBody(allocator, cfg, history);
     defer allocator.free(body);
 
-    const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, cfg.base_url, "/")});
+    const base_url = switch (credentials.mode) {
+        .chatgpt => cfg.chatgpt_base_url,
+        .api_key => cfg.openai_base_url,
+    };
+    const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, base_url, "/")});
     defer allocator.free(url);
 
     const auth_header = try auth.authorizationHeader(allocator, credentials);
@@ -349,7 +353,8 @@ test "builds chronological request input from owned history" {
     const cfg = config.Config{
         .codex_home = ".",
         .model = "demo-model",
-        .base_url = "https://example.invalid/v1",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
         .installation_id = "install-test",
     };
     const history = [_]HistoryItem{

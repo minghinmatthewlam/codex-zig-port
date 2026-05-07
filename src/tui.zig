@@ -46,8 +46,17 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials) void {
         \\╰────────────────────────────────────────────╯
         \\model: {s}
         \\auth: {s}
+        \\api:  {s}
         \\cwd:  {s}
         \\Type /quit to exit.
         \\
-    , .{ cfg.model, credentials.describe(), "." });
+    , .{
+        cfg.model,
+        credentials.describe(),
+        switch (credentials.mode) {
+            .chatgpt => cfg.chatgpt_base_url,
+            .api_key => cfg.openai_base_url,
+        },
+        ".",
+    });
 }

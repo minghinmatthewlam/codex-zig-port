@@ -26,3 +26,9 @@ zig build run
 ```
 
 The project currently targets Zig `0.16.0`.
+
+## Configuration
+
+The port reads `model`, `openai_base_url`, and `chatgpt_base_url` from the
+top-level keys in `$CODEX_HOME/config.toml`. `CODEX_ZIG_MODEL` overrides the
+model. `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
