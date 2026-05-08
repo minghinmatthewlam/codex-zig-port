@@ -10,6 +10,7 @@ const workdir = @import("workdir.zig");
 const ExecArgs = struct {
     auto_approve: bool = false,
     ephemeral: bool = false,
+    skip_git_repo_check: bool = false,
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
@@ -194,6 +195,20 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.ephemeral = true;
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--skip-git-repo-check")) {
+            parsed.skip_git_repo_check = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--color")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            try parseColor(args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--color=")) {
+            try parseColor(arg["--color=".len..]);
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C"))) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
@@ -352,6 +367,16 @@ fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []co
     parsed.resume_target = try allocator.dupe(u8, target);
 }
 
+fn parseColor(value: []const u8) !void {
+    if (std.mem.eql(u8, value, "auto") or
+        std.mem.eql(u8, value, "always") or
+        std.mem.eql(u8, value, "never"))
+    {
+        return;
+    }
+    return error.InvalidExecColor;
+}
+
 fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8) ![]const u8 {
     var buffer: [4096]u8 = undefined;
     var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
@@ -412,6 +437,8 @@ fn printHelp() void {
         \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
         \\  -m, --model MODEL       Override the model
         \\  --ephemeral             Do not save or resume a session file
+        \\  --skip-git-repo-check   Accepted for Rust CLI compatibility
+        \\  --color MODE            auto, always, or never
         \\  -C, --cd DIR            Use DIR as the working root
         \\  --add-dir DIR           Allow workspace-write shell tools to write DIR
         \\  -a, --ask-for-approval MODE
@@ -429,11 +456,12 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.auto_approve);
+    try std.testing.expect(parsed.skip_git_repo_check);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
