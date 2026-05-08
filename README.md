@@ -22,7 +22,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
-- run a minimal stdio MCP server with `codex` and `codex-reply` tools
+- run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
+  `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and

@@ -4,6 +4,7 @@ const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
+const workdir = @import("workdir.zig");
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
@@ -27,6 +28,9 @@ const Server = struct {
     allocator: std.mem.Allocator,
     cfg: config.Config,
     credentials: auth.Credentials,
+    runtime_overrides: config.RuntimeOverrides,
+    oss: bool,
+    oss_provider: ?[]const u8,
     additional_writable_roots: []const []const u8,
     sessions: std.ArrayList(SavedSession) = .empty,
     next_thread_id: usize = 1,
@@ -160,7 +164,12 @@ const Server = struct {
         var transcript_moved = false;
         defer if (!transcript_moved) transcript.deinit(self.allocator);
 
-        const answer = session.runTurnWithOptions(self.allocator, self.cfg, self.credentials, &transcript, prompt, .{
+        var turn_cfg = try self.turnConfig(arguments_value);
+        defer turn_cfg.deinit(self.allocator);
+        const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
+        defer restoreCallCwd(self.allocator, restore_cwd);
+
+        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, self.credentials, &transcript, prompt, .{
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,
@@ -194,7 +203,12 @@ const Server = struct {
             return;
         };
 
-        const answer = session.runTurnWithOptions(self.allocator, self.cfg, self.credentials, &saved.transcript, prompt, .{
+        var turn_cfg = try self.turnConfig(arguments_value);
+        defer turn_cfg.deinit(self.allocator);
+        const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
+        defer restoreCallCwd(self.allocator, restore_cwd);
+
+        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, self.credentials, &saved.transcript, prompt, .{
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,
@@ -207,6 +221,34 @@ const Server = struct {
         defer self.allocator.free(answer);
 
         try self.writeToolResult(id_value, saved.id, answer, false);
+    }
+
+    fn turnConfig(self: *Server, arguments_value: std.json.Value) !config.Config {
+        const profile = getStringField(arguments_value, "profile");
+        var cfg = if (profile) |profile_name|
+            try config.loadWithOptions(self.allocator, .{ .profile = profile_name })
+        else
+            try cloneConfig(self.allocator, self.cfg);
+        errdefer cfg.deinit(self.allocator);
+
+        if (profile != null) {
+            try config.applyRuntimeOverrides(&cfg, self.allocator, self.runtime_overrides);
+            if (self.oss) {
+                try config.applyOssMode(&cfg, self.allocator, self.oss_provider, self.runtime_overrides.model != null);
+            }
+        }
+
+        if (getStringField(arguments_value, "model")) |model| {
+            try config.applyRuntimeOverrides(&cfg, self.allocator, .{ .model = model });
+        }
+        if (getStringField(arguments_value, "approval-policy")) |approval_policy| {
+            cfg.approval_policy = try config.ApprovalPolicy.parse(approval_policy);
+        }
+        if (getStringField(arguments_value, "sandbox")) |sandbox_mode| {
+            cfg.sandbox_mode = try config.SandboxMode.parse(sandbox_mode);
+        }
+
+        return cfg;
     }
 
     fn findSession(self: *Server, thread_id: []const u8) ?*SavedSession {
@@ -297,6 +339,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .allocator = allocator,
         .cfg = cfg,
         .credentials = credentials,
+        .runtime_overrides = options.runtime_overrides,
+        .oss = options.oss,
+        .oss_provider = options.oss_provider,
         .additional_writable_roots = options.additional_writable_roots,
     };
     cfg_owned = false;
@@ -312,6 +357,52 @@ fn getStringField(value: std.json.Value, name: []const u8) ?[]const u8 {
     return field.string;
 }
 
+fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Config {
+    const codex_home = try allocator.dupe(u8, source.codex_home);
+    errdefer allocator.free(codex_home);
+    const active_profile = if (source.active_profile) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (active_profile) |value| allocator.free(value);
+    const model = try allocator.dupe(u8, source.model);
+    errdefer allocator.free(model);
+    const openai_base_url = try allocator.dupe(u8, source.openai_base_url);
+    errdefer allocator.free(openai_base_url);
+    const chatgpt_base_url = try allocator.dupe(u8, source.chatgpt_base_url);
+    errdefer allocator.free(chatgpt_base_url);
+    const oss_provider = if (source.oss_provider) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (oss_provider) |value| allocator.free(value);
+    const installation_id = try allocator.dupe(u8, source.installation_id);
+    errdefer allocator.free(installation_id);
+
+    return .{
+        .codex_home = codex_home,
+        .active_profile = active_profile,
+        .model = model,
+        .openai_base_url = openai_base_url,
+        .chatgpt_base_url = chatgpt_base_url,
+        .oss_provider = oss_provider,
+        .installation_id = installation_id,
+        .approval_policy = source.approval_policy,
+        .sandbox_mode = source.sandbox_mode,
+        .web_search_mode = source.web_search_mode,
+    };
+}
+
+fn enterCallCwd(allocator: std.mem.Allocator, arguments_value: std.json.Value) !?[]const u8 {
+    const cwd = getStringField(arguments_value, "cwd") orelse return null;
+    const previous = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    errdefer allocator.free(previous);
+    try workdir.change(cwd);
+    return previous;
+}
+
+fn restoreCallCwd(allocator: std.mem.Allocator, restore_cwd: ?[]const u8) void {
+    const previous = restore_cwd orelse return;
+    defer allocator.free(previous);
+    workdir.change(previous) catch |err| {
+        std.debug.print("[mcp-server] failed to restore cwd: {s}\n", .{@errorName(err)});
+    };
+}
+
 fn renderInitializeResult(allocator: std.mem.Allocator, protocol_version: []const u8) ![]const u8 {
     const protocol_json = try std.json.Stringify.valueAlloc(allocator, protocol_version, .{});
     defer allocator.free(protocol_json);
@@ -324,7 +415,7 @@ fn renderInitializeResult(allocator: std.mem.Allocator, protocol_version: []cons
 
 fn renderToolsList(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8,
-        \\{"tools":[{"name":"codex","title":"Codex","description":"Run a Codex session.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The initial user prompt to start the Codex conversation."}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}},{"name":"codex-reply","title":"Codex Reply","description":"Continue a Codex conversation by providing the thread id and prompt.","inputSchema":{"type":"object","properties":{"threadId":{"type":"string","description":"The thread id for this Codex session."},"conversationId":{"type":"string","description":"Deprecated alias for threadId."},"prompt":{"type":"string","description":"The next user prompt to continue the Codex conversation."}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}}]}
+        \\{"tools":[{"name":"codex","title":"Codex","description":"Run a Codex session.","inputSchema":{"type":"object","properties":{"approval-policy":{"description":"Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.","enum":["untrusted","on-failure","on-request","never"],"type":"string"},"cwd":{"description":"Working directory for the session. If relative, it is resolved against the server process's current working directory.","type":"string"},"model":{"description":"Optional override for the model name.","type":"string"},"profile":{"description":"Configuration profile from config.toml to specify default options.","type":"string"},"prompt":{"description":"The initial user prompt to start the Codex conversation.","type":"string"},"sandbox":{"description":"Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.","enum":["read-only","workspace-write","danger-full-access"],"type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}},{"name":"codex-reply","title":"Codex Reply","description":"Continue a Codex conversation by providing the thread id and prompt.","inputSchema":{"type":"object","properties":{"conversationId":{"description":"Deprecated alias for threadId.","type":"string"},"cwd":{"description":"Working directory for the reply turn.","type":"string"},"model":{"description":"Optional override for the model name.","type":"string"},"prompt":{"description":"The next user prompt to continue the Codex conversation.","type":"string"},"threadId":{"description":"The thread id for this Codex session.","type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}}]}
     );
 }
 
@@ -382,4 +473,45 @@ test "mcp server tool result includes text and structured content" {
         "{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"structuredContent\":{\"threadId\":\"zig-1\",\"content\":\"hello\"},\"isError\":false}",
         result,
     );
+}
+
+test "mcp server turn config applies direct call overrides" {
+    const allocator = std.testing.allocator;
+    const source = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "base-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+    };
+    var credentials = try auth.localOssCredentials(allocator);
+    defer credentials.deinit(allocator);
+    var server = Server{
+        .allocator = allocator,
+        .cfg = source,
+        .credentials = credentials,
+        .runtime_overrides = .{},
+        .oss = false,
+        .oss_provider = null,
+        .additional_writable_roots = &.{},
+    };
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"model\":\"call-model\",\"approval-policy\":\"never\",\"sandbox\":\"read-only\"}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    var cfg = try server.turnConfig(parsed.value);
+    defer cfg.deinit(allocator);
+
+    try std.testing.expectEqualStrings("call-model", cfg.model);
+    try std.testing.expectEqual(config.ApprovalPolicy.never, cfg.approval_policy);
+    try std.testing.expectEqual(config.SandboxMode.read_only, cfg.sandbox_mode);
 }
