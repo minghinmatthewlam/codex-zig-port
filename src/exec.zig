@@ -29,6 +29,7 @@ const ExecArgs = struct {
     cwd: ?[]const u8 = null,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
     resume_target: ?[]const u8 = null,
+    resume_all: bool = false,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
 
@@ -386,6 +387,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             resume_target_set = true;
             continue;
         }
+        if (!end_options and resume_mode and std.mem.eql(u8, arg, "--all")) {
+            parsed.resume_all = true;
+            continue;
+        }
         if (!end_options and std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-")) {
             std.debug.print("unknown exec option: {s}\n", .{arg});
             return error.UnknownExecOption;
@@ -555,7 +560,7 @@ fn printHelp() void {
         \\Usage:
         \\  codex-zig exec [OPTIONS] [PROMPT]
         \\  codex-zig exec [OPTIONS] -
-        \\  codex-zig exec [OPTIONS] resume [last|ID|PATH] PROMPT
+        \\  codex-zig exec [OPTIONS] resume [--all] [last|ID|PATH] PROMPT
         \\
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
@@ -630,12 +635,20 @@ test "exec args parse resume last prompt" {
 
 test "exec args parse resume --last stdin" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "resume", "--last", "-" };
+    const argv = [_][]const u8{ "resume", "--last", "--all", "-" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("last", parsed.resume_target.?);
+    try std.testing.expect(parsed.resume_all);
     try std.testing.expect(parsed.read_stdin);
+}
+
+test "exec args reject --all outside resume mode" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--all", "say", "hello" };
+
+    try std.testing.expectError(error.UnknownExecOption, parseArgs(allocator, argv[0..]));
 }
 
 test "exec args parse ephemeral" {
