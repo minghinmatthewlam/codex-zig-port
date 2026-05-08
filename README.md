@@ -61,6 +61,15 @@ codex-zig resume <session-id>
 
 ## Configuration
 
-The port reads `model`, `openai_base_url`, and `chatgpt_base_url` from the
-top-level keys in `$CODEX_HOME/config.toml`. `CODEX_ZIG_MODEL` overrides the
-model. `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
+The port reads `model`, `openai_base_url`, `chatgpt_base_url`,
+`approval_policy`, `sandbox_mode`, and `profile` from top-level keys in
+`$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
+those same fields.
+
+```sh
+codex-zig --profile work auth-status
+codex-zig exec --profile work "say hello"
+```
+
+`CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.
+`CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.

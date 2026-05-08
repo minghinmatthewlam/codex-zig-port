@@ -20,13 +20,28 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
 
-    if (args.next()) |cmd| {
+    var profile_override: ?[]const u8 = null;
+    var cmd_opt: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+            profile_override = args.next() orelse return error.MissingProfileOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            profile_override = arg["--profile=".len..];
+            continue;
+        }
+        cmd_opt = arg;
+        break;
+    }
+
+    if (cmd_opt) |cmd| {
         if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
             try printHelp();
             return;
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
-            try runAuthStatus(allocator);
+            try runAuthStatus(allocator, profile_override);
             return;
         }
         if (std.mem.eql(u8, cmd, "login")) {
@@ -38,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "exec")) {
-            try exec.run(allocator, &args);
+            try exec.runWithOptions(allocator, &args, .{ .profile = profile_override });
             return;
         }
         if (std.mem.eql(u8, cmd, "resume")) {
@@ -49,17 +64,17 @@ pub fn main(init: std.process.Init) !void {
                     return;
                 }
                 if (std.mem.eql(u8, value, "--last")) {
-                    try tui.runWithOptions(allocator, .{ .resume_target = "last" });
+                    try tui.runWithOptions(allocator, .{ .resume_target = "last", .profile = profile_override });
                     return;
                 }
-                try tui.runWithOptions(allocator, .{ .resume_target = value });
+                try tui.runWithOptions(allocator, .{ .resume_target = value, .profile = profile_override });
             } else {
-                try tui.runWithOptions(allocator, .{ .resume_picker = true });
+                try tui.runWithOptions(allocator, .{ .resume_picker = true, .profile = profile_override });
             }
             return;
         }
         if (std.mem.eql(u8, cmd, "sessions")) {
-            try runSessions(allocator, args.next());
+            try runSessions(allocator, args.next(), profile_override);
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -83,7 +98,7 @@ pub fn main(init: std.process.Init) !void {
         return error.UnknownCommand;
     }
 
-    try tui.run(allocator);
+    try tui.runWithOptions(allocator, .{ .profile = profile_override });
 }
 
 fn printHelp() !void {
@@ -103,6 +118,8 @@ fn printHelp() !void {
         \\  codex-zig login status Show login status
         \\  codex-zig logout       Remove local Codex auth
         \\  codex-zig auth-status  Check local Codex auth reuse
+        \\  codex-zig --profile NAME ...
+        \\                          Select a config profile for the command
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
         \\                          Run deterministic apply_patch demo
@@ -134,21 +151,22 @@ fn printResumeHelp() void {
     , .{});
 }
 
-fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8) !void {
+fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8, profile: ?[]const u8) !void {
     const limit = if (limit_arg) |value| try std.fmt.parseUnsigned(usize, value, 10) else 10;
-    var cfg = try config.load(allocator);
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = profile });
     defer cfg.deinit(allocator);
 
     try session_store.printSessionList(allocator, cfg.codex_home, limit);
 }
 
-fn runAuthStatus(allocator: std.mem.Allocator) !void {
-    var cfg = try config.load(allocator);
+fn runAuthStatus(allocator: std.mem.Allocator, profile: ?[]const u8) !void {
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = profile });
     defer cfg.deinit(allocator);
     var credentials = try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
     std.debug.print("codex_home: {s}\n", .{cfg.codex_home});
+    std.debug.print("active_profile: {s}\n", .{cfg.active_profile orelse "<none>"});
     std.debug.print("model: {s}\n", .{cfg.model});
     std.debug.print("auth: {s}\n", .{credentials.describe()});
     std.debug.print("approval_policy: {s}\n", .{cfg.approval_policy.label()});

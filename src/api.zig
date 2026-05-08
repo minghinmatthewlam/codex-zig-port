@@ -519,6 +519,7 @@ test "builds chronological request input from owned history" {
     const allocator = std.testing.allocator;
     const cfg = config.Config{
         .codex_home = ".",
+        .active_profile = null,
         .model = "demo-model",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",

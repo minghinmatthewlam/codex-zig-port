@@ -9,6 +9,7 @@ const session_store = @import("session_store.zig");
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
     resume_picker: bool = false,
+    profile: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -16,7 +17,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 }
 
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
-    var cfg = try config.load(allocator);
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
 
     var credentials = try auth.load(allocator, cfg.codex_home);

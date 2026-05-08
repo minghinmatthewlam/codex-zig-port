@@ -3,6 +3,7 @@ const env = @import("env.zig");
 
 pub const Config = struct {
     codex_home: []const u8,
+    active_profile: ?[]const u8,
     model: []const u8,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
@@ -12,11 +13,16 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
+        if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.model);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
         allocator.free(self.installation_id);
     }
+};
+
+pub const LoadOptions = struct {
+    profile: ?[]const u8 = null,
 };
 
 pub const ApprovalPolicy = enum {
@@ -70,24 +76,40 @@ const BaseUrls = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator) !Config {
+    return loadWithOptions(allocator, .{});
+}
+
+pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Config {
     const codex_home = try resolveCodexHome(allocator);
     errdefer allocator.free(codex_home);
 
-    const model = try resolveModel(allocator, codex_home);
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+
+    const active_profile = try resolveActiveProfile(allocator, config_view, options.profile);
+    errdefer if (active_profile) |profile| allocator.free(profile);
+    if (active_profile) |profile| {
+        if (!config_view.hasProfile(profile)) return error.ConfigProfileNotFound;
+    }
+
+    const model = try resolveModel(allocator, config_view, active_profile);
     errdefer allocator.free(model);
 
-    const base_urls = try resolveBaseUrls(allocator, codex_home);
+    const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
     errdefer allocator.free(base_urls.chatgpt);
 
     const installation_id = try readOptionalFileTrimmed(allocator, codex_home, "installation_id", "unknown-zig-port");
     errdefer allocator.free(installation_id);
 
-    const approval_policy = try resolveApprovalPolicy(allocator, codex_home);
-    const sandbox_mode = try resolveSandboxMode(allocator, codex_home);
+    const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
+    const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
 
     return .{
         .codex_home = codex_home,
+        .active_profile = active_profile,
         .model = model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
@@ -107,19 +129,30 @@ fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".codex" });
 }
 
-fn resolveModel(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+fn resolveActiveProfile(allocator: std.mem.Allocator, config_view: ConfigView, override_profile: ?[]const u8) !?[]const u8 {
+    if (override_profile) |value| {
+        const profile = try allocator.dupe(u8, value);
+        return profile;
+    }
+    if (try env.getOwned(allocator, "CODEX_ZIG_PROFILE")) |value| {
+        return value;
+    }
+    return config_view.getScopedString(allocator, null, "profile");
+}
+
+fn resolveModel(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) ![]const u8 {
     if (try env.getOwned(allocator, "CODEX_ZIG_MODEL")) |value| {
         return value;
     }
 
-    if (try readTopLevelStringFromConfig(allocator, codex_home, "model")) |model| {
+    if (try config_view.getScopedString(allocator, active_profile, "model")) |model| {
         return model;
     }
 
     return allocator.dupe(u8, "gpt-5.2-codex");
 }
 
-fn resolveBaseUrls(allocator: std.mem.Allocator, codex_home: []const u8) !BaseUrls {
+fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !BaseUrls {
     if (try env.getOwned(allocator, "CODEX_ZIG_BASE_URL")) |value| {
         errdefer allocator.free(value);
         return .{
@@ -128,13 +161,13 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, codex_home: []const u8) !BaseUr
         };
     }
 
-    const openai = if (try readTopLevelStringFromConfig(allocator, codex_home, "openai_base_url")) |value|
+    const openai = if (try config_view.getScopedString(allocator, active_profile, "openai_base_url")) |value|
         value
     else
         try allocator.dupe(u8, "https://api.openai.com/v1");
     errdefer allocator.free(openai);
 
-    const chatgpt = if (try readTopLevelStringFromConfig(allocator, codex_home, "chatgpt_base_url")) |value|
+    const chatgpt = if (try config_view.getScopedString(allocator, active_profile, "chatgpt_base_url")) |value|
         value
     else
         try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex");
@@ -142,13 +175,13 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, codex_home: []const u8) !BaseUr
     return .{ .openai = openai, .chatgpt = chatgpt };
 }
 
-fn resolveApprovalPolicy(allocator: std.mem.Allocator, codex_home: []const u8) !ApprovalPolicy {
+fn resolveApprovalPolicy(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ApprovalPolicy {
     if (try env.getOwned(allocator, "CODEX_ZIG_APPROVAL_POLICY")) |value| {
         defer allocator.free(value);
         return ApprovalPolicy.parse(value);
     }
 
-    if (try readTopLevelStringFromConfig(allocator, codex_home, "approval_policy")) |value| {
+    if (try config_view.getScopedString(allocator, active_profile, "approval_policy")) |value| {
         defer allocator.free(value);
         return ApprovalPolicy.parse(value);
     }
@@ -156,13 +189,13 @@ fn resolveApprovalPolicy(allocator: std.mem.Allocator, codex_home: []const u8) !
     return .on_request;
 }
 
-fn resolveSandboxMode(allocator: std.mem.Allocator, codex_home: []const u8) !SandboxMode {
+fn resolveSandboxMode(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !SandboxMode {
     if (try env.getOwned(allocator, "CODEX_ZIG_SANDBOX_MODE")) |value| {
         defer allocator.free(value);
         return SandboxMode.parse(value);
     }
 
-    if (try readTopLevelStringFromConfig(allocator, codex_home, "sandbox_mode")) |value| {
+    if (try config_view.getScopedString(allocator, active_profile, "sandbox_mode")) |value| {
         defer allocator.free(value);
         return SandboxMode.parse(value);
     }
@@ -170,32 +203,127 @@ fn resolveSandboxMode(allocator: std.mem.Allocator, codex_home: []const u8) !San
     return .workspace_write;
 }
 
-fn readTopLevelStringFromConfig(allocator: std.mem.Allocator, codex_home: []const u8, key: []const u8) !?[]const u8 {
+fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
     defer allocator.free(path);
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+    return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer allocator.free(bytes);
+}
 
-    var iter = std.mem.splitScalar(u8, bytes, '\n');
-    while (iter.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') break;
-        if (!std.mem.startsWith(u8, line, key)) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const lhs = std.mem.trim(u8, line[0..eq], " \t");
-        if (!std.mem.eql(u8, lhs, key)) continue;
-        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        if (rhs.len >= 2 and rhs[0] == '"') {
-            const end = std.mem.indexOfScalar(u8, rhs[1..], '"') orelse continue;
-            return try allocator.dupe(u8, rhs[1 .. 1 + end]);
+const ConfigView = struct {
+    bytes: []const u8,
+
+    fn getScopedString(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        profile: ?[]const u8,
+        key: []const u8,
+    ) !?[]const u8 {
+        if (profile) |name| {
+            if (try self.getProfileString(allocator, name, key)) |value| {
+                return value;
+            }
         }
+        return self.getTopLevelString(allocator, key);
     }
-    return null;
+
+    fn getTopLevelString(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') break;
+            if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
+    fn getProfileString(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        profile: []const u8,
+        key: []const u8,
+    ) !?[]const u8 {
+        var in_profile = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_profile = isProfileSection(line, profile);
+                continue;
+            }
+            if (!in_profile) continue;
+            if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
+    fn hasProfile(self: ConfigView, profile: []const u8) bool {
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[' and isProfileSection(line, profile)) return true;
+        }
+        return false;
+    }
+};
+
+fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    return parseTomlString(allocator, rhs);
+}
+
+fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
+    if (rhs.len < 2 or rhs[0] != '"') return null;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var index: usize = 1;
+    while (index < rhs.len) : (index += 1) {
+        const byte = rhs[index];
+        if (byte == '"') {
+            const value = try output.toOwnedSlice(allocator);
+            return value;
+        }
+        if (byte != '\\') {
+            try output.append(allocator, byte);
+            continue;
+        }
+
+        index += 1;
+        if (index >= rhs.len) return error.InvalidTomlString;
+        const escaped: u8 = switch (rhs[index]) {
+            '"' => '"',
+            '\\' => '\\',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            else => return error.InvalidTomlString,
+        };
+        try output.append(allocator, escaped);
+    }
+
+    return error.InvalidTomlString;
+}
+
+fn isProfileSection(line: []const u8, profile: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    if (!std.mem.startsWith(u8, section, "profiles.")) return false;
+    const raw_name = section["profiles.".len..];
+    if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
+        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], profile);
+    }
+    return std.mem.eql(u8, raw_name, profile);
 }
 
 fn readOptionalFileTrimmed(
@@ -219,33 +347,84 @@ fn readOptionalFileTrimmed(
 
 test "top-level model is read from config" {
     const allocator = std.testing.allocator;
-    var dir = std.testing.tmpDir(.{});
-    defer dir.cleanup();
-    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = "config.toml", .data = "model = \"demo-model\" # trailing comment\n[other]\nmodel = \"ignored\"\n" });
-    const cwd_path = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
-    defer allocator.free(cwd_path);
-    const model = try readTopLevelStringFromConfig(allocator, cwd_path, "model");
+    const view = ConfigView{ .bytes = "model = \"demo-model\" # trailing comment\n[other]\nmodel = \"ignored\"\n" };
+    const model = try view.getTopLevelString(allocator, "model");
     defer allocator.free(model.?);
     try std.testing.expectEqualStrings("demo-model", model.?);
 }
 
 test "approval and sandbox labels parse config strings" {
     const allocator = std.testing.allocator;
-    var dir = std.testing.tmpDir(.{});
-    defer dir.cleanup();
-    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
-        .sub_path = "config.toml",
-        .data =
+    const view = ConfigView{
+        .bytes =
         \\approval_policy = "never"
         \\sandbox_mode = "read-only"
         \\
         ,
-    });
-    const cwd_path = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
-    defer allocator.free(cwd_path);
+    };
 
-    try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, cwd_path));
-    try std.testing.expectEqual(SandboxMode.read_only, try resolveSandboxMode(allocator, cwd_path));
+    try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, null));
+    try std.testing.expectEqual(SandboxMode.read_only, try resolveSandboxMode(allocator, view, null));
     try std.testing.expectEqualStrings("on-request", ApprovalPolicy.on_request.label());
     try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
+}
+
+test "profile values override top-level config values" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\profile = "work"
+        \\model = "base-model"
+        \\approval_policy = "on-request"
+        \\sandbox_mode = "read-only"
+        \\chatgpt_base_url = "https://base.example/codex"
+        \\
+        \\[profiles.work]
+        \\model = "profile-model"
+        \\approval_policy = "never"
+        \\sandbox_mode = "danger-full-access"
+        \\chatgpt_base_url = "https://profile.example/codex"
+        \\
+        ,
+    };
+
+    try std.testing.expect(view.hasProfile("work"));
+
+    const active_profile = try view.getTopLevelString(allocator, "profile");
+    defer allocator.free(active_profile.?);
+    try std.testing.expectEqualStrings("work", active_profile.?);
+
+    const model = try view.getScopedString(allocator, active_profile.?, "model");
+    defer allocator.free(model.?);
+    try std.testing.expectEqualStrings("profile-model", model.?);
+
+    const chatgpt_base_url = try view.getScopedString(allocator, active_profile.?, "chatgpt_base_url");
+    defer allocator.free(chatgpt_base_url.?);
+    try std.testing.expectEqualStrings("https://profile.example/codex", chatgpt_base_url.?);
+
+    try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
+    try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
+}
+
+test "quoted profile section names are supported" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[profiles."team a"]
+        \\model = "quoted-profile-model"
+        \\
+        ,
+    };
+
+    try std.testing.expect(view.hasProfile("team a"));
+    const model = try view.getScopedString(allocator, "team a", "model");
+    defer allocator.free(model.?);
+    try std.testing.expectEqualStrings("quoted-profile-model", model.?);
+}
+
+test "toml string escapes are decoded" {
+    const allocator = std.testing.allocator;
+    const value = try parseTomlString(allocator, "\"hello\\n\\\"zig\\\"\"");
+    defer allocator.free(value.?);
+    try std.testing.expectEqualStrings("hello\n\"zig\"", value.?);
 }
