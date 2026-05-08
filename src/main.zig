@@ -3,6 +3,7 @@ const std = @import("std");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
+const completion_cmd = @import("completion_cmd.zig");
 const config = @import("config.zig");
 const debug_cmd = @import("debug_cmd.zig");
 const env = @import("env.zig");
@@ -245,6 +246,10 @@ fn mainInner(init: std.process.Init) !void {
             try features_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
             });
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "completion")) {
+            try completion_cmd.run(allocator, &args);
             return;
         }
         if (std.mem.eql(u8, cmd, "debug")) {
@@ -511,6 +516,8 @@ fn printHelp() !void {
         \\                          Run a command under macOS Seatbelt
         \\  codex-zig features list
         \\                          List known feature flags
+        \\  codex-zig completion [SHELL]
+        \\                          Generate shell completion scripts
         \\  codex-zig debug prompt-input [PROMPT]
         \\                          Print model-visible input JSON
         \\  codex-zig mcp list
@@ -829,6 +836,7 @@ test {
     _ = api;
     _ = auth;
     _ = cli_utils;
+    _ = completion_cmd;
     _ = config;
     _ = debug_cmd;
     _ = env;
