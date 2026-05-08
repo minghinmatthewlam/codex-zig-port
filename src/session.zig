@@ -97,6 +97,7 @@ pub const TurnOptions = struct {
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
     json_events: bool = false,
+    stream_text: bool = false,
 };
 
 pub fn runTurn(
@@ -125,7 +126,15 @@ pub fn runTurnWithOptions(
 
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
-        var response = try api.createTurn(allocator, cfg, credentials, transcript.history.items);
+        var stream_context = StreamTextContext{};
+        var create_options = api.CreateTurnOptions{};
+        if (options.stream_text and !options.json_events) {
+            create_options.stream_callback = api.StreamCallback{
+                .ctx = &stream_context,
+                .on_text_delta = streamTextDelta,
+            };
+        }
+        var response = try api.createTurnWithOptions(allocator, cfg, credentials, transcript.history.items, create_options);
         defer response.deinit(allocator);
 
         if (response.text.len > 0) {
@@ -167,6 +176,13 @@ pub fn runTurnWithOptions(
     }
 
     return error.TooManyToolRounds;
+}
+
+const StreamTextContext = struct {};
+
+fn streamTextDelta(ctx: *anyopaque, delta: []const u8) anyerror!void {
+    _ = ctx;
+    std.debug.print("{s}", .{delta});
 }
 
 fn emitJsonEvent(allocator: std.mem.Allocator, event: anytype) !void {

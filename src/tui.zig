@@ -65,8 +65,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
-        std.debug.print("\nassistant streaming...\n", .{});
-        const answer = session.runTurn(allocator, cfg, credentials, &transcript, prompt) catch |err| {
+        std.debug.print("\nassistant:\n", .{});
+        const answer = session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
+            .stream_text = true,
+        }) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -74,7 +76,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         session_store.saveTranscript(allocator, session_path, &transcript) catch |err| {
             std.debug.print("warning: could not save session: {s}\n", .{@errorName(err)});
         };
-        std.debug.print("\nassistant:\n{s}\n", .{answer});
+        if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+            std.debug.print("\n", .{});
+        }
     }
 
     std.debug.print("\nbye\n", .{});

@@ -26,6 +26,15 @@ pub const ParsedResponse = struct {
     }
 };
 
+pub const StreamCallback = struct {
+    ctx: *anyopaque,
+    on_text_delta: *const fn (ctx: *anyopaque, delta: []const u8) anyerror!void,
+};
+
+pub const CreateTurnOptions = struct {
+    stream_callback: ?StreamCallback = null,
+};
+
 pub const HistoryItem = struct {
     kind: Kind,
     role: ?[]const u8 = null,
@@ -127,6 +136,16 @@ pub fn createTurn(
     credentials: auth.Credentials,
     history: []const HistoryItem,
 ) !ParsedResponse {
+    return createTurnWithOptions(allocator, cfg, credentials, history, .{});
+}
+
+pub fn createTurnWithOptions(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    history: []const HistoryItem,
+    options: CreateTurnOptions,
+) !ParsedResponse {
     const body = try buildRequestBody(allocator, cfg, history);
     defer allocator.free(body);
 
@@ -159,7 +178,7 @@ pub fn createTurn(
     var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
     defer client.deinit();
 
-    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    var response_body = StreamingResponseWriter.init(allocator, options.stream_callback);
     defer response_body.deinit();
 
     const result = try client.fetch(.{
@@ -169,6 +188,9 @@ pub fn createTurn(
         .response_writer = &response_body.writer,
         .extra_headers = headers.items,
     });
+
+    if (response_body.failure) |err| return err;
+    try response_body.finish();
 
     const bytes = try response_body.toOwnedSlice();
     defer allocator.free(bytes);
@@ -180,6 +202,105 @@ pub fn createTurn(
 
     return parseSseResponse(allocator, bytes);
 }
+
+const StreamingResponseWriter = struct {
+    allocator: std.mem.Allocator,
+    writer: std.Io.Writer,
+    raw: std.ArrayList(u8) = .empty,
+    line: std.ArrayList(u8) = .empty,
+    callback: ?StreamCallback,
+    failure: ?anyerror = null,
+
+    const vtable: std.Io.Writer.VTable = .{
+        .drain = drain,
+    };
+
+    fn init(allocator: std.mem.Allocator, callback: ?StreamCallback) StreamingResponseWriter {
+        return .{
+            .allocator = allocator,
+            .writer = .{
+                .buffer = &.{},
+                .vtable = &vtable,
+            },
+            .callback = callback,
+        };
+    }
+
+    fn deinit(self: *StreamingResponseWriter) void {
+        self.raw.deinit(self.allocator);
+        self.line.deinit(self.allocator);
+    }
+
+    fn finish(self: *StreamingResponseWriter) !void {
+        if (self.line.items.len > 0) {
+            try self.processLine(self.line.items);
+            self.line.clearRetainingCapacity();
+        }
+    }
+
+    fn toOwnedSlice(self: *StreamingResponseWriter) ![]u8 {
+        return self.raw.toOwnedSlice(self.allocator);
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *StreamingResponseWriter = @fieldParentPtr("writer", w);
+        const start_len = self.raw.items.len;
+
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.ingest(bytes) catch |err| {
+                self.failure = err;
+                return error.WriteFailed;
+            };
+        }
+
+        const pattern = data[data.len - 1];
+        var repeat_index: usize = 0;
+        while (repeat_index < splat) : (repeat_index += 1) {
+            self.ingest(pattern) catch |err| {
+                self.failure = err;
+                return error.WriteFailed;
+            };
+        }
+
+        return self.raw.items.len - start_len;
+    }
+
+    fn ingest(self: *StreamingResponseWriter, bytes: []const u8) !void {
+        try self.raw.appendSlice(self.allocator, bytes);
+        for (bytes) |byte| {
+            if (byte == '\n') {
+                try self.processLine(self.line.items);
+                self.line.clearRetainingCapacity();
+            } else {
+                try self.line.append(self.allocator, byte);
+            }
+        }
+    }
+
+    fn processLine(self: *StreamingResponseWriter, raw_line: []const u8) !void {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "data:")) return;
+        const data = std.mem.trim(u8, line[5..], " \t");
+        if (std.mem.eql(u8, data, "[DONE]")) return;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch return;
+        defer parsed.deinit();
+
+        const object = switch (parsed.value) {
+            .object => |object| object,
+            else => return,
+        };
+        const event_type = object.get("type") orelse return;
+        if (event_type != .string) return;
+        if (!std.mem.eql(u8, event_type.string, "response.output_text.delta")) return;
+
+        const delta = object.get("delta") orelse return;
+        if (delta != .string or delta.string.len == 0) return;
+        if (self.callback) |callback| {
+            try callback.on_text_delta(callback.ctx, delta.string);
+        }
+    }
+};
 
 pub fn buildRequestBody(
     allocator: std.mem.Allocator,
@@ -355,6 +476,43 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("hi", parsed.text);
     try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
+}
+
+const TestStreamContext = struct {
+    allocator: std.mem.Allocator,
+    text: std.ArrayList(u8) = .empty,
+
+    fn deinit(self: *TestStreamContext) void {
+        self.text.deinit(self.allocator);
+    }
+};
+
+fn collectTextDelta(ctx: *anyopaque, delta: []const u8) anyerror!void {
+    const test_context: *TestStreamContext = @ptrCast(@alignCast(ctx));
+    try test_context.text.appendSlice(test_context.allocator, delta);
+}
+
+test "streaming response writer emits text deltas while retaining raw SSE" {
+    const allocator = std.testing.allocator;
+    var stream_context = TestStreamContext{ .allocator = allocator };
+    defer stream_context.deinit();
+
+    var writer = StreamingResponseWriter.init(allocator, .{
+        .ctx = &stream_context,
+        .on_text_delta = collectTextDelta,
+    });
+    defer writer.deinit();
+
+    try writer.writer.writeAll("data: {\"type\":\"response.output_text.delta\",\"delta\":\"he\"}\n");
+    try writer.writer.writeAll("data: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n");
+    try writer.writer.writeAll("data: [DONE]\n");
+    try writer.finish();
+
+    const raw = try writer.toOwnedSlice();
+    defer allocator.free(raw);
+
+    try std.testing.expectEqualStrings("hello", stream_context.text.items);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"delta\":\"he\"") != null);
 }
 
 test "builds chronological request input from owned history" {
