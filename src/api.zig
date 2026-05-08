@@ -3,6 +3,7 @@ const std = @import("std");
 const agents_md = @import("agents_md.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const mcp_runtime = @import("mcp_runtime.zig");
 
 pub const FunctionCall = struct {
     call_id: []const u8,
@@ -36,6 +37,7 @@ pub const CreateTurnOptions = struct {
     stream_callback: ?StreamCallback = null,
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
+    mcp_tools: []const mcp_runtime.ToolSpec = &.{},
 };
 
 pub const HistoryItem = struct {
@@ -82,33 +84,11 @@ const InputItem = struct {
     output: ?[]const u8 = null,
 };
 
-const FunctionParameters = struct {
-    type: []const u8 = "object",
-    properties: ToolProperties,
-    required: []const []const u8,
-    additionalProperties: bool = false,
-};
-
-const ToolProperties = struct {
-    command: ?ToolProperty = null,
-    patch: ?ToolProperty = null,
-};
-
-const ToolProperty = struct {
-    type: []const u8,
-    description: []const u8,
-    items: ?CommandItems = null,
-};
-
-const CommandItems = struct {
-    type: []const u8 = "string",
-};
-
 const Tool = struct {
     type: []const u8,
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
-    parameters: ?FunctionParameters = null,
+    parameters: ?std.json.Value = null,
     external_web_access: ?bool = null,
 };
 
@@ -167,6 +147,7 @@ pub fn createTurnWithOptions(
     const body = try buildRequestBodyWithOptions(allocator, cfg, history, .{
         .output_schema = options.output_schema,
         .input_images = options.input_images,
+        .mcp_tools = options.mcp_tools,
     });
     defer allocator.free(body);
 
@@ -352,6 +333,7 @@ pub fn buildRequestBody(
 pub const RequestBodyOptions = struct {
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
+    mcp_tools: []const mcp_runtime.ToolSpec = &.{},
 };
 
 fn latestUserMessageIndex(history: []const HistoryItem) ?usize {
@@ -429,60 +411,63 @@ pub fn buildRequestBodyWithOptions(
         }
     }
 
-    const command_required = [_][]const u8{"command"};
-    const patch_required = [_][]const u8{"patch"};
+    var parsed_parameter_values = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
+    defer {
+        for (parsed_parameter_values.items) |*parsed| parsed.deinit();
+        parsed_parameter_values.deinit(allocator);
+    }
+
     const shell_tool = Tool{
         .type = "function",
         .name = "shell",
         .description = "Run a command as an argv array in the current workspace.",
-        .parameters = .{
-            .properties = .{ .command = .{
-                .type = "array",
-                .description = "Command and arguments to execute.",
-                .items = .{},
-            } },
-            .required = command_required[0..],
-        },
+        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+            \\{"type":"object","properties":{"command":{"type":"array","description":"Command and arguments to execute.","items":{"type":"string"}}},"required":["command"],"additionalProperties":false}
+        ),
     };
     const shell_command_tool = Tool{
         .type = "function",
         .name = "shell_command",
         .description = "Run a shell command string in the current workspace.",
-        .parameters = .{
-            .properties = .{ .command = .{
-                .type = "string",
-                .description = "Shell command to execute.",
-            } },
-            .required = command_required[0..],
-        },
+        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+            \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute."}},"required":["command"],"additionalProperties":false}
+        ),
     };
     const apply_patch_tool = Tool{
         .type = "function",
         .name = "apply_patch",
         .description = "Apply a Codex-style patch to files in the current workspace. The patch must start with *** Begin Patch and end with *** End Patch.",
-        .parameters = .{
-            .properties = .{ .patch = .{
-                .type = "string",
-                .description = "Patch text with Add File, Update File, or Delete File sections.",
-            } },
-            .required = patch_required[0..],
-        },
+        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+            \\{"type":"object","properties":{"patch":{"type":"string","description":"Patch text with Add File, Update File, or Delete File sections."}},"required":["patch"],"additionalProperties":false}
+        ),
     };
-    var tools_storage: [4]Tool = undefined;
-    tools_storage[0] = shell_tool;
-    tools_storage[1] = shell_command_tool;
-    tools_storage[2] = apply_patch_tool;
-    var tools_count: usize = 3;
+    var tools_list = std.ArrayList(Tool).empty;
+    defer tools_list.deinit(allocator);
+    try tools_list.append(allocator, shell_tool);
+    try tools_list.append(allocator, shell_command_tool);
+    try tools_list.append(allocator, apply_patch_tool);
     if (cfg.web_search_mode) |web_search_mode| {
         if (web_search_mode.externalWebAccess()) |external_web_access| {
-            tools_storage[tools_count] = .{
+            try tools_list.append(allocator, .{
                 .type = "web_search",
                 .external_web_access = external_web_access,
-            };
-            tools_count += 1;
+            });
         }
     }
-    const tools = tools_storage[0..tools_count];
+    for (options.mcp_tools) |mcp_tool| {
+        const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
+            try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
+        const description = if (mcp_tool.description.len > 0)
+            mcp_tool.description
+        else
+            "Call a configured MCP server tool.";
+        try tools_list.append(allocator, .{
+            .type = "function",
+            .name = mcp_tool.callable_name,
+            .description = description,
+            .parameters = parameters,
+        });
+    }
     const include = [_][]const u8{};
 
     const instructions = try agents_md.buildInstructions(allocator, baseInstructions);
@@ -497,7 +482,7 @@ pub fn buildRequestBodyWithOptions(
         .model = cfg.model,
         .instructions = instructions,
         .input = inputs.items,
-        .tools = tools[0..],
+        .tools = tools_list.items,
         .text = text_controls,
         .reasoning = .{},
         .include = include[0..],
@@ -505,6 +490,17 @@ pub fn buildRequestBodyWithOptions(
         .client_metadata = .{ .@"x-codex-installation-id" = cfg.installation_id },
     };
     return std.json.Stringify.valueAlloc(allocator, req, .{ .emit_null_optional_fields = false });
+}
+
+fn appendParsedJsonValue(
+    allocator: std.mem.Allocator,
+    parsed_values: *std.ArrayList(std.json.Parsed(std.json.Value)),
+    bytes: []const u8,
+) !std.json.Value {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    errdefer parsed.deinit();
+    try parsed_values.append(allocator, parsed);
+    return parsed_values.items[parsed_values.items.len - 1].value;
 }
 
 pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !ParsedResponse {
@@ -567,6 +563,7 @@ const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
     \\When you need to inspect files or run commands, call shell_command or shell.
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
+    \\Configured MCP server tools may appear as mcp__server__tool function tools.
     \\Keep answers concise and report command outcomes.
 ;
 
@@ -748,6 +745,57 @@ test "builds web search tool from config mode" {
         found = true;
         try std.testing.expectEqual(true, object.get("external_web_access").?.bool);
         try std.testing.expect(object.get("name") == null);
+    }
+
+    try std.testing.expect(found);
+}
+
+test "builds mcp function tools from catalog" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "use mcp",
+        },
+    };
+    const mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":[\"message\"]}",
+    }};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .mcp_tools = mcp_tools[0..] });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    var found = false;
+    for (tools.items) |tool| {
+        const object = tool.object;
+        const name = object.get("name") orelse continue;
+        if (name != .string or !std.mem.eql(u8, name.string, "mcp__demo__echo")) continue;
+        found = true;
+        try std.testing.expectEqualStrings("function", object.get("type").?.string);
+        try std.testing.expectEqualStrings("Echo through MCP", object.get("description").?.string);
+        try std.testing.expectEqualStrings("object", object.get("parameters").?.object.get("type").?.string);
     }
 
     try std.testing.expect(found);

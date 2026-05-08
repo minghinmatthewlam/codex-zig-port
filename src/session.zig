@@ -3,6 +3,7 @@ const std = @import("std");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const mcp_runtime = @import("mcp_runtime.zig");
 const tools = @import("tools.zig");
 
 pub const Transcript = struct {
@@ -127,12 +128,16 @@ pub fn runTurnWithOptions(
     var final_text = std.ArrayList(u8).empty;
     errdefer final_text.deinit(allocator);
 
+    var mcp_catalog = try mcp_runtime.loadCatalog(allocator, cfg.codex_home);
+    defer mcp_catalog.deinit(allocator);
+
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
         var stream_context = StreamTextContext{};
         var create_options = api.CreateTurnOptions{};
         create_options.output_schema = options.output_schema;
         create_options.input_images = options.input_images;
+        create_options.mcp_tools = mcp_catalog.tools;
         if (options.stream_text and !options.json_events) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,
@@ -161,13 +166,7 @@ pub fn runTurnWithOptions(
                 std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
             }
 
-            var tool_result = try tools.runFunctionCall(allocator, call, .{
-                .approval_policy = cfg.approval_policy,
-                .sandbox_mode = cfg.sandbox_mode,
-                .additional_writable_roots = options.additional_writable_roots,
-                .auto_approve = options.auto_approve,
-                .prompt_for_approval = options.prompt_for_approval,
-            });
+            var tool_result = try runToolCall(allocator, cfg, mcp_catalog, call, options);
             defer tool_result.deinit(allocator);
 
             if (options.json_events) {
@@ -182,6 +181,38 @@ pub fn runTurnWithOptions(
     }
 
     return error.TooManyToolRounds;
+}
+
+fn runToolCall(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    mcp_catalog: mcp_runtime.Catalog,
+    call: api.FunctionCall,
+    options: TurnOptions,
+) !tools.ToolResult {
+    if (mcp_catalog.find(call.name)) |mcp_tool| {
+        var output = mcp_runtime.callTool(allocator, cfg.codex_home, mcp_tool, call.arguments) catch |err| {
+            return .{
+                .call_id = try allocator.dupe(u8, call.call_id),
+                .summary = try allocator.dupe(u8, "mcp failed"),
+                .output = try std.fmt.allocPrint(allocator, "mcp tool failed: {s}", .{@errorName(err)}),
+            };
+        };
+        defer output.deinit(allocator);
+        return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, output.summary),
+            .output = try allocator.dupe(u8, output.output),
+        };
+    }
+
+    return tools.runFunctionCall(allocator, call, .{
+        .approval_policy = cfg.approval_policy,
+        .sandbox_mode = cfg.sandbox_mode,
+        .additional_writable_roots = options.additional_writable_roots,
+        .auto_approve = options.auto_approve,
+        .prompt_for_approval = options.prompt_for_approval,
+    });
 }
 
 const StreamTextContext = struct {};

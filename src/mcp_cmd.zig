@@ -3,19 +3,19 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 const env = @import("env.zig");
 
-const ServerKind = enum { unknown, stdio, streamable_http };
+pub const ServerKind = enum { unknown, stdio, streamable_http };
 
-const KeyValue = struct {
+pub const KeyValue = struct {
     key: []const u8,
     value: []const u8,
 
-    fn deinit(self: KeyValue, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: KeyValue, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
         allocator.free(self.value);
     }
 };
 
-const McpServer = struct {
+pub const McpServer = struct {
     name: []const u8,
     kind: ServerKind = .unknown,
     command: ?[]const u8 = null,
@@ -25,7 +25,7 @@ const McpServer = struct {
     args: std.ArrayList([]const u8) = .empty,
     env_vars: std.ArrayList(KeyValue) = .empty,
 
-    fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.command) |value| allocator.free(value);
         if (self.url) |value| allocator.free(value);
@@ -37,22 +37,22 @@ const McpServer = struct {
     }
 };
 
-const McpServers = struct {
+pub const McpServers = struct {
     items: std.ArrayList(McpServer) = .empty,
 
-    fn deinit(self: *McpServers, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *McpServers, allocator: std.mem.Allocator) void {
         for (self.items.items) |*server| server.deinit(allocator);
         self.items.deinit(allocator);
     }
 
-    fn findIndex(self: McpServers, name: []const u8) ?usize {
+    pub fn findIndex(self: McpServers, name: []const u8) ?usize {
         for (self.items.items, 0..) |server, index| {
             if (std.mem.eql(u8, server.name, name)) return index;
         }
         return null;
     }
 
-    fn get(self: McpServers, name: []const u8) ?*McpServer {
+    pub fn get(self: McpServers, name: []const u8) ?*McpServer {
         const index = self.findIndex(name) orelse return null;
         return &self.items.items[index];
     }
@@ -63,7 +63,7 @@ const McpServers = struct {
         return &self.items.items[self.items.items.len - 1];
     }
 
-    fn remove(self: *McpServers, allocator: std.mem.Allocator, name: []const u8) bool {
+    pub fn remove(self: *McpServers, allocator: std.mem.Allocator, name: []const u8) bool {
         const index = self.findIndex(name) orelse return false;
         var removed = self.items.orderedRemove(index);
         removed.deinit(allocator);
@@ -109,6 +109,12 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else {
         return error.UnknownMcpSubcommand;
     }
+}
+
+pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpServers {
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    return parseServers(allocator, config_bytes orelse "");
 }
 
 fn runList(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
