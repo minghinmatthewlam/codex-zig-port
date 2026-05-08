@@ -16,6 +16,8 @@ const tools = @import("tools.zig");
 const tui = @import("tui.zig");
 const workdir = @import("workdir.zig");
 
+const version = "0.0.1";
+
 const CliOverrides = struct {
     profile: ?[]const u8 = null,
     runtime: config.RuntimeOverrides = .{},
@@ -126,6 +128,10 @@ fn mainInner(init: std.process.Init) !void {
     if (cmd_opt) |cmd| {
         if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
             try printHelp();
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-V")) {
+            printVersion();
             return;
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
@@ -312,6 +318,8 @@ fn printHelp() !void {
         \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
+        \\  codex-zig --version
+        \\                          Print version and exit
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
         \\                          Run deterministic apply_patch demo
@@ -330,6 +338,10 @@ fn printHelp() !void {
         \\  CODEX_ZIG_WEB_SEARCH   Override web search mode: disabled, cached, live
         \\
     , .{});
+}
+
+fn printVersion() void {
+    std.debug.print("codex-zig {s}\n", .{version});
 }
 
 fn printResumeHelp() void {
