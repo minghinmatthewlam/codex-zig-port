@@ -10,9 +10,13 @@ const session_store = @import("session_store.zig");
 const ReviewArgs = struct {
     help: bool = false,
     uncommitted: bool = false,
+    commit: ?[]const u8 = null,
+    commit_title: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
 
     fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
+        if (self.commit) |commit| allocator.free(commit);
+        if (self.commit_title) |title| allocator.free(title);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
 };
@@ -94,16 +98,24 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
             return error.ReviewBaseUnsupported;
         }
         if (!end_options and std.mem.eql(u8, arg, "--commit")) {
-            return error.ReviewCommitUnsupported;
+            index += 1;
+            if (index >= args.len) return error.MissingReviewOptionValue;
+            try setCommitOption(allocator, &parsed.commit, args[index]);
+            continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--commit=")) {
-            return error.ReviewCommitUnsupported;
+            try setCommitOption(allocator, &parsed.commit, arg["--commit=".len..]);
+            continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--title")) {
-            return error.ReviewCommitUnsupported;
+            index += 1;
+            if (index >= args.len) return error.MissingReviewOptionValue;
+            try setRequiredOption(allocator, &parsed.commit_title, args[index]);
+            continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--title=")) {
-            return error.ReviewCommitUnsupported;
+            try setRequiredOption(allocator, &parsed.commit_title, arg["--title=".len..]);
+            continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownReviewOption;
@@ -112,13 +124,34 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
         try prompt_parts.append(allocator, arg);
     }
 
-    if (parsed.uncommitted and prompt_parts.items.len > 0) return error.InvalidReviewArguments;
+    var target_count: usize = 0;
+    if (parsed.uncommitted) target_count += 1;
+    if (parsed.commit != null) target_count += 1;
+    if (prompt_parts.items.len > 0) target_count += 1;
+    if (target_count > 1) return error.InvalidReviewArguments;
+    if (parsed.commit_title != null and parsed.commit == null) return error.InvalidReviewArguments;
+
     if (prompt_parts.items.len > 0) {
         parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
     }
-    if (!parsed.help and !parsed.uncommitted and parsed.prompt == null) return error.MissingReviewTarget;
+    if (!parsed.help and !parsed.uncommitted and parsed.commit == null and parsed.prompt == null) return error.MissingReviewTarget;
 
     return parsed;
+}
+
+fn setCommitOption(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) !void {
+    try git_diff.validateRevision(value);
+    try setOwnedOption(allocator, field, value);
+}
+
+fn setRequiredOption(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) !void {
+    if (value.len == 0) return error.MissingReviewOptionValue;
+    try setOwnedOption(allocator, field, value);
+}
+
+fn setOwnedOption(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) !void {
+    if (field.*) |existing| allocator.free(existing);
+    field.* = try allocator.dupe(u8, value);
 }
 
 fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
@@ -132,6 +165,23 @@ fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
             \\{s}
             \\```
         , .{diff});
+    }
+
+    if (args.commit) |commit| {
+        const diff = try git_diff.renderCommit(allocator, commit);
+        defer allocator.free(diff);
+        const title_block = if (args.commit_title) |title|
+            try std.fmt.allocPrint(allocator, "Commit title: {s}\n\n", .{title})
+        else
+            try allocator.dupe(u8, "");
+        defer allocator.free(title_block);
+        return std.fmt.allocPrint(allocator,
+            \\Review the changes introduced by commit `{s}` below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
+            \\
+            \\{s}```diff
+            \\{s}
+            \\```
+        , .{ commit, title_block, diff });
     }
 
     const prompt = args.prompt orelse return error.MissingReviewTarget;
@@ -148,14 +198,16 @@ fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig review --uncommitted
+        \\  codex-zig review --commit SHA [--title TITLE]
         \\  codex-zig review PROMPT
         \\
         \\Options:
         \\  --uncommitted     Review staged, unstaged, and untracked changes
+        \\  --commit SHA      Review the changes introduced by a commit
+        \\  --title TITLE     Optional title for --commit review context
         \\
         \\Planned:
         \\  --base BRANCH
-        \\  --commit SHA
         \\
     , .{});
 }
@@ -179,9 +231,42 @@ test "review args join custom prompt" {
     try std.testing.expectEqualStrings("check this", parsed.prompt.?);
 }
 
+test "review args parse commit and title" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--commit", "abc123", "--title", "demo commit" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("abc123", parsed.commit.?);
+    try std.testing.expectEqualStrings("demo commit", parsed.commit_title.?);
+}
+
 test "review args reject base for now" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "--base", "main" };
-
     try std.testing.expectError(error.ReviewBaseUnsupported, parseArgs(allocator, argv[0..]));
+}
+
+test "review args reject title without commit" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--title", "orphan" };
+    try std.testing.expectError(error.InvalidReviewArguments, parseArgs(allocator, argv[0..]));
+}
+
+test "review args reject invalid commit values before prompt building" {
+    const allocator = std.testing.allocator;
+    {
+        const argv = [_][]const u8{"--commit="};
+        try std.testing.expectError(error.InvalidGitRevision, parseArgs(allocator, argv[0..]));
+    }
+    {
+        const argv = [_][]const u8{ "--commit", "--stat" };
+        try std.testing.expectError(error.InvalidGitRevision, parseArgs(allocator, argv[0..]));
+    }
+}
+
+test "review args reject empty title values" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{"--title="};
+    try std.testing.expectError(error.MissingReviewOptionValue, parseArgs(allocator, argv[0..]));
 }

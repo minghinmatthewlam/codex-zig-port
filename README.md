@@ -21,7 +21,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
-- run a narrow non-interactive `review --uncommitted` flow
+- run narrow non-interactive `review --uncommitted` and `review --commit` flows
 
 Long-term exact parity is tracked in `docs/parity.md`.
 
@@ -81,6 +81,7 @@ codex-zig --add-dir ~/scratch
 codex-zig --search
 codex-zig exec --profile work "say hello"
 codex-zig review --uncommitted
+codex-zig review --commit HEAD
 ```
 
 `CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.

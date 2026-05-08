@@ -49,6 +49,29 @@ pub fn render(allocator: std.mem.Allocator) ![]const u8 {
     return out.toOwnedSlice(allocator);
 }
 
+pub fn renderCommit(allocator: std.mem.Allocator, commit: []const u8) ![]const u8 {
+    try validateRevision(commit);
+
+    var show = try runGit(allocator, &.{
+        "git",
+        "show",
+        "--stat",
+        "--patch",
+        "--format=medium",
+        "--no-ext-diff",
+        commit,
+        "--",
+    });
+    defer show.deinit(allocator);
+    if (!show.success()) return gitUnavailable(allocator, show);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "commit diff\n\n");
+    try appendOrNone(allocator, &out, show.stdout, "<none>\n");
+    return out.toOwnedSlice(allocator);
+}
+
 fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !CommandOutput {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -111,8 +134,7 @@ fn appendUntrackedFiles(allocator: std.mem.Allocator, out: *std.ArrayList(u8), p
 
 fn appendUntrackedFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8) !void {
     try validateGitPath(path);
-    const header = try std.fmt.allocPrint(
-        allocator,
+    const header = try std.fmt.allocPrint(allocator,
         \\diff --git a/{s} b/{s}
         \\new file mode 100644
         \\--- /dev/null
@@ -180,6 +202,13 @@ fn validateGitPath(path: []const u8) !void {
     }
 }
 
+pub fn validateRevision(revision: []const u8) !void {
+    if (revision.len == 0) return error.InvalidGitRevision;
+    if (revision[0] == '-') return error.InvalidGitRevision;
+    if (std.mem.indexOfScalar(u8, revision, 0) != null) return error.InvalidGitRevision;
+    if (std.mem.indexOfAny(u8, revision, "\r\n") != null) return error.InvalidGitRevision;
+}
+
 test "append added lines prefixes text as a synthetic new-file diff" {
     const allocator = std.testing.allocator;
     var out = std.ArrayList(u8).empty;
@@ -195,4 +224,11 @@ test "validate git path rejects absolute and parent traversal paths" {
     try std.testing.expectError(error.InvalidGitPath, validateGitPath("/tmp/file"));
     try std.testing.expectError(error.InvalidGitPath, validateGitPath("../file"));
     try std.testing.expectError(error.InvalidGitPath, validateGitPath("a/../file"));
+}
+
+test "validate revision rejects option-shaped and empty values" {
+    try validateRevision("abc123");
+    try std.testing.expectError(error.InvalidGitRevision, validateRevision(""));
+    try std.testing.expectError(error.InvalidGitRevision, validateRevision("--stat"));
+    try std.testing.expectError(error.InvalidGitRevision, validateRevision("abc\n123"));
 }
