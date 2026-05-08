@@ -360,18 +360,38 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active
         };
     }
 
-    const openai = if (try config_view.getScopedString(allocator, active_profile, "openai_base_url")) |value|
-        value
+    var explicit_openai = try config_view.getScopedString(allocator, active_profile, "openai_base_url");
+    errdefer if (explicit_openai) |value| allocator.free(value);
+    var explicit_chatgpt = try config_view.getScopedString(allocator, active_profile, "chatgpt_base_url");
+    errdefer if (explicit_chatgpt) |value| allocator.free(value);
+
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    const provider_base_url = if (model_provider) |provider|
+        try config_view.getModelProviderString(allocator, provider, "base_url")
     else
-        try allocator.dupe(u8, "https://api.openai.com/v1");
+        null;
+    defer if (provider_base_url) |value| allocator.free(value);
+
+    const openai = if (explicit_openai) |value| blk: {
+        explicit_openai = null;
+        break :blk value;
+    } else if (provider_base_url) |value| try allocator.dupe(u8, value) else try allocator.dupe(u8, "https://api.openai.com/v1");
     errdefer allocator.free(openai);
 
-    const chatgpt = if (try config_view.getScopedString(allocator, active_profile, "chatgpt_base_url")) |value|
-        value
-    else
-        try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex");
+    const chatgpt = if (explicit_chatgpt) |value| blk: {
+        explicit_chatgpt = null;
+        break :blk value;
+    } else if (provider_base_url) |value| try allocator.dupe(u8, value) else try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex");
 
     return .{ .openai = openai, .chatgpt = chatgpt };
+}
+
+fn resolveModelProviderId(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    if (try env.getOwned(allocator, "CODEX_ZIG_MODEL_PROVIDER")) |value| {
+        return value;
+    }
+    return config_view.getScopedString(allocator, active_profile, "model_provider");
 }
 
 fn resolveOssProvider(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
@@ -479,6 +499,27 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getModelProviderString(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        provider: []const u8,
+        key: []const u8,
+    ) !?[]const u8 {
+        var in_provider = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_provider = isNamedSection(line, "model_providers.", provider);
+                continue;
+            }
+            if (!in_provider) continue;
+            if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
@@ -533,14 +574,18 @@ fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
 }
 
 fn isProfileSection(line: []const u8, profile: []const u8) bool {
+    return isNamedSection(line, "profiles.", profile);
+}
+
+fn isNamedSection(line: []const u8, prefix: []const u8, name: []const u8) bool {
     if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
-    if (!std.mem.startsWith(u8, section, "profiles.")) return false;
-    const raw_name = section["profiles.".len..];
+    if (!std.mem.startsWith(u8, section, prefix)) return false;
+    const raw_name = section[prefix.len..];
     if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
-        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], profile);
+        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], name);
     }
-    return std.mem.eql(u8, raw_name, profile);
+    return std.mem.eql(u8, raw_name, name);
 }
 
 fn readOptionalFileTrimmed(
@@ -651,6 +696,53 @@ test "quoted profile section names are supported" {
     const model = try view.getScopedString(allocator, "team a", "model");
     defer allocator.free(model.?);
     try std.testing.expectEqualStrings("quoted-profile-model", model.?);
+}
+
+test "model provider base url resolves from active provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "openai-custom"
+        \\
+        \\[model_providers.openai-custom]
+        \\base_url = "https://proxy.example/v1"
+        \\wire_api = "responses"
+        \\
+        ,
+    };
+
+    const base_urls = try resolveBaseUrls(allocator, view, null);
+    defer allocator.free(base_urls.openai);
+    defer allocator.free(base_urls.chatgpt);
+
+    try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.openai);
+    try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.chatgpt);
+}
+
+test "profile model provider overrides top-level provider" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "base"
+        \\
+        \\[profiles.work]
+        \\model_provider = "profile-provider"
+        \\
+        \\[model_providers.base]
+        \\base_url = "https://base.example/v1"
+        \\
+        \\[model_providers.profile-provider]
+        \\base_url = "https://profile.example/v1"
+        \\
+        ,
+    };
+
+    const base_urls = try resolveBaseUrls(allocator, view, "work");
+    defer allocator.free(base_urls.openai);
+    defer allocator.free(base_urls.chatgpt);
+
+    try std.testing.expectEqualStrings("https://profile.example/v1", base_urls.openai);
+    try std.testing.expectEqualStrings("https://profile.example/v1", base_urls.chatgpt);
 }
 
 test "raw cli config overrides map supported fields" {

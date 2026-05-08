@@ -81,10 +81,11 @@ codex-zig fork <session-id>
 
 ## Configuration
 
-The port reads `model`, `openai_base_url`, `chatgpt_base_url`,
-`approval_policy`, `sandbox_mode`, `oss_provider`, and `profile` from top-level keys in
-`$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
-those same fields.
+The port reads `model`, `model_provider`, `openai_base_url`,
+`chatgpt_base_url`, `approval_policy`, `sandbox_mode`, `oss_provider`, and
+`profile` from top-level keys in `$CODEX_HOME/config.toml`. It also supports
+`[profiles.<name>]` sections for those same fields and reads
+`[model_providers.<name>].base_url` for custom Responses-compatible providers.
 
 ```sh
 codex-zig --profile work auth-status
@@ -113,6 +114,7 @@ codex-zig review --commit HEAD
 ```
 
 `CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.
+`CODEX_ZIG_MODEL_PROVIDER` selects a configured model provider.
 `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
 `CODEX_ZIG_WEB_SEARCH` overrides web search mode with `disabled`, `cached`, or
 `live`.
