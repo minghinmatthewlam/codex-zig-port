@@ -14,6 +14,8 @@ pub const Options = struct {
     fork_picker: bool = false,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     initial_prompt: ?[]const u8 = null,
 };
@@ -26,8 +28,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+    if (options.oss) {
+        try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
+    }
 
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = if (options.oss)
+        try auth.localOssCredentials(allocator)
+    else
+        try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
     var transcript = session.Transcript{};
@@ -171,7 +179,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         credentials.describe(),
         switch (credentials.mode) {
             .chatgpt, .agent_identity => cfg.chatgpt_base_url,
-            .api_key => cfg.openai_base_url,
+            .api_key, .local_oss => cfg.openai_base_url,
         },
         cwd,
         cfg.approval_policy.label(),
@@ -441,7 +449,7 @@ fn printStatus(
         credentials.describe(),
         switch (credentials.mode) {
             .chatgpt, .agent_identity => cfg.chatgpt_base_url,
-            .api_key => cfg.openai_base_url,
+            .api_key, .local_oss => cfg.openai_base_url,
         },
         cwd,
         session_path,

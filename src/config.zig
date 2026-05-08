@@ -7,6 +7,7 @@ pub const Config = struct {
     model: []const u8,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
+    oss_provider: ?[]const u8,
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
     sandbox_mode: SandboxMode,
@@ -18,6 +19,7 @@ pub const Config = struct {
         allocator.free(self.model);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
+        if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
     }
 };
@@ -31,6 +33,7 @@ pub const RuntimeOverrides = struct {
     model: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
+    oss_provider: ?[]const u8 = null,
     approval_policy: ?ApprovalPolicy = null,
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
@@ -55,6 +58,11 @@ pub fn applyRuntimeOverrides(
         const next_chatgpt_base_url = try allocator.dupe(u8, chatgpt_base_url);
         allocator.free(cfg.chatgpt_base_url);
         cfg.chatgpt_base_url = next_chatgpt_base_url;
+    }
+    if (overrides.oss_provider) |oss_provider| {
+        const next_oss_provider = try allocator.dupe(u8, oss_provider);
+        if (cfg.oss_provider) |existing| allocator.free(existing);
+        cfg.oss_provider = next_oss_provider;
     }
     if (overrides.approval_policy) |approval_policy| {
         cfg.approval_policy = approval_policy;
@@ -85,6 +93,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.openai_base_url = value;
     } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
         runtime_overrides.chatgpt_base_url = value;
+    } else if (std.mem.eql(u8, key, "oss_provider")) {
+        runtime_overrides.oss_provider = value;
     } else if (std.mem.eql(u8, key, "approval_policy")) {
         runtime_overrides.approval_policy = try ApprovalPolicy.parse(value);
     } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -176,6 +186,75 @@ pub const WebSearchMode = enum {
     }
 };
 
+pub const OssProvider = enum {
+    lmstudio,
+    ollama,
+
+    pub fn parse(value: []const u8) !OssProvider {
+        if (std.mem.eql(u8, value, "lmstudio")) return .lmstudio;
+        if (std.mem.eql(u8, value, "ollama")) return .ollama;
+        if (std.mem.eql(u8, value, "ollama-chat")) return error.RemovedOllamaChatProvider;
+        return error.InvalidOssProvider;
+    }
+
+    pub fn label(self: OssProvider) []const u8 {
+        return switch (self) {
+            .lmstudio => "lmstudio",
+            .ollama => "ollama",
+        };
+    }
+
+    pub fn defaultModel(self: OssProvider) []const u8 {
+        return switch (self) {
+            .lmstudio => "openai/gpt-oss-20b",
+            .ollama => "gpt-oss:20b",
+        };
+    }
+
+    fn defaultPort(self: OssProvider) u16 {
+        return switch (self) {
+            .lmstudio => 1234,
+            .ollama => 11434,
+        };
+    }
+};
+
+pub fn applyOssMode(
+    cfg: *Config,
+    allocator: std.mem.Allocator,
+    provider_override: ?[]const u8,
+    explicit_model: bool,
+) !void {
+    const provider_name = provider_override orelse cfg.oss_provider orelse return error.NoDefaultOssProviderConfigured;
+    const provider = try OssProvider.parse(provider_name);
+
+    const next_base_url = try resolveOssBaseUrl(allocator, provider);
+    allocator.free(cfg.openai_base_url);
+    cfg.openai_base_url = next_base_url;
+
+    if (!explicit_model) {
+        const next_model = try allocator.dupe(u8, provider.defaultModel());
+        allocator.free(cfg.model);
+        cfg.model = next_model;
+    }
+}
+
+fn resolveOssBaseUrl(allocator: std.mem.Allocator, provider: OssProvider) ![]const u8 {
+    if (try env.getOwned(allocator, "CODEX_OSS_BASE_URL")) |base_url| {
+        if (std.mem.trim(u8, base_url, " \t\r\n").len > 0) return base_url;
+        allocator.free(base_url);
+    }
+
+    const port = if (try env.getOwned(allocator, "CODEX_OSS_PORT")) |raw_port| blk: {
+        defer allocator.free(raw_port);
+        const trimmed = std.mem.trim(u8, raw_port, " \t\r\n");
+        if (trimmed.len == 0) break :blk provider.defaultPort();
+        break :blk try std.fmt.parseInt(u16, trimmed, 10);
+    } else provider.defaultPort();
+
+    return std.fmt.allocPrint(allocator, "http://localhost:{d}/v1", .{port});
+}
+
 pub fn webSearchLabel(mode: ?WebSearchMode) []const u8 {
     if (mode) |value| return value.label();
     return "unset";
@@ -215,6 +294,9 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer allocator.free(base_urls.openai);
     errdefer allocator.free(base_urls.chatgpt);
 
+    const oss_provider = try resolveOssProvider(allocator, config_view, active_profile);
+    errdefer if (oss_provider) |provider| allocator.free(provider);
+
     const installation_id = try readOptionalFileTrimmed(allocator, codex_home, "installation_id", "unknown-zig-port");
     errdefer allocator.free(installation_id);
 
@@ -228,6 +310,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model = model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
+        .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
@@ -289,6 +372,10 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active
         try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex");
 
     return .{ .openai = openai, .chatgpt = chatgpt };
+}
+
+fn resolveOssProvider(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    return config_view.getScopedString(allocator, active_profile, "oss_provider");
 }
 
 fn resolveApprovalPolicy(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ApprovalPolicy {
@@ -507,6 +594,7 @@ test "profile values override top-level config values" {
         .bytes =
         \\profile = "work"
         \\model = "base-model"
+        \\oss_provider = "ollama"
         \\approval_policy = "on-request"
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
@@ -514,6 +602,7 @@ test "profile values override top-level config values" {
         \\
         \\[profiles.work]
         \\model = "profile-model"
+        \\oss_provider = "lmstudio"
         \\approval_policy = "never"
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
@@ -535,6 +624,10 @@ test "profile values override top-level config values" {
     const chatgpt_base_url = try view.getScopedString(allocator, active_profile.?, "chatgpt_base_url");
     defer allocator.free(chatgpt_base_url.?);
     try std.testing.expectEqualStrings("https://profile.example/codex", chatgpt_base_url.?);
+
+    const oss_provider = try resolveOssProvider(allocator, view, active_profile.?);
+    defer allocator.free(oss_provider.?);
+    try std.testing.expectEqualStrings("lmstudio", oss_provider.?);
 
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
@@ -568,6 +661,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "model=gpt-test");
     try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
+    try applyRawConfigOverride(&runtime, &profile, "oss_provider=ollama");
     try applyRawConfigOverride(&runtime, &profile, "approval_policy=never");
     try applyRawConfigOverride(&runtime, &profile, "sandbox_mode=read-only");
     try applyRawConfigOverride(&runtime, &profile, "web_search=live");
@@ -577,6 +671,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("gpt-test", runtime.model.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
+    try std.testing.expectEqualStrings("ollama", runtime.oss_provider.?);
     try std.testing.expectEqual(ApprovalPolicy.never, runtime.approval_policy.?);
     try std.testing.expectEqual(SandboxMode.read_only, runtime.sandbox_mode.?);
     try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
@@ -586,6 +681,38 @@ test "raw cli config override rejects missing assignment" {
     var runtime = RuntimeOverrides{};
     var profile: ?[]const u8 = null;
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
+}
+
+test "oss mode applies local provider defaults" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{
+        .codex_home = try allocator.dupe(u8, "/tmp/codex-zig-test"),
+        .active_profile = null,
+        .model = try allocator.dupe(u8, "configured-model"),
+        .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .oss_provider = try allocator.dupe(u8, "ollama"),
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .never,
+        .sandbox_mode = .read_only,
+        .web_search_mode = null,
+    };
+    defer cfg.deinit(allocator);
+
+    try applyOssMode(&cfg, allocator, null, false);
+    try std.testing.expectEqualStrings("gpt-oss:20b", cfg.model);
+    try std.testing.expect(std.mem.endsWith(u8, cfg.openai_base_url, "/v1"));
+
+    try applyOssMode(&cfg, allocator, "lmstudio", true);
+    try std.testing.expectEqualStrings("gpt-oss:20b", cfg.model);
+}
+
+test "oss provider validation matches supported providers" {
+    try std.testing.expectEqual(OssProvider.lmstudio, try OssProvider.parse("lmstudio"));
+    try std.testing.expectEqual(OssProvider.ollama, try OssProvider.parse("ollama"));
+    try std.testing.expectEqualStrings("openai/gpt-oss-20b", OssProvider.lmstudio.defaultModel());
+    try std.testing.expectError(error.RemovedOllamaChatProvider, OssProvider.parse("ollama-chat"));
+    try std.testing.expectError(error.InvalidOssProvider, OssProvider.parse("other"));
 }
 
 test "toml string escapes are decoded" {

@@ -23,6 +23,8 @@ const version = "0.0.1";
 const CliOverrides = struct {
     profile: ?[]const u8 = null,
     runtime: config.RuntimeOverrides = .{},
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
 };
@@ -97,6 +99,18 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.model = arg["--model=".len..];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--oss")) {
+            overrides.oss = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--local-provider")) {
+            overrides.oss_provider = args.next() orelse return error.MissingLocalProviderOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--local-provider=")) {
+            overrides.oss_provider = arg["--local-provider=".len..];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
             continue;
@@ -163,6 +177,8 @@ fn mainInner(init: std.process.Init) !void {
         try tui.runWithOptions(allocator, .{
             .profile = overrides.profile,
             .runtime_overrides = overrides.runtime,
+            .oss = overrides.oss,
+            .oss_provider = overrides.oss_provider,
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
         });
@@ -208,6 +224,8 @@ fn mainInner(init: std.process.Init) !void {
             try review.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .oss = overrides.oss,
+                .oss_provider = overrides.oss_provider,
             });
             return;
         }
@@ -230,6 +248,8 @@ fn mainInner(init: std.process.Init) !void {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .oss = overrides.oss,
+                .oss_provider = overrides.oss_provider,
                 .cwd = overrides.cwd,
                 .additional_writable_roots = overrides.additional_writable_roots,
             });
@@ -248,6 +268,8 @@ fn mainInner(init: std.process.Init) !void {
                     .resume_target = "last",
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
                 return;
@@ -257,6 +279,8 @@ fn mainInner(init: std.process.Init) !void {
                     .resume_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
             } else {
@@ -264,6 +288,8 @@ fn mainInner(init: std.process.Init) !void {
                     .resume_picker = true,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
             }
@@ -282,6 +308,8 @@ fn mainInner(init: std.process.Init) !void {
                     .fork_target = "last",
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
                 return;
@@ -291,6 +319,8 @@ fn mainInner(init: std.process.Init) !void {
                     .fork_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
             } else {
@@ -298,6 +328,8 @@ fn mainInner(init: std.process.Init) !void {
                     .fork_picker = true,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .oss = overrides.oss,
+                    .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                 });
             }
@@ -335,6 +367,8 @@ fn mainInner(init: std.process.Init) !void {
         try tui.runWithOptions(allocator, .{
             .profile = overrides.profile,
             .runtime_overrides = overrides.runtime,
+            .oss = overrides.oss,
+            .oss_provider = overrides.oss_provider,
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
         });
@@ -344,6 +378,8 @@ fn mainInner(init: std.process.Init) !void {
     try tui.runWithOptions(allocator, .{
         .profile = overrides.profile,
         .runtime_overrides = overrides.runtime,
+        .oss = overrides.oss,
+        .oss_provider = overrides.oss_provider,
         .additional_writable_roots = overrides.additional_writable_roots,
     });
 }
@@ -457,6 +493,8 @@ fn printHelp() !void {
         \\                          Override a supported config value
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
+        \\  codex-zig --oss --local-provider lmstudio ...
+        \\                          Use a local OSS provider
         \\  codex-zig -a MODE ...
         \\                          Override approval policy
         \\  codex-zig -s MODE ...
@@ -484,6 +522,8 @@ fn printHelp() !void {
         \\                         Override approval policy
         \\  CODEX_ZIG_SANDBOX_MODE Override sandbox mode
         \\  CODEX_ZIG_WEB_SEARCH   Override web search mode: disabled, cached, live
+        \\  CODEX_OSS_BASE_URL     Override local OSS Responses base URL
+        \\  CODEX_OSS_PORT         Override local OSS provider port
         \\
     , .{});
 }
@@ -576,7 +616,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     std.debug.print("web_search: {s}\n", .{config.webSearchLabel(cfg.web_search_mode)});
     std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
         .chatgpt, .agent_identity => cfg.chatgpt_base_url,
-        .api_key => cfg.openai_base_url,
+        .api_key, .local_oss => cfg.openai_base_url,
     }});
     if (credentials.account_id) |account_id| {
         std.debug.print("chatgpt_account_id: {s}\n", .{account_id});

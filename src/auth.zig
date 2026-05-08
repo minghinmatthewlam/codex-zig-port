@@ -11,6 +11,7 @@ pub const Credentials = struct {
         chatgpt,
         agent_identity,
         api_key,
+        local_oss,
     };
 
     pub fn deinit(self: *Credentials, allocator: std.mem.Allocator) void {
@@ -23,6 +24,7 @@ pub const Credentials = struct {
             .chatgpt => "ChatGPT token from auth.json",
             .agent_identity => "Access token",
             .api_key => "API key",
+            .local_oss => "Local OSS provider",
         };
     }
 };
@@ -114,7 +116,12 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
 }
 
 pub fn authorizationHeader(allocator: std.mem.Allocator, credentials: Credentials) ![]const u8 {
+    if (credentials.mode == .local_oss) return error.LocalOssAuthHeaderUnavailable;
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{credentials.token});
+}
+
+pub fn localOssCredentials(allocator: std.mem.Allocator) !Credentials {
+    return .{ .mode = .local_oss, .token = try allocator.dupe(u8, "") };
 }
 
 fn isAgentIdentityAuthMode(mode: []const u8) bool {

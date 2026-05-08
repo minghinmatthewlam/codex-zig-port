@@ -26,6 +26,8 @@ const ReviewArgs = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -45,8 +47,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+    if (options.oss) {
+        try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
+    }
 
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = if (options.oss)
+        try auth.localOssCredentials(allocator)
+    else
+        try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
     const prompt = try buildPrompt(allocator, parsed);

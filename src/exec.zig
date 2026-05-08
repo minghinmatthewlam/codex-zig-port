@@ -23,6 +23,8 @@ const ExecArgs = struct {
     output_schema_file: ?[]const u8 = null,
     image_files: std.ArrayList([]const u8) = .empty,
     model: ?[]const u8 = null,
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     profile: ?[]const u8 = null,
@@ -40,6 +42,7 @@ const ExecArgs = struct {
         var image_files = self.image_files;
         image_files.deinit(allocator);
         if (self.model) |model| allocator.free(model);
+        if (self.oss_provider) |provider| allocator.free(provider);
         if (self.profile) |profile| allocator.free(profile);
         if (self.cwd) |cwd| allocator.free(cwd);
         for (self.additional_writable_roots.items) |root| allocator.free(root);
@@ -53,6 +56,8 @@ const ExecArgs = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
 };
@@ -90,6 +95,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.removed_full_auto) {
         try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
     }
+    const effective_oss = options.oss or parsed.oss;
+    const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
 
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
@@ -119,8 +126,17 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     }
     if (parsed.approval_policy) |approval_policy| cfg.approval_policy = approval_policy;
     if (parsed.sandbox_mode) |sandbox_mode| cfg.sandbox_mode = sandbox_mode;
+    if (effective_oss) {
+        const explicit_model = options.runtime_overrides.model != null or
+            parsed.config_overrides.model != null or
+            parsed.model != null;
+        try config.applyOssMode(&cfg, allocator, effective_oss_provider, explicit_model);
+    }
 
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = if (effective_oss)
+        try auth.localOssCredentials(allocator)
+    else
+        try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
     var output_schema = try loadOutputSchema(allocator, parsed.output_schema_file);
@@ -214,6 +230,20 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
                 parsed.model = null;
             }
             parsed.model = try allocator.dupe(u8, arg["--model=".len..]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--oss")) {
+            parsed.oss = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--local-provider")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            try setOssProvider(allocator, &parsed, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--local-provider=")) {
+            try setOssProvider(allocator, &parsed, arg["--local-provider=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--ephemeral")) {
@@ -433,6 +463,14 @@ fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []co
     parsed.resume_target = try allocator.dupe(u8, target);
 }
 
+fn setOssProvider(allocator: std.mem.Allocator, parsed: *ExecArgs, provider: []const u8) !void {
+    if (parsed.oss_provider) |existing| {
+        allocator.free(existing);
+        parsed.oss_provider = null;
+    }
+    parsed.oss_provider = try allocator.dupe(u8, provider);
+}
+
 fn parseColor(value: []const u8) !void {
     if (std.mem.eql(u8, value, "auto") or
         std.mem.eql(u8, value, "always") or
@@ -566,6 +604,8 @@ fn printHelp() void {
         \\  --auto-approve          Run requested tools without prompting
         \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
         \\  -m, --model MODEL       Override the model
+        \\  --oss                   Use a local open-source provider
+        \\  --local-provider NAME   Local OSS provider: lmstudio or ollama
         \\  --ephemeral             Do not save or resume a session file
         \\  --skip-git-repo-check   Accepted for Rust CLI compatibility
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
@@ -590,7 +630,7 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -603,6 +643,8 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqual(config.WebSearchMode.live, parsed.config_overrides.web_search_mode.?);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expect(parsed.oss);
+    try std.testing.expectEqualStrings("ollama", parsed.oss_provider.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
     try std.testing.expectEqualStrings("/tmp/demo", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);

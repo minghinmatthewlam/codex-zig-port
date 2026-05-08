@@ -78,7 +78,7 @@ codex-zig fork <session-id>
 ## Configuration
 
 The port reads `model`, `openai_base_url`, `chatgpt_base_url`,
-`approval_policy`, `sandbox_mode`, and `profile` from top-level keys in
+`approval_policy`, `sandbox_mode`, `oss_provider`, and `profile` from top-level keys in
 `$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
 those same fields.
 
@@ -89,6 +89,7 @@ codex-zig --cd ~/dev/my-project
 codex-zig --add-dir ~/scratch
 codex-zig -c model=gpt-5.5
 codex-zig exec -c sandbox_mode=read-only "say hello"
+codex-zig --oss --local-provider lmstudio
 codex-zig --search
 codex-zig --version
 codex-zig exec --profile work "say hello"
@@ -107,6 +108,7 @@ codex-zig review --commit HEAD
 `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
 `CODEX_ZIG_WEB_SEARCH` overrides web search mode with `disabled`, `cached`, or
 `live`.
+`CODEX_OSS_BASE_URL` or `CODEX_OSS_PORT` override the local OSS Responses endpoint.
 The Rust-compatible `-c/--config key=value` path currently accepts supported
 scalar keys: `profile`, `model`, `openai_base_url`, `chatgpt_base_url`,
-`approval_policy`, `sandbox_mode`, and `web_search`.
+`oss_provider`, `approval_policy`, `sandbox_mode`, and `web_search`.

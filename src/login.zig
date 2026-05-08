@@ -208,6 +208,7 @@ fn runStatus(allocator: std.mem.Allocator, cfg: config.Config) !void {
             defer allocator.free(formatted);
             std.debug.print("Logged in using an API key - {s}\n", .{formatted});
         },
+        .local_oss => std.debug.print("Using local OSS provider\n", .{}),
     }
 }
 

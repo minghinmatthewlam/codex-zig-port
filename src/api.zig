@@ -172,17 +172,19 @@ pub fn createTurnWithOptions(
 
     const base_url = switch (credentials.mode) {
         .chatgpt, .agent_identity => cfg.chatgpt_base_url,
-        .api_key => cfg.openai_base_url,
+        .api_key, .local_oss => cfg.openai_base_url,
     };
     const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, base_url, "/")});
     defer allocator.free(url);
 
-    const auth_header = try auth.authorizationHeader(allocator, credentials);
-    defer allocator.free(auth_header);
-
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
-    try headers.append(allocator, .{ .name = "Authorization", .value = auth_header });
+    var auth_header: ?[]const u8 = null;
+    defer if (auth_header) |value| allocator.free(value);
+    if (credentials.mode != .local_oss) {
+        auth_header = try auth.authorizationHeader(allocator, credentials);
+        try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
+    }
     try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
     try headers.append(allocator, .{ .name = "Accept", .value = "text/event-stream" });
     try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
@@ -626,6 +628,7 @@ test "builds chronological request input from owned history" {
         .model = "demo-model",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
         .installation_id = "install-test",
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
@@ -677,6 +680,7 @@ test "builds input images on latest user message" {
         .model = "demo-model",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
         .installation_id = "install-test",
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
@@ -714,6 +718,7 @@ test "builds web search tool from config mode" {
         .model = "demo-model",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
         .installation_id = "install-test",
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
@@ -756,6 +761,7 @@ test "builds output schema text format" {
         .model = "demo-model",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
         .installation_id = "install-test",
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
