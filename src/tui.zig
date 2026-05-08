@@ -28,7 +28,13 @@ pub fn run(allocator: std.mem.Allocator) !void {
         const line = line_opt orelse break;
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
-        if (std.mem.eql(u8, prompt, "/quit") or std.mem.eql(u8, prompt, "q")) break;
+        if (std.mem.eql(u8, prompt, "q")) break;
+        if (try handleSlashCommand(allocator, &cfg, credentials, &transcript, cwd, prompt)) |action| {
+            switch (action) {
+                .handled => continue,
+                .quit => break,
+            }
+        }
 
         std.debug.print("\nassistant streaming...\n", .{});
         const answer = session.runTurn(allocator, cfg, credentials, &transcript, prompt) catch |err| {
@@ -51,7 +57,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         \\auth: {s}
         \\api:  {s}
         \\cwd:  {s}
-        \\Type /quit to exit.
+        \\Type /help for commands or /quit to exit.
         \\
     , .{
         cfg.model,
@@ -62,4 +68,127 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         },
         cwd,
     });
+}
+
+const SlashAction = enum {
+    handled,
+    quit,
+};
+
+const SlashParts = struct {
+    name: []const u8,
+    args: []const u8,
+};
+
+fn handleSlashCommand(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    credentials: auth.Credentials,
+    transcript: *session.Transcript,
+    cwd: []const u8,
+    prompt: []const u8,
+) !?SlashAction {
+    const parts = parseSlash(prompt) orelse return null;
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "quit") or
+        std.ascii.eqlIgnoreCase(parts.name, "exit") or
+        std.mem.eql(u8, parts.name, "q"))
+    {
+        return .quit;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "help")) {
+        printSlashHelp();
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
+        printStatus(cfg.*, credentials, transcript, cwd);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "clear") or std.ascii.eqlIgnoreCase(parts.name, "new")) {
+        transcript.deinit(allocator);
+        transcript.* = .{};
+        if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
+            std.debug.print("\x1b[2J\x1b[H", .{});
+            printHeader(cfg.*, credentials, cwd);
+        } else {
+            std.debug.print("started a new chat\n", .{});
+        }
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
+        if (parts.args.len == 0) {
+            std.debug.print("model: {s}\n", .{cfg.model});
+        } else {
+            const next_model = try allocator.dupe(u8, parts.args);
+            allocator.free(cfg.model);
+            cfg.model = next_model;
+            std.debug.print("model: {s}\n", .{cfg.model});
+        }
+        return .handled;
+    }
+
+    std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
+    return .handled;
+}
+
+fn parseSlash(prompt: []const u8) ?SlashParts {
+    if (prompt.len < 2 or prompt[0] != '/') return null;
+    const body = std.mem.trim(u8, prompt[1..], " \t");
+    if (body.len == 0) return .{ .name = "", .args = "" };
+    const split = std.mem.indexOfAny(u8, body, " \t") orelse return .{ .name = body, .args = "" };
+    const name = body[0..split];
+    const args = std.mem.trim(u8, body[split + 1 ..], " \t");
+    return .{ .name = name, .args = args };
+}
+
+fn printSlashHelp() void {
+    std.debug.print(
+        \\commands:
+        \\  /help             show this help
+        \\  /status           show current session settings
+        \\  /model [name]     show or set the in-memory model for this session
+        \\  /clear            clear transcript and redraw the header
+        \\  /new              start a new transcript
+        \\  /quit, /exit      exit
+        \\
+    , .{});
+}
+
+fn printStatus(cfg: config.Config, credentials: auth.Credentials, transcript: *const session.Transcript, cwd: []const u8) void {
+    std.debug.print(
+        \\status:
+        \\  model:       {s}
+        \\  auth:        {s}
+        \\  api:         {s}
+        \\  cwd:         {s}
+        \\  transcript:  {d} items
+        \\  tools:       shell, shell_command, apply_patch
+        \\  sandbox:     not implemented
+        \\
+    , .{
+        cfg.model,
+        credentials.describe(),
+        switch (credentials.mode) {
+            .chatgpt => cfg.chatgpt_base_url,
+            .api_key => cfg.openai_base_url,
+        },
+        cwd,
+        transcript.history.items.len,
+    });
+}
+
+test "parse slash command names and args" {
+    const status = parseSlash("/status").?;
+    try std.testing.expectEqualStrings("status", status.name);
+    try std.testing.expectEqualStrings("", status.args);
+
+    const model = parseSlash("/model gpt-test").?;
+    try std.testing.expectEqualStrings("model", model.name);
+    try std.testing.expectEqualStrings("gpt-test", model.args);
+
+    try std.testing.expect(parseSlash("hello") == null);
 }
