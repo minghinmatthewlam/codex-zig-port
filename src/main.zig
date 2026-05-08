@@ -73,6 +73,22 @@ fn mainInner(init: std.process.Init) !void {
             try additional_writable_roots.append(allocator, arg["--add-dir=".len..]);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            try config.applyRawConfigOverride(
+                &overrides.runtime,
+                &overrides.profile,
+                args.next() orelse return error.MissingConfigOptionValue,
+            );
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) {
+            try config.applyRawConfigOverride(
+                &overrides.runtime,
+                &overrides.profile,
+                arg["--config=".len..],
+            );
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
             overrides.runtime.model = args.next() orelse return error.MissingModelOptionValue;
             continue;
@@ -384,6 +400,8 @@ fn printHelp() !void {
         \\                          Use DIR as the working root
         \\  codex-zig --add-dir DIR ...
         \\                          Allow workspace-write shell tools to write DIR
+        \\  codex-zig -c key=value ...
+        \\                          Override a supported config value
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
         \\  codex-zig -a MODE ...

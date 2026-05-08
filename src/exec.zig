@@ -14,6 +14,8 @@ const ExecArgs = struct {
     ignore_user_config: bool = false,
     ignore_rules: bool = false,
     json: bool = false,
+    config_overrides: config.RuntimeOverrides = .{},
+    config_profile: ?[]const u8 = null,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
     output_schema_file: ?[]const u8 = null,
@@ -64,6 +66,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.profile == null) {
         if (options.profile) |profile| {
             parsed.profile = try allocator.dupe(u8, profile);
+        } else if (parsed.config_profile) |profile| {
+            parsed.profile = try allocator.dupe(u8, profile);
         }
     }
 
@@ -99,6 +103,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+    try config.applyRuntimeOverrides(&cfg, allocator, parsed.config_overrides);
     if (parsed.model) |model| {
         try config.applyRuntimeOverrides(&cfg, allocator, .{ .model = model });
     }
@@ -210,6 +215,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--ignore-rules")) {
             parsed.ignore_rules = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, arg["--config=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--color")) {
@@ -453,6 +468,7 @@ fn printHelp() void {
         \\  --skip-git-repo-check   Accepted for Rust CLI compatibility
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
+        \\  -c, --config key=value  Override a supported config value
         \\  --color MODE            auto, always, or never
         \\  -C, --cd DIR            Use DIR as the working root
         \\  --add-dir DIR           Allow workspace-write shell tools to write DIR
@@ -471,7 +487,7 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-c", "sandbox_mode=read-only", "--config", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -479,6 +495,8 @@ test "exec args parse prompt and options" {
     try std.testing.expect(parsed.skip_git_repo_check);
     try std.testing.expect(parsed.ignore_user_config);
     try std.testing.expect(parsed.ignore_rules);
+    try std.testing.expectEqual(config.SandboxMode.read_only, parsed.config_overrides.sandbox_mode.?);
+    try std.testing.expectEqual(config.WebSearchMode.live, parsed.config_overrides.web_search_mode.?);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);

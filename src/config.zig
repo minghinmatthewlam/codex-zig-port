@@ -29,6 +29,8 @@ pub const LoadOptions = struct {
 
 pub const RuntimeOverrides = struct {
     model: ?[]const u8 = null,
+    openai_base_url: ?[]const u8 = null,
+    chatgpt_base_url: ?[]const u8 = null,
     approval_policy: ?ApprovalPolicy = null,
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
@@ -44,6 +46,16 @@ pub fn applyRuntimeOverrides(
         allocator.free(cfg.model);
         cfg.model = next_model;
     }
+    if (overrides.openai_base_url) |openai_base_url| {
+        const next_openai_base_url = try allocator.dupe(u8, openai_base_url);
+        allocator.free(cfg.openai_base_url);
+        cfg.openai_base_url = next_openai_base_url;
+    }
+    if (overrides.chatgpt_base_url) |chatgpt_base_url| {
+        const next_chatgpt_base_url = try allocator.dupe(u8, chatgpt_base_url);
+        allocator.free(cfg.chatgpt_base_url);
+        cfg.chatgpt_base_url = next_chatgpt_base_url;
+    }
     if (overrides.approval_policy) |approval_policy| {
         cfg.approval_policy = approval_policy;
     }
@@ -53,6 +65,41 @@ pub fn applyRuntimeOverrides(
     if (overrides.web_search_mode) |web_search_mode| {
         cfg.web_search_mode = web_search_mode;
     }
+}
+
+pub fn applyRawConfigOverride(
+    runtime_overrides: *RuntimeOverrides,
+    profile_override: *?[]const u8,
+    raw: []const u8,
+) !void {
+    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const value = trimConfigOverrideValue(raw[eq + 1 ..]);
+    if (key.len == 0) return error.InvalidConfigOverride;
+
+    if (std.mem.eql(u8, key, "profile")) {
+        profile_override.* = value;
+    } else if (std.mem.eql(u8, key, "model")) {
+        runtime_overrides.model = value;
+    } else if (std.mem.eql(u8, key, "openai_base_url")) {
+        runtime_overrides.openai_base_url = value;
+    } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
+        runtime_overrides.chatgpt_base_url = value;
+    } else if (std.mem.eql(u8, key, "approval_policy")) {
+        runtime_overrides.approval_policy = try ApprovalPolicy.parse(value);
+    } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+        runtime_overrides.sandbox_mode = try SandboxMode.parse(value);
+    } else if (std.mem.eql(u8, key, "web_search")) {
+        runtime_overrides.web_search_mode = try WebSearchMode.parse(value);
+    }
+}
+
+fn trimConfigOverrideValue(raw: []const u8) []const u8 {
+    const value = std.mem.trim(u8, raw, " \t");
+    if (value.len >= 2 and value[0] == value[value.len - 1] and (value[0] == '"' or value[0] == '\'')) {
+        return value[1 .. value.len - 1];
+    }
+    return value;
 }
 
 pub const ApprovalPolicy = enum {
@@ -511,6 +558,34 @@ test "quoted profile section names are supported" {
     const model = try view.getScopedString(allocator, "team a", "model");
     defer allocator.free(model.?);
     try std.testing.expectEqualStrings("quoted-profile-model", model.?);
+}
+
+test "raw cli config overrides map supported fields" {
+    var runtime = RuntimeOverrides{};
+    var profile: ?[]const u8 = null;
+
+    try applyRawConfigOverride(&runtime, &profile, "profile=\"work\"");
+    try applyRawConfigOverride(&runtime, &profile, "model=gpt-test");
+    try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
+    try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
+    try applyRawConfigOverride(&runtime, &profile, "approval_policy=never");
+    try applyRawConfigOverride(&runtime, &profile, "sandbox_mode=read-only");
+    try applyRawConfigOverride(&runtime, &profile, "web_search=live");
+    try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
+
+    try std.testing.expectEqualStrings("work", profile.?);
+    try std.testing.expectEqualStrings("gpt-test", runtime.model.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
+    try std.testing.expectEqual(ApprovalPolicy.never, runtime.approval_policy.?);
+    try std.testing.expectEqual(SandboxMode.read_only, runtime.sandbox_mode.?);
+    try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
+}
+
+test "raw cli config override rejects missing assignment" {
+    var runtime = RuntimeOverrides{};
+    var profile: ?[]const u8 = null;
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
 }
 
 test "toml string escapes are decoded" {

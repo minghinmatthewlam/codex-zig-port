@@ -87,6 +87,8 @@ codex-zig --profile work auth-status
 codex-zig -m gpt-5.5 -a never -s danger-full-access
 codex-zig --cd ~/dev/my-project
 codex-zig --add-dir ~/scratch
+codex-zig -c model=gpt-5.5
+codex-zig exec -c sandbox_mode=read-only "say hello"
 codex-zig --search
 codex-zig --version
 codex-zig exec --profile work "say hello"
@@ -101,3 +103,6 @@ codex-zig review --commit HEAD
 `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
 `CODEX_ZIG_WEB_SEARCH` overrides web search mode with `disabled`, `cached`, or
 `live`.
+The Rust-compatible `-c/--config key=value` path currently accepts supported
+scalar keys: `profile`, `model`, `openai_base_url`, `chatgpt_base_url`,
+`approval_policy`, `sandbox_mode`, and `web_search`.
