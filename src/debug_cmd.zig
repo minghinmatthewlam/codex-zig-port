@@ -3,6 +3,7 @@ const std = @import("std");
 const api = @import("api.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const input_images = @import("input_images.zig");
 const session = @import("session.zig");
 
 pub const Options = struct {
@@ -33,11 +34,25 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 fn runPromptInput(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var prompt_parts = std.ArrayList([]const u8).empty;
     defer prompt_parts.deinit(allocator);
+    var image_files = std.ArrayList([]const u8).empty;
+    defer {
+        for (image_files.items) |path| allocator.free(path);
+        image_files.deinit(allocator);
+    }
 
     while (args.next()) |arg| {
         if (isHelpFlag(arg)) {
             printPromptInputHelp();
             return;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            const value = args.next() orelse return error.MissingDebugPromptInputOptionValue;
+            try input_images.appendFiles(allocator, &image_files, value);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            try input_images.appendFiles(allocator, &image_files, arg["--image=".len..]);
+            continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownDebugPromptInputOption;
         try prompt_parts.append(allocator, arg);
@@ -49,13 +64,21 @@ fn runPromptInput(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         null;
     defer if (prompt) |value| allocator.free(value);
 
-    const rendered = try renderPromptInput(allocator, prompt, options);
+    var loaded_images = try input_images.load(allocator, image_files.items);
+    defer loaded_images.deinit(allocator);
+
+    const rendered = try renderPromptInput(allocator, prompt, loaded_images.data_urls, options);
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
     try cli_utils.writeStdout("\n");
 }
 
-fn renderPromptInput(allocator: std.mem.Allocator, prompt: ?[]const u8, options: Options) ![]const u8 {
+fn renderPromptInput(
+    allocator: std.mem.Allocator,
+    prompt: ?[]const u8,
+    image_data_urls: []const []const u8,
+    options: Options,
+) ![]const u8 {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
@@ -68,6 +91,7 @@ fn renderPromptInput(allocator: std.mem.Allocator, prompt: ?[]const u8, options:
 
     const body = try api.buildRequestBodyWithOptions(allocator, cfg, transcript.history.items, .{
         .include_tools = false,
+        .input_images = image_data_urls,
     });
     defer allocator.free(body);
 
@@ -81,7 +105,7 @@ fn renderPromptInput(allocator: std.mem.Allocator, prompt: ?[]const u8, options:
 fn printHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig debug prompt-input [PROMPT]
+        \\  codex-zig debug prompt-input [OPTIONS] [PROMPT]
         \\
         \\Subcommands:
         \\  prompt-input       Render the model-visible input list as JSON
@@ -92,9 +116,12 @@ fn printHelp() void {
 fn printPromptInputHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig debug prompt-input [PROMPT]
+        \\  codex-zig debug prompt-input [OPTIONS] [PROMPT]
         \\
         \\Prints the Responses API input list that would be sent for PROMPT.
+        \\
+        \\Options:
+        \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
         \\
     , .{});
 }
@@ -105,7 +132,7 @@ fn isHelpFlag(arg: []const u8) bool {
 
 test "debug prompt input renders optional user prompt" {
     const allocator = std.testing.allocator;
-    const rendered = try renderPromptInput(allocator, "hello debug", .{});
+    const rendered = try renderPromptInput(allocator, "hello debug", &.{}, .{});
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"type\": \"message\"") != null);
@@ -115,8 +142,18 @@ test "debug prompt input renders optional user prompt" {
 
 test "debug prompt input renders empty history" {
     const allocator = std.testing.allocator;
-    const rendered = try renderPromptInput(allocator, null, .{});
+    const rendered = try renderPromptInput(allocator, null, &.{}, .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings("[]", rendered);
+}
+
+test "debug prompt input renders images on latest user message" {
+    const allocator = std.testing.allocator;
+    const images = [_][]const u8{"data:image/png;base64,aW1hZ2U="};
+    const rendered = try renderPromptInput(allocator, "describe", images[0..], .{});
+    defer allocator.free(rendered);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"type\": \"input_image\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"image_url\": \"data:image/png;base64,aW1hZ2U=\"") != null);
 }
