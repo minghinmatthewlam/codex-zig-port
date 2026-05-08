@@ -165,7 +165,7 @@ fn mainInner(init: std.process.Init) !void {
     overrides.additional_writable_roots = additional_writable_roots.items;
 
     const should_apply_cwd = if (cmd_opt) |cmd|
-        !std.mem.eql(u8, cmd, "exec") and
+        !isExecCommand(cmd) and
             !std.mem.eql(u8, cmd, "sandbox") and
             !isHelpFlag(cmd) and
             !isVersionFlag(cmd)
@@ -260,7 +260,7 @@ fn mainInner(init: std.process.Init) !void {
             });
             return;
         }
-        if (std.mem.eql(u8, cmd, "exec")) {
+        if (isExecCommand(cmd)) {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
@@ -408,6 +408,10 @@ fn isVersionFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V");
 }
 
+fn isExecCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "exec") or std.mem.eql(u8, cmd, "e");
+}
+
 fn joinInitialPrompt(
     allocator: std.mem.Allocator,
     first: []const u8,
@@ -489,6 +493,7 @@ fn printHelp() !void {
         \\                          Start interactive TUI from a forked session
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
+        \\  codex-zig e PROMPT     Alias for exec
         \\  codex-zig login        Sign in with ChatGPT browser auth
         \\  codex-zig login status Show login status
         \\  codex-zig logout       Remove local Codex auth
@@ -836,6 +841,12 @@ test "join initial prompt consumes remaining args" {
     defer allocator.free(prompt);
 
     try std.testing.expectEqualStrings("hello from prompt", prompt);
+}
+
+test "exec command alias matches exec" {
+    try std.testing.expect(isExecCommand("exec"));
+    try std.testing.expect(isExecCommand("e"));
+    try std.testing.expect(!isExecCommand("review"));
 }
 
 test "session command flags parse resume compatibility options" {
