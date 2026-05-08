@@ -10,6 +10,7 @@ const modules = .{
     @import("features_cmd.zig"),
     @import("git_diff.zig"),
     @import("login.zig"),
+    @import("mcp_cmd.zig"),
     @import("main.zig"),
     @import("review.zig"),
     @import("sandbox.zig"),

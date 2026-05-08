@@ -99,6 +99,9 @@ codex-zig sandbox macos -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals
 codex-zig features disable goals
+codex-zig mcp list
+codex-zig mcp add docs -- node ./server.js
+codex-zig mcp add remote --url https://example.com/mcp
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD

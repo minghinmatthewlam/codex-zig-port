@@ -9,6 +9,7 @@ const exec = @import("exec.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
+const mcp_cmd = @import("mcp_cmd.zig");
 const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
 const sandbox_cmd = @import("sandbox_cmd.zig");
@@ -242,6 +243,10 @@ fn mainInner(init: std.process.Init) !void {
             try features_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
             });
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "mcp")) {
+            try mcp_cmd.run(allocator, &args);
             return;
         }
         if (std.mem.eql(u8, cmd, "exec")) {
@@ -482,6 +487,8 @@ fn printHelp() !void {
         \\                          Run a command under macOS Seatbelt
         \\  codex-zig features list
         \\                          List known feature flags
+        \\  codex-zig mcp list
+        \\                          List configured MCP servers
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
