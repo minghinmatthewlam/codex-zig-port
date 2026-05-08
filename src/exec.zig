@@ -21,6 +21,7 @@ const ExecArgs = struct {
     help: bool = false,
     last_message_file: ?[]const u8 = null,
     output_schema_file: ?[]const u8 = null,
+    image_files: std.ArrayList([]const u8) = .empty,
     model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
@@ -34,6 +35,9 @@ const ExecArgs = struct {
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         if (self.last_message_file) |path| allocator.free(path);
         if (self.output_schema_file) |path| allocator.free(path);
+        for (self.image_files.items) |path| allocator.free(path);
+        var image_files = self.image_files;
+        image_files.deinit(allocator);
         if (self.model) |model| allocator.free(model);
         if (self.profile) |profile| allocator.free(profile);
         if (self.cwd) |cwd| allocator.free(cwd);
@@ -120,6 +124,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     var output_schema = try loadOutputSchema(allocator, parsed.output_schema_file);
     defer output_schema.deinit();
+    var input_images = try loadInputImages(allocator, parsed.image_files.items);
+    defer input_images.deinit(allocator);
 
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
@@ -143,6 +149,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .json_events = parsed.json,
         .additional_writable_roots = additional_writable_roots,
         .output_schema = output_schema.value(),
+        .input_images = input_images.data_urls,
     });
     defer allocator.free(answer);
 
@@ -360,6 +367,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.output_schema_file = try allocator.dupe(u8, arg["--output-schema=".len..]);
             continue;
         }
+        if (!end_options and (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            try appendImageFiles(allocator, &parsed.image_files, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--image=")) {
+            try appendImageFiles(allocator, &parsed.image_files, arg["--image=".len..]);
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             parsed.help = true;
             continue;
@@ -469,6 +486,70 @@ fn loadOutputSchema(allocator: std.mem.Allocator, path_opt: ?[]const u8) !Loaded
     return .{ .parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) };
 }
 
+fn appendImageFiles(
+    allocator: std.mem.Allocator,
+    image_files: *std.ArrayList([]const u8),
+    raw: []const u8,
+) !void {
+    var iter = std.mem.splitScalar(u8, raw, ',');
+    while (iter.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t");
+        if (part.len == 0) continue;
+        try image_files.append(allocator, try allocator.dupe(u8, part));
+    }
+}
+
+const LoadedInputImages = struct {
+    data_urls: []const []const u8 = &.{},
+
+    fn deinit(self: *LoadedInputImages, allocator: std.mem.Allocator) void {
+        for (self.data_urls) |url| allocator.free(url);
+        if (self.data_urls.len > 0) allocator.free(self.data_urls);
+    }
+};
+
+fn loadInputImages(allocator: std.mem.Allocator, paths: []const []const u8) !LoadedInputImages {
+    if (paths.len == 0) return .{};
+
+    const data_urls = try allocator.alloc([]const u8, paths.len);
+    errdefer allocator.free(data_urls);
+    var count: usize = 0;
+    errdefer {
+        for (data_urls[0..count]) |url| allocator.free(url);
+    }
+
+    for (paths) |path| {
+        data_urls[count] = try loadInputImage(allocator, path);
+        count += 1;
+    }
+
+    return .{ .data_urls = data_urls };
+}
+
+fn loadInputImage(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(20 * 1024 * 1024));
+    defer allocator.free(bytes);
+
+    const encoded_len = std.base64.standard.Encoder.calcSize(bytes.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, bytes);
+
+    return std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ mimeForImage(path, bytes), encoded });
+}
+
+fn mimeForImage(path: []const u8, bytes: []const u8) []const u8 {
+    if (bytes.len >= 8 and std.mem.eql(u8, bytes[0..8], "\x89PNG\r\n\x1a\n")) return "image/png";
+    if (bytes.len >= 3 and bytes[0] == 0xff and bytes[1] == 0xd8 and bytes[2] == 0xff) return "image/jpeg";
+    if (bytes.len >= 6 and (std.mem.eql(u8, bytes[0..6], "GIF87a") or std.mem.eql(u8, bytes[0..6], "GIF89a"))) return "image/gif";
+    if (bytes.len >= 12 and std.mem.eql(u8, bytes[0..4], "RIFF") and std.mem.eql(u8, bytes[8..12], "WEBP")) return "image/webp";
+
+    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
+    if (std.mem.endsWith(u8, path, ".gif")) return "image/gif";
+    if (std.mem.endsWith(u8, path, ".webp")) return "image/webp";
+    return "image/png";
+}
+
 fn printHelp() void {
     std.debug.print(
         \\Usage:
@@ -497,13 +578,14 @@ fn printHelp() void {
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
         \\  --output-schema FILE    Send a JSON Schema for the final response
+        \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
         \\
     , .{});
 }
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -519,6 +601,8 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
     try std.testing.expectEqualStrings("/tmp/demo", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqualStrings("one.png", parsed.image_files.items[0]);
+    try std.testing.expectEqualStrings("two.jpg", parsed.image_files.items[1]);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }

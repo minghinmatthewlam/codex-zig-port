@@ -92,6 +92,7 @@ codex-zig exec -c sandbox_mode=read-only "say hello"
 codex-zig --search
 codex-zig --version
 codex-zig exec --profile work "say hello"
+codex-zig exec --image screenshot.png "describe this"
 codex-zig sandbox macos -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals

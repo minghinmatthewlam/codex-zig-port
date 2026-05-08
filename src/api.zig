@@ -35,6 +35,7 @@ pub const StreamCallback = struct {
 pub const CreateTurnOptions = struct {
     stream_callback: ?StreamCallback = null,
     output_schema: ?std.json.Value = null,
+    input_images: []const []const u8 = &.{},
 };
 
 pub const HistoryItem = struct {
@@ -66,7 +67,9 @@ pub const HistoryItem = struct {
 
 const ContentItem = struct {
     type: []const u8,
-    text: []const u8,
+    text: ?[]const u8 = null,
+    image_url: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
 };
 
 const InputItem = struct {
@@ -163,6 +166,7 @@ pub fn createTurnWithOptions(
 ) !ParsedResponse {
     const body = try buildRequestBodyWithOptions(allocator, cfg, history, .{
         .output_schema = options.output_schema,
+        .input_images = options.input_images,
     });
     defer allocator.free(body);
 
@@ -345,7 +349,18 @@ pub fn buildRequestBody(
 
 pub const RequestBodyOptions = struct {
     output_schema: ?std.json.Value = null,
+    input_images: []const []const u8 = &.{},
 };
+
+fn latestUserMessageIndex(history: []const HistoryItem) ?usize {
+    var latest: ?usize = null;
+    for (history, 0..) |item, index| {
+        if (item.kind != .message) continue;
+        const role = item.role orelse continue;
+        if (std.mem.eql(u8, role, "user")) latest = index;
+    }
+    return latest;
+}
 
 pub fn buildRequestBodyWithOptions(
     allocator: std.mem.Allocator,
@@ -356,31 +371,47 @@ pub fn buildRequestBodyWithOptions(
     var inputs = std.ArrayList(InputItem).empty;
     defer inputs.deinit(allocator);
 
-    var message_count: usize = 0;
-    for (history) |item| {
-        if (item.kind == .message) message_count += 1;
+    const image_message_index = latestUserMessageIndex(history);
+    var message_contents = std.ArrayList([]ContentItem).empty;
+    defer {
+        for (message_contents.items) |content| allocator.free(content);
+        message_contents.deinit(allocator);
     }
 
-    const message_content = try allocator.alloc([1]ContentItem, message_count);
-    defer allocator.free(message_content);
-    var message_index: usize = 0;
-
-    for (history) |item| {
+    for (history, 0..) |item, history_index| {
         switch (item.kind) {
             .message => {
                 const role = item.role orelse return error.InvalidMessageHistory;
                 const text = item.text orelse return error.InvalidMessageHistory;
                 const content_type = item.content_type orelse return error.InvalidMessageHistory;
-                message_content[message_index][0] = .{
+
+                const include_images = image_message_index != null and
+                    image_message_index.? == history_index and
+                    options.input_images.len > 0;
+                const content_len: usize = if (include_images) 1 + options.input_images.len else 1;
+                const content = try allocator.alloc(ContentItem, content_len);
+                var content_owned = true;
+                errdefer if (content_owned) allocator.free(content);
+                content[0] = .{
                     .type = content_type,
                     .text = text,
                 };
+                if (include_images) {
+                    for (options.input_images, 0..) |image_url, image_index| {
+                        content[1 + image_index] = .{
+                            .type = "input_image",
+                            .image_url = image_url,
+                            .detail = "auto",
+                        };
+                    }
+                }
+                try message_contents.append(allocator, content);
+                content_owned = false;
                 try inputs.append(allocator, .{
                     .type = "message",
                     .role = role,
-                    .content = message_content[message_index][0..],
+                    .content = content,
                 });
-                message_index += 1;
             },
             .function_call => try inputs.append(allocator, .{
                 .type = "function_call",
@@ -636,6 +667,43 @@ test "builds chronological request input from owned history" {
     try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
+}
+
+test "builds input images on latest user message" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "describe this",
+        },
+    };
+    const images = [_][]const u8{"data:image/png;base64,aGVsbG8="};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .input_images = images[0..] });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const content = parsed.value.object.get("input").?.array.items[0].object.get("content").?.array;
+
+    try std.testing.expectEqual(@as(usize, 2), content.items.len);
+    try std.testing.expectEqualStrings("input_text", content.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("input_image", content.items[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("data:image/png;base64,aGVsbG8=", content.items[1].object.get("image_url").?.string);
+    try std.testing.expectEqualStrings("auto", content.items[1].object.get("detail").?.string);
 }
 
 test "builds web search tool from config mode" {
