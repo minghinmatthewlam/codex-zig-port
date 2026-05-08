@@ -49,17 +49,18 @@ The project currently targets Zig `0.16.0`.
 
 ## Verification
 
-Run the repeatable TUI E2E harness after building:
+Run the repeatable checks:
 
 ```sh
-zig build
-scripts/tui_e2e.py
+zig build test
+zig build e2e
 ```
 
-The harness starts a local mock Responses server, launches the real
+The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/status`, a model
 tool call with approval, `/ps`, `/stop`, and `/quit`, then checks the captured
-terminal transcript and API request count.
+terminal transcript and API request count. Run `scripts/tui_e2e.py --show-output`
+directly when you want to inspect the terminal transcript.
 
 ## Auth
 
