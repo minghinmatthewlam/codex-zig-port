@@ -16,6 +16,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - send a Responses API turn
 - stream assistant text deltas in the interactive TUI
 - include discovered `AGENTS.md` project instructions in API turns
+- enable native Responses web search with `--search` or `web_search = "live"`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
@@ -75,8 +76,11 @@ codex-zig --profile work auth-status
 codex-zig -m gpt-5.5 -a never -s danger-full-access
 codex-zig --cd ~/dev/my-project
 codex-zig --add-dir ~/scratch
+codex-zig --search
 codex-zig exec --profile work "say hello"
 ```
 
 `CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.
 `CODEX_ZIG_BASE_URL` overrides both API base URLs for local testing.
+`CODEX_ZIG_WEB_SEARCH` overrides web search mode with `disabled`, `cached`, or
+`live`.

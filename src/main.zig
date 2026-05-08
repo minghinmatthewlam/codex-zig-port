@@ -102,6 +102,10 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.sandbox_mode = .danger_full_access;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--search")) {
+            overrides.runtime.web_search_mode = .live;
+            continue;
+        }
         cmd_opt = arg;
         break;
     }
@@ -275,6 +279,8 @@ fn printHelp() !void {
         \\                          Override sandbox mode
         \\  codex-zig --yolo ...
         \\                          Danger: approval=never and sandbox=danger-full-access
+        \\  codex-zig --search ...
+        \\                          Enable live web search for Responses turns
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
         \\                          Run deterministic apply_patch demo
@@ -290,6 +296,7 @@ fn printHelp() !void {
         \\  CODEX_ZIG_APPROVAL_POLICY
         \\                         Override approval policy
         \\  CODEX_ZIG_SANDBOX_MODE Override sandbox mode
+        \\  CODEX_ZIG_WEB_SEARCH   Override web search mode: disabled, cached, live
         \\
     , .{});
 }
@@ -339,6 +346,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     std.debug.print("auth: {s}\n", .{credentials.describe()});
     std.debug.print("approval_policy: {s}\n", .{cfg.approval_policy.label()});
     std.debug.print("sandbox_mode: {s}\n", .{cfg.sandbox_mode.label()});
+    std.debug.print("web_search: {s}\n", .{config.webSearchLabel(cfg.web_search_mode)});
     std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
         .chatgpt => cfg.chatgpt_base_url,
         .api_key => cfg.openai_base_url,

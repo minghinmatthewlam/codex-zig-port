@@ -101,10 +101,11 @@ const CommandItems = struct {
 };
 
 const Tool = struct {
-    type: []const u8 = "function",
-    name: []const u8,
-    description: []const u8,
-    parameters: FunctionParameters,
+    type: []const u8,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    parameters: ?FunctionParameters = null,
+    external_web_access: ?bool = null,
 };
 
 const Request = struct {
@@ -354,6 +355,7 @@ pub fn buildRequestBody(
     const command_required = [_][]const u8{"command"};
     const patch_required = [_][]const u8{"patch"};
     const shell_tool = Tool{
+        .type = "function",
         .name = "shell",
         .description = "Run a command as an argv array in the current workspace.",
         .parameters = .{
@@ -366,6 +368,7 @@ pub fn buildRequestBody(
         },
     };
     const shell_command_tool = Tool{
+        .type = "function",
         .name = "shell_command",
         .description = "Run a shell command string in the current workspace.",
         .parameters = .{
@@ -377,6 +380,7 @@ pub fn buildRequestBody(
         },
     };
     const apply_patch_tool = Tool{
+        .type = "function",
         .name = "apply_patch",
         .description = "Apply a Codex-style patch to files in the current workspace. The patch must start with *** Begin Patch and end with *** End Patch.",
         .parameters = .{
@@ -387,7 +391,21 @@ pub fn buildRequestBody(
             .required = patch_required[0..],
         },
     };
-    const tools = [_]Tool{ shell_tool, shell_command_tool, apply_patch_tool };
+    var tools_storage: [4]Tool = undefined;
+    tools_storage[0] = shell_tool;
+    tools_storage[1] = shell_command_tool;
+    tools_storage[2] = apply_patch_tool;
+    var tools_count: usize = 3;
+    if (cfg.web_search_mode) |web_search_mode| {
+        if (web_search_mode.externalWebAccess()) |external_web_access| {
+            tools_storage[tools_count] = .{
+                .type = "web_search",
+                .external_web_access = external_web_access,
+            };
+            tools_count += 1;
+        }
+    }
+    const tools = tools_storage[0..tools_count];
     const include = [_][]const u8{};
 
     const instructions = try agents_md.buildInstructions(allocator, baseInstructions);
@@ -530,6 +548,7 @@ test "builds chronological request input from owned history" {
         .installation_id = "install-test",
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -567,4 +586,46 @@ test "builds chronological request input from owned history" {
     try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
+}
+
+test "builds web search tool from config mode" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = .live,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "search the web",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    var found = false;
+    for (tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type != .string or !std.mem.eql(u8, tool_type.string, "web_search")) continue;
+        found = true;
+        try std.testing.expectEqual(true, object.get("external_web_access").?.bool);
+        try std.testing.expect(object.get("name") == null);
+    }
+
+    try std.testing.expect(found);
 }

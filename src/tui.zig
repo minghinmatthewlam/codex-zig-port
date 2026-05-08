@@ -140,6 +140,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         \\cwd:  {s}
         \\approval: {s}
         \\sandbox:  {s}
+        \\search:   {s}
         \\Type /help for commands or /quit to exit.
         \\
     , .{
@@ -152,6 +153,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         cwd,
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
+        config.webSearchLabel(cfg.web_search_mode),
     });
 }
 
@@ -378,6 +380,14 @@ fn printStatus(
     session_path: []const u8,
     cwd: []const u8,
 ) void {
+    const tool_label = if (cfg.web_search_mode) |mode|
+        if (mode.externalWebAccess() != null)
+            "shell, shell_command, apply_patch, web_search"
+        else
+            "shell, shell_command, apply_patch"
+    else
+        "shell, shell_command, apply_patch";
+
     std.debug.print(
         \\status:
         \\  model:       {s}
@@ -387,8 +397,9 @@ fn printStatus(
         \\  session:     {s}
         \\  approval:    {s}
         \\  sandbox:     {s}
+        \\  search:      {s}
         \\  transcript:  {d} items
-        \\  tools:       shell, shell_command, apply_patch
+        \\  tools:       {s}
         \\
     , .{
         cfg.model,
@@ -401,7 +412,9 @@ fn printStatus(
         session_path,
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
+        config.webSearchLabel(cfg.web_search_mode),
         transcript.history.items.len,
+        tool_label,
     });
 }
 

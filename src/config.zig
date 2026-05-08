@@ -10,6 +10,7 @@ pub const Config = struct {
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
     sandbox_mode: SandboxMode,
+    web_search_mode: ?WebSearchMode,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -29,6 +30,7 @@ pub const RuntimeOverrides = struct {
     model: ?[]const u8 = null,
     approval_policy: ?ApprovalPolicy = null,
     sandbox_mode: ?SandboxMode = null,
+    web_search_mode: ?WebSearchMode = null,
 };
 
 pub fn applyRuntimeOverrides(
@@ -46,6 +48,9 @@ pub fn applyRuntimeOverrides(
     }
     if (overrides.sandbox_mode) |sandbox_mode| {
         cfg.sandbox_mode = sandbox_mode;
+    }
+    if (overrides.web_search_mode) |web_search_mode| {
+        cfg.web_search_mode = web_search_mode;
     }
 }
 
@@ -94,6 +99,40 @@ pub const SandboxMode = enum {
     }
 };
 
+pub const WebSearchMode = enum {
+    disabled,
+    cached,
+    live,
+
+    pub fn label(self: WebSearchMode) []const u8 {
+        return switch (self) {
+            .disabled => "disabled",
+            .cached => "cached",
+            .live => "live",
+        };
+    }
+
+    pub fn externalWebAccess(self: WebSearchMode) ?bool {
+        return switch (self) {
+            .disabled => null,
+            .cached => false,
+            .live => true,
+        };
+    }
+
+    pub fn parse(value: []const u8) !WebSearchMode {
+        if (std.mem.eql(u8, value, "disabled")) return .disabled;
+        if (std.mem.eql(u8, value, "cached")) return .cached;
+        if (std.mem.eql(u8, value, "live")) return .live;
+        return error.InvalidWebSearchMode;
+    }
+};
+
+pub fn webSearchLabel(mode: ?WebSearchMode) []const u8 {
+    if (mode) |value| return value.label();
+    return "unset";
+}
+
 const BaseUrls = struct {
     openai: []const u8,
     chatgpt: []const u8,
@@ -130,6 +169,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
     const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
+    const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
 
     return .{
         .codex_home = codex_home,
@@ -140,6 +180,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .installation_id = installation_id,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
+        .web_search_mode = web_search_mode,
     };
 }
 
@@ -225,6 +266,20 @@ fn resolveSandboxMode(allocator: std.mem.Allocator, config_view: ConfigView, act
     }
 
     return .workspace_write;
+}
+
+fn resolveWebSearchMode(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?WebSearchMode {
+    if (try env.getOwned(allocator, "CODEX_ZIG_WEB_SEARCH")) |value| {
+        defer allocator.free(value);
+        return try WebSearchMode.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "web_search")) |value| {
+        defer allocator.free(value);
+        return try WebSearchMode.parse(value);
+    }
+
+    return null;
 }
 
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -391,6 +446,8 @@ test "approval and sandbox labels parse config strings" {
     try std.testing.expectEqual(SandboxMode.read_only, try resolveSandboxMode(allocator, view, null));
     try std.testing.expectEqualStrings("on-request", ApprovalPolicy.on_request.label());
     try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
+    try std.testing.expectEqual(WebSearchMode.live, try WebSearchMode.parse("live"));
+    try std.testing.expectEqualStrings("cached", WebSearchMode.cached.label());
 }
 
 test "profile values override top-level config values" {
@@ -401,12 +458,14 @@ test "profile values override top-level config values" {
         \\model = "base-model"
         \\approval_policy = "on-request"
         \\sandbox_mode = "read-only"
+        \\web_search = "cached"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
         \\model = "profile-model"
         \\approval_policy = "never"
         \\sandbox_mode = "danger-full-access"
+        \\web_search = "live"
         \\chatgpt_base_url = "https://profile.example/codex"
         \\
         ,
@@ -428,6 +487,10 @@ test "profile values override top-level config values" {
 
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
+    try std.testing.expectEqual(WebSearchMode.live, (try resolveWebSearchMode(allocator, view, active_profile.?)).?);
+    try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
+    try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
+    try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
 }
 
 test "quoted profile section names are supported" {
