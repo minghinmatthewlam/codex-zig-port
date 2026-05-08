@@ -14,6 +14,13 @@ const tools = @import("tools.zig");
 const tui = @import("tui.zig");
 
 pub fn main(init: std.process.Init) !void {
+    mainInner(init) catch |err| {
+        std.debug.print("error: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+}
+
+fn mainInner(init: std.process.Init) !void {
     const allocator = init.gpa;
 
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
