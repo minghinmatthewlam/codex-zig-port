@@ -6,6 +6,7 @@ const git_diff = @import("git_diff.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
+const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
 const init_prompt =
@@ -306,6 +307,17 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "ps")) {
+        try printBackgroundTerminals(allocator);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "stop")) {
+        const stopped = tools.stopAllExecSessions();
+        std.debug.print("stopped {d} background terminal(s)\n", .{stopped});
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "review")) {
         const review_prompt = if (parts.args.len == 0)
             try review.buildUncommittedPrompt(allocator)
@@ -435,6 +447,8 @@ fn printSlashHelp() void {
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
+        \\  /ps               list background terminals
+        \\  /stop             stop all background terminals
         \\  /review [text]    review current changes or custom instructions
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
@@ -501,11 +515,11 @@ fn printStatus(
 ) void {
     const tool_label = if (cfg.web_search_mode) |mode|
         if (mode.externalWebAccess() != null)
-            "shell, shell_command, apply_patch, web_search"
+            "exec_command, write_stdin, shell, shell_command, apply_patch, web_search"
         else
-            "shell, shell_command, apply_patch"
+            "exec_command, write_stdin, shell, shell_command, apply_patch"
     else
-        "shell, shell_command, apply_patch";
+        "exec_command, write_stdin, shell, shell_command, apply_patch";
 
     std.debug.print(
         \\status:
@@ -549,6 +563,22 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     std.debug.print("{s}", .{rendered});
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
+    }
+}
+
+fn printBackgroundTerminals(allocator: std.mem.Allocator) !void {
+    const sessions = try tools.listExecSessions(allocator);
+    defer allocator.free(sessions);
+
+    if (sessions.len == 0) {
+        std.debug.print("background terminals: none\n", .{});
+        return;
+    }
+
+    std.debug.print("background terminals:\n", .{});
+    for (sessions) |entry| {
+        const kind = if (entry.pty) "pty" else "pipes";
+        std.debug.print("  {d}. {s}, {d}ms\n", .{ entry.id, kind, entry.age_ms });
     }
 }
 
@@ -711,6 +741,14 @@ test "parse slash command names and args" {
     const diff = parseSlash("/diff").?;
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
+
+    const ps = parseSlash("/ps").?;
+    try std.testing.expectEqualStrings("ps", ps.name);
+    try std.testing.expectEqualStrings("", ps.args);
+
+    const stop = parseSlash("/stop").?;
+    try std.testing.expectEqualStrings("stop", stop.name);
+    try std.testing.expectEqualStrings("", stop.args);
 
     const review_cmd = parseSlash("/review check regressions").?;
     try std.testing.expectEqualStrings("review", review_cmd.name);

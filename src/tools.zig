@@ -103,6 +103,12 @@ const ExecSessionKind = enum {
     pty,
 };
 
+pub const ExecSessionSummary = struct {
+    id: u64,
+    pty: bool,
+    age_ms: u64,
+};
+
 const SessionRead = struct {
     output: []const u8,
     term: ?std.process.Child.Term,
@@ -737,6 +743,31 @@ fn findExecSessionIndex(session_id: u64) ?usize {
     return null;
 }
 
+pub fn listExecSessions(allocator: std.mem.Allocator) ![]ExecSessionSummary {
+    const summaries = try allocator.alloc(ExecSessionSummary, exec_sessions.items.len);
+    errdefer allocator.free(summaries);
+    for (exec_sessions.items, 0..) |*session, index| {
+        summaries[index] = .{
+            .id = session.id,
+            .pty = session.kind == .pty,
+            .age_ms = elapsedMilliseconds(session.io_instance.io(), session.started),
+        };
+    }
+    return summaries;
+}
+
+pub fn activeExecSessionCount() usize {
+    return exec_sessions.items.len;
+}
+
+pub fn stopAllExecSessions() usize {
+    const count = exec_sessions.items.len;
+    while (exec_sessions.items.len > 0) {
+        removeExecSession(exec_sessions.items.len - 1);
+    }
+    return count;
+}
+
 fn removeExecSession(index: usize) void {
     var removed = exec_sessions.orderedRemove(index);
     removed.deinit();
@@ -1180,6 +1211,31 @@ test "exec_command tty session accepts write_stdin" {
     try std.testing.expect(std.mem.indexOf(u8, write_result.output, "Process exited with code 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, write_result.output, "GOT:hello") != null);
     try std.testing.expect(findExecSessionIndex(session_id) == null);
+}
+
+test "exec sessions can be listed and stopped" {
+    const allocator = std.testing.allocator;
+    const start_call = api.FunctionCall{
+        .call_id = "exec-session-list",
+        .name = "exec_command",
+        .arguments = "{\"cmd\":\"printf READY; sleep 30\",\"tty\":true,\"yield_time_ms\":200,\"max_output_tokens\":100}",
+    };
+    const start_result = try runFunctionCall(allocator, start_call, .{ .auto_approve = true });
+    defer start_result.deinit(allocator);
+    defer _ = stopAllExecSessions();
+
+    try std.testing.expect(std.mem.startsWith(u8, start_result.summary, "session "));
+    const session_id = try std.fmt.parseInt(u64, start_result.summary["session ".len..], 10);
+
+    const sessions = try listExecSessions(allocator);
+    defer allocator.free(sessions);
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqual(session_id, sessions[0].id);
+    try std.testing.expect(sessions[0].pty);
+
+    try std.testing.expectEqual(@as(usize, 1), activeExecSessionCount());
+    try std.testing.expectEqual(@as(usize, 1), stopAllExecSessions());
+    try std.testing.expectEqual(@as(usize, 0), activeExecSessionCount());
 }
 
 test "write_stdin reports unknown session" {
