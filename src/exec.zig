@@ -3,19 +3,23 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
+const session_store = @import("session_store.zig");
 
 const ExecArgs = struct {
     auto_approve: bool = false,
+    ephemeral: bool = false,
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
+    resume_target: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         if (self.last_message_file) |path| allocator.free(path);
+        if (self.resume_target) |target| allocator.free(target);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
 };
@@ -57,12 +61,29 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
+    var session_path: ?[]const u8 = null;
+    defer if (session_path) |path| allocator.free(path);
+    if (!parsed.ephemeral) {
+        if (parsed.resume_target) |target| {
+            session_path = try session_store.resolveResumePath(allocator, cfg.codex_home, target);
+            const loaded = try session_store.loadTranscript(allocator, session_path.?);
+            transcript.deinit(allocator);
+            transcript = loaded;
+        } else {
+            session_path = try session_store.createSessionPath(allocator, cfg.codex_home);
+        }
+    }
+
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
         .auto_approve = parsed.auto_approve,
         .prompt_for_approval = false,
         .json_events = parsed.json,
     });
     defer allocator.free(answer);
+
+    if (session_path) |path| {
+        try session_store.saveTranscript(allocator, path, &transcript);
+    }
 
     if (parsed.last_message_file) |path| {
         try writeFile(path, answer);
@@ -85,6 +106,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
 
     var index: usize = 0;
     var end_options = false;
+    var resume_mode = false;
+    var resume_target_set = false;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (!end_options and std.mem.eql(u8, arg, "--")) {
@@ -93,6 +116,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--auto-approve")) {
             parsed.auto_approve = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--ephemeral")) {
+            parsed.ephemeral = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
@@ -125,9 +152,25 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.help = true;
             continue;
         }
+        if (!end_options and resume_mode and std.mem.eql(u8, arg, "--last")) {
+            try setResumeTarget(allocator, &parsed, "last");
+            resume_target_set = true;
+            continue;
+        }
         if (!end_options and std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-")) {
             std.debug.print("unknown exec option: {s}\n", .{arg});
             return error.UnknownExecOption;
+        }
+
+        if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "resume")) {
+            resume_mode = true;
+            continue;
+        }
+
+        if (resume_mode and !resume_target_set) {
+            try setResumeTarget(allocator, &parsed, arg);
+            resume_target_set = true;
+            continue;
         }
 
         if (std.mem.eql(u8, arg, "-") and prompt_parts.items.len == 0) {
@@ -137,11 +180,20 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
     }
 
+    if (resume_mode and !resume_target_set) {
+        try setResumeTarget(allocator, &parsed, "last");
+    }
+
     if (prompt_parts.items.len > 0) {
         parsed.prompt = try joinPrompt(allocator, prompt_parts.items);
     }
 
     return parsed;
+}
+
+fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []const u8) !void {
+    if (parsed.resume_target) |existing| allocator.free(existing);
+    parsed.resume_target = try allocator.dupe(u8, target);
 }
 
 fn joinPrompt(allocator: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
@@ -194,9 +246,11 @@ fn printHelp() void {
         \\Usage:
         \\  codex-zig exec [OPTIONS] [PROMPT]
         \\  codex-zig exec [OPTIONS] -
+        \\  codex-zig exec [OPTIONS] resume [last|ID|PATH] PROMPT
         \\
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
+        \\  --ephemeral             Do not save or resume a session file
         \\  --approval-policy MODE  untrusted, on-failure, on-request, or never
         \\  --sandbox MODE          read-only, workspace-write, or danger-full-access
         \\  --json                  Emit JSONL events instead of plain final text
@@ -216,6 +270,47 @@ test "exec args parse prompt and options" {
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse resume last prompt" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--json", "resume", "last", "say", "again" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.json);
+    try std.testing.expectEqualStrings("last", parsed.resume_target.?);
+    try std.testing.expectEqualStrings("say again", parsed.prompt.?);
+}
+
+test "exec args parse resume --last stdin" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "resume", "--last", "-" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("last", parsed.resume_target.?);
+    try std.testing.expect(parsed.read_stdin);
+}
+
+test "exec args parse ephemeral" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--ephemeral", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.ephemeral);
+    try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args keep resume literal after end options" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--", "resume", "this", "prompt" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.resume_target == null);
+    try std.testing.expectEqualStrings("resume this prompt", parsed.prompt.?);
 }
 
 test "exec args parse approval and sandbox options" {
