@@ -77,7 +77,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
 
-    const additional_writable_roots = try mergeAdditionalWritableRoots(
+    const additional_writable_roots = try cli_utils.mergeStringSlices(
         allocator,
         options.additional_writable_roots,
         parsed.additional_writable_roots.items,
@@ -350,17 +350,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
 fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []const u8) !void {
     if (parsed.resume_target) |existing| allocator.free(existing);
     parsed.resume_target = try allocator.dupe(u8, target);
-}
-
-fn mergeAdditionalWritableRoots(
-    allocator: std.mem.Allocator,
-    inherited: []const []const u8,
-    local: []const []const u8,
-) ![]const []const u8 {
-    const merged = try allocator.alloc([]const u8, inherited.len + local.len);
-    @memcpy(merged[0..inherited.len], inherited);
-    @memcpy(merged[inherited.len..], local);
-    return merged;
 }
 
 fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8) ![]const u8 {

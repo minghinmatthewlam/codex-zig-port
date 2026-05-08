@@ -10,6 +10,7 @@ const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
+const sandbox_cmd = @import("sandbox_cmd.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
@@ -132,6 +133,7 @@ fn mainInner(init: std.process.Init) !void {
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         !std.mem.eql(u8, cmd, "exec") and
+            !std.mem.eql(u8, cmd, "sandbox") and
             !isHelpFlag(cmd) and
             !isVersionFlag(cmd)
     else
@@ -189,6 +191,15 @@ fn mainInner(init: std.process.Init) !void {
             try review.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+            });
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "sandbox")) {
+            try sandbox_cmd.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+                .cwd = overrides.cwd,
+                .additional_writable_roots = overrides.additional_writable_roots,
             });
             return;
         }
@@ -355,6 +366,8 @@ fn printHelp() !void {
         \\  codex-zig logout       Remove local Codex auth
         \\  codex-zig review --uncommitted
         \\                          Run a non-interactive code review
+        \\  codex-zig sandbox macos -- COMMAND
+        \\                          Run a command under macOS Seatbelt
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command

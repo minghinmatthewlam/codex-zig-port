@@ -19,6 +19,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - include discovered `AGENTS.md` project instructions in API turns
 - enable native Responses web search with `--search` or `web_search = "live"`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
+- run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
@@ -88,6 +89,7 @@ codex-zig --add-dir ~/scratch
 codex-zig --search
 codex-zig --version
 codex-zig exec --profile work "say hello"
+codex-zig sandbox macos -- /bin/echo ok
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD
