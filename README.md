@@ -18,6 +18,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - stream assistant text deltas in the interactive TUI
 - include discovered `AGENTS.md` project instructions in API turns
 - enable native Responses web search with `--search` or `web_search = "live"`
+- accept modern `exec_command` tool calls for one-shot command execution
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - apply focused `apply_patch` file edits after user confirmation

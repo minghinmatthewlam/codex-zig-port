@@ -425,6 +425,14 @@ pub fn buildRequestBodyWithOptions(
             \\{"type":"object","properties":{"command":{"type":"array","description":"Command and arguments to execute.","items":{"type":"string"}}},"required":["command"],"additionalProperties":false}
         ),
     };
+    const exec_command_tool = Tool{
+        .type = "function",
+        .name = "exec_command",
+        .description = "Runs a shell command, returning terminal-style output. Long-running session reuse through write_stdin is not implemented in this Zig port yet.",
+        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"Accepted for compatibility; PTY allocation is not implemented yet."},"yield_time_ms":{"type":"number","description":"Accepted for compatibility; one-shot Zig exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
+        ),
+    };
     const shell_command_tool = Tool{
         .type = "function",
         .name = "shell_command",
@@ -443,6 +451,7 @@ pub fn buildRequestBodyWithOptions(
     };
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
+    try tools_list.append(allocator, exec_command_tool);
     try tools_list.append(allocator, shell_tool);
     try tools_list.append(allocator, shell_command_tool);
     try tools_list.append(allocator, apply_patch_tool);
@@ -561,7 +570,7 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
 
 const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
-    \\When you need to inspect files or run commands, call shell_command or shell.
+    \\When you need to inspect files or run commands, call exec_command. shell_command and shell remain supported.
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\Configured MCP server tools may appear as mcp__server__tool function tools.
     \\Keep answers concise and report command outcomes.
@@ -666,6 +675,7 @@ test "builds chronological request input from owned history" {
     try std.testing.expectEqualStrings("function_call", input.items[1].object.get("type").?.string);
     try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"exec_command\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
 }
 

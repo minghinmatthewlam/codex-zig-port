@@ -20,6 +20,16 @@ const ShellCommandArgs = struct {
     command: []const u8,
 };
 
+const ExecCommandArgs = struct {
+    cmd: []const u8,
+    workdir: ?[]const u8 = null,
+    shell: ?[]const u8 = null,
+    tty: ?bool = null,
+    yield_time_ms: ?u64 = null,
+    max_output_tokens: ?usize = null,
+    login: ?bool = null,
+};
+
 const ShellArgs = struct {
     command: []const []const u8,
 };
@@ -55,6 +65,13 @@ const PermissionDecision = enum {
 };
 
 pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, policy: Policy) !ToolResult {
+    if (std.mem.eql(u8, call.name, "exec_command")) {
+        var parsed = try std.json.parseFromSlice(ExecCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
+        return runExecCommand(allocator, call.call_id, parsed.value, policy.sandbox_mode, policy.additional_writable_roots);
+    }
+
     if (std.mem.eql(u8, call.name, "shell_command")) {
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
@@ -157,6 +174,27 @@ fn runShellCommand(
     return runArgv(allocator, call_id, argv[0..], sandbox_mode, additional_writable_roots);
 }
 
+fn runExecCommand(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    args: ExecCommandArgs,
+    sandbox_mode: config.SandboxMode,
+    additional_writable_roots: []const []const u8,
+) !ToolResult {
+    _ = args.tty;
+    _ = args.yield_time_ms;
+    const shell = args.shell orelse "/bin/zsh";
+    const shell_flag = if (args.login orelse false) "-lic" else "-lc";
+    const argv = [_][]const u8{ shell, shell_flag, args.cmd };
+    return runArgvWithOptions(allocator, call_id, argv[0..], .{
+        .sandbox_mode = sandbox_mode,
+        .additional_writable_roots = additional_writable_roots,
+        .workdir = args.workdir,
+        .max_output_tokens = args.max_output_tokens,
+        .unified_format = true,
+    });
+}
+
 fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
     const stats = try applyPatchInDir(allocator, std.Io.Dir.cwd(), patch);
     const summary = try std.fmt.allocPrint(
@@ -187,18 +225,41 @@ fn runArgv(
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8,
 ) !ToolResult {
+    return runArgvWithOptions(allocator, call_id, argv, .{
+        .sandbox_mode = sandbox_mode,
+        .additional_writable_roots = additional_writable_roots,
+    });
+}
+
+const RunArgvOptions = struct {
+    sandbox_mode: config.SandboxMode,
+    additional_writable_roots: []const []const u8 = &.{},
+    workdir: ?[]const u8 = null,
+    max_output_tokens: ?usize = null,
+    unified_format: bool = false,
+};
+
+fn runArgvWithOptions(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    argv: []const []const u8,
+    options: RunArgvOptions,
+) !ToolResult {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
-    const effective_argv = if (sandbox.shouldSandbox(sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgv(allocator, sandbox_mode, argv, additional_writable_roots);
+    const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
+        sandboxed_argv = try sandbox.wrapArgv(allocator, options.sandbox_mode, argv, options.additional_writable_roots);
         break :blk sandboxed_argv.?.argv;
     } else argv;
 
+    const cwd: std.process.Child.Cwd = if (options.workdir) |workdir| .{ .path = workdir } else .inherit;
+    const started = std.Io.Timestamp.now(io_instance.io(), .awake);
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = effective_argv,
+        .cwd = cwd,
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{
@@ -208,6 +269,8 @@ fn runArgv(
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
+    const elapsed = started.durationTo(std.Io.Timestamp.now(io_instance.io(), .awake));
+    const elapsed_seconds = @as(f64, @floatFromInt(elapsed.toNanoseconds())) / @as(f64, @floatFromInt(std.time.ns_per_s));
 
     const exit_summary = switch (result.term) {
         .exited => |code| try std.fmt.allocPrint(allocator, "exit {d}", .{code}),
@@ -217,11 +280,14 @@ fn runArgv(
     };
     errdefer allocator.free(exit_summary);
 
-    const output = try std.fmt.allocPrint(
-        allocator,
-        "stdout:\n{s}\nstderr:\n{s}",
-        .{ result.stdout, result.stderr },
-    );
+    const output = if (options.unified_format)
+        try renderUnifiedExecOutput(allocator, result.term, result.stdout, result.stderr, elapsed_seconds, options.max_output_tokens)
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "stdout:\n{s}\nstderr:\n{s}",
+            .{ result.stdout, result.stderr },
+        );
     errdefer allocator.free(output);
 
     return .{
@@ -229,6 +295,57 @@ fn runArgv(
         .summary = exit_summary,
         .output = output,
     };
+}
+
+fn renderUnifiedExecOutput(
+    allocator: std.mem.Allocator,
+    term: std.process.Child.Term,
+    stdout: []const u8,
+    stderr: []const u8,
+    elapsed_seconds: f64,
+    max_output_tokens: ?usize,
+) ![]const u8 {
+    const raw_output = try mergeExecStreams(allocator, stdout, stderr);
+    defer allocator.free(raw_output);
+    const rendered_output = try truncateOutputForTokens(allocator, raw_output, max_output_tokens);
+    defer allocator.free(rendered_output);
+
+    const status = switch (term) {
+        .exited => |code| try std.fmt.allocPrint(allocator, "Process exited with code {d}", .{code}),
+        .signal => |sig| try std.fmt.allocPrint(allocator, "Process killed by signal {d}", .{@intFromEnum(sig)}),
+        .stopped => |sig| try std.fmt.allocPrint(allocator, "Process stopped by signal {d}", .{@intFromEnum(sig)}),
+        .unknown => |code| try std.fmt.allocPrint(allocator, "Process ended with unknown status {d}", .{code}),
+    };
+    defer allocator.free(status);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "Wall time: {d:.3} seconds\n{s}\nOutput:\n{s}",
+        .{ elapsed_seconds, status, rendered_output },
+    );
+}
+
+fn mergeExecStreams(allocator: std.mem.Allocator, stdout: []const u8, stderr: []const u8) ![]const u8 {
+    if (stderr.len == 0) return allocator.dupe(u8, stdout);
+    if (stdout.len == 0) return allocator.dupe(u8, stderr);
+    return std.fmt.allocPrint(allocator, "{s}\n[stderr]\n{s}", .{ stdout, stderr });
+}
+
+fn truncateOutputForTokens(allocator: std.mem.Allocator, output: []const u8, max_output_tokens: ?usize) ![]const u8 {
+    const token_limit = max_output_tokens orelse return allocator.dupe(u8, output);
+    if (token_limit == 0) return allocator.dupe(u8, "");
+    const byte_limit = token_limit * 4;
+    if (output.len <= byte_limit) return allocator.dupe(u8, output);
+    if (byte_limit < 32) return allocator.dupe(u8, output[0..byte_limit]);
+
+    const head_len = byte_limit / 2;
+    const tail_len = byte_limit - head_len;
+    const omitted = output.len - head_len - tail_len;
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n... {d} bytes truncated ...\n{s}",
+        .{ output[0..head_len], omitted, output[output.len - tail_len ..] },
+    );
 }
 
 fn joinCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
@@ -545,6 +662,44 @@ test "shell command creates output" {
     const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "hello") != null);
+}
+
+test "exec_command returns unified-style one-shot output" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "exec-1",
+        .name = "exec_command",
+        .arguments = "{\"cmd\":\"printf exec-ok\",\"yield_time_ms\":100,\"max_output_tokens\":100}",
+    };
+    const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Wall time: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Process exited with code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Output:\nexec-ok") != null);
+}
+
+test "exec_command honors workdir" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const args = try std.fmt.allocPrint(allocator, "{{\"cmd\":\"pwd\",\"workdir\":{s}}}", .{cwd_json});
+    defer allocator.free(args);
+
+    const call = api.FunctionCall{
+        .call_id = "exec-cwd",
+        .name = "exec_command",
+        .arguments = args,
+    };
+    const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, cwd) != null);
 }
 
 test "apply_patch adds and updates files" {
