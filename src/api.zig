@@ -38,6 +38,7 @@ pub const CreateTurnOptions = struct {
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
+    include_tools: bool = true,
 };
 
 pub const HistoryItem = struct {
@@ -148,6 +149,7 @@ pub fn createTurnWithOptions(
         .output_schema = options.output_schema,
         .input_images = options.input_images,
         .mcp_tools = options.mcp_tools,
+        .include_tools = options.include_tools,
     });
     defer allocator.free(body);
 
@@ -334,6 +336,7 @@ pub const RequestBodyOptions = struct {
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
+    include_tools: bool = true,
 };
 
 fn latestUserMessageIndex(history: []const HistoryItem) ?usize {
@@ -417,74 +420,76 @@ pub fn buildRequestBodyWithOptions(
         parsed_parameter_values.deinit(allocator);
     }
 
-    const shell_tool = Tool{
-        .type = "function",
-        .name = "shell",
-        .description = "Run a command as an argv array in the current workspace.",
-        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"command":{"type":"array","description":"Command and arguments to execute.","items":{"type":"string"}}},"required":["command"],"additionalProperties":false}
-        ),
-    };
-    const exec_command_tool = Tool{
-        .type = "function",
-        .name = "exec_command",
-        .description = "Runs a shell command, returning terminal-style output. Set tty=true for a PTY-backed long-running session that can receive input through write_stdin.",
-        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a PTY-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
-        ),
-    };
-    const write_stdin_tool = Tool{
-        .type = "function",
-        .name = "write_stdin",
-        .description = "Writes input to a running exec_command session and returns any new output.",
-        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"session_id":{"type":"number","description":"Session ID returned by exec_command when tty=true."},"chars":{"type":"string","description":"Literal text to write to the session stdin."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for output after writing."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."}},"required":["session_id"],"additionalProperties":false}
-        ),
-    };
-    const shell_command_tool = Tool{
-        .type = "function",
-        .name = "shell_command",
-        .description = "Run a shell command string in the current workspace.",
-        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute."}},"required":["command"],"additionalProperties":false}
-        ),
-    };
-    const apply_patch_tool = Tool{
-        .type = "function",
-        .name = "apply_patch",
-        .description = "Apply a Codex-style patch to files in the current workspace. The patch must start with *** Begin Patch and end with *** End Patch.",
-        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"patch":{"type":"string","description":"Patch text with Add File, Update File, or Delete File sections."}},"required":["patch"],"additionalProperties":false}
-        ),
-    };
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
-    try tools_list.append(allocator, exec_command_tool);
-    try tools_list.append(allocator, write_stdin_tool);
-    try tools_list.append(allocator, shell_tool);
-    try tools_list.append(allocator, shell_command_tool);
-    try tools_list.append(allocator, apply_patch_tool);
-    if (cfg.web_search_mode) |web_search_mode| {
-        if (web_search_mode.externalWebAccess()) |external_web_access| {
+    if (options.include_tools) {
+        const shell_tool = Tool{
+            .type = "function",
+            .name = "shell",
+            .description = "Run a command as an argv array in the current workspace.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"command":{"type":"array","description":"Command and arguments to execute.","items":{"type":"string"}}},"required":["command"],"additionalProperties":false}
+            ),
+        };
+        const exec_command_tool = Tool{
+            .type = "function",
+            .name = "exec_command",
+            .description = "Runs a shell command, returning terminal-style output. Set tty=true for a PTY-backed long-running session that can receive input through write_stdin.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a PTY-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
+            ),
+        };
+        const write_stdin_tool = Tool{
+            .type = "function",
+            .name = "write_stdin",
+            .description = "Writes input to a running exec_command session and returns any new output.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"session_id":{"type":"number","description":"Session ID returned by exec_command when tty=true."},"chars":{"type":"string","description":"Literal text to write to the session stdin."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for output after writing."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."}},"required":["session_id"],"additionalProperties":false}
+            ),
+        };
+        const shell_command_tool = Tool{
+            .type = "function",
+            .name = "shell_command",
+            .description = "Run a shell command string in the current workspace.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute."}},"required":["command"],"additionalProperties":false}
+            ),
+        };
+        const apply_patch_tool = Tool{
+            .type = "function",
+            .name = "apply_patch",
+            .description = "Apply a Codex-style patch to files in the current workspace. The patch must start with *** Begin Patch and end with *** End Patch.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"patch":{"type":"string","description":"Patch text with Add File, Update File, or Delete File sections."}},"required":["patch"],"additionalProperties":false}
+            ),
+        };
+        try tools_list.append(allocator, exec_command_tool);
+        try tools_list.append(allocator, write_stdin_tool);
+        try tools_list.append(allocator, shell_tool);
+        try tools_list.append(allocator, shell_command_tool);
+        try tools_list.append(allocator, apply_patch_tool);
+        if (cfg.web_search_mode) |web_search_mode| {
+            if (web_search_mode.externalWebAccess()) |external_web_access| {
+                try tools_list.append(allocator, .{
+                    .type = "web_search",
+                    .external_web_access = external_web_access,
+                });
+            }
+        }
+        for (options.mcp_tools) |mcp_tool| {
+            const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
+                try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
+            const description = if (mcp_tool.description.len > 0)
+                mcp_tool.description
+            else
+                "Call a configured MCP server tool.";
             try tools_list.append(allocator, .{
-                .type = "web_search",
-                .external_web_access = external_web_access,
+                .type = "function",
+                .name = mcp_tool.callable_name,
+                .description = description,
+                .parameters = parameters,
             });
         }
-    }
-    for (options.mcp_tools) |mcp_tool| {
-        const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
-            try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
-        const description = if (mcp_tool.description.len > 0)
-            mcp_tool.description
-        else
-            "Call a configured MCP server tool.";
-        try tools_list.append(allocator, .{
-            .type = "function",
-            .name = mcp_tool.callable_name,
-            .description = description,
-            .parameters = parameters,
-        });
     }
     const include = [_][]const u8{};
 
@@ -819,6 +824,47 @@ test "builds mcp function tools from catalog" {
     }
 
     try std.testing.expect(found);
+}
+
+test "can omit tools for compact-style turns" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = .live,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "summarize",
+        },
+    };
+    const mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .mcp_tools = mcp_tools[0..],
+        .include_tools = false,
+    });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.object.get("tools").?.array.items.len);
 }
 
 test "builds output schema text format" {

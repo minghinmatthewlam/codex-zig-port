@@ -92,6 +92,19 @@ pub const Transcript = struct {
             .output = output_copy,
         });
     }
+
+    pub fn replaceWithCompactedSummary(
+        self: *Transcript,
+        allocator: std.mem.Allocator,
+        summary: []const u8,
+    ) !void {
+        var replacement = Transcript{};
+        errdefer replacement.deinit(allocator);
+
+        try replacement.appendUserMessage(allocator, summary);
+        self.deinit(allocator);
+        self.* = replacement;
+    }
 };
 
 pub const TurnOptions = struct {
@@ -102,6 +115,7 @@ pub const TurnOptions = struct {
     additional_writable_roots: []const []const u8 = &.{},
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
+    include_tools: bool = true,
 };
 
 pub fn runTurn(
@@ -137,7 +151,8 @@ pub fn runTurnWithOptions(
         var create_options = api.CreateTurnOptions{};
         create_options.output_schema = options.output_schema;
         create_options.input_images = options.input_images;
-        create_options.mcp_tools = mcp_catalog.tools;
+        create_options.include_tools = options.include_tools;
+        create_options.mcp_tools = if (options.include_tools) mcp_catalog.tools else &.{};
         if (options.stream_text and !options.json_events) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,
@@ -232,4 +247,20 @@ fn emitJsonEvent(allocator: std.mem.Allocator, event: anytype) !void {
     try stdout.writeAll(line);
     try stdout.writeAll("\n");
     try stdout.flush();
+}
+
+test "replace transcript with compacted summary" {
+    const allocator = std.testing.allocator;
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try transcript.appendUserMessage(allocator, "first");
+    try transcript.appendAssistantMessage(allocator, "second");
+    try transcript.replaceWithCompactedSummary(allocator, "summary");
+
+    try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
+    try std.testing.expectEqual(api.HistoryItem.Kind.message, transcript.history.items[0].kind);
+    try std.testing.expectEqualStrings("user", transcript.history.items[0].role.?);
+    try std.testing.expectEqualStrings("input_text", transcript.history.items[0].content_type.?);
+    try std.testing.expectEqualStrings("summary", transcript.history.items[0].text.?);
 }

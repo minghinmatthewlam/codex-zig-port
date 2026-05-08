@@ -14,6 +14,11 @@ const init_prompt =
     \\Include build, test, coding style, and workflow notes where they apply.
     \\Inspect the project files before writing, and do not overwrite an existing AGENTS.md.
 ;
+const compact_prompt =
+    \\Summarize this conversation so another coding agent can continue from the compacted context.
+    \\Preserve the user's goal, decisions, constraints, files changed, commands run, verification results, unresolved risks, and exact next steps.
+    \\Be concise but specific. Do not include generic advice.
+;
 
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
@@ -271,6 +276,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "compact")) {
+        try runCompact(allocator, cfg.*, credentials, transcript, session_path.*, additional_writable_roots);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
         printStatus(cfg.*, credentials, transcript, session_path.*, cwd);
         return .handled;
@@ -415,6 +425,7 @@ fn printSlashHelp() void {
         \\commands:
         \\  /help             show this help
         \\  /init             create an AGENTS.md contributor guide
+        \\  /compact          summarize and replace this session's history
         \\  /status           show current session settings
         \\  /model [name]     show or set the in-memory model for this session
         \\  /permissions      show or set approval/sandbox modes
@@ -442,6 +453,43 @@ fn agentsFileExists(allocator: std.mem.Allocator, cwd: []const u8) !bool {
         else => return err,
     };
     return true;
+}
+
+fn runCompact(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    additional_writable_roots: []const []const u8,
+) !void {
+    const previous_items = transcript.history.items.len;
+    if (previous_items == 0) {
+        std.debug.print("nothing to compact yet\n", .{});
+        return;
+    }
+
+    std.debug.print("\ncompact:\n", .{});
+    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, compact_prompt, .{
+        .stream_text = true,
+        .additional_writable_roots = additional_writable_roots,
+        .include_tools = false,
+    });
+    defer allocator.free(answer);
+
+    const trimmed = std.mem.trim(u8, answer, " \t\r\n");
+    if (trimmed.len == 0) return error.EmptyCompactionSummary;
+
+    const compacted = try std.fmt.allocPrint(
+        allocator,
+        "Compacted conversation summary:\n\n{s}",
+        .{trimmed},
+    );
+    defer allocator.free(compacted);
+
+    try transcript.replaceWithCompactedSummary(allocator, compacted);
+    try session_store.saveTranscript(allocator, session_path, transcript);
+    std.debug.print("\ncompacted: {d} -> {d} item\n", .{ previous_items, transcript.history.items.len });
 }
 
 fn printStatus(
@@ -627,6 +675,10 @@ test "parse slash command names and args" {
     const init = parseSlash("/init").?;
     try std.testing.expectEqualStrings("init", init.name);
     try std.testing.expectEqualStrings("", init.args);
+
+    const compact = parseSlash("/compact").?;
+    try std.testing.expectEqualStrings("compact", compact.name);
+    try std.testing.expectEqualStrings("", compact.args);
 
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);

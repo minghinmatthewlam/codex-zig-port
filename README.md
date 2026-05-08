@@ -18,6 +18,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - stream assistant text deltas in the interactive TUI
 - include discovered `AGENTS.md` project instructions in API turns
 - create a repository guide through interactive `/init`
+- compact an interactive session into a continuation summary with `/compact`
 - enable native Responses web search with `--search` or `web_search = "live"`
 - accept modern `exec_command` tool calls for one-shot command execution and
   PTY-backed `write_stdin` session input
