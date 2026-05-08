@@ -143,6 +143,16 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "history")) {
+        printHistory(transcript, try parseHistoryLimit(parts.args));
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "rollout")) {
+        std.debug.print("rollout: {s}\n", .{session_path.*});
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "clear") or std.ascii.eqlIgnoreCase(parts.name, "new")) {
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         transcript.deinit(allocator);
@@ -227,6 +237,8 @@ fn printSlashHelp() void {
         \\  /model [name]     show or set the in-memory model for this session
         \\  /approval [mode]  show or set approval policy
         \\  /sandbox [mode]   show or set sandbox mode
+        \\  /history [n]      show recent transcript items
+        \\  /rollout          show the active session JSONL path
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
         \\  /resume [target]  resume last, a session id, or a JSONL path
@@ -269,6 +281,57 @@ fn printStatus(
     });
 }
 
+fn printHistory(transcript: *const session.Transcript, limit: usize) void {
+    const total = transcript.history.items.len;
+    const start = if (limit == 0 or limit >= total) 0 else total - limit;
+    std.debug.print("history: showing {d} of {d} items\n", .{ total - start, total });
+    if (total == 0) {
+        std.debug.print("  <empty>\n", .{});
+        return;
+    }
+
+    for (transcript.history.items[start..], start..) |item, index| {
+        std.debug.print("\n#{d} ", .{index + 1});
+        switch (item.kind) {
+            .message => {
+                const role = item.role orelse "message";
+                const text = item.text orelse "";
+                std.debug.print("{s}:\n", .{role});
+                printIndented(text, 1200);
+            },
+            .function_call => {
+                std.debug.print("tool call: {s}\n", .{item.name orelse "unknown"});
+                printIndented(item.arguments orelse "", 800);
+            },
+            .function_call_output => {
+                std.debug.print("tool output: {s}\n", .{item.call_id orelse "unknown"});
+                printIndented(item.output orelse "", 800);
+            },
+        }
+    }
+}
+
+fn printIndented(text: []const u8, max_bytes: usize) void {
+    const shown = text[0..@min(text.len, max_bytes)];
+    if (shown.len == 0) {
+        std.debug.print("  <empty>\n", .{});
+    } else {
+        var lines = std.mem.splitScalar(u8, shown, '\n');
+        while (lines.next()) |line| {
+            std.debug.print("  {s}\n", .{line});
+        }
+    }
+    if (text.len > shown.len) {
+        std.debug.print("  ... truncated {d} bytes\n", .{text.len - shown.len});
+    }
+}
+
+fn parseHistoryLimit(args: []const u8) !usize {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) return 20;
+    return std.fmt.parseUnsigned(usize, trimmed, 10);
+}
+
 test "parse slash command names and args" {
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
@@ -282,5 +345,19 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("approval", approval.name);
     try std.testing.expectEqualStrings("on-request", approval.args);
 
+    const history = parseSlash("/history 5").?;
+    try std.testing.expectEqualStrings("history", history.name);
+    try std.testing.expectEqualStrings("5", history.args);
+
+    const rollout = parseSlash("/rollout").?;
+    try std.testing.expectEqualStrings("rollout", rollout.name);
+    try std.testing.expectEqualStrings("", rollout.args);
+
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "parse history limit" {
+    try std.testing.expectEqual(@as(usize, 20), try parseHistoryLimit(""));
+    try std.testing.expectEqual(@as(usize, 3), try parseHistoryLimit(" 3 "));
+    try std.testing.expectError(error.InvalidCharacter, parseHistoryLimit("abc"));
 }
