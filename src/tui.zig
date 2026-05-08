@@ -9,6 +9,8 @@ const session_store = @import("session_store.zig");
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
     resume_picker: bool = false,
+    fork_target: ?[]const u8 = null,
+    fork_picker: bool = false,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     additional_writable_roots: []const []const u8 = &.{},
@@ -30,8 +32,33 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     defer transcript.deinit(allocator);
 
     var resumed = false;
-    var session_path = if (options.resume_picker) blk: {
-        const picked_path = try promptResumePicker(allocator, cfg.codex_home);
+    var forked_from_path: ?[]const u8 = null;
+    defer if (forked_from_path) |path| allocator.free(path);
+
+    const source_fork_path = if (options.fork_picker) blk: {
+        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "fork");
+        if (picked_path == null) {
+            std.debug.print("fork canceled\n", .{});
+            return;
+        }
+        break :blk picked_path.?;
+    } else if (options.fork_target) |target|
+        try session_store.resolveResumePath(allocator, cfg.codex_home, target)
+    else
+        null;
+
+    var session_path = if (source_fork_path) |path| blk: {
+        forked_from_path = path;
+        var loaded = try session_store.loadTranscript(allocator, path);
+        errdefer loaded.deinit(allocator);
+        const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
+        errdefer allocator.free(next_path);
+        try session_store.saveTranscript(allocator, next_path, &loaded);
+        transcript.deinit(allocator);
+        transcript = loaded;
+        break :blk next_path;
+    } else if (options.resume_picker) blk: {
+        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "resume");
         if (picked_path == null) {
             std.debug.print("resume canceled\n", .{});
             return;
@@ -56,6 +83,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     printHeader(cfg, credentials, cwd);
     if (resumed) {
         std.debug.print("resumed: {s} ({d} items)\n", .{ session_path, transcript.history.items.len });
+    }
+    if (forked_from_path) |path| {
+        std.debug.print("forked: {s} -> {s} ({d} items)\n", .{ path, session_path, transcript.history.items.len });
     }
 
     var input_buffer: [16 * 1024]u8 = undefined;
@@ -125,16 +155,16 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
     });
 }
 
-fn promptResumePicker(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+fn promptSessionPicker(allocator: std.mem.Allocator, codex_home: []const u8, action: []const u8) !?[]const u8 {
     const sessions = try session_store.listSessions(allocator, codex_home, 10);
     defer session_store.freeSessionSummaries(allocator, sessions);
 
     if (sessions.len == 0) {
-        std.debug.print("resume: no saved Zig sessions\n", .{});
+        std.debug.print("{s}: no saved Zig sessions\n", .{action});
         return null;
     }
 
-    std.debug.print("resume sessions:\n", .{});
+    std.debug.print("{s} sessions:\n", .{action});
     for (sessions, 0..) |entry, index| {
         std.debug.print("  {d}. {s}\n     {s}\n", .{ index + 1, entry.id, entry.path });
     }
@@ -245,6 +275,29 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "fork")) {
+        const source_path = if (parts.args.len == 0)
+            try allocator.dupe(u8, session_path.*)
+        else
+            try session_store.resolveResumePath(allocator, cfg.codex_home, parts.args);
+        defer allocator.free(source_path);
+
+        if (parts.args.len > 0) {
+            var loaded = try session_store.loadTranscript(allocator, source_path);
+            errdefer loaded.deinit(allocator);
+            transcript.deinit(allocator);
+            transcript.* = loaded;
+        }
+
+        const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
+        errdefer allocator.free(next_path);
+        try session_store.saveTranscript(allocator, next_path, transcript);
+        allocator.free(session_path.*);
+        session_path.* = next_path;
+        std.debug.print("forked: {s} -> {s} ({d} items)\n", .{ source_path, session_path.*, transcript.history.items.len });
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
         if (parts.args.len == 0) {
             std.debug.print("model: {s}\n", .{cfg.model});
@@ -312,6 +365,7 @@ fn printSlashHelp() void {
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
         \\  /resume [target]  resume last, a session id, or a JSONL path
+        \\  /fork [target]    fork current, last, a session id, or a JSONL path
         \\  /quit, /exit      exit
         \\
     , .{});

@@ -57,6 +57,9 @@ codex-zig sessions
 codex-zig resume
 codex-zig resume --last
 codex-zig resume <session-id>
+codex-zig fork
+codex-zig fork --last
+codex-zig fork <session-id>
 ```
 
 ## Configuration

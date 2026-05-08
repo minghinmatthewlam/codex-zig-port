@@ -175,6 +175,38 @@ fn mainInner(init: std.process.Init) !void {
             }
             return;
         }
+        if (std.mem.eql(u8, cmd, "fork")) {
+            const target = args.next();
+            if (target) |value| {
+                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                    printForkHelp();
+                    return;
+                }
+                if (std.mem.eql(u8, value, "--last")) {
+                    try tui.runWithOptions(allocator, .{
+                        .fork_target = "last",
+                        .profile = overrides.profile,
+                        .runtime_overrides = overrides.runtime,
+                        .additional_writable_roots = overrides.additional_writable_roots,
+                    });
+                    return;
+                }
+                try tui.runWithOptions(allocator, .{
+                    .fork_target = value,
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
+                });
+            } else {
+                try tui.runWithOptions(allocator, .{
+                    .fork_picker = true,
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
+                });
+            }
+            return;
+        }
         if (std.mem.eql(u8, cmd, "sessions")) {
             try runSessions(allocator, args.next(), overrides.profile);
             return;
@@ -218,6 +250,11 @@ fn printHelp() !void {
         \\                          Resume the latest saved Zig session
         \\  codex-zig resume ID|PATH|last
         \\                          Start interactive TUI from a saved session
+        \\  codex-zig fork         Pick a saved Zig session to fork
+        \\  codex-zig fork --last
+        \\                          Fork the latest saved Zig session
+        \\  codex-zig fork ID|PATH|last
+        \\                          Start interactive TUI from a forked session
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig login        Sign in with ChatGPT device auth
@@ -263,6 +300,18 @@ fn printResumeHelp() void {
         \\  codex-zig resume
         \\  codex-zig resume --last
         \\  codex-zig resume ID|PATH|last
+        \\
+        \\Without a target, opens a numbered picker for saved Zig sessions.
+        \\
+    , .{});
+}
+
+fn printForkHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig fork
+        \\  codex-zig fork --last
+        \\  codex-zig fork ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
         \\
