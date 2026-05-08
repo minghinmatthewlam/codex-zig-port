@@ -25,6 +25,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
   `review --commit` flows
+- inspect known feature flags with `features list`
 
 Long-term exact parity is tracked in `docs/parity.md`.
 
@@ -90,6 +91,7 @@ codex-zig --search
 codex-zig --version
 codex-zig exec --profile work "say hello"
 codex-zig sandbox macos -- /bin/echo ok
+codex-zig features list
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD

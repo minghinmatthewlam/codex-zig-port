@@ -6,6 +6,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
+const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const review = @import("review.zig");
@@ -203,6 +204,12 @@ fn mainInner(init: std.process.Init) !void {
             });
             return;
         }
+        if (std.mem.eql(u8, cmd, "features")) {
+            try features_cmd.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+            });
+            return;
+        }
         if (std.mem.eql(u8, cmd, "exec")) {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -368,6 +375,8 @@ fn printHelp() !void {
         \\                          Run a non-interactive code review
         \\  codex-zig sandbox macos -- COMMAND
         \\                          Run a command under macOS Seatbelt
+        \\  codex-zig features list
+        \\                          List known feature flags
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
