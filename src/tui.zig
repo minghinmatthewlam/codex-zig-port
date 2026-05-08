@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const git_diff = @import("git_diff.zig");
+const login = @import("login.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -318,6 +319,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "logout")) {
+        try login.runLogout(allocator);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "review")) {
         const review_prompt = if (parts.args.len == 0)
             try review.buildUncommittedPrompt(allocator)
@@ -449,6 +455,7 @@ fn printSlashHelp() void {
         \\  /diff             show git status and diff, including untracked files
         \\  /ps               list background terminals
         \\  /stop             stop all background terminals
+        \\  /logout           remove local Codex auth
         \\  /review [text]    review current changes or custom instructions
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
@@ -749,6 +756,10 @@ test "parse slash command names and args" {
     const stop = parseSlash("/stop").?;
     try std.testing.expectEqualStrings("stop", stop.name);
     try std.testing.expectEqualStrings("", stop.args);
+
+    const logout = parseSlash("/logout").?;
+    try std.testing.expectEqualStrings("logout", logout.name);
+    try std.testing.expectEqualStrings("", logout.args);
 
     const review_cmd = parseSlash("/review check regressions").?;
     try std.testing.expectEqualStrings("review", review_cmd.name);
