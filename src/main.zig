@@ -236,23 +236,25 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "resume")) {
-            const target = args.next();
-            if (target) |value| {
-                if (isHelpFlag(value)) {
-                    printResumeHelp();
-                    return;
-                }
-                if (std.mem.eql(u8, value, "--last")) {
-                    try tui.runWithOptions(allocator, .{
-                        .resume_target = "last",
-                        .profile = overrides.profile,
-                        .runtime_overrides = overrides.runtime,
-                        .additional_writable_roots = overrides.additional_writable_roots,
-                    });
-                    return;
-                }
+            var remaining = try collectRemainingArgs(allocator, &args);
+            defer remaining.deinit(allocator);
+            const parsed = try parseSessionCommandArgs(remaining.items, true);
+            if (parsed.help) {
+                printResumeHelp();
+                return;
+            }
+            if (parsed.last) {
                 try tui.runWithOptions(allocator, .{
-                    .resume_target = value,
+                    .resume_target = "last",
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
+                });
+                return;
+            }
+            if (parsed.target) |target| {
+                try tui.runWithOptions(allocator, .{
+                    .resume_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
                     .additional_writable_roots = overrides.additional_writable_roots,
@@ -268,23 +270,25 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "fork")) {
-            const target = args.next();
-            if (target) |value| {
-                if (isHelpFlag(value)) {
-                    printForkHelp();
-                    return;
-                }
-                if (std.mem.eql(u8, value, "--last")) {
-                    try tui.runWithOptions(allocator, .{
-                        .fork_target = "last",
-                        .profile = overrides.profile,
-                        .runtime_overrides = overrides.runtime,
-                        .additional_writable_roots = overrides.additional_writable_roots,
-                    });
-                    return;
-                }
+            var remaining = try collectRemainingArgs(allocator, &args);
+            defer remaining.deinit(allocator);
+            const parsed = try parseSessionCommandArgs(remaining.items, false);
+            if (parsed.help) {
+                printForkHelp();
+                return;
+            }
+            if (parsed.last) {
                 try tui.runWithOptions(allocator, .{
-                    .fork_target = value,
+                    .fork_target = "last",
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
+                });
+                return;
+            }
+            if (parsed.target) |target| {
+                try tui.runWithOptions(allocator, .{
+                    .fork_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
                     .additional_writable_roots = overrides.additional_writable_roots,
@@ -364,6 +368,55 @@ fn joinInitialPrompt(
         try parts.append(allocator, arg);
     }
     return cli_utils.joinWithSpaces(allocator, parts.items);
+}
+
+const SessionCommandArgs = struct {
+    target: ?[]const u8 = null,
+    last: bool = false,
+    show_all: bool = false,
+    include_non_interactive: bool = false,
+    help: bool = false,
+};
+
+fn collectRemainingArgs(
+    allocator: std.mem.Allocator,
+    args: *std.process.Args.Iterator,
+) !std.ArrayList([]const u8) {
+    var remaining = std.ArrayList([]const u8).empty;
+    errdefer remaining.deinit(allocator);
+    while (args.next()) |arg| {
+        try remaining.append(allocator, arg);
+    }
+    return remaining;
+}
+
+fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interactive: bool) !SessionCommandArgs {
+    var parsed = SessionCommandArgs{};
+    for (args) |arg| {
+        if (isHelpFlag(arg)) {
+            parsed.help = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--last")) {
+            parsed.last = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--all")) {
+            parsed.show_all = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--include-non-interactive")) {
+            if (!allow_include_non_interactive) return error.UnknownSessionCommandOption;
+            parsed.include_non_interactive = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            return error.UnknownSessionCommandOption;
+        }
+        if (parsed.target != null) return error.UnexpectedSessionCommandArgument;
+        parsed.target = arg;
+    }
+    return parsed;
 }
 
 fn printHelp() !void {
@@ -464,10 +517,12 @@ fn printResumeHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig resume
-        \\  codex-zig resume --last
+        \\  codex-zig resume [--all] [--include-non-interactive]
+        \\  codex-zig resume --last [--all] [--include-non-interactive]
         \\  codex-zig resume ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
+        \\--all and --include-non-interactive are accepted for Rust CLI compatibility.
         \\
     , .{});
 }
@@ -476,10 +531,12 @@ fn printForkHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig fork
-        \\  codex-zig fork --last
+        \\  codex-zig fork [--all]
+        \\  codex-zig fork --last [--all]
         \\  codex-zig fork ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
+        \\--all is accepted for Rust CLI compatibility.
         \\
     , .{});
 }
@@ -719,4 +776,28 @@ test "join initial prompt consumes remaining args" {
     defer allocator.free(prompt);
 
     try std.testing.expectEqualStrings("hello from prompt", prompt);
+}
+
+test "session command flags parse resume compatibility options" {
+    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last" };
+    const parsed = try parseSessionCommandArgs(argv[0..], true);
+
+    try std.testing.expect(parsed.show_all);
+    try std.testing.expect(parsed.include_non_interactive);
+    try std.testing.expect(parsed.last);
+    try std.testing.expect(parsed.target == null);
+}
+
+test "session command flags parse target and reject extra target" {
+    const target_argv = [_][]const u8{"session-id"};
+    const target = try parseSessionCommandArgs(target_argv[0..], false);
+    try std.testing.expectEqualStrings("session-id", target.target.?);
+
+    const extra_argv = [_][]const u8{ "one", "two" };
+    try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseSessionCommandArgs(extra_argv[0..], true));
+}
+
+test "fork session command rejects include non interactive" {
+    const argv = [_][]const u8{"--include-non-interactive"};
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionCommandArgs(argv[0..], false));
 }
