@@ -6,6 +6,7 @@ const modules = .{
     @import("auth.zig"),
     @import("cli_utils.zig"),
     @import("config.zig"),
+    @import("debug_cmd.zig"),
     @import("exec.zig"),
     @import("features_cmd.zig"),
     @import("git_diff.zig"),
