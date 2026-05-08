@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
 const git_diff = @import("git_diff.zig");
+const login = @import("login.zig");
 const sandbox = @import("sandbox.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -26,6 +27,14 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
             try runAuthStatus(allocator);
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "login")) {
+            try login.run(allocator, &args);
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "logout")) {
+            try login.runLogout(allocator);
             return;
         }
         if (std.mem.eql(u8, cmd, "exec")) {
@@ -70,6 +79,9 @@ fn printHelp() !void {
         \\  codex-zig resume [ID|PATH|last]
         \\                          Start interactive TUI from a saved session
         \\  codex-zig exec PROMPT  Run one non-interactive turn
+        \\  codex-zig login        Sign in with ChatGPT device auth
+        \\  codex-zig login status Show login status
+        \\  codex-zig logout       Remove local Codex auth
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
@@ -256,6 +268,7 @@ test {
     _ = env;
     _ = exec;
     _ = git_diff;
+    _ = login;
     _ = sandbox;
     _ = session;
     _ = session_store;

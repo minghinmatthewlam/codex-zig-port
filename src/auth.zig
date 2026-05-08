@@ -39,6 +39,19 @@ const TokenData = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
+    if (try loadStored(allocator, codex_home)) |credentials| {
+        return credentials;
+    }
+
+    const env_api_key = try env.getOwned(allocator, "OPENAI_API_KEY");
+    if (env_api_key) |api_key| {
+        return .{ .mode = .api_key, .token = api_key };
+    }
+
+    return error.NoUsableAuth;
+}
+
+pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Credentials {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);
 
@@ -67,12 +80,7 @@ pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
         else => return err,
     }
 
-    const env_api_key = try env.getOwned(allocator, "OPENAI_API_KEY");
-    if (env_api_key) |api_key| {
-        return .{ .mode = .api_key, .token = api_key };
-    }
-
-    return error.NoUsableAuth;
+    return null;
 }
 
 pub fn authorizationHeader(allocator: std.mem.Allocator, credentials: Credentials) ![]const u8 {
