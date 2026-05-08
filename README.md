@@ -46,6 +46,17 @@ codex-zig logout
 `logout` removes the selected `CODEX_HOME/auth.json`; it does not yet revoke
 OAuth tokens server-side.
 
+## Sessions
+
+Interactive and non-interactive turns save Zig-native JSONL transcripts under
+`$CODEX_HOME/sessions/zig/`.
+
+```sh
+codex-zig sessions
+codex-zig resume last
+codex-zig resume <session-id>
+```
+
 ## Configuration
 
 The port reads `model`, `openai_base_url`, and `chatgpt_base_url` from the

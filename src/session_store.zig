@@ -6,7 +6,7 @@ const session = @import("session.zig");
 const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
 
 const StoredLine = struct {
-    @"type": []const u8,
+    type: []const u8,
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
@@ -14,6 +14,16 @@ const StoredLine = struct {
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
+};
+
+pub const SessionSummary = struct {
+    id: []const u8,
+    path: []const u8,
+
+    pub fn deinit(self: SessionSummary, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.path);
+    }
 };
 
 pub fn createSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -110,31 +120,79 @@ pub fn resolveResumePath(allocator: std.mem.Allocator, codex_home: []const u8, t
 }
 
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    const sessions = try listSessions(allocator, codex_home, 1);
+    defer freeSessionSummaries(allocator, sessions);
+    if (sessions.len == 0) return null;
+    return try allocator.dupe(u8, sessions[0].path);
+}
+
+pub fn listSessions(allocator: std.mem.Allocator, codex_home: []const u8, limit: usize) ![]SessionSummary {
     const dir_path = try sessionsDirPath(allocator, codex_home);
     defer allocator.free(dir_path);
 
     const io = std.Io.Threaded.global_single_threaded.io();
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return null,
+        error.FileNotFound => return allocator.alloc(SessionSummary, 0),
         else => return err,
     };
     defer dir.close(io);
 
-    var best_name: ?[]const u8 = null;
-    errdefer if (best_name) |name| allocator.free(name);
+    var names = std.ArrayList([]const u8).empty;
+    defer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
 
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
         if (!isSessionFilename(entry.name)) continue;
-        if (best_name == null or std.mem.lessThan(u8, best_name.?, entry.name)) {
-            if (best_name) |name| allocator.free(name);
-            best_name = try allocator.dupe(u8, entry.name);
-        }
+        const name = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(name);
+        try names.append(allocator, name);
     }
 
-    const name = best_name orelse return null;
-    defer allocator.free(name);
-    return try sessionFilePath(allocator, codex_home, name);
+    std.mem.sort([]const u8, names.items, {}, newerSessionNameFirst);
+
+    const count = if (limit == 0) names.items.len else @min(limit, names.items.len);
+    const summaries = try allocator.alloc(SessionSummary, count);
+    var initialized: usize = 0;
+    errdefer {
+        for (summaries[0..initialized]) |summary| summary.deinit(allocator);
+        allocator.free(summaries);
+    }
+
+    for (names.items[0..count], 0..) |name, index| {
+        const id = try sessionIdFromFilename(allocator, name);
+        errdefer allocator.free(id);
+        const path = try sessionFilePath(allocator, codex_home, name);
+        summaries[index] = .{
+            .id = id,
+            .path = path,
+        };
+        initialized += 1;
+    }
+
+    return summaries;
+}
+
+pub fn freeSessionSummaries(allocator: std.mem.Allocator, summaries: []SessionSummary) void {
+    for (summaries) |summary| summary.deinit(allocator);
+    allocator.free(summaries);
+}
+
+pub fn printSessionList(allocator: std.mem.Allocator, codex_home: []const u8, limit: usize) !void {
+    const sessions = try listSessions(allocator, codex_home, limit);
+    defer freeSessionSummaries(allocator, sessions);
+
+    if (sessions.len == 0) {
+        std.debug.print("sessions: <none>\n", .{});
+        return;
+    }
+
+    std.debug.print("sessions: showing {d}\n", .{sessions.len});
+    for (sessions, 0..) |entry, index| {
+        std.debug.print("  {d}. {s}\n     {s}\n", .{ index + 1, entry.id, entry.path });
+    }
 }
 
 fn sessionsDirPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -171,22 +229,38 @@ fn isSessionFilename(name: []const u8) bool {
     return std.mem.startsWith(u8, name, "rollout-") and std.mem.endsWith(u8, name, ".jsonl");
 }
 
+fn newerSessionNameFirst(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .gt;
+}
+
+fn sessionIdFromFilename(allocator: std.mem.Allocator, filename: []const u8) ![]const u8 {
+    const without_prefix = if (std.mem.startsWith(u8, filename, "rollout-"))
+        filename["rollout-".len..]
+    else
+        filename;
+    const without_suffix = if (std.mem.endsWith(u8, without_prefix, ".jsonl"))
+        without_prefix[0 .. without_prefix.len - ".jsonl".len]
+    else
+        without_prefix;
+    return allocator.dupe(u8, without_suffix);
+}
+
 fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
     return switch (item.kind) {
         .message => .{
-            .@"type" = "message",
+            .type = "message",
             .role = item.role orelse return error.InvalidSessionItem,
             .content_type = item.content_type orelse return error.InvalidSessionItem,
             .text = item.text orelse return error.InvalidSessionItem,
         },
         .function_call => .{
-            .@"type" = "function_call",
+            .type = "function_call",
             .call_id = item.call_id orelse return error.InvalidSessionItem,
             .name = item.name orelse return error.InvalidSessionItem,
             .arguments = item.arguments orelse return error.InvalidSessionItem,
         },
         .function_call_output => .{
-            .@"type" = "function_call_output",
+            .type = "function_call_output",
             .call_id = item.call_id orelse return error.InvalidSessionItem,
             .output = item.output orelse return error.InvalidSessionItem,
         },
@@ -194,7 +268,7 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
 }
 
 fn historyItemFromStoredLine(line: StoredLine) !api.HistoryItem {
-    if (std.mem.eql(u8, line.@"type", "message")) {
+    if (std.mem.eql(u8, line.type, "message")) {
         if (line.role == null or line.content_type == null or line.text == null) return error.InvalidSessionLine;
         return .{
             .kind = .message,
@@ -204,7 +278,7 @@ fn historyItemFromStoredLine(line: StoredLine) !api.HistoryItem {
         };
     }
 
-    if (std.mem.eql(u8, line.@"type", "function_call")) {
+    if (std.mem.eql(u8, line.type, "function_call")) {
         if (line.call_id == null or line.name == null or line.arguments == null) return error.InvalidSessionLine;
         return .{
             .kind = .function_call,
@@ -214,7 +288,7 @@ fn historyItemFromStoredLine(line: StoredLine) !api.HistoryItem {
         };
     }
 
-    if (std.mem.eql(u8, line.@"type", "function_call_output")) {
+    if (std.mem.eql(u8, line.type, "function_call_output")) {
         if (line.call_id == null or line.output == null) return error.InvalidSessionLine;
         return .{
             .kind = .function_call_output,
@@ -285,6 +359,38 @@ test "latest session path picks lexicographically newest rollout" {
     const latest = (try latestSessionPath(allocator, root)).?;
     defer allocator.free(latest);
     try std.testing.expectEqualStrings("rollout-2024-01-02.jsonl", std.fs.path.basename(latest));
+}
+
+test "list sessions returns newest first and supports limits" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.appendUserMessage(allocator, "session");
+
+    const older = try createSessionPathForId(allocator, root, "001-older");
+    defer allocator.free(older);
+    try saveTranscript(allocator, older, &transcript);
+
+    const newer = try createSessionPathForId(allocator, root, "002-newer");
+    defer allocator.free(newer);
+    try saveTranscript(allocator, newer, &transcript);
+
+    const sessions = try listSessions(allocator, root, 0);
+    defer freeSessionSummaries(allocator, sessions);
+    try std.testing.expectEqual(@as(usize, 2), sessions.len);
+    try std.testing.expectEqualStrings("002-newer", sessions[0].id);
+    try std.testing.expectEqualStrings("001-older", sessions[1].id);
+
+    const limited = try listSessions(allocator, root, 1);
+    defer freeSessionSummaries(allocator, limited);
+    try std.testing.expectEqual(@as(usize, 1), limited.len);
+    try std.testing.expectEqualStrings("002-newer", limited[0].id);
 }
 
 test "resume target accepts ids and rollout filenames" {

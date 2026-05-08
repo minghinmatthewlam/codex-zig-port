@@ -46,6 +46,10 @@ pub fn main(init: std.process.Init) !void {
             try tui.runWithOptions(allocator, .{ .resume_target = target });
             return;
         }
+        if (std.mem.eql(u8, cmd, "sessions")) {
+            try runSessions(allocator, args.next());
+            return;
+        }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
             try runMockDemo(allocator);
             return;
@@ -78,6 +82,7 @@ fn printHelp() !void {
         \\  codex-zig              Start interactive TUI
         \\  codex-zig resume [ID|PATH|last]
         \\                          Start interactive TUI from a saved session
+        \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig login        Sign in with ChatGPT device auth
         \\  codex-zig login status Show login status
@@ -100,6 +105,14 @@ fn printHelp() !void {
         \\  CODEX_ZIG_SANDBOX_MODE Override sandbox mode
         \\
     , .{});
+}
+
+fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8) !void {
+    const limit = if (limit_arg) |value| try std.fmt.parseUnsigned(usize, value, 10) else 10;
+    var cfg = try config.load(allocator);
+    defer cfg.deinit(allocator);
+
+    try session_store.printSessionList(allocator, cfg.codex_home, limit);
 }
 
 fn runAuthStatus(allocator: std.mem.Allocator) !void {

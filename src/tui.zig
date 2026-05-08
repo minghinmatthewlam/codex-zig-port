@@ -154,6 +154,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
+        try session_store.printSessionList(allocator, cfg.codex_home, try parseSessionListLimit(parts.args));
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "diff")) {
         try printDiff(allocator, parts.args);
         return .handled;
@@ -251,6 +256,7 @@ fn printSlashHelp() void {
         \\  /sandbox [mode]   show or set sandbox mode
         \\  /history [n]      show recent transcript items
         \\  /rollout          show the active session JSONL path
+        \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
@@ -422,6 +428,12 @@ fn parseHistoryLimit(args: []const u8) !usize {
     return std.fmt.parseUnsigned(usize, trimmed, 10);
 }
 
+fn parseSessionListLimit(args: []const u8) !usize {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) return 10;
+    return std.fmt.parseUnsigned(usize, trimmed, 10);
+}
+
 test "parse slash command names and args" {
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
@@ -447,6 +459,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("rollout", rollout.name);
     try std.testing.expectEqualStrings("", rollout.args);
 
+    const sessions = parseSlash("/sessions 2").?;
+    try std.testing.expectEqualStrings("sessions", sessions.name);
+    try std.testing.expectEqualStrings("2", sessions.args);
+
     const diff = parseSlash("/diff").?;
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
@@ -458,6 +474,10 @@ test "parse history limit" {
     try std.testing.expectEqual(@as(usize, 20), try parseHistoryLimit(""));
     try std.testing.expectEqual(@as(usize, 3), try parseHistoryLimit(" 3 "));
     try std.testing.expectError(error.InvalidCharacter, parseHistoryLimit("abc"));
+
+    try std.testing.expectEqual(@as(usize, 10), try parseSessionListLimit(""));
+    try std.testing.expectEqual(@as(usize, 2), try parseSessionListLimit("2"));
+    try std.testing.expectError(error.InvalidCharacter, parseSessionListLimit("x"));
 }
 
 test "parse permission updates" {
