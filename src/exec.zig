@@ -11,6 +11,8 @@ const ExecArgs = struct {
     auto_approve: bool = false,
     ephemeral: bool = false,
     skip_git_repo_check: bool = false,
+    removed_full_auto: bool = false,
+    dangerously_bypass_approvals_and_sandbox: bool = false,
     ignore_user_config: bool = false,
     ignore_rules: bool = false,
     json: bool = false,
@@ -79,6 +81,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.prompt == null and !parsed.read_stdin) {
         std.debug.print("codex-zig exec requires a prompt or - for stdin\n", .{});
         return error.MissingExecPrompt;
+    }
+    if (parsed.removed_full_auto) {
+        try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
     }
 
     const effective_cwd = parsed.cwd orelse options.cwd;
@@ -179,6 +184,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo"))) {
+            if (parsed.removed_full_auto) return error.ConflictingExecOptions;
+            parsed.dangerously_bypass_approvals_and_sandbox = true;
             parsed.approval_policy = .never;
             parsed.sandbox_mode = .danger_full_access;
             continue;
@@ -207,6 +214,12 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--skip-git-repo-check")) {
             parsed.skip_git_repo_check = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--full-auto")) {
+            if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
+            parsed.removed_full_auto = true;
+            parsed.sandbox_mode = .workspace_write;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--ignore-user-config")) {
@@ -386,6 +399,9 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     if (prompt_parts.items.len > 0) {
         parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
     }
+    if (parsed.removed_full_auto) {
+        parsed.sandbox_mode = .workspace_write;
+    }
 
     return parsed;
 }
@@ -487,15 +503,16 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-c", "sandbox_mode=read-only", "--config", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.auto_approve);
     try std.testing.expect(parsed.skip_git_repo_check);
+    try std.testing.expect(parsed.removed_full_auto);
     try std.testing.expect(parsed.ignore_user_config);
     try std.testing.expect(parsed.ignore_rules);
-    try std.testing.expectEqual(config.SandboxMode.read_only, parsed.config_overrides.sandbox_mode.?);
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.sandbox_mode.?);
     try std.testing.expectEqual(config.WebSearchMode.live, parsed.config_overrides.web_search_mode.?);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
@@ -566,6 +583,12 @@ test "exec args parse approval and sandbox options" {
     try std.testing.expectEqual(config.ApprovalPolicy.never, parsed.approval_policy.?);
     try std.testing.expectEqual(config.SandboxMode.read_only, parsed.sandbox_mode.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args reject full auto with yolo" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--full-auto", "--yolo", "say", "nope" };
+    try std.testing.expectError(error.ConflictingExecOptions, parseArgs(allocator, argv[0..]));
 }
 
 test "exec args parse stdin sentinel with context prompt" {
