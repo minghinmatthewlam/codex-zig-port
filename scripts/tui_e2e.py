@@ -77,6 +77,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             )
 
         self.server.request_count += 1
+        self.server.request_bodies.append(request)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -89,11 +90,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
 
 class MockResponsesServer(ThreadingHTTPServer):
     request_count: int
+    request_bodies: list[dict]
 
 
 def start_mock_server(port: int) -> MockResponsesServer:
     server = MockResponsesServer(("127.0.0.1", port), MockResponsesHandler)
     server.request_count = 0
+    server.request_bodies = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -116,9 +119,15 @@ def read_available(master_fd: int, output: bytearray, timeout: float = 0.05) -> 
         timeout = 0
 
 
-def wait_for(master_fd: int, output: bytearray, needle: bytes, timeout: float) -> None:
+def wait_for(
+    master_fd: int,
+    output: bytearray,
+    needle: bytes,
+    timeout: float,
+    start: int = 0,
+) -> None:
     deadline = time.monotonic() + timeout
-    while needle not in output:
+    while needle not in output[start:]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             rendered = output.decode(errors="replace")
@@ -187,29 +196,70 @@ def run_e2e(repo: Path, binary: Path) -> str:
             os.close(slave_fd)
 
             wait_for(master_fd, output, b"Type /help for commands", 8)
+
+            mark = len(output)
+            send_line(master_fd, "/help")
+            wait_for(master_fd, output, b"commands:", 5, mark)
+            wait_for(master_fd, output, b"/permissions", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/status")
-            wait_for(master_fd, output, b"status:", 5)
-            wait_for(master_fd, output, b"tools:", 5)
+            wait_for(master_fd, output, b"status:", 5, mark)
+            wait_for(master_fd, output, b"tools:", 5, mark)
 
+            mark = len(output)
+            send_line(master_fd, "/model gpt-e2e")
+            wait_for(master_fd, output, b"model: gpt-e2e", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/permissions approval=never sandbox=danger-full-access")
+            wait_for(master_fd, output, b"approval: never", 5, mark)
+            wait_for(master_fd, output, b"sandbox:  danger-full-access", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/permissions approval=on-request sandbox=workspace-write")
+            wait_for(master_fd, output, b"approval: on-request", 5, mark)
+            wait_for(master_fd, output, b"sandbox:  workspace-write", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/history 1")
+            wait_for(master_fd, output, b"history: showing 0 of 0 items", 5, mark)
+            wait_for(master_fd, output, b"<empty>", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "start a background terminal")
-            wait_for(master_fd, output, b"Tool approval required", 8)
-            wait_for(master_fd, output, b"Run this command? [y/N]", 5)
+            wait_for(master_fd, output, b"Tool approval required", 8, mark)
+            wait_for(master_fd, output, b"Run this command? [y/N]", 5, mark)
+            mark = len(output)
             send_line(master_fd, "y")
-            wait_for(master_fd, output, b"[tool result] session 1000", 10)
-            wait_for(master_fd, output, b"background terminal started", 8)
+            wait_for(master_fd, output, b"[tool result] session 1000", 10, mark)
+            wait_for(master_fd, output, b"background terminal started", 8, mark)
+            read_available(master_fd, output, 0.2)
 
+            mark = len(output)
+            send_line(master_fd, "/history 4")
+            wait_for(master_fd, output, b"history: showing 4 of 4 items", 5, mark)
+            wait_for(master_fd, output, b"tool call: exec_command", 5, mark)
+            wait_for(master_fd, output, b"#4 assistant:", 5, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
             send_line(master_fd, "/ps")
-            wait_for(master_fd, output, b"background terminals:", 5)
-            wait_for(master_fd, output, b"1000. pty", 5)
+            wait_for(master_fd, output, b"background terminals:", 5, mark)
+            wait_for(master_fd, output, b"1000. pty", 5, mark)
+            read_available(master_fd, output, 0.2)
 
+            mark = len(output)
             send_line(master_fd, "/stop")
-            wait_for(master_fd, output, b"stopped 1 background terminal(s)", 5)
+            wait_for(master_fd, output, b"stopped 1 background terminal(s)", 5, mark)
 
+            mark = len(output)
             send_line(master_fd, "/ps")
-            wait_for(master_fd, output, b"background terminals: none", 5)
+            wait_for(master_fd, output, b"background terminals: none", 5, mark)
 
+            mark = len(output)
             send_line(master_fd, "/quit")
-            wait_for(master_fd, output, b"bye", 5)
+            wait_for(master_fd, output, b"bye", 5, mark)
             read_available(master_fd, output)
             exit_code = proc.wait(timeout=5)
             if exit_code != 0:
@@ -217,6 +267,9 @@ def run_e2e(repo: Path, binary: Path) -> str:
 
         if server.request_count < 2:
             raise AssertionError(f"expected at least 2 API requests, saw {server.request_count}")
+        models = [body.get("model") for body in server.request_bodies]
+        if "gpt-e2e" not in models:
+            raise AssertionError(f"expected model override in API requests, saw {models!r}")
         return output.decode(errors="replace")
     finally:
         server.shutdown()

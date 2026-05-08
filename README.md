@@ -57,10 +57,11 @@ zig build e2e
 ```
 
 The `e2e` step starts a local mock Responses server, launches the real
-`zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/status`, a model
-tool call with approval, `/ps`, `/stop`, and `/quit`, then checks the captured
-terminal transcript and API request count. Run `scripts/tui_e2e.py --show-output`
-directly when you want to inspect the terminal transcript.
+`zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
+`/model`, `/permissions`, `/history`, a model tool call with approval, `/ps`,
+`/stop`, and `/quit`, then checks the captured terminal transcript and API
+request count. Run `scripts/tui_e2e.py --show-output` directly when you want to
+inspect the terminal transcript.
 
 ## Auth
 
