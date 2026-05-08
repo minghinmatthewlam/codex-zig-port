@@ -21,6 +21,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
+- review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted` and `review --commit` flows
 
 Long-term exact parity is tracked in `docs/parity.md`.

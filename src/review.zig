@@ -156,35 +156,47 @@ fn setOwnedOption(allocator: std.mem.Allocator, field: *?[]const u8, value: []co
 
 fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
     if (args.uncommitted) {
-        const diff = try git_diff.render(allocator);
-        defer allocator.free(diff);
-        return std.fmt.allocPrint(allocator,
-            \\Review the uncommitted changes below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
-            \\
-            \\```diff
-            \\{s}
-            \\```
-        , .{diff});
+        return buildUncommittedPrompt(allocator);
     }
 
     if (args.commit) |commit| {
-        const diff = try git_diff.renderCommit(allocator, commit);
-        defer allocator.free(diff);
-        const title_block = if (args.commit_title) |title|
-            try std.fmt.allocPrint(allocator, "Commit title: {s}\n\n", .{title})
-        else
-            try allocator.dupe(u8, "");
-        defer allocator.free(title_block);
-        return std.fmt.allocPrint(allocator,
-            \\Review the changes introduced by commit `{s}` below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
-            \\
-            \\{s}```diff
-            \\{s}
-            \\```
-        , .{ commit, title_block, diff });
+        return buildCommitPrompt(allocator, commit, args.commit_title);
     }
 
     const prompt = args.prompt orelse return error.MissingReviewTarget;
+    return buildCustomPrompt(allocator, prompt);
+}
+
+pub fn buildUncommittedPrompt(allocator: std.mem.Allocator) ![]const u8 {
+    const diff = try git_diff.render(allocator);
+    defer allocator.free(diff);
+    return std.fmt.allocPrint(allocator,
+        \\Review the uncommitted changes below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
+        \\
+        \\```diff
+        \\{s}
+        \\```
+    , .{diff});
+}
+
+pub fn buildCommitPrompt(allocator: std.mem.Allocator, commit: []const u8, title: ?[]const u8) ![]const u8 {
+    const diff = try git_diff.renderCommit(allocator, commit);
+    defer allocator.free(diff);
+    const title_block = if (title) |value|
+        try std.fmt.allocPrint(allocator, "Commit title: {s}\n\n", .{value})
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(title_block);
+    return std.fmt.allocPrint(allocator,
+        \\Review the changes introduced by commit `{s}` below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
+        \\
+        \\{s}```diff
+        \\{s}
+        \\```
+    , .{ commit, title_block, diff });
+}
+
+pub fn buildCustomPrompt(allocator: std.mem.Allocator, prompt: []const u8) ![]const u8 {
     const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
     if (trimmed.len == 0) return error.MissingReviewTarget;
     return std.fmt.allocPrint(allocator,

@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const git_diff = @import("git_diff.zig");
+const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 
@@ -108,7 +109,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
         if (std.mem.eql(u8, prompt, "q")) break;
-        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt) catch |err| {
+        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, options.additional_writable_roots) catch |err| {
             std.debug.print("error: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -229,6 +230,7 @@ fn handleSlashCommand(
     session_path: *[]const u8,
     cwd: []const u8,
     prompt: []const u8,
+    additional_writable_roots: []const []const u8,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
 
@@ -266,6 +268,16 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "diff")) {
         try printDiff(allocator, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "review")) {
+        const review_prompt = if (parts.args.len == 0)
+            try review.buildUncommittedPrompt(allocator)
+        else
+            try review.buildCustomPrompt(allocator, parts.args);
+        defer allocator.free(review_prompt);
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, review_prompt, additional_writable_roots);
         return .handled;
     }
 
@@ -386,6 +398,7 @@ fn printSlashHelp() void {
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
+        \\  /review [text]    review current changes or custom instructions
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
         \\  /resume [target]  resume last, a session id, or a JSONL path
@@ -606,6 +619,10 @@ test "parse slash command names and args" {
     const diff = parseSlash("/diff").?;
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
+
+    const review_cmd = parseSlash("/review check regressions").?;
+    try std.testing.expectEqualStrings("review", review_cmd.name);
+    try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
 }
