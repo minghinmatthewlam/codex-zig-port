@@ -25,6 +25,30 @@ pub const LoadOptions = struct {
     profile: ?[]const u8 = null,
 };
 
+pub const RuntimeOverrides = struct {
+    model: ?[]const u8 = null,
+    approval_policy: ?ApprovalPolicy = null,
+    sandbox_mode: ?SandboxMode = null,
+};
+
+pub fn applyRuntimeOverrides(
+    cfg: *Config,
+    allocator: std.mem.Allocator,
+    overrides: RuntimeOverrides,
+) !void {
+    if (overrides.model) |model| {
+        const next_model = try allocator.dupe(u8, model);
+        allocator.free(cfg.model);
+        cfg.model = next_model;
+    }
+    if (overrides.approval_policy) |approval_policy| {
+        cfg.approval_policy = approval_policy;
+    }
+    if (overrides.sandbox_mode) |sandbox_mode| {
+        cfg.sandbox_mode = sandbox_mode;
+    }
+}
+
 pub const ApprovalPolicy = enum {
     untrusted,
     on_failure,

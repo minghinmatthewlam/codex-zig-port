@@ -11,6 +11,7 @@ const ExecArgs = struct {
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
+    model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     profile: ?[]const u8 = null,
@@ -20,6 +21,7 @@ const ExecArgs = struct {
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         if (self.last_message_file) |path| allocator.free(path);
+        if (self.model) |model| allocator.free(model);
         if (self.profile) |profile| allocator.free(profile);
         if (self.resume_target) |target| allocator.free(target);
         if (self.prompt) |prompt| allocator.free(prompt);
@@ -28,6 +30,7 @@ const ExecArgs = struct {
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -67,6 +70,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = parsed.profile });
     defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+    if (parsed.model) |model| {
+        try config.applyRuntimeOverrides(&cfg, allocator, .{ .model = model });
+    }
     if (parsed.approval_policy) |approval_policy| cfg.approval_policy = approval_policy;
     if (parsed.sandbox_mode) |sandbox_mode| cfg.sandbox_mode = sandbox_mode;
 
@@ -133,8 +140,41 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.auto_approve = true;
             continue;
         }
+        if (!end_options and (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo"))) {
+            parsed.approval_policy = .never;
+            parsed.sandbox_mode = .danger_full_access;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            if (parsed.model) |existing| {
+                allocator.free(existing);
+                parsed.model = null;
+            }
+            parsed.model = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--model=")) {
+            if (parsed.model) |existing| {
+                allocator.free(existing);
+                parsed.model = null;
+            }
+            parsed.model = try allocator.dupe(u8, arg["--model=".len..]);
+            continue;
+        }
         if (!end_options and std.mem.eql(u8, arg, "--ephemeral")) {
             parsed.ephemeral = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
@@ -147,6 +187,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
             parsed.sandbox_mode = try config.SandboxMode.parse(args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "-s")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            parsed.sandbox_mode = try config.SandboxMode.parse(args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--sandbox=")) {
+            parsed.sandbox_mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p"))) {
@@ -283,9 +333,13 @@ fn printHelp() void {
         \\
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
+        \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
+        \\  -m, --model MODEL       Override the model
         \\  --ephemeral             Do not save or resume a session file
-        \\  --approval-policy MODE  untrusted, on-failure, on-request, or never
-        \\  --sandbox MODE          read-only, workspace-write, or danger-full-access
+        \\  -a, --ask-for-approval MODE
+        \\                          untrusted, on-failure, on-request, or never
+        \\  --approval-policy MODE  Alias for --ask-for-approval
+        \\  -s, --sandbox MODE      read-only, workspace-write, or danger-full-access
         \\  -p, --profile PROFILE   Select a config profile
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
@@ -296,13 +350,14 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.auto_approve);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }

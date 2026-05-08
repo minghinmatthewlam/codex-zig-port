@@ -13,6 +13,11 @@ const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
 const tui = @import("tui.zig");
 
+const CliOverrides = struct {
+    profile: ?[]const u8 = null,
+    runtime: config.RuntimeOverrides = .{},
+};
+
 pub fn main(init: std.process.Init) !void {
     mainInner(init) catch |err| {
         std.debug.print("error: {s}\n", .{@errorName(err)});
@@ -27,15 +32,52 @@ fn mainInner(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
 
-    var profile_override: ?[]const u8 = null;
+    var overrides = CliOverrides{};
     var cmd_opt: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
-            profile_override = args.next() orelse return error.MissingProfileOptionValue;
+            overrides.profile = args.next() orelse return error.MissingProfileOptionValue;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--profile=")) {
-            profile_override = arg["--profile=".len..];
+            overrides.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
+            overrides.runtime.model = args.next() orelse return error.MissingModelOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--model=")) {
+            overrides.runtime.model = arg["--model=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--approval-policy")) {
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
+            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(args.next() orelse return error.MissingSandboxOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sandbox=")) {
+            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
+            overrides.runtime.approval_policy = .never;
+            overrides.runtime.sandbox_mode = .danger_full_access;
             continue;
         }
         cmd_opt = arg;
@@ -48,7 +90,7 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
-            try runAuthStatus(allocator, profile_override);
+            try runAuthStatus(allocator, overrides);
             return;
         }
         if (std.mem.eql(u8, cmd, "login")) {
@@ -60,7 +102,10 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "exec")) {
-            try exec.runWithOptions(allocator, &args, .{ .profile = profile_override });
+            try exec.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "resume")) {
@@ -71,17 +116,29 @@ fn mainInner(init: std.process.Init) !void {
                     return;
                 }
                 if (std.mem.eql(u8, value, "--last")) {
-                    try tui.runWithOptions(allocator, .{ .resume_target = "last", .profile = profile_override });
+                    try tui.runWithOptions(allocator, .{
+                        .resume_target = "last",
+                        .profile = overrides.profile,
+                        .runtime_overrides = overrides.runtime,
+                    });
                     return;
                 }
-                try tui.runWithOptions(allocator, .{ .resume_target = value, .profile = profile_override });
+                try tui.runWithOptions(allocator, .{
+                    .resume_target = value,
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                });
             } else {
-                try tui.runWithOptions(allocator, .{ .resume_picker = true, .profile = profile_override });
+                try tui.runWithOptions(allocator, .{
+                    .resume_picker = true,
+                    .profile = overrides.profile,
+                    .runtime_overrides = overrides.runtime,
+                });
             }
             return;
         }
         if (std.mem.eql(u8, cmd, "sessions")) {
-            try runSessions(allocator, args.next(), profile_override);
+            try runSessions(allocator, args.next(), overrides.profile);
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -105,7 +162,10 @@ fn mainInner(init: std.process.Init) !void {
         return error.UnknownCommand;
     }
 
-    try tui.runWithOptions(allocator, .{ .profile = profile_override });
+    try tui.runWithOptions(allocator, .{
+        .profile = overrides.profile,
+        .runtime_overrides = overrides.runtime,
+    });
 }
 
 fn printHelp() !void {
@@ -127,6 +187,14 @@ fn printHelp() !void {
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
+        \\  codex-zig -m MODEL ...
+        \\                          Override model for the command
+        \\  codex-zig -a MODE ...
+        \\                          Override approval policy
+        \\  codex-zig -s MODE ...
+        \\                          Override sandbox mode
+        \\  codex-zig --yolo ...
+        \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
         \\                          Run deterministic apply_patch demo
@@ -166,9 +234,10 @@ fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8, profile: ?[
     try session_store.printSessionList(allocator, cfg.codex_home, limit);
 }
 
-fn runAuthStatus(allocator: std.mem.Allocator, profile: ?[]const u8) !void {
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = profile });
+fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = overrides.profile });
     defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, overrides.runtime);
     var credentials = try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 

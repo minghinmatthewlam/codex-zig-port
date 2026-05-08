@@ -68,6 +68,7 @@ those same fields.
 
 ```sh
 codex-zig --profile work auth-status
+codex-zig -m gpt-5.5 -a never -s danger-full-access
 codex-zig exec --profile work "say hello"
 ```
 

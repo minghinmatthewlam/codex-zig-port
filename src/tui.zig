@@ -10,6 +10,7 @@ pub const Options = struct {
     resume_target: ?[]const u8 = null,
     resume_picker: bool = false,
     profile: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -19,6 +20,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
 
     var credentials = try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
