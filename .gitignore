@@ -3,4 +3,6 @@ zig-out/
 codex_zig_mock_demo.txt
 codex_zig_apply_patch_demo.txt
 codex_zig_cua_patch_demo.txt
+codex_zig_exec_last_message.txt
+codex_zig_exec_tool_demo.txt
 plans/

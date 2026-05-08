@@ -16,7 +16,7 @@ Status values:
 | `config` | partial | Resolves Codex home, installation id, and simple model/base URL config. Full TOML config stack and managed requirements are planned. |
 | `mcp` | planned | Not in first milestone. |
 | `apply-patch` | partial | Exposes an `apply_patch` function tool with approval and a Zig-native parser for add, update, delete, move-to, multiple hunks, EOF markers, padded markers, and no-newline replacements. Full grammar and fixture parity are still planned. |
-| `exec` non-interactive mode | planned | Not in first milestone. |
+| `exec` non-interactive mode | partial | Supports `codex-zig exec [--auto-approve] [--json] [-o FILE] [PROMPT|-]` for a single turn using the shared session/tool loop. Resume, review, schema output, sandbox policy, and full event parity are planned. |
 | `sandbox` macOS seatbelt | planned | First milestone uses explicit command confirmation but no seatbelt profile. |
 | `resume` / `fork` / session store | planned | Not in first milestone. |
 | app server / desktop app / cloud tasks | planned | Not in first milestone. |

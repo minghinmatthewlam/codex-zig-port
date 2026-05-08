@@ -4,6 +4,7 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const exec = @import("exec.zig");
 const session = @import("session.zig");
 const tools = @import("tools.zig");
 const tui = @import("tui.zig");
@@ -22,6 +23,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
             try runAuthStatus(allocator);
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "exec")) {
+            try exec.run(allocator, &args);
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -46,6 +51,7 @@ fn printHelp() !void {
         \\
         \\Usage:
         \\  codex-zig              Start interactive TUI
+        \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig mock-demo    Run deterministic local tool demo
         \\  codex-zig mock-apply-patch
@@ -128,6 +134,7 @@ test {
     _ = auth;
     _ = config;
     _ = env;
+    _ = exec;
     _ = session;
     _ = tools;
     _ = tui;

@@ -79,7 +79,7 @@ fn confirm(kind: []const u8, detail: []const u8) !bool {
     return std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes");
 }
 
-fn rejected(allocator: std.mem.Allocator, call_id: []const u8) !ToolResult {
+pub fn rejected(allocator: std.mem.Allocator, call_id: []const u8) !ToolResult {
     return .{
         .call_id = try allocator.dupe(u8, call_id),
         .summary = try allocator.dupe(u8, "rejected"),

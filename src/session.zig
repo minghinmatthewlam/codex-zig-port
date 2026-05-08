@@ -78,6 +78,12 @@ pub const Transcript = struct {
     }
 };
 
+pub const TurnOptions = struct {
+    auto_approve: bool = false,
+    prompt_for_approval: bool = true,
+    json_events: bool = false,
+};
+
 pub fn runTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -85,7 +91,20 @@ pub fn runTurn(
     transcript: *Transcript,
     prompt: []const u8,
 ) ![]const u8 {
+    return runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{});
+}
+
+pub fn runTurnWithOptions(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *Transcript,
+    prompt: []const u8,
+    options: TurnOptions,
+) ![]const u8 {
     try transcript.appendUserMessage(allocator, prompt);
+    if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.started" });
+
     var final_text = std.ArrayList(u8).empty;
     errdefer final_text.deinit(allocator);
 
@@ -102,15 +121,28 @@ pub fn runTurn(
             const answer = try final_text.toOwnedSlice(allocator);
             errdefer allocator.free(answer);
             if (answer.len > 0) try transcript.appendAssistantMessage(allocator, answer);
+            if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.completed", .message = answer });
             return answer;
         }
 
         for (response.function_calls) |call| {
-            std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
-            var tool_result = try tools.runFunctionCall(allocator, call, false);
+            if (options.json_events) {
+                try emitJsonEvent(allocator, .{ .type = "tool.started", .name = call.name, .arguments = call.arguments });
+            } else {
+                std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
+            }
+
+            var tool_result = if (!options.auto_approve and !options.prompt_for_approval)
+                try tools.rejected(allocator, call.call_id)
+            else
+                try tools.runFunctionCall(allocator, call, options.auto_approve);
             defer tool_result.deinit(allocator);
 
-            std.debug.print("[tool result] {s}\n", .{tool_result.summary});
+            if (options.json_events) {
+                try emitJsonEvent(allocator, .{ .type = "tool.completed", .name = call.name, .summary = tool_result.summary });
+            } else {
+                std.debug.print("[tool result] {s}\n", .{tool_result.summary});
+            }
 
             try transcript.appendFunctionCall(allocator, call);
             try transcript.appendFunctionOutput(allocator, tool_result.call_id, tool_result.output);
@@ -118,4 +150,16 @@ pub fn runTurn(
     }
 
     return error.TooManyToolRounds;
+}
+
+fn emitJsonEvent(allocator: std.mem.Allocator, event: anytype) !void {
+    const line = try std.json.Stringify.valueAlloc(allocator, event, .{});
+    defer allocator.free(line);
+
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.File.stdout().writer(std.Io.Threaded.global_single_threaded.io(), &buffer);
+    const stdout = &writer.interface;
+    try stdout.writeAll(line);
+    try stdout.writeAll("\n");
+    try stdout.flush();
 }
