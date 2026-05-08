@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const api = @import("api.zig");
+const config = @import("config.zig");
 
 pub const ToolResult = struct {
     call_id: []const u8,
@@ -32,13 +33,30 @@ const PatchStats = struct {
     deleted: usize = 0,
 };
 
-pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, auto_approve: bool) !ToolResult {
+pub const Policy = struct {
+    approval_policy: config.ApprovalPolicy = .on_request,
+    sandbox_mode: config.SandboxMode = .workspace_write,
+    auto_approve: bool = false,
+    prompt_for_approval: bool = true,
+};
+
+const ToolKind = enum {
+    shell,
+    apply_patch,
+};
+
+const PermissionDecision = enum {
+    allow,
+    prompt,
+    reject,
+    block,
+};
+
+pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, policy: Policy) !ToolResult {
     if (std.mem.eql(u8, call.name, "shell_command")) {
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (!auto_approve and !try confirm("command", parsed.value.command)) {
-            return rejected(allocator, call.call_id);
-        }
+        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, isTrustedShellCommand(parsed.value.command))) |result| return result;
         return runShellCommand(allocator, call.call_id, parsed.value.command);
     }
 
@@ -48,18 +66,14 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, aut
         if (parsed.value.command.len == 0) return error.EmptyShellCommand;
         const command = try joinCommand(allocator, parsed.value.command);
         defer allocator.free(command);
-        if (!auto_approve and !try confirm("command", command)) {
-            return rejected(allocator, call.call_id);
-        }
+        if (try permissionResult(allocator, call.call_id, policy, .shell, command, isTrustedArgv(parsed.value.command))) |result| return result;
         return runArgv(allocator, call.call_id, parsed.value.command);
     }
 
     if (std.mem.eql(u8, call.name, "apply_patch")) {
         var parsed = try std.json.parseFromSlice(ApplyPatchArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (!auto_approve and !try confirm("patch", parsed.value.patch)) {
-            return rejected(allocator, call.call_id);
-        }
+        if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, false)) |result| return result;
         return runApplyPatch(allocator, call.call_id, parsed.value.patch);
     }
 
@@ -67,6 +81,41 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, aut
         .call_id = try allocator.dupe(u8, call.call_id),
         .summary = try allocator.dupe(u8, "unsupported tool"),
         .output = try std.fmt.allocPrint(allocator, "unsupported tool: {s}", .{call.name}),
+    };
+}
+
+fn permissionResult(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    policy: Policy,
+    kind: ToolKind,
+    detail: []const u8,
+    trusted_read_only: bool,
+) !?ToolResult {
+    return switch (decidePermission(policy, kind, trusted_read_only)) {
+        .allow => null,
+        .prompt => if (try confirm(toolKindLabel(kind), detail)) null else try rejected(allocator, call_id),
+        .reject => try rejected(allocator, call_id),
+        .block => try blockedBySandbox(allocator, call_id, policy.sandbox_mode),
+    };
+}
+
+fn decidePermission(policy: Policy, kind: ToolKind, trusted_read_only: bool) PermissionDecision {
+    if (policy.sandbox_mode == .read_only and (kind != .shell or !trusted_read_only)) return .block;
+    if (policy.auto_approve) return .allow;
+
+    return switch (policy.approval_policy) {
+        .never => .allow,
+        .on_failure => .allow,
+        .on_request => if (policy.prompt_for_approval) .prompt else .reject,
+        .untrusted => if (trusted_read_only) .allow else if (policy.prompt_for_approval) .prompt else .reject,
+    };
+}
+
+fn toolKindLabel(kind: ToolKind) []const u8 {
+    return switch (kind) {
+        .shell => "command",
+        .apply_patch => "patch",
     };
 }
 
@@ -84,6 +133,14 @@ pub fn rejected(allocator: std.mem.Allocator, call_id: []const u8) !ToolResult {
         .call_id = try allocator.dupe(u8, call_id),
         .summary = try allocator.dupe(u8, "rejected"),
         .output = try allocator.dupe(u8, "user rejected tool execution"),
+    };
+}
+
+fn blockedBySandbox(allocator: std.mem.Allocator, call_id: []const u8, sandbox_mode: config.SandboxMode) !ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call_id),
+        .summary = try allocator.dupe(u8, "blocked by sandbox"),
+        .output = try std.fmt.allocPrint(allocator, "blocked by sandbox_mode={s}", .{sandbox_mode.label()}),
     };
 }
 
@@ -161,6 +218,59 @@ fn joinCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]const 
         try list.appendSlice(allocator, part);
     }
     return list.toOwnedSlice(allocator);
+}
+
+fn isTrustedShellCommand(command: []const u8) bool {
+    const trimmed = std.mem.trim(u8, command, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    if (std.mem.indexOfAny(u8, trimmed, "><;|&`$\n\r") != null) return false;
+
+    var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
+    const first = parts.next() orelse return false;
+    const second = parts.next();
+    return isTrustedCommandName(first, second);
+}
+
+fn isTrustedArgv(argv: []const []const u8) bool {
+    if (argv.len == 0) return false;
+    const first = std.fs.path.basename(argv[0]);
+    const second = if (argv.len > 1) argv[1] else null;
+    return isTrustedCommandName(first, second);
+}
+
+fn isTrustedCommandName(first: []const u8, second: ?[]const u8) bool {
+    const read_only_commands = [_][]const u8{
+        "pwd",
+        "ls",
+        "cat",
+        "sed",
+        "rg",
+        "grep",
+        "find",
+        "wc",
+        "head",
+        "tail",
+        "nl",
+    };
+    for (read_only_commands) |name| {
+        if (std.mem.eql(u8, first, name)) return true;
+    }
+
+    if (!std.mem.eql(u8, first, "git")) return false;
+    const subcommand = second orelse return false;
+    const read_only_git = [_][]const u8{
+        "status",
+        "diff",
+        "show",
+        "log",
+        "branch",
+        "rev-parse",
+        "ls-files",
+    };
+    for (read_only_git) |name| {
+        if (std.mem.eql(u8, subcommand, name)) return true;
+    }
+    return false;
 }
 
 fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []const u8) !PatchStats {
@@ -411,7 +521,7 @@ test "shell command creates output" {
         .name = "shell_command",
         .arguments = "{\"command\":\"printf hello\"}",
     };
-    const result = try runFunctionCall(allocator, call, true);
+    const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "hello") != null);
 }
@@ -606,4 +716,76 @@ test "apply_patch rejects empty patch and trailing content" {
         \\extra
     ;
     try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, trailing_patch));
+}
+
+test "untrusted policy allows trusted read-only shell command without prompt" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "call-read",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"pwd\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .untrusted,
+        .sandbox_mode = .read_only,
+        .prompt_for_approval = false,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.startsWith(u8, result.summary, "exit "));
+}
+
+test "read-only sandbox blocks apply_patch even with auto approval" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "call-write",
+        .name = "apply_patch",
+        .arguments =
+        \\{"patch":"*** Begin Patch\n*** Add File: blocked.txt\n+blocked\n*** End Patch"}
+        ,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .on_failure,
+        .sandbox_mode = .read_only,
+        .auto_approve = true,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expectEqualStrings("blocked by sandbox_mode=read-only", result.output);
+}
+
+test "untrusted policy rejects untrusted shell command when prompting is disabled" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "call-write-shell",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"printf nope > blocked.txt\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .untrusted,
+        .sandbox_mode = .workspace_write,
+        .prompt_for_approval = false,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("rejected", result.summary);
+}
+
+test "never policy runs without prompting unless sandbox blocks it" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "call-never",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"printf never-ok\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .danger_full_access,
+        .prompt_for_approval = false,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "never-ok") != null);
 }

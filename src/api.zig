@@ -365,6 +365,8 @@ test "builds chronological request input from owned history" {
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
         .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
     };
     const history = [_]HistoryItem{
         .{

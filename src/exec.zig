@@ -9,6 +9,8 @@ const ExecArgs = struct {
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
+    approval_policy: ?config.ApprovalPolicy = null,
+    sandbox_mode: ?config.SandboxMode = null,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
 
@@ -46,6 +48,8 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
 
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
+    if (parsed.approval_policy) |approval_policy| cfg.approval_policy = approval_policy;
+    if (parsed.sandbox_mode) |sandbox_mode| cfg.sandbox_mode = sandbox_mode;
 
     var credentials = try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
@@ -89,6 +93,18 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--auto-approve")) {
             parsed.auto_approve = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--sandbox")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            parsed.sandbox_mode = try config.SandboxMode.parse(args[index]);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--experimental-json"))) {
@@ -181,6 +197,8 @@ fn printHelp() void {
         \\
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
+        \\  --approval-policy MODE  untrusted, on-failure, on-request, or never
+        \\  --sandbox MODE          read-only, workspace-write, or danger-full-access
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
@@ -197,6 +215,17 @@ test "exec args parse prompt and options" {
     try std.testing.expect(parsed.auto_approve);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
+    try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse approval and sandbox options" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--approval-policy", "never", "--sandbox", "read-only", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(config.ApprovalPolicy.never, parsed.approval_policy.?);
+    try std.testing.expectEqual(config.SandboxMode.read_only, parsed.sandbox_mode.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 

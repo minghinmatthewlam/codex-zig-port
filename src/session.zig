@@ -147,10 +147,12 @@ pub fn runTurnWithOptions(
                 std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
             }
 
-            var tool_result = if (!options.auto_approve and !options.prompt_for_approval)
-                try tools.rejected(allocator, call.call_id)
-            else
-                try tools.runFunctionCall(allocator, call, options.auto_approve);
+            var tool_result = try tools.runFunctionCall(allocator, call, .{
+                .approval_policy = cfg.approval_policy,
+                .sandbox_mode = cfg.sandbox_mode,
+                .auto_approve = options.auto_approve,
+                .prompt_for_approval = options.prompt_for_approval,
+            });
             defer tool_result.deinit(allocator);
 
             if (options.json_events) {

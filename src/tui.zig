@@ -88,6 +88,8 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         \\auth: {s}
         \\api:  {s}
         \\cwd:  {s}
+        \\approval: {s}
+        \\sandbox:  {s}
         \\Type /help for commands or /quit to exit.
         \\
     , .{
@@ -98,6 +100,8 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
             .api_key => cfg.openai_base_url,
         },
         cwd,
+        cfg.approval_policy.label(),
+        cfg.sandbox_mode.label(),
     });
 }
 
@@ -181,6 +185,26 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "approval")) {
+        if (parts.args.len == 0) {
+            std.debug.print("approval: {s}\n", .{cfg.approval_policy.label()});
+        } else {
+            cfg.approval_policy = try config.ApprovalPolicy.parse(parts.args);
+            std.debug.print("approval: {s}\n", .{cfg.approval_policy.label()});
+        }
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "sandbox")) {
+        if (parts.args.len == 0) {
+            std.debug.print("sandbox: {s}\n", .{cfg.sandbox_mode.label()});
+        } else {
+            cfg.sandbox_mode = try config.SandboxMode.parse(parts.args);
+            std.debug.print("sandbox: {s}\n", .{cfg.sandbox_mode.label()});
+        }
+        return .handled;
+    }
+
     std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
     return .handled;
 }
@@ -201,6 +225,8 @@ fn printSlashHelp() void {
         \\  /help             show this help
         \\  /status           show current session settings
         \\  /model [name]     show or set the in-memory model for this session
+        \\  /approval [mode]  show or set approval policy
+        \\  /sandbox [mode]   show or set sandbox mode
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
         \\  /resume [target]  resume last, a session id, or a JSONL path
@@ -223,9 +249,10 @@ fn printStatus(
         \\  api:         {s}
         \\  cwd:         {s}
         \\  session:     {s}
+        \\  approval:    {s}
+        \\  sandbox:     {s}
         \\  transcript:  {d} items
         \\  tools:       shell, shell_command, apply_patch
-        \\  sandbox:     not implemented
         \\
     , .{
         cfg.model,
@@ -236,6 +263,8 @@ fn printStatus(
         },
         cwd,
         session_path,
+        cfg.approval_policy.label(),
+        cfg.sandbox_mode.label(),
         transcript.history.items.len,
     });
 }
@@ -248,6 +277,10 @@ test "parse slash command names and args" {
     const model = parseSlash("/model gpt-test").?;
     try std.testing.expectEqualStrings("model", model.name);
     try std.testing.expectEqualStrings("gpt-test", model.args);
+
+    const approval = parseSlash("/approval on-request").?;
+    try std.testing.expectEqualStrings("approval", approval.name);
+    try std.testing.expectEqualStrings("on-request", approval.args);
 
     try std.testing.expect(parseSlash("hello") == null);
 }

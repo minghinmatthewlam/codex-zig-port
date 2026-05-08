@@ -7,6 +7,8 @@ pub const Config = struct {
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
     installation_id: []const u8,
+    approval_policy: ApprovalPolicy,
+    sandbox_mode: SandboxMode,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -14,6 +16,51 @@ pub const Config = struct {
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
         allocator.free(self.installation_id);
+    }
+};
+
+pub const ApprovalPolicy = enum {
+    untrusted,
+    on_failure,
+    on_request,
+    never,
+
+    pub fn label(self: ApprovalPolicy) []const u8 {
+        return switch (self) {
+            .untrusted => "untrusted",
+            .on_failure => "on-failure",
+            .on_request => "on-request",
+            .never => "never",
+        };
+    }
+
+    pub fn parse(value: []const u8) !ApprovalPolicy {
+        if (std.mem.eql(u8, value, "untrusted") or std.mem.eql(u8, value, "unless-trusted")) return .untrusted;
+        if (std.mem.eql(u8, value, "on-failure") or std.mem.eql(u8, value, "on_failure")) return .on_failure;
+        if (std.mem.eql(u8, value, "on-request") or std.mem.eql(u8, value, "on_request")) return .on_request;
+        if (std.mem.eql(u8, value, "never")) return .never;
+        return error.InvalidApprovalPolicy;
+    }
+};
+
+pub const SandboxMode = enum {
+    read_only,
+    workspace_write,
+    danger_full_access,
+
+    pub fn label(self: SandboxMode) []const u8 {
+        return switch (self) {
+            .read_only => "read-only",
+            .workspace_write => "workspace-write",
+            .danger_full_access => "danger-full-access",
+        };
+    }
+
+    pub fn parse(value: []const u8) !SandboxMode {
+        if (std.mem.eql(u8, value, "read-only") or std.mem.eql(u8, value, "read_only")) return .read_only;
+        if (std.mem.eql(u8, value, "workspace-write") or std.mem.eql(u8, value, "workspace_write")) return .workspace_write;
+        if (std.mem.eql(u8, value, "danger-full-access") or std.mem.eql(u8, value, "danger_full_access")) return .danger_full_access;
+        return error.InvalidSandboxMode;
     }
 };
 
@@ -36,12 +83,17 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     const installation_id = try readOptionalFileTrimmed(allocator, codex_home, "installation_id", "unknown-zig-port");
     errdefer allocator.free(installation_id);
 
+    const approval_policy = try resolveApprovalPolicy(allocator, codex_home);
+    const sandbox_mode = try resolveSandboxMode(allocator, codex_home);
+
     return .{
         .codex_home = codex_home,
         .model = model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
         .installation_id = installation_id,
+        .approval_policy = approval_policy,
+        .sandbox_mode = sandbox_mode,
     };
 }
 
@@ -88,6 +140,34 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, codex_home: []const u8) !BaseUr
         try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex");
 
     return .{ .openai = openai, .chatgpt = chatgpt };
+}
+
+fn resolveApprovalPolicy(allocator: std.mem.Allocator, codex_home: []const u8) !ApprovalPolicy {
+    if (try env.getOwned(allocator, "CODEX_ZIG_APPROVAL_POLICY")) |value| {
+        defer allocator.free(value);
+        return ApprovalPolicy.parse(value);
+    }
+
+    if (try readTopLevelStringFromConfig(allocator, codex_home, "approval_policy")) |value| {
+        defer allocator.free(value);
+        return ApprovalPolicy.parse(value);
+    }
+
+    return .on_request;
+}
+
+fn resolveSandboxMode(allocator: std.mem.Allocator, codex_home: []const u8) !SandboxMode {
+    if (try env.getOwned(allocator, "CODEX_ZIG_SANDBOX_MODE")) |value| {
+        defer allocator.free(value);
+        return SandboxMode.parse(value);
+    }
+
+    if (try readTopLevelStringFromConfig(allocator, codex_home, "sandbox_mode")) |value| {
+        defer allocator.free(value);
+        return SandboxMode.parse(value);
+    }
+
+    return .workspace_write;
 }
 
 fn readTopLevelStringFromConfig(allocator: std.mem.Allocator, codex_home: []const u8, key: []const u8) !?[]const u8 {
@@ -147,4 +227,25 @@ test "top-level model is read from config" {
     const model = try readTopLevelStringFromConfig(allocator, cwd_path, "model");
     defer allocator.free(model.?);
     try std.testing.expectEqualStrings("demo-model", model.?);
+}
+
+test "approval and sandbox labels parse config strings" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "config.toml",
+        .data =
+        \\approval_policy = "never"
+        \\sandbox_mode = "read-only"
+        \\
+        ,
+    });
+    const cwd_path = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd_path);
+
+    try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, cwd_path));
+    try std.testing.expectEqual(SandboxMode.read_only, try resolveSandboxMode(allocator, cwd_path));
+    try std.testing.expectEqualStrings("on-request", ApprovalPolicy.on_request.label());
+    try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
 }
