@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const app_server_cmd = @import("app_server_cmd.zig");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
@@ -263,6 +264,10 @@ fn mainInner(init: std.process.Init) !void {
             try mcp_cmd.run(allocator, &args);
             return;
         }
+        if (std.mem.eql(u8, cmd, "app-server")) {
+            try app_server_cmd.run(allocator, &args);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "mcp-server")) {
             try mcp_server_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -524,6 +529,8 @@ fn printHelp() !void {
         \\                          List configured MCP servers
         \\  codex-zig mcp-server
         \\                          Run Codex as a stdio MCP server
+        \\  codex-zig app-server
+        \\                          Run the app-server JSON-RPC stdio transport
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command

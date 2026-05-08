@@ -29,6 +29,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
+- run a minimal app-server stdio JSON-RPC transport with an `initialize`
+  handshake
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
@@ -61,7 +63,9 @@ The `e2e` step starts a local mock Responses server, launches the real
 `/model`, `/permissions`, `/history`, model-requested `exec_command` and
 `apply_patch` tool calls with approval, `/ps`, `/stop`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
-and the file created in the temporary workspace. Run
+and the file created in the temporary workspace. It also launches
+`codex-zig app-server` as a subprocess and verifies a newline-delimited
+JSON-RPC stdio initialize request and unsupported-method error. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
@@ -133,6 +137,7 @@ codex-zig mcp list
 codex-zig mcp add docs -- node ./server.js
 codex-zig mcp add remote --url https://example.com/mcp
 codex-zig mcp-server
+codex-zig app-server
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD

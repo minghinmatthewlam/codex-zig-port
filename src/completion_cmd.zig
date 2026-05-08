@@ -3,12 +3,12 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 
 const top_level_commands =
-    "auth-status completion debug e exec features fork login logout mcp mcp-server review resume sandbox sessions";
+    "app-server auth-status completion debug e exec features fork login logout mcp mcp-server review resume sandbox sessions";
 const global_options =
     "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
-    "'auth-status' 'completion' 'debug' 'e' 'exec' 'features' 'fork' 'login' 'logout' 'mcp' 'mcp-server' 'review' 'resume' 'sandbox' 'sessions'";
+    "'app-server' 'auth-status' 'completion' 'debug' 'e' 'exec' 'features' 'fork' 'login' 'logout' 'mcp' 'mcp-server' 'review' 'resume' 'sandbox' 'sessions'";
 const elvish_global_options =
     "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";

@@ -38,6 +38,9 @@ pub fn build(b: *std.Build) void {
 
     const tui_e2e_cmd = b.addSystemCommand(&.{ "python3", "scripts/tui_e2e.py" });
     tui_e2e_cmd.step.dependOn(b.getInstallStep());
+    const app_server_e2e_cmd = b.addSystemCommand(&.{ "python3", "scripts/app_server_stdio_smoke.py" });
+    app_server_e2e_cmd.step.dependOn(b.getInstallStep());
     const e2e_step = b.step("e2e", "Run product-surface E2E smoke tests");
     e2e_step.dependOn(&tui_e2e_cmd.step);
+    e2e_step.dependOn(&app_server_e2e_cmd.step);
 }
