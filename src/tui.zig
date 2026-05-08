@@ -7,6 +7,14 @@ const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 
+const agents_filename = "AGENTS.md";
+const init_prompt =
+    \\Create an AGENTS.md file for this repository.
+    \\Make it a concise contributor guide with practical headings and repository-specific guidance.
+    \\Include build, test, coding style, and workflow notes where they apply.
+    \\Inspect the project files before writing, and do not overwrite an existing AGENTS.md.
+;
+
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
     resume_picker: bool = false,
@@ -254,6 +262,15 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "init")) {
+        if (try agentsFileExists(allocator, cwd)) {
+            std.debug.print("{s} already exists here. Skipping /init to avoid overwriting it.\n", .{agents_filename});
+            return .handled;
+        }
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
         printStatus(cfg.*, credentials, transcript, session_path.*, cwd);
         return .handled;
@@ -397,6 +414,7 @@ fn printSlashHelp() void {
     std.debug.print(
         \\commands:
         \\  /help             show this help
+        \\  /init             create an AGENTS.md contributor guide
         \\  /status           show current session settings
         \\  /model [name]     show or set the in-memory model for this session
         \\  /permissions      show or set approval/sandbox modes
@@ -414,6 +432,16 @@ fn printSlashHelp() void {
         \\  /quit, /exit      exit
         \\
     , .{});
+}
+
+fn agentsFileExists(allocator: std.mem.Allocator, cwd: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ cwd, agents_filename });
+    defer allocator.free(path);
+    std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
 }
 
 fn printStatus(
@@ -596,6 +624,10 @@ fn parseSessionListLimit(args: []const u8) !usize {
 }
 
 test "parse slash command names and args" {
+    const init = parseSlash("/init").?;
+    try std.testing.expectEqualStrings("init", init.name);
+    try std.testing.expectEqualStrings("", init.args);
+
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
     try std.testing.expectEqualStrings("", status.args);
@@ -633,6 +665,22 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "agents file existence check" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    try std.testing.expect(!try agentsFileExists(allocator, cwd));
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = agents_filename,
+        .data = "repo guidance\n",
+    });
+    try std.testing.expect(try agentsFileExists(allocator, cwd));
 }
 
 test "parse history limit" {
