@@ -99,6 +99,7 @@ pub const TurnOptions = struct {
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
+    output_schema: ?std.json.Value = null,
 };
 
 pub fn runTurn(
@@ -129,6 +130,7 @@ pub fn runTurnWithOptions(
     while (rounds < 8) : (rounds += 1) {
         var stream_context = StreamTextContext{};
         var create_options = api.CreateTurnOptions{};
+        create_options.output_schema = options.output_schema;
         if (options.stream_text and !options.json_events) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,

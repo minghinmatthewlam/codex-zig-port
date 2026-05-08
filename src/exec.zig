@@ -13,6 +13,7 @@ const ExecArgs = struct {
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
+    output_schema_file: ?[]const u8 = null,
     model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
@@ -25,6 +26,7 @@ const ExecArgs = struct {
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         if (self.last_message_file) |path| allocator.free(path);
+        if (self.output_schema_file) |path| allocator.free(path);
         if (self.model) |model| allocator.free(model);
         if (self.profile) |profile| allocator.free(profile);
         if (self.cwd) |cwd| allocator.free(cwd);
@@ -100,6 +102,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var credentials = try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
+    var output_schema = try loadOutputSchema(allocator, parsed.output_schema_file);
+    defer output_schema.deinit();
+
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
@@ -121,6 +126,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .prompt_for_approval = false,
         .json_events = parsed.json,
         .additional_writable_roots = additional_writable_roots,
+        .output_schema = output_schema.value(),
     });
     defer allocator.free(answer);
 
@@ -280,6 +286,24 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.last_message_file = try allocator.dupe(u8, args[index]);
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--output-schema")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            if (parsed.output_schema_file) |existing| {
+                allocator.free(existing);
+                parsed.output_schema_file = null;
+            }
+            parsed.output_schema_file = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--output-schema=")) {
+            if (parsed.output_schema_file) |existing| {
+                allocator.free(existing);
+                parsed.output_schema_file = null;
+            }
+            parsed.output_schema_file = try allocator.dupe(u8, arg["--output-schema=".len..]);
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             parsed.help = true;
             continue;
@@ -366,6 +390,27 @@ fn writeFile(path: []const u8, bytes: []const u8) !void {
     });
 }
 
+const LoadedOutputSchema = struct {
+    parsed: ?std.json.Parsed(std.json.Value) = null,
+
+    fn deinit(self: *LoadedOutputSchema) void {
+        if (self.parsed) |*parsed| parsed.deinit();
+    }
+
+    fn value(self: *const LoadedOutputSchema) ?std.json.Value {
+        if (self.parsed) |*parsed| return parsed.value;
+        return null;
+    }
+};
+
+fn loadOutputSchema(allocator: std.mem.Allocator, path_opt: ?[]const u8) !LoadedOutputSchema {
+    const path = path_opt orelse return .{};
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
+    defer allocator.free(bytes);
+
+    return .{ .parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) };
+}
+
 fn printHelp() void {
     std.debug.print(
         \\Usage:
@@ -388,6 +433,7 @@ fn printHelp() void {
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
+        \\  --output-schema FILE    Send a JSON Schema for the final response
         \\
     , .{});
 }
@@ -406,6 +452,16 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse output schema" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--output-schema", "schema.json", "say", "json" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("schema.json", parsed.output_schema_file.?);
+    try std.testing.expectEqualStrings("say json", parsed.prompt.?);
 }
 
 test "exec args parse resume last prompt" {

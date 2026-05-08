@@ -34,6 +34,7 @@ pub const StreamCallback = struct {
 
 pub const CreateTurnOptions = struct {
     stream_callback: ?StreamCallback = null,
+    output_schema: ?std.json.Value = null,
 };
 
 pub const HistoryItem = struct {
@@ -113,6 +114,7 @@ const Request = struct {
     instructions: []const u8,
     input: []const InputItem,
     tools: []const Tool,
+    text: ?TextControls = null,
     tool_choice: []const u8 = "auto",
     parallel_tool_calls: bool = false,
     reasoning: ?Reasoning = null,
@@ -132,6 +134,17 @@ const ClientMetadata = struct {
     @"x-codex-installation-id": []const u8,
 };
 
+const TextControls = struct {
+    format: ?TextFormat = null,
+};
+
+const TextFormat = struct {
+    type: []const u8 = "json_schema",
+    name: []const u8 = "codex_output_schema",
+    schema: std.json.Value,
+    strict: bool = true,
+};
+
 pub fn createTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -148,7 +161,9 @@ pub fn createTurnWithOptions(
     history: []const HistoryItem,
     options: CreateTurnOptions,
 ) !ParsedResponse {
-    const body = try buildRequestBody(allocator, cfg, history);
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history, .{
+        .output_schema = options.output_schema,
+    });
     defer allocator.free(body);
 
     const base_url = switch (credentials.mode) {
@@ -325,6 +340,19 @@ pub fn buildRequestBody(
     cfg: config.Config,
     history: []const HistoryItem,
 ) ![]const u8 {
+    return buildRequestBodyWithOptions(allocator, cfg, history, .{});
+}
+
+pub const RequestBodyOptions = struct {
+    output_schema: ?std.json.Value = null,
+};
+
+pub fn buildRequestBodyWithOptions(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    history: []const HistoryItem,
+    options: RequestBodyOptions,
+) ![]const u8 {
     var inputs = std.ArrayList(InputItem).empty;
     defer inputs.deinit(allocator);
 
@@ -427,11 +455,17 @@ pub fn buildRequestBody(
     const instructions = try agents_md.buildInstructions(allocator, baseInstructions);
     defer allocator.free(instructions);
 
+    const text_controls: ?TextControls = if (options.output_schema) |schema|
+        .{ .format = .{ .schema = schema } }
+    else
+        null;
+
     const req = Request{
         .model = cfg.model,
         .instructions = instructions,
         .input = inputs.items,
         .tools = tools[0..],
+        .text = text_controls,
         .reasoning = .{},
         .include = include[0..],
         .prompt_cache_key = cfg.installation_id,
@@ -644,4 +678,41 @@ test "builds web search tool from config mode" {
     }
 
     try std.testing.expect(found);
+}
+
+test "builds output schema text format" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "return json",
+        },
+    };
+
+    var schema = try std.json.parseFromSlice(std.json.Value, allocator, "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}}}", .{});
+    defer schema.deinit();
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .output_schema = schema.value });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const format = parsed.value.object.get("text").?.object.get("format").?.object;
+
+    try std.testing.expectEqualStrings("json_schema", format.get("type").?.string);
+    try std.testing.expectEqualStrings("codex_output_schema", format.get("name").?.string);
+    try std.testing.expect(format.get("strict").?.bool);
+    try std.testing.expectEqualStrings("object", format.get("schema").?.object.get("type").?.string);
 }
