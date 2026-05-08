@@ -118,6 +118,14 @@ fn mainInner(init: std.process.Init) !void {
             }
             break;
         }
+        if (std.mem.eql(u8, arg, "--help") or
+            std.mem.eql(u8, arg, "-h") or
+            std.mem.eql(u8, arg, "--version") or
+            std.mem.eql(u8, arg, "-V"))
+        {
+            cmd_opt = arg;
+            break;
+        }
         if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownCliOption;
         }
@@ -129,7 +137,9 @@ fn mainInner(init: std.process.Init) !void {
     const should_apply_cwd = if (cmd_opt) |cmd|
         !std.mem.eql(u8, cmd, "exec") and
             !std.mem.eql(u8, cmd, "--help") and
-            !std.mem.eql(u8, cmd, "-h")
+            !std.mem.eql(u8, cmd, "-h") and
+            !std.mem.eql(u8, cmd, "--version") and
+            !std.mem.eql(u8, cmd, "-V")
     else
         true;
     if (should_apply_cwd) {
