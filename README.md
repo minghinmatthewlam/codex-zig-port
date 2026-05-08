@@ -22,6 +22,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
+- run a minimal stdio MCP server with `codex` and `codex-reply` tools
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
@@ -103,6 +104,7 @@ codex-zig features disable goals
 codex-zig mcp list
 codex-zig mcp add docs -- node ./server.js
 codex-zig mcp add remote --url https://example.com/mcp
+codex-zig mcp-server
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD

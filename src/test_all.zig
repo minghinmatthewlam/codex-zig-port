@@ -11,6 +11,7 @@ const modules = .{
     @import("git_diff.zig"),
     @import("login.zig"),
     @import("mcp_cmd.zig"),
+    @import("mcp_server_cmd.zig"),
     @import("mcp_runtime.zig"),
     @import("main.zig"),
     @import("review.zig"),

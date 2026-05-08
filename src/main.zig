@@ -10,6 +10,7 @@ const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const mcp_server_cmd = @import("mcp_server_cmd.zig");
 const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
 const sandbox_cmd = @import("sandbox_cmd.zig");
@@ -247,6 +248,16 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "mcp")) {
             try mcp_cmd.run(allocator, &args);
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "mcp-server")) {
+            try mcp_server_cmd.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+                .oss = overrides.oss,
+                .oss_provider = overrides.oss_provider,
+                .additional_writable_roots = overrides.additional_writable_roots,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "exec")) {
@@ -489,6 +500,8 @@ fn printHelp() !void {
         \\                          List known feature flags
         \\  codex-zig mcp list
         \\                          List configured MCP servers
+        \\  codex-zig mcp-server
+        \\                          Run Codex as a stdio MCP server
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
