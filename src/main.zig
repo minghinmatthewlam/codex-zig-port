@@ -351,6 +351,7 @@ fn printHelp() !void {
         \\
         \\Environment:
         \\  CODEX_HOME             Override Codex home (default: ~/.codex)
+        \\  CODEX_ACCESS_TOKEN     Use an access token without auth.json
         \\  CODEX_ZIG_MODEL        Override model
         \\  CODEX_ZIG_BASE_URL     Override API base URL
         \\  CODEX_ZIG_APPROVAL_POLICY
@@ -412,7 +413,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     std.debug.print("sandbox_mode: {s}\n", .{cfg.sandbox_mode.label()});
     std.debug.print("web_search: {s}\n", .{config.webSearchLabel(cfg.web_search_mode)});
     std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
-        .chatgpt => cfg.chatgpt_base_url,
+        .chatgpt, .agent_identity => cfg.chatgpt_base_url,
         .api_key => cfg.openai_base_url,
     }});
     if (credentials.account_id) |account_id| {

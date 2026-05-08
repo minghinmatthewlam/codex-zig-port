@@ -9,6 +9,7 @@ pub const Credentials = struct {
 
     pub const Mode = enum {
         chatgpt,
+        agent_identity,
         api_key,
     };
 
@@ -20,6 +21,7 @@ pub const Credentials = struct {
     pub fn describe(self: Credentials) []const u8 {
         return switch (self.mode) {
             .chatgpt => "ChatGPT token from auth.json",
+            .agent_identity => "Access token",
             .api_key => "API key",
         };
     }
@@ -29,6 +31,7 @@ const AuthJson = struct {
     auth_mode: ?[]const u8 = null,
     OPENAI_API_KEY: ?[]const u8 = null,
     tokens: ?TokenData = null,
+    agent_identity: ?[]const u8 = null,
 };
 
 const TokenData = struct {
@@ -41,6 +44,11 @@ const TokenData = struct {
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
     if (try loadStored(allocator, codex_home)) |credentials| {
         return credentials;
+    }
+
+    const env_access_token = try env.getOwned(allocator, "CODEX_ACCESS_TOKEN");
+    if (env_access_token) |access_token| {
+        return .{ .mode = .agent_identity, .token = access_token };
     }
 
     const env_api_key = try env.getOwned(allocator, "OPENAI_API_KEY");
@@ -61,6 +69,15 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
         var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
+        if (parsed.value.auth_mode) |mode| {
+            if (isAgentIdentityAuthMode(mode)) {
+                if (parsed.value.agent_identity) |agent_identity| {
+                    return .{ .mode = .agent_identity, .token = try allocator.dupe(u8, agent_identity) };
+                }
+                return null;
+            }
+        }
+
         if (parsed.value.tokens) |tokens| {
             const account_id = if (tokens.account_id) |id| try allocator.dupe(u8, id) else null;
             errdefer if (account_id) |id| allocator.free(id);
@@ -75,6 +92,10 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
         if (parsed.value.OPENAI_API_KEY) |api_key| {
             return .{ .mode = .api_key, .token = try allocator.dupe(u8, api_key) };
         }
+
+        if (parsed.value.agent_identity) |agent_identity| {
+            return .{ .mode = .agent_identity, .token = try allocator.dupe(u8, agent_identity) };
+        }
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -85,6 +106,10 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
 
 pub fn authorizationHeader(allocator: std.mem.Allocator, credentials: Credentials) ![]const u8 {
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{credentials.token});
+}
+
+fn isAgentIdentityAuthMode(mode: []const u8) bool {
+    return std.mem.eql(u8, mode, "agentIdentity") or std.mem.eql(u8, mode, "agent_identity");
 }
 
 test "parses chatgpt auth" {
@@ -103,4 +128,21 @@ test "parses chatgpt auth" {
     try std.testing.expectEqual(Credentials.Mode.chatgpt, creds.mode);
     try std.testing.expectEqualStrings("tok", creds.token);
     try std.testing.expectEqualStrings("acct", creds.account_id.?);
+}
+
+test "parses agent identity auth" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "auth.json",
+        .data = "{\"auth_mode\":\"agentIdentity\",\"agent_identity\":\"agent-token\"}",
+    });
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var creds = try load(allocator, root);
+    defer creds.deinit(allocator);
+    try std.testing.expectEqual(Credentials.Mode.agent_identity, creds.mode);
+    try std.testing.expectEqualStrings("agent-token", creds.token);
 }

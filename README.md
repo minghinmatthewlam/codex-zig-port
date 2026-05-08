@@ -12,8 +12,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - launch an interactive terminal UI with `zig build run`
 - accept an optional initial prompt with `codex-zig [PROMPT]`
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
-- manage basic auth with `login status`, `login --with-api-key`, `login --device-auth`,
-  and `logout`
+- manage basic auth with `login status`, `login --with-api-key`,
+  `login --with-access-token`, `login --device-auth`, and `logout`
 - send a Responses API turn
 - stream assistant text deltas in the interactive TUI
 - include discovered `AGENTS.md` project instructions in API turns
@@ -45,11 +45,16 @@ current Zig auth surface supports:
 ```sh
 codex-zig login status
 codex-zig login --with-api-key
+codex-zig login --with-access-token
 codex-zig login --device-auth
 codex-zig logout
 ```
 
 `login --device-auth` implements the ChatGPT device-code flow directly in Zig.
+`login --with-access-token` stores the token in the Rust CLI-compatible
+`agent_identity` auth shape; full upstream JWT/JWKS verification and
+agent-task authorization are still tracked as parity work. `CODEX_ACCESS_TOKEN`
+can also provide the access token without writing `auth.json`.
 `logout` removes the selected `CODEX_HOME/auth.json`; it does not yet revoke
 OAuth tokens server-side.
 

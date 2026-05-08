@@ -170,7 +170,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         cfg.model,
         credentials.describe(),
         switch (credentials.mode) {
-            .chatgpt => cfg.chatgpt_base_url,
+            .chatgpt, .agent_identity => cfg.chatgpt_base_url,
             .api_key => cfg.openai_base_url,
         },
         cwd,
@@ -440,7 +440,7 @@ fn printStatus(
         cfg.model,
         credentials.describe(),
         switch (credentials.mode) {
-            .chatgpt => cfg.chatgpt_base_url,
+            .chatgpt, .agent_identity => cfg.chatgpt_base_url,
             .api_key => cfg.openai_base_url,
         },
         cwd,

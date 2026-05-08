@@ -152,7 +152,7 @@ pub fn createTurnWithOptions(
     defer allocator.free(body);
 
     const base_url = switch (credentials.mode) {
-        .chatgpt => cfg.chatgpt_base_url,
+        .chatgpt, .agent_identity => cfg.chatgpt_base_url,
         .api_key => cfg.openai_base_url,
     };
     const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, base_url, "/")});

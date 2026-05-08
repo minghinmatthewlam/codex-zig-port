@@ -10,6 +10,7 @@ const LoginArgs = struct {
     help: bool = false,
     status: bool = false,
     with_api_key: bool = false,
+    with_access_token: bool = false,
     device_auth: bool = false,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = CLIENT_ID,
@@ -106,6 +107,14 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         return;
     }
 
+    if (parsed.with_access_token) {
+        const access_token = try readSecretFromStdin(allocator, "No access token provided via stdin.");
+        defer allocator.free(access_token);
+        try saveAgentIdentity(allocator, cfg.codex_home, access_token);
+        std.debug.print("Successfully logged in\n", .{});
+        return;
+    }
+
     if (parsed.device_auth or raw_args.items.len == 0) {
         try runDeviceAuth(allocator, cfg.codex_home, parsed.issuer, parsed.client_id);
         std.debug.print("Successfully logged in\n", .{});
@@ -146,13 +155,13 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
             parsed.with_api_key = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--with-access-token")) {
+            parsed.with_access_token = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--device-auth")) {
             parsed.device_auth = true;
             continue;
-        }
-        if (std.mem.eql(u8, arg, "--with-access-token")) {
-            std.debug.print("codex-zig login --with-access-token is not implemented yet\n", .{});
-            return error.UnsupportedLoginMode;
         }
         if (std.mem.eql(u8, arg, "--experimental_issuer")) {
             index += 1;
@@ -175,8 +184,12 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
         return error.UnknownLoginOption;
     }
 
-    if (parsed.with_api_key and parsed.device_auth) return error.ConflictingLoginModes;
-    if (parsed.status and (parsed.with_api_key or parsed.device_auth)) return error.ConflictingLoginModes;
+    const login_mode_count: u8 =
+        @as(u8, @intFromBool(parsed.with_api_key)) +
+        @as(u8, @intFromBool(parsed.with_access_token)) +
+        @as(u8, @intFromBool(parsed.device_auth));
+    if (login_mode_count > 1) return error.ConflictingLoginModes;
+    if (parsed.status and login_mode_count > 0) return error.ConflictingLoginModes;
     return parsed;
 }
 
@@ -189,6 +202,7 @@ fn runStatus(allocator: std.mem.Allocator, cfg: config.Config) !void {
 
     switch (credentials.mode) {
         .chatgpt => std.debug.print("Logged in using ChatGPT\n", .{}),
+        .agent_identity => std.debug.print("Logged in using access token\n", .{}),
         .api_key => {
             const formatted = try safeFormatKey(allocator, credentials.token);
             defer allocator.free(formatted);
@@ -414,6 +428,15 @@ fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, token
     try writeAuthJson(allocator, codex_home, json);
 }
 
+fn saveAgentIdentity(allocator: std.mem.Allocator, codex_home: []const u8, access_token: []const u8) !void {
+    const json = try std.json.Stringify.valueAlloc(allocator, .{
+        .auth_mode = "agentIdentity",
+        .agent_identity = access_token,
+    }, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    try writeAuthJson(allocator, codex_home, json);
+}
+
 fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, codex_home);
@@ -594,11 +617,13 @@ fn printLoginHelp() void {
         \\  codex-zig login
         \\  codex-zig login --device-auth
         \\  codex-zig login --with-api-key
+        \\  codex-zig login --with-access-token
         \\  codex-zig login status
         \\  codex-zig logout
         \\
         \\Options:
         \\  --with-api-key          Read an OpenAI API key from stdin
+        \\  --with-access-token     Read an access token from stdin
         \\  --device-auth           Sign in with ChatGPT device code authorization
         \\  --experimental_issuer URL
         \\                          Override OAuth issuer for testing
@@ -654,4 +679,18 @@ test "api key login writes auth json load can reuse" {
     defer credentials.deinit(allocator);
     try std.testing.expectEqual(auth.Credentials.Mode.api_key, credentials.mode);
     try std.testing.expectEqualStrings("sk-test", credentials.token);
+}
+
+test "access token login writes agent identity auth json load can reuse" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try saveAgentIdentity(allocator, root, "agent-token");
+    var credentials = try auth.load(allocator, root);
+    defer credentials.deinit(allocator);
+    try std.testing.expectEqual(auth.Credentials.Mode.agent_identity, credentials.mode);
+    try std.testing.expectEqualStrings("agent-token", credentials.token);
 }
