@@ -1,6 +1,12 @@
 const std = @import("std");
 const env = @import("env.zig");
 
+pub const chatgpt_client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
+const refresh_token_url = "https://auth.openai.com/oauth/token";
+const refresh_token_url_override_env = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+const token_refresh_interval_days = 8;
+const seconds_per_day = 24 * 60 * 60;
+
 pub const Credentials = struct {
     mode: Mode,
     token: []const u8,
@@ -34,6 +40,7 @@ const AuthJson = struct {
     OPENAI_API_KEY: ?[]const u8 = null,
     tokens: ?TokenData = null,
     agent_identity: ?[]const u8 = null,
+    last_refresh: ?[]const u8 = null,
 };
 
 const TokenData = struct {
@@ -52,8 +59,32 @@ const AgentIdentityClaims = struct {
     }
 };
 
+pub const ChatGptClaims = struct {
+    account_id: ?[]const u8 = null,
+    fedramp: bool = false,
+
+    pub fn deinit(self: ChatGptClaims, allocator: std.mem.Allocator) void {
+        if (self.account_id) |account_id| allocator.free(account_id);
+    }
+};
+
+const RefreshResponse = struct {
+    id_token: ?[]const u8 = null,
+    access_token: ?[]const u8 = null,
+    refresh_token: ?[]const u8 = null,
+};
+
+const HttpResponse = struct {
+    status: std.http.Status,
+    body: []const u8,
+
+    fn deinit(self: HttpResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+    }
+};
+
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    if (try loadStored(allocator, codex_home)) |credentials| {
+    if (try loadStoredWithOptions(allocator, codex_home, .{ .refresh_chatgpt = true })) |credentials| {
         return credentials;
     }
 
@@ -71,6 +102,18 @@ pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
 }
 
 pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Credentials {
+    return loadStoredWithOptions(allocator, codex_home, .{});
+}
+
+const LoadStoredOptions = struct {
+    refresh_chatgpt: bool = false,
+};
+
+fn loadStoredWithOptions(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    options: LoadStoredOptions,
+) !?Credentials {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);
 
@@ -90,14 +133,14 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
         }
 
         if (parsed.value.tokens) |tokens| {
-            const account_id = if (tokens.account_id) |id| try allocator.dupe(u8, id) else null;
-            errdefer if (account_id) |id| allocator.free(id);
-            return .{
-                .mode = .chatgpt,
-                .token = try allocator.dupe(u8, tokens.access_token),
-                .account_id = account_id,
-                .fedramp = false,
-            };
+            if (options.refresh_chatgpt and try shouldRefreshChatGptToken(allocator, tokens, parsed.value.last_refresh)) {
+                refreshChatGptAuth(allocator, codex_home, parsed.value) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => std.debug.print("warning: could not refresh ChatGPT auth token: {s}\n", .{@errorName(err)}),
+                };
+                if (try loadStoredWithOptions(allocator, codex_home, .{})) |refreshed| return refreshed;
+            }
+            return try chatGptCredentials(allocator, tokens);
         }
 
         if (parsed.value.OPENAI_API_KEY) |api_key| {
@@ -131,6 +174,17 @@ fn isAgentIdentityAuthMode(mode: []const u8) bool {
 fn agentIdentityCredentials(allocator: std.mem.Allocator, token: []const u8) !Credentials {
     const owned_token = try allocator.dupe(u8, token);
     return try agentIdentityCredentialsFromOwnedToken(allocator, owned_token);
+}
+
+fn chatGptCredentials(allocator: std.mem.Allocator, tokens: TokenData) !Credentials {
+    const account_id = if (tokens.account_id) |id| try allocator.dupe(u8, id) else null;
+    errdefer if (account_id) |id| allocator.free(id);
+    return .{
+        .mode = .chatgpt,
+        .token = try allocator.dupe(u8, tokens.access_token),
+        .account_id = account_id,
+        .fedramp = false,
+    };
 }
 
 fn agentIdentityCredentialsFromOwnedToken(allocator: std.mem.Allocator, token: []const u8) !Credentials {
@@ -180,6 +234,265 @@ fn parseAgentIdentityClaims(allocator: std.mem.Allocator, jwt: []const u8) !Agen
         false;
 
     return .{ .account_id = account_id, .fedramp = fedramp };
+}
+
+fn shouldRefreshChatGptToken(allocator: std.mem.Allocator, tokens: TokenData, last_refresh: ?[]const u8) !bool {
+    return shouldRefreshChatGptTokenAt(allocator, tokens, last_refresh, currentEpochSeconds());
+}
+
+fn shouldRefreshChatGptTokenAt(
+    allocator: std.mem.Allocator,
+    tokens: TokenData,
+    last_refresh: ?[]const u8,
+    now: u64,
+) !bool {
+    if (tokens.refresh_token == null) return false;
+    const expires_at = parseJwtExpiration(allocator, tokens.access_token) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    if (expires_at) |seconds| return seconds <= now;
+
+    const refreshed_at = if (last_refresh) |value|
+        parseRfc3339Seconds(value) catch return false
+    else
+        return false;
+    const interval_seconds = token_refresh_interval_days * seconds_per_day;
+    if (now <= interval_seconds) return false;
+    return refreshed_at < now - interval_seconds;
+}
+
+fn refreshChatGptAuth(allocator: std.mem.Allocator, codex_home: []const u8, auth_json: AuthJson) !void {
+    const tokens = auth_json.tokens orelse return error.MissingChatGptTokens;
+    const existing_refresh = tokens.refresh_token orelse return error.MissingRefreshToken;
+
+    const endpoint = try refreshTokenEndpoint(allocator);
+    defer allocator.free(endpoint);
+
+    const request_body = try std.json.Stringify.valueAlloc(allocator, .{
+        .client_id = chatgpt_client_id,
+        .grant_type = "refresh_token",
+        .refresh_token = existing_refresh,
+    }, .{});
+    defer allocator.free(request_body);
+
+    var response = try postJson(allocator, endpoint, request_body);
+    defer response.deinit(allocator);
+    if (@intFromEnum(response.status) < 200 or @intFromEnum(response.status) >= 300) {
+        std.debug.print("ChatGPT token refresh failed with status {d}: {s}\n", .{ @intFromEnum(response.status), response.body });
+        return error.RefreshTokenFailed;
+    }
+
+    var parsed = try std.json.parseFromSlice(RefreshResponse, allocator, response.body, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const refreshed_access = parsed.value.access_token orelse tokens.access_token;
+    const refreshed_refresh = parsed.value.refresh_token orelse existing_refresh;
+    const refreshed_id = parsed.value.id_token orelse tokens.id_token;
+
+    var claims = if (refreshed_id) |id_token|
+        parseChatGptClaims(allocator, id_token) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => ChatGptClaims{},
+        }
+    else
+        ChatGptClaims{};
+    defer claims.deinit(allocator);
+
+    const account_id = if (claims.account_id) |id|
+        id
+    else
+        tokens.account_id;
+
+    const last_refresh = try currentRfc3339(allocator);
+    defer allocator.free(last_refresh);
+
+    const output = try std.json.Stringify.valueAlloc(allocator, .{
+        .auth_mode = "chatgpt",
+        .tokens = .{
+            .id_token = refreshed_id,
+            .access_token = refreshed_access,
+            .refresh_token = refreshed_refresh,
+            .account_id = account_id,
+        },
+        .last_refresh = last_refresh,
+    }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false });
+    defer allocator.free(output);
+
+    try writeAuthJson(allocator, codex_home, output);
+}
+
+fn refreshTokenEndpoint(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, refresh_token_url_override_env)) |override| return override;
+    return allocator.dupe(u8, refresh_token_url);
+}
+
+fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) !HttpResponse {
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_body.deinit();
+
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .payload = payload,
+        .response_writer = &response_body.writer,
+        .extra_headers = headers.items,
+    });
+
+    return .{ .status = result.status, .body = try response_body.toOwnedSlice() };
+}
+
+pub fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, codex_home);
+
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
+    defer allocator.free(path);
+
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = path,
+        .data = json,
+        .flags = .{ .permissions = @enumFromInt(0o600) },
+    });
+}
+
+fn parseJwtExpiration(allocator: std.mem.Allocator, jwt: []const u8) !?u64 {
+    var parsed = try parseJwtPayload(allocator, jwt);
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const value = parsed.value.object.get("exp") orelse return null;
+    return switch (value) {
+        .integer => |number| if (number >= 0) @as(u64, @intCast(number)) else null,
+        .float => |number| if (number >= 0) @as(u64, @intFromFloat(number)) else null,
+        else => null,
+    };
+}
+
+pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGptClaims {
+    var parsed = try parseJwtPayload(allocator, jwt);
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidJsonObject;
+    const object = parsed.value.object;
+    const auth_value = object.get("https://api.openai.com/auth") orelse return .{};
+    if (auth_value != .object) return .{};
+    const auth_object = auth_value.object;
+
+    const account_id = if (auth_object.get("chatgpt_account_id")) |value|
+        if (value == .string) try allocator.dupe(u8, value.string) else null
+    else
+        null;
+    errdefer if (account_id) |id| allocator.free(id);
+
+    const fedramp = if (auth_object.get("chatgpt_account_is_fedramp")) |value|
+        value == .bool and value.bool
+    else
+        false;
+
+    return .{ .account_id = account_id, .fedramp = fedramp };
+}
+
+fn parseJwtPayload(allocator: std.mem.Allocator, jwt: []const u8) !std.json.Parsed(std.json.Value) {
+    var parts = std.mem.splitScalar(u8, jwt, '.');
+    _ = parts.next() orelse return error.InvalidJwt;
+    const payload = parts.next() orelse return error.InvalidJwt;
+    _ = parts.next() orelse return error.InvalidJwt;
+
+    const decoded_len = try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload);
+    const decoded = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded);
+    try std.base64.url_safe_no_pad.Decoder.decode(decoded, payload);
+
+    return std.json.parseFromSlice(std.json.Value, allocator, decoded, .{});
+}
+
+fn currentEpochSeconds() u64 {
+    const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
+    return @as(u64, @intCast(now.toSeconds()));
+}
+
+pub fn currentRfc3339(allocator: std.mem.Allocator) ![]const u8 {
+    const seconds = currentEpochSeconds();
+    return rfc3339FromSeconds(allocator, seconds);
+}
+
+pub fn rfc3339FromSeconds(allocator: std.mem.Allocator, seconds: u64) ![]const u8 {
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
+    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+        .{
+            year_day.year,
+            month_day.month.numeric(),
+            month_day.day_index + 1,
+            day_seconds.getHoursIntoDay(),
+            day_seconds.getMinutesIntoHour(),
+            day_seconds.getSecondsIntoMinute(),
+        },
+    );
+}
+
+fn parseRfc3339Seconds(value: []const u8) !u64 {
+    if (value.len < "YYYY-MM-DDTHH:MM:SSZ".len) return error.InvalidRfc3339;
+    if (value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != ':' or value[16] != ':') {
+        return error.InvalidRfc3339;
+    }
+
+    const year = try std.fmt.parseInt(u16, value[0..4], 10);
+    const month = try std.fmt.parseInt(u8, value[5..7], 10);
+    const day = try std.fmt.parseInt(u8, value[8..10], 10);
+    const hour = try std.fmt.parseInt(u8, value[11..13], 10);
+    const minute = try std.fmt.parseInt(u8, value[14..16], 10);
+    const second = try std.fmt.parseInt(u8, value[17..19], 10);
+
+    var end_index: usize = 19;
+    if (end_index < value.len and value[end_index] == '.') {
+        end_index += 1;
+        const fraction_start = end_index;
+        while (end_index < value.len and std.ascii.isDigit(value[end_index])) {
+            end_index += 1;
+        }
+        if (end_index == fraction_start) return error.InvalidRfc3339;
+    }
+    if (end_index >= value.len or value[end_index] != 'Z' or end_index + 1 != value.len) {
+        return error.InvalidRfc3339;
+    }
+    if (year < std.time.epoch.epoch_year or month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59) {
+        return error.InvalidRfc3339;
+    }
+
+    const month_enum: std.time.epoch.Month = @enumFromInt(month);
+    const days_in_month = std.time.epoch.getDaysInMonth(year, month_enum);
+    if (day < 1 or day > days_in_month) return error.InvalidRfc3339;
+
+    var days: u64 = 0;
+    var y: u16 = std.time.epoch.epoch_year;
+    while (y < year) : (y += 1) {
+        days += std.time.epoch.getDaysInYear(y);
+    }
+
+    var m: u8 = 1;
+    while (m < month) : (m += 1) {
+        days += std.time.epoch.getDaysInMonth(year, @enumFromInt(m));
+    }
+    days += day - 1;
+
+    return days * seconds_per_day + @as(u64, hour) * 60 * 60 + @as(u64, minute) * 60 + second;
 }
 
 test "parses chatgpt auth" {
@@ -244,4 +557,49 @@ test "parses agent identity auth metadata from jwt" {
     try std.testing.expectEqualStrings(jwt, creds.token);
     try std.testing.expectEqualStrings("acct_agent", creds.account_id.?);
     try std.testing.expect(creds.fedramp);
+}
+
+test "jwt expiration parser reads exp claim" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"exp\":4102444800}";
+    var encoded_buffer: [128]u8 = undefined;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
+    const jwt = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
+    defer allocator.free(jwt);
+
+    const expires_at = try parseJwtExpiration(allocator, jwt);
+    try std.testing.expectEqual(@as(u64, 4102444800), expires_at.?);
+}
+
+test "chatgpt refresh decision uses expired access token with refresh token" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"exp\":1}";
+    var encoded_buffer: [128]u8 = undefined;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
+    const jwt = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
+    defer allocator.free(jwt);
+
+    try std.testing.expect(try shouldRefreshChatGptTokenAt(allocator, .{
+        .access_token = jwt,
+        .refresh_token = "refresh-token",
+    }, null, currentEpochSeconds()));
+    try std.testing.expect(!try shouldRefreshChatGptTokenAt(allocator, .{
+        .access_token = jwt,
+        .refresh_token = null,
+    }, null, currentEpochSeconds()));
+}
+
+test "chatgpt refresh decision falls back to stale last_refresh" {
+    const allocator = std.testing.allocator;
+    const now = try parseRfc3339Seconds("2026-01-09T00:00:01Z");
+
+    try std.testing.expect(try shouldRefreshChatGptTokenAt(allocator, .{
+        .access_token = "not-a-jwt",
+        .refresh_token = "refresh-token",
+    }, "2026-01-01T00:00:00.123456789Z", now));
+
+    try std.testing.expect(!try shouldRefreshChatGptTokenAt(allocator, .{
+        .access_token = "not-a-jwt",
+        .refresh_token = "refresh-token",
+    }, "2026-01-02T00:00:00Z", now));
 }

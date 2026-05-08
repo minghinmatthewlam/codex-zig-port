@@ -3,7 +3,6 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_ISSUER = "https://auth.openai.com";
 
 const LoginArgs = struct {
@@ -13,7 +12,7 @@ const LoginArgs = struct {
     with_access_token: bool = false,
     device_auth: bool = false,
     issuer: []const u8 = DEFAULT_ISSUER,
-    client_id: []const u8 = CLIENT_ID,
+    client_id: []const u8 = auth.chatgpt_client_id,
     issuer_owned: bool = false,
     client_id_owned: bool = false,
 
@@ -55,15 +54,6 @@ const Tokens = struct {
         allocator.free(self.id_token);
         allocator.free(self.access_token);
         allocator.free(self.refresh_token);
-    }
-};
-
-const JwtClaims = struct {
-    account_id: ?[]const u8 = null,
-    fedramp: bool = false,
-
-    fn deinit(self: JwtClaims, allocator: std.mem.Allocator) void {
-        if (self.account_id) |account_id| allocator.free(account_id);
     }
 };
 
@@ -405,14 +395,14 @@ fn saveApiKey(allocator: std.mem.Allocator, codex_home: []const u8, api_key: []c
         .OPENAI_API_KEY = api_key,
     }, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
-    try writeAuthJson(allocator, codex_home, json);
+    try auth.writeAuthJson(allocator, codex_home, json);
 }
 
 fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, tokens: Tokens) !void {
-    var claims = try parseJwtClaims(allocator, tokens.id_token);
+    var claims = try auth.parseChatGptClaims(allocator, tokens.id_token);
     defer claims.deinit(allocator);
 
-    const last_refresh = try currentRfc3339(allocator);
+    const last_refresh = try auth.currentRfc3339(allocator);
     defer allocator.free(last_refresh);
 
     const json = try std.json.Stringify.valueAlloc(allocator, .{
@@ -426,7 +416,7 @@ fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, token
         .last_refresh = last_refresh,
     }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false });
     defer allocator.free(json);
-    try writeAuthJson(allocator, codex_home, json);
+    try auth.writeAuthJson(allocator, codex_home, json);
 }
 
 fn saveAgentIdentity(allocator: std.mem.Allocator, codex_home: []const u8, access_token: []const u8) !void {
@@ -435,21 +425,7 @@ fn saveAgentIdentity(allocator: std.mem.Allocator, codex_home: []const u8, acces
         .agent_identity = access_token,
     }, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
-    try writeAuthJson(allocator, codex_home, json);
-}
-
-fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    try std.Io.Dir.cwd().createDirPath(io, codex_home);
-
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
-    defer allocator.free(path);
-
-    try std.Io.Dir.cwd().writeFile(io, .{
-        .sub_path = path,
-        .data = json,
-        .flags = .{ .permissions = @enumFromInt(0o600) },
-    });
+    try auth.writeAuthJson(allocator, codex_home, json);
 }
 
 fn deleteAuthFile(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
@@ -533,64 +509,6 @@ fn percentEncode(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: [
     }
 }
 
-fn parseJwtClaims(allocator: std.mem.Allocator, jwt: []const u8) !JwtClaims {
-    var parts = std.mem.splitScalar(u8, jwt, '.');
-    _ = parts.next() orelse return error.InvalidJwt;
-    const payload = parts.next() orelse return error.InvalidJwt;
-    _ = parts.next() orelse return error.InvalidJwt;
-
-    const decoded_len = try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload);
-    const decoded = try allocator.alloc(u8, decoded_len);
-    defer allocator.free(decoded);
-    try std.base64.url_safe_no_pad.Decoder.decode(decoded, payload);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, decoded, .{});
-    defer parsed.deinit();
-    const root = try jsonObject(parsed.value);
-    const auth_value = root.get("https://api.openai.com/auth") orelse return .{};
-    if (auth_value != .object) return .{};
-    const auth_object = auth_value.object;
-
-    const account_id = if (auth_object.get("chatgpt_account_id")) |value|
-        if (value == .string) try allocator.dupe(u8, value.string) else null
-    else
-        null;
-    errdefer if (account_id) |id| allocator.free(id);
-
-    const fedramp = if (auth_object.get("chatgpt_account_is_fedramp")) |value|
-        value == .bool and value.bool
-    else
-        false;
-
-    return .{ .account_id = account_id, .fedramp = fedramp };
-}
-
-fn currentRfc3339(allocator: std.mem.Allocator) ![]const u8 {
-    const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
-    const seconds = @as(u64, @intCast(now.toSeconds()));
-    return rfc3339FromSeconds(allocator, seconds);
-}
-
-fn rfc3339FromSeconds(allocator: std.mem.Allocator, seconds: u64) ![]const u8 {
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    return std.fmt.allocPrint(
-        allocator,
-        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
-}
-
 fn safeFormatKey(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
     if (key.len <= 13) return allocator.dupe(u8, "***");
     return std.fmt.allocPrint(allocator, "{s}***{s}", .{ key[0..8], key[key.len - 5 ..] });
@@ -647,7 +565,7 @@ test "safe api key formatting matches codex cli shape" {
 
 test "rfc3339 timestamp formats epoch seconds" {
     const allocator = std.testing.allocator;
-    const formatted = try rfc3339FromSeconds(allocator, 1622924906);
+    const formatted = try auth.rfc3339FromSeconds(allocator, 1622924906);
     defer allocator.free(formatted);
     try std.testing.expectEqualStrings("2021-06-05T20:28:26Z", formatted);
 }
@@ -662,7 +580,7 @@ test "jwt parser extracts account metadata" {
     const jwt = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
     defer allocator.free(jwt);
 
-    var claims = try parseJwtClaims(allocator, jwt);
+    var claims = try auth.parseChatGptClaims(allocator, jwt);
     defer claims.deinit(allocator);
     try std.testing.expectEqualStrings("acct_123", claims.account_id.?);
     try std.testing.expect(claims.fedramp);
