@@ -258,7 +258,14 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "sessions")) {
-            try runSessions(allocator, args.next(), overrides.profile);
+            const limit_arg = args.next();
+            if (limit_arg) |value| {
+                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                    printSessionsHelp();
+                    return;
+                }
+            }
+            try runSessions(allocator, limit_arg, overrides.profile);
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -396,6 +403,17 @@ fn printForkHelp() void {
         \\  codex-zig fork ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
+        \\
+    , .{});
+}
+
+fn printSessionsHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig sessions
+        \\  codex-zig sessions N
+        \\
+        \\Lists saved Zig sessions, newest first. N limits the number shown.
         \\
     , .{});
 }
