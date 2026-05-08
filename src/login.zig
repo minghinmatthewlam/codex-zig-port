@@ -4,6 +4,10 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 
 const DEFAULT_ISSUER = "https://auth.openai.com";
+const DEFAULT_CALLBACK_PORT: u16 = 1455;
+const FALLBACK_CALLBACK_PORT: u16 = 1457;
+const LOGIN_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const net = std.Io.net;
 
 const LoginArgs = struct {
     help: bool = false,
@@ -11,14 +15,19 @@ const LoginArgs = struct {
     with_api_key: bool = false,
     with_access_token: bool = false,
     device_auth: bool = false,
+    open_browser: bool = true,
+    callback_port: u16 = DEFAULT_CALLBACK_PORT,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = auth.chatgpt_client_id,
+    force_state: ?[]const u8 = null,
     issuer_owned: bool = false,
     client_id_owned: bool = false,
+    force_state_owned: bool = false,
 
     fn deinit(self: LoginArgs, allocator: std.mem.Allocator) void {
         if (self.issuer_owned) allocator.free(self.issuer);
         if (self.client_id_owned) allocator.free(self.client_id);
+        if (self.force_state_owned) allocator.free(self.force_state.?);
     }
 };
 
@@ -54,6 +63,16 @@ const Tokens = struct {
         allocator.free(self.id_token);
         allocator.free(self.access_token);
         allocator.free(self.refresh_token);
+    }
+};
+
+const PkceCodes = struct {
+    code_verifier: []const u8,
+    code_challenge: []const u8,
+
+    fn deinit(self: PkceCodes, allocator: std.mem.Allocator) void {
+        allocator.free(self.code_verifier);
+        allocator.free(self.code_challenge);
     }
 };
 
@@ -105,14 +124,14 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         return;
     }
 
-    if (parsed.device_auth or raw_args.items.len == 0) {
+    if (parsed.device_auth) {
         try runDeviceAuth(allocator, cfg.codex_home, parsed.issuer, parsed.client_id);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
 
-    printLoginHelp();
-    return error.InvalidLoginArguments;
+    try runBrowserAuth(allocator, cfg.codex_home, parsed);
+    std.debug.print("Successfully logged in\n", .{});
 }
 
 pub fn runLogout(allocator: std.mem.Allocator) !void {
@@ -153,6 +172,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
             parsed.device_auth = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--no-browser")) {
+            parsed.open_browser = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental_port")) {
+            index += 1;
+            if (index >= args.len) return error.MissingLoginOptionValue;
+            parsed.callback_port = try std.fmt.parseInt(u16, args[index], 10);
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--experimental_issuer")) {
             index += 1;
             if (index >= args.len) return error.MissingLoginOptionValue;
@@ -167,6 +196,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
             if (parsed.client_id_owned) allocator.free(parsed.client_id);
             parsed.client_id = try allocator.dupe(u8, args[index]);
             parsed.client_id_owned = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental_state")) {
+            index += 1;
+            if (index >= args.len) return error.MissingLoginOptionValue;
+            if (parsed.force_state_owned) allocator.free(parsed.force_state.?);
+            parsed.force_state = try allocator.dupe(u8, args[index]);
+            parsed.force_state_owned = true;
             continue;
         }
 
@@ -219,6 +256,276 @@ fn readSecretFromStdin(allocator: std.mem.Allocator, empty_message: []const u8) 
     return owned;
 }
 
+fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: LoginArgs) !void {
+    var pkce = try generatePkce(allocator);
+    defer pkce.deinit(allocator);
+
+    const state = if (args.force_state) |forced|
+        try allocator.dupe(u8, forced)
+    else
+        try randomUrlSafe(allocator, 32);
+    defer allocator.free(state);
+
+    var callback_server = try bindCallbackServer(args.callback_port);
+    defer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+
+    const actual_port = callback_server.socket.address.getPort();
+    const redirect_uri = try std.fmt.allocPrint(allocator, "http://localhost:{d}/auth/callback", .{actual_port});
+    defer allocator.free(redirect_uri);
+
+    const authorize_url = try buildAuthorizeUrl(allocator, args.issuer, args.client_id, redirect_uri, pkce, state);
+    defer allocator.free(authorize_url);
+
+    if (args.open_browser) {
+        openBrowser(allocator, authorize_url) catch |err| {
+            std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
+        };
+    }
+
+    std.debug.print(
+        \\Starting local login server on http://localhost:{d}.
+        \\If your browser did not open, navigate to this URL to authenticate:
+        \\
+        \\{s}
+        \\
+        \\On a remote or headless machine? Use `codex-zig login --device-auth` instead.
+        \\
+    , .{ actual_port, authorize_url });
+
+    try waitForBrowserCallback(allocator, codex_home, &callback_server, args.issuer, args.client_id, redirect_uri, pkce.code_verifier, state);
+}
+
+fn bindCallbackServer(port: u16) !net.Server {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var address: net.IpAddress = .{ .ip4 = net.Ip4Address.loopback(port) };
+    return address.listen(io, .{ .reuse_address = true }) catch |err| switch (err) {
+        error.AddressInUse => {
+            if (port != DEFAULT_CALLBACK_PORT) return err;
+            var fallback: net.IpAddress = .{ .ip4 = net.Ip4Address.loopback(FALLBACK_CALLBACK_PORT) };
+            return fallback.listen(io, .{ .reuse_address = true });
+        },
+        else => return err,
+    };
+}
+
+fn waitForBrowserCallback(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: *net.Server,
+    issuer: []const u8,
+    client_id: []const u8,
+    redirect_uri: []const u8,
+    code_verifier: []const u8,
+    expected_state: []const u8,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    while (true) {
+        var stream = try server.accept(io);
+        defer stream.close(io);
+
+        var send_buffer: [4096]u8 = undefined;
+        var recv_buffer: [4096]u8 = undefined;
+        var connection_reader = stream.reader(io, &recv_buffer);
+        var connection_writer = stream.writer(io, &send_buffer);
+        var http_server: std.http.Server = .init(&connection_reader.interface, &connection_writer.interface);
+        var request = http_server.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing => continue,
+            else => return err,
+        };
+
+        const completed = try handleBrowserLoginRequest(
+            allocator,
+            codex_home,
+            &request,
+            issuer,
+            client_id,
+            redirect_uri,
+            code_verifier,
+            expected_state,
+        );
+        if (completed) return;
+    }
+}
+
+fn handleBrowserLoginRequest(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    request: *std.http.Server.Request,
+    issuer: []const u8,
+    client_id: []const u8,
+    redirect_uri: []const u8,
+    code_verifier: []const u8,
+    expected_state: []const u8,
+) !bool {
+    const target = request.head.target;
+    const path, const query = splitTarget(target);
+
+    if (std.mem.eql(u8, path, "/cancel")) {
+        try respondText(request, .ok, "Login cancelled\n");
+        return error.LoginCancelled;
+    }
+    if (!std.mem.eql(u8, path, "/auth/callback")) {
+        try respondText(request, .not_found, "Not Found\n");
+        return false;
+    }
+
+    const callback_state = try queryParam(allocator, query, "state");
+    defer if (callback_state) |value| allocator.free(value);
+    if (callback_state == null or !std.mem.eql(u8, callback_state.?, expected_state)) {
+        try respondText(request, .bad_request, "State mismatch\n");
+        return error.OAuthStateMismatch;
+    }
+
+    const error_code = try queryParam(allocator, query, "error");
+    defer if (error_code) |value| allocator.free(value);
+    if (error_code) |value| {
+        const description = try queryParam(allocator, query, "error_description");
+        defer if (description) |text| allocator.free(text);
+        const message = if (description) |text|
+            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}\n", .{text})
+        else
+            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}\n", .{value});
+        defer allocator.free(message);
+        try respondText(request, .bad_request, message);
+        return error.OAuthCallbackError;
+    }
+
+    const code = try queryParam(allocator, query, "code");
+    defer if (code) |value| allocator.free(value);
+    if (code == null or code.?.len == 0) {
+        try respondText(request, .bad_request, "Missing authorization code\n");
+        return error.MissingAuthorizationCode;
+    }
+
+    var tokens = try exchangeCodeForTokens(allocator, issuer, client_id, code.?, redirect_uri, code_verifier);
+    defer tokens.deinit(allocator);
+
+    try saveChatGptTokens(allocator, codex_home, tokens);
+    try respondText(
+        request,
+        .ok,
+        "<!doctype html><meta charset=\"utf-8\"><title>Codex login complete</title><h1>Codex login complete</h1><p>You can return to the terminal.</p>",
+    );
+    return true;
+}
+
+fn splitTarget(target: []const u8) struct { []const u8, []const u8 } {
+    if (std.mem.indexOfScalar(u8, target, '?')) |index| {
+        return .{ target[0..index], target[index + 1 ..] };
+    }
+    return .{ target, "" };
+}
+
+fn respondText(request: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
+    try request.respond(body, .{
+        .status = status,
+        .extra_headers = &.{
+            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            .{ .name = "Connection", .value = "close" },
+        },
+    });
+}
+
+fn queryParam(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !?[]const u8 {
+    var parts = std.mem.splitScalar(u8, query, '&');
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        const key_raw, const value_raw = if (std.mem.indexOfScalar(u8, part, '=')) |index|
+            .{ part[0..index], part[index + 1 ..] }
+        else
+            .{ part, "" };
+        const key = try percentDecodeQueryComponent(allocator, key_raw);
+        defer allocator.free(key);
+        if (!std.mem.eql(u8, key, name)) continue;
+        return try percentDecodeQueryComponent(allocator, value_raw);
+    }
+    return null;
+}
+
+fn percentDecodeQueryComponent(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const copy = try allocator.dupe(u8, value);
+    errdefer allocator.free(copy);
+    for (copy) |*byte| {
+        if (byte.* == '+') byte.* = ' ';
+    }
+    const decoded = std.Uri.percentDecodeInPlace(copy);
+    if (decoded.ptr != copy.ptr) {
+        std.mem.copyForwards(u8, copy[0..decoded.len], decoded);
+    }
+    if (decoded.len == copy.len) return copy;
+    return try allocator.realloc(copy, decoded.len);
+}
+
+fn buildAuthorizeUrl(
+    allocator: std.mem.Allocator,
+    issuer: []const u8,
+    client_id: []const u8,
+    redirect_uri: []const u8,
+    pkce: PkceCodes,
+    state: []const u8,
+) ![]const u8 {
+    const base = std.mem.trimEnd(u8, issuer, "/");
+    const query = try formEncode(allocator, &.{
+        .{ .name = "response_type", .value = "code" },
+        .{ .name = "client_id", .value = client_id },
+        .{ .name = "redirect_uri", .value = redirect_uri },
+        .{ .name = "scope", .value = LOGIN_SCOPE },
+        .{ .name = "code_challenge", .value = pkce.code_challenge },
+        .{ .name = "code_challenge_method", .value = "S256" },
+        .{ .name = "id_token_add_organizations", .value = "true" },
+        .{ .name = "codex_cli_simplified_flow", .value = "true" },
+        .{ .name = "state", .value = state },
+        .{ .name = "originator", .value = "codex_cli" },
+    });
+    defer allocator.free(query);
+    return std.fmt.allocPrint(allocator, "{s}/oauth/authorize?{s}", .{ base, query });
+}
+
+fn generatePkce(allocator: std.mem.Allocator) !PkceCodes {
+    const code_verifier = try randomUrlSafe(allocator, 64);
+    errdefer allocator.free(code_verifier);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(code_verifier, &digest, .{});
+    const code_challenge = try base64UrlSafeAlloc(allocator, &digest);
+    errdefer allocator.free(code_challenge);
+
+    return .{ .code_verifier = code_verifier, .code_challenge = code_challenge };
+}
+
+fn randomUrlSafe(allocator: std.mem.Allocator, comptime byte_count: usize) ![]const u8 {
+    var bytes: [byte_count]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    return base64UrlSafeAlloc(allocator, &bytes);
+}
+
+fn base64UrlSafeAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const len = std.base64.url_safe_no_pad.Encoder.calcSize(bytes.len);
+    const encoded = try allocator.alloc(u8, len);
+    errdefer allocator.free(encoded);
+    _ = std.base64.url_safe_no_pad.Encoder.encode(encoded, bytes);
+    return encoded;
+}
+
+fn openBrowser(allocator: std.mem.Allocator, url: []const u8) !void {
+    if (@import("builtin").target.os.tag != .macos) return;
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = &.{ "/usr/bin/open", url },
+        .stdout_limit = .limited(1024),
+        .stderr_limit = .limited(1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.OpenBrowserFailed,
+        else => return error.OpenBrowserFailed,
+    }
+}
+
 fn runDeviceAuth(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -233,7 +540,10 @@ fn runDeviceAuth(
     var code = try pollForCode(allocator, issuer, device_code);
     defer code.deinit(allocator);
 
-    var tokens = try exchangeCodeForTokens(allocator, issuer, client_id, code.authorization_code, code.code_verifier);
+    const redirect_uri = try std.fmt.allocPrint(allocator, "{s}/deviceauth/callback", .{std.mem.trimEnd(u8, issuer, "/")});
+    defer allocator.free(redirect_uri);
+
+    var tokens = try exchangeCodeForTokens(allocator, issuer, client_id, code.authorization_code, redirect_uri, code.code_verifier);
     defer tokens.deinit(allocator);
 
     try saveChatGptTokens(allocator, codex_home, tokens);
@@ -325,14 +635,12 @@ fn exchangeCodeForTokens(
     issuer: []const u8,
     client_id: []const u8,
     authorization_code: []const u8,
+    redirect_uri: []const u8,
     code_verifier: []const u8,
 ) !Tokens {
     const base = std.mem.trimEnd(u8, issuer, "/");
     const url = try std.fmt.allocPrint(allocator, "{s}/oauth/token", .{base});
     defer allocator.free(url);
-
-    const redirect_uri = try std.fmt.allocPrint(allocator, "{s}/deviceauth/callback", .{base});
-    defer allocator.free(redirect_uri);
 
     const body = try formEncode(allocator, &.{
         .{ .name = "grant_type", .value = "authorization_code" },
@@ -544,10 +852,15 @@ fn printLoginHelp() void {
         \\  --with-api-key          Read an OpenAI API key from stdin
         \\  --with-access-token     Read an access token from stdin
         \\  --device-auth           Sign in with ChatGPT device code authorization
+        \\  --no-browser            Print the ChatGPT login URL without opening it
         \\  --experimental_issuer URL
         \\                          Override OAuth issuer for testing
         \\  --experimental_client-id CLIENT_ID
         \\                          Override OAuth client id for testing
+        \\  --experimental_port PORT
+        \\                          Override localhost callback port for testing
+        \\  --experimental_state STATE
+        \\                          Override OAuth state for testing
         \\
     , .{});
 }
@@ -584,6 +897,36 @@ test "jwt parser extracts account metadata" {
     defer claims.deinit(allocator);
     try std.testing.expectEqualStrings("acct_123", claims.account_id.?);
     try std.testing.expect(claims.fedramp);
+}
+
+test "browser authorize url matches codex callback shape" {
+    const allocator = std.testing.allocator;
+    const url = try buildAuthorizeUrl(allocator, "https://auth.example.test/", "client id", "http://localhost:1455/auth/callback", .{
+        .code_verifier = "verifier",
+        .code_challenge = "challenge",
+    }, "state value");
+    defer allocator.free(url);
+
+    try std.testing.expect(std.mem.startsWith(u8, url, "https://auth.example.test/oauth/authorize?"));
+    try std.testing.expect(std.mem.indexOf(u8, url, "response_type=code") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "client_id=client%20id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "code_challenge=challenge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "code_challenge_method=S256") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "codex_cli_simplified_flow=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "state=state%20value") != null);
+}
+
+test "query params decode callback values" {
+    const allocator = std.testing.allocator;
+    const code = (try queryParam(allocator, "code=abc%20123&state=state+value", "code")).?;
+    defer allocator.free(code);
+    const state = (try queryParam(allocator, "code=abc%20123&state=state+value", "state")).?;
+    defer allocator.free(state);
+
+    try std.testing.expectEqualStrings("abc 123", code);
+    try std.testing.expectEqualStrings("state value", state);
+    try std.testing.expect((try queryParam(allocator, "code=abc", "missing")) == null);
 }
 
 test "api key login writes auth json load can reuse" {

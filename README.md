@@ -54,13 +54,16 @@ current Zig auth surface supports:
 
 ```sh
 codex-zig login status
+codex-zig login
 codex-zig login --with-api-key
 codex-zig login --with-access-token
 codex-zig login --device-auth
 codex-zig logout
 ```
 
-`login --device-auth` implements the ChatGPT device-code flow directly in Zig.
+`login` starts a local browser OAuth callback flow on macOS and writes the
+resulting ChatGPT tokens to `auth.json`. `login --device-auth` implements the
+ChatGPT device-code fallback directly in Zig.
 `login --with-access-token` stores the token in the Rust CLI-compatible
 `agent_identity` auth shape; full upstream JWT/JWKS verification and
 agent-task authorization are still tracked as parity work. `CODEX_ACCESS_TOKEN`

@@ -489,7 +489,7 @@ fn printHelp() !void {
         \\                          Start interactive TUI from a forked session
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
-        \\  codex-zig login        Sign in with ChatGPT device auth
+        \\  codex-zig login        Sign in with ChatGPT browser auth
         \\  codex-zig login status Show login status
         \\  codex-zig logout       Remove local Codex auth
         \\  codex-zig review --uncommitted
