@@ -24,6 +24,7 @@ pub const Config = struct {
 
 pub const LoadOptions = struct {
     profile: ?[]const u8 = null,
+    ignore_user_config: bool = false,
 };
 
 pub const RuntimeOverrides = struct {
@@ -146,7 +147,10 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const codex_home = try resolveCodexHome(allocator);
     errdefer allocator.free(codex_home);
 
-    const config_bytes = try readConfigToml(allocator, codex_home);
+    const config_bytes = if (options.ignore_user_config)
+        null
+    else
+        try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
     const config_view = ConfigView{ .bytes = config_bytes orelse "" };
@@ -154,7 +158,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const active_profile = try resolveActiveProfile(allocator, config_view, options.profile);
     errdefer if (active_profile) |profile| allocator.free(profile);
     if (active_profile) |profile| {
-        if (!config_view.hasProfile(profile)) return error.ConfigProfileNotFound;
+        if (!options.ignore_user_config and !config_view.hasProfile(profile)) return error.ConfigProfileNotFound;
     }
 
     const model = try resolveModel(allocator, config_view, active_profile);

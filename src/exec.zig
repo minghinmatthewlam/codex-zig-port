@@ -11,6 +11,8 @@ const ExecArgs = struct {
     auto_approve: bool = false,
     ephemeral: bool = false,
     skip_git_repo_check: bool = false,
+    ignore_user_config: bool = false,
+    ignore_rules: bool = false,
     json: bool = false,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
@@ -91,7 +93,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try allocator.dupe(u8, parsed.prompt.?);
     defer allocator.free(prompt);
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = parsed.profile });
+    var cfg = try config.loadWithOptions(allocator, .{
+        .profile = parsed.profile,
+        .ignore_user_config = parsed.ignore_user_config,
+    });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (parsed.model) |model| {
@@ -197,6 +202,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--skip-git-repo-check")) {
             parsed.skip_git_repo_check = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--ignore-user-config")) {
+            parsed.ignore_user_config = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--ignore-rules")) {
+            parsed.ignore_rules = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--color")) {
@@ -438,6 +451,8 @@ fn printHelp() void {
         \\  -m, --model MODEL       Override the model
         \\  --ephemeral             Do not save or resume a session file
         \\  --skip-git-repo-check   Accepted for Rust CLI compatibility
+        \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
+        \\  --ignore-rules          Accepted for Rust CLI compatibility
         \\  --color MODE            auto, always, or never
         \\  -C, --cd DIR            Use DIR as the working root
         \\  --add-dir DIR           Allow workspace-write shell tools to write DIR
@@ -456,12 +471,14 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--color", "never", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.auto_approve);
     try std.testing.expect(parsed.skip_git_repo_check);
+    try std.testing.expect(parsed.ignore_user_config);
+    try std.testing.expect(parsed.ignore_rules);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
