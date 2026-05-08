@@ -15,6 +15,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   and `logout`
 - send a Responses API turn
 - stream assistant text deltas in the interactive TUI
+- include discovered `AGENTS.md` project instructions in API turns
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model

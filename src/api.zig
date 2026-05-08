@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const agents_md = @import("agents_md.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 
@@ -389,9 +390,12 @@ pub fn buildRequestBody(
     const tools = [_]Tool{ shell_tool, shell_command_tool, apply_patch_tool };
     const include = [_][]const u8{};
 
+    const instructions = try agents_md.buildInstructions(allocator, baseInstructions);
+    defer allocator.free(instructions);
+
     const req = Request{
         .model = cfg.model,
-        .instructions = baseInstructions,
+        .instructions = instructions,
         .input = inputs.items,
         .tools = tools[0..],
         .reasoning = .{},
