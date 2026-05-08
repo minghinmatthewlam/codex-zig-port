@@ -22,19 +22,11 @@ pub fn mergeStringSlices(
 }
 
 pub fn writeStdout(bytes: []const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stdout().writer(std.Io.Threaded.global_single_threaded.io(), &buffer);
-    const stdout = &writer.interface;
-    try stdout.writeAll(bytes);
-    try stdout.flush();
+    try std.Io.File.stdout().writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), bytes);
 }
 
 pub fn writeStderr(bytes: []const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stderr().writer(std.Io.Threaded.global_single_threaded.io(), &buffer);
-    const stderr = &writer.interface;
-    try stderr.writeAll(bytes);
-    try stderr.flush();
+    try std.Io.File.stderr().writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), bytes);
 }
 
 test "join with spaces" {

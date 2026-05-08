@@ -26,6 +26,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try runPromptInput(allocator, args, options);
         return;
     }
+    if (std.mem.eql(u8, subcommand, "models")) {
+        try runModels(allocator, args, options);
+        return;
+    }
 
     std.debug.print("unknown debug subcommand: {s}\n", .{subcommand});
     return error.UnknownDebugSubcommand;
@@ -73,6 +77,26 @@ fn runPromptInput(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
     try cli_utils.writeStdout("\n");
 }
 
+fn runModels(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
+    var bundled = false;
+    while (args.next()) |arg| {
+        if (isHelpFlag(arg)) {
+            printModelsHelp();
+            return;
+        }
+        if (std.mem.eql(u8, arg, "--bundled")) {
+            bundled = true;
+            continue;
+        }
+        return error.UnknownDebugModelsOption;
+    }
+
+    const rendered = try renderModels(allocator, options, bundled);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+    try cli_utils.writeStdout("\n");
+}
+
 fn renderPromptInput(
     allocator: std.mem.Allocator,
     prompt: ?[]const u8,
@@ -102,13 +126,79 @@ fn renderPromptInput(
     return std.json.Stringify.valueAlloc(allocator, input, .{ .whitespace = .indent_2 });
 }
 
+const ReasoningLevel = struct {
+    effort: []const u8,
+    description: []const u8,
+};
+
+const ModelEntry = struct {
+    slug: []const u8,
+    display_name: []const u8,
+    description: []const u8,
+    default_reasoning_level: []const u8,
+    supported_reasoning_levels: []const ReasoningLevel,
+    input_modalities: []const []const u8,
+    supports_parallel_tool_calls: bool,
+    supported_in_api: bool,
+    visibility: []const u8,
+    priority: u32,
+};
+
+const ModelsResponse = struct {
+    models: []const ModelEntry,
+};
+
+const default_reasoning_levels = [_]ReasoningLevel{
+    .{ .effort = "low", .description = "Fast responses with lighter reasoning" },
+    .{ .effort = "medium", .description = "Balanced reasoning depth" },
+    .{ .effort = "high", .description = "Greater reasoning depth" },
+    .{ .effort = "xhigh", .description = "Extra high reasoning depth" },
+};
+
+const text_image_modalities = [_][]const u8{ "text", "image" };
+
+fn renderModels(allocator: std.mem.Allocator, options: Options, bundled: bool) ![]const u8 {
+    if (bundled) {
+        const models = [_]ModelEntry{defaultModelEntry("gpt-5.2-codex", "GPT-5.2 Codex", "Default Codex Zig coding model.")};
+        return stringifyModels(allocator, models[0..]);
+    }
+
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+
+    const models = [_]ModelEntry{defaultModelEntry(cfg.model, cfg.model, "Configured Codex Zig model.")};
+    return stringifyModels(allocator, models[0..]);
+}
+
+fn defaultModelEntry(slug: []const u8, display_name: []const u8, description: []const u8) ModelEntry {
+    return .{
+        .slug = slug,
+        .display_name = display_name,
+        .description = description,
+        .default_reasoning_level = "medium",
+        .supported_reasoning_levels = default_reasoning_levels[0..],
+        .input_modalities = text_image_modalities[0..],
+        .supports_parallel_tool_calls = true,
+        .supported_in_api = true,
+        .visibility = "list",
+        .priority = 0,
+    };
+}
+
+fn stringifyModels(allocator: std.mem.Allocator, models: []const ModelEntry) ![]const u8 {
+    return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{ .whitespace = .indent_2 });
+}
+
 fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig debug prompt-input [OPTIONS] [PROMPT]
+        \\  codex-zig debug models [--bundled]
         \\
         \\Subcommands:
         \\  prompt-input       Render the model-visible input list as JSON
+        \\  models             Render the raw model catalog as JSON
         \\
     , .{});
 }
@@ -122,6 +212,19 @@ fn printPromptInputHelp() void {
         \\
         \\Options:
         \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
+        \\
+    , .{});
+}
+
+fn printModelsHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig debug models [--bundled]
+        \\
+        \\Prints a Zig-native model catalog snapshot as JSON.
+        \\
+        \\Options:
+        \\  --bundled              Skip config and dump the bundled Zig catalog
         \\
     , .{});
 }
@@ -156,4 +259,29 @@ test "debug prompt input renders images on latest user message" {
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"type\": \"input_image\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"image_url\": \"data:image/png;base64,aW1hZ2U=\"") != null);
+}
+
+test "debug models renders configured model" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderModels(allocator, .{ .runtime_overrides = .{ .model = "gpt-test" } }, false);
+    defer allocator.free(rendered);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
+    defer parsed.deinit();
+    const model = parsed.value.object.get("models").?.array.items[0].object;
+    try std.testing.expectEqualStrings("gpt-test", model.get("slug").?.string);
+    try std.testing.expectEqualStrings("medium", model.get("default_reasoning_level").?.string);
+    try std.testing.expectEqual(@as(usize, 4), model.get("supported_reasoning_levels").?.array.items.len);
+}
+
+test "debug models bundled ignores configured model" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderModels(allocator, .{ .runtime_overrides = .{ .model = "gpt-test" } }, true);
+    defer allocator.free(rendered);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
+    defer parsed.deinit();
+    const model = parsed.value.object.get("models").?.array.items[0].object;
+    try std.testing.expectEqualStrings("gpt-5.2-codex", model.get("slug").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"slug\": \"gpt-test\"") == null);
 }
