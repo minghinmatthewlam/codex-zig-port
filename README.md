@@ -47,6 +47,20 @@ zig build run
 
 The project currently targets Zig `0.16.0`.
 
+## Verification
+
+Run the repeatable TUI E2E harness after building:
+
+```sh
+zig build
+scripts/tui_e2e.py
+```
+
+The harness starts a local mock Responses server, launches the real
+`zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/status`, a model
+tool call with approval, `/ps`, `/stop`, and `/quit`, then checks the captured
+terminal transcript and API request count.
+
 ## Auth
 
 `codex-zig` reuses the same `$CODEX_HOME/auth.json` file as the Rust CLI. The

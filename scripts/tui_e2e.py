@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+import argparse
+import errno
+import json
+import os
+import pty
+import select
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+def free_port() -> int:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def sse(*events: dict) -> bytes:
+    body = "".join(
+        f"data: {json.dumps(event, separators=(',', ':'))}\n" for event in events
+    )
+    return (body + "data: [DONE]\n").encode()
+
+
+class MockResponsesHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length)
+        try:
+            request = json.loads(raw_body)
+        except json.JSONDecodeError:
+            request = {}
+
+        items = request.get("input", [])
+        has_tool_output = any(
+            isinstance(item, dict) and item.get("type") == "function_call_output"
+            for item in items
+        )
+        if has_tool_output:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "background terminal started\n",
+                },
+            )
+        else:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll start a background command.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-1",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf READY; sleep 30",
+                                "tty": True,
+                                "yield_time_ms": 1000,
+                                "max_output_tokens": 2000,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
+
+        self.server.request_count += 1
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class MockResponsesServer(ThreadingHTTPServer):
+    request_count: int
+
+
+def start_mock_server(port: int) -> MockResponsesServer:
+    server = MockResponsesServer(("127.0.0.1", port), MockResponsesHandler)
+    server.request_count = 0
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def read_available(master_fd: int, output: bytearray, timeout: float = 0.05) -> None:
+    while True:
+        readable, _, _ = select.select([master_fd], [], [], timeout)
+        if not readable:
+            return
+        try:
+            chunk = os.read(master_fd, 8192)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                return
+            raise
+        if not chunk:
+            return
+        output.extend(chunk)
+        timeout = 0
+
+
+def wait_for(master_fd: int, output: bytearray, needle: bytes, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while needle not in output:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"timed out waiting for {needle!r}\n\n{rendered}")
+        readable, _, _ = select.select([master_fd], [], [], min(0.2, remaining))
+        if not readable:
+            continue
+        try:
+            chunk = os.read(master_fd, 8192)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                rendered = output.decode(errors="replace")
+                raise AssertionError(f"process exited before {needle!r}\n\n{rendered}")
+            raise
+        if not chunk:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"process closed before {needle!r}\n\n{rendered}")
+        output.extend(chunk)
+
+
+def send_line(master_fd: int, line: str) -> None:
+    os.write(master_fd, line.encode() + b"\n")
+
+
+def run_e2e(repo: Path, binary: Path) -> str:
+    if not binary.exists():
+        raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
+
+    port = free_port()
+    server = start_mock_server(port)
+    output = bytearray()
+    proc = None
+    master_fd = -1
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="codex-zig-tui-e2e.") as home:
+            auth_path = Path(home) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "tokens": {
+                            "access_token": "tui-e2e-token",
+                            "account_id": "acct_tui_e2e",
+                        }
+                    }
+                )
+            )
+
+            master_fd, slave_fd = pty.openpty()
+            env = os.environ.copy()
+            env["CODEX_HOME"] = home
+            env.setdefault("TERM", "xterm-256color")
+            proc = subprocess.Popen(
+                [
+                    str(binary),
+                    "-c",
+                    f"chatgpt_base_url=http://127.0.0.1:{port}",
+                ],
+                cwd=repo,
+                env=env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+
+            wait_for(master_fd, output, b"Type /help for commands", 8)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"status:", 5)
+            wait_for(master_fd, output, b"tools:", 5)
+
+            send_line(master_fd, "start a background terminal")
+            wait_for(master_fd, output, b"Tool approval required", 8)
+            wait_for(master_fd, output, b"Run this command? [y/N]", 5)
+            send_line(master_fd, "y")
+            wait_for(master_fd, output, b"[tool result] session 1000", 10)
+            wait_for(master_fd, output, b"background terminal started", 8)
+
+            send_line(master_fd, "/ps")
+            wait_for(master_fd, output, b"background terminals:", 5)
+            wait_for(master_fd, output, b"1000. pty", 5)
+
+            send_line(master_fd, "/stop")
+            wait_for(master_fd, output, b"stopped 1 background terminal(s)", 5)
+
+            send_line(master_fd, "/ps")
+            wait_for(master_fd, output, b"background terminals: none", 5)
+
+            send_line(master_fd, "/quit")
+            wait_for(master_fd, output, b"bye", 5)
+            read_available(master_fd, output)
+            exit_code = proc.wait(timeout=5)
+            if exit_code != 0:
+                raise AssertionError(f"codex-zig exited with {exit_code}")
+
+        if server.request_count < 2:
+            raise AssertionError(f"expected at least 2 API requests, saw {server.request_count}")
+        return output.decode(errors="replace")
+    finally:
+        server.shutdown()
+        server.server_close()
+        if master_fd != -1:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run Codex Zig TUI E2E in a PTY.")
+    parser.add_argument(
+        "--bin",
+        default="zig-out/bin/codex-zig",
+        help="Path to the codex-zig binary relative to repo root, or absolute.",
+    )
+    parser.add_argument(
+        "--show-output",
+        action="store_true",
+        help="Print the captured terminal transcript after success.",
+    )
+    args = parser.parse_args()
+
+    repo = Path(__file__).resolve().parents[1]
+    binary = Path(args.bin)
+    if not binary.is_absolute():
+        binary = repo / binary
+
+    transcript = run_e2e(repo, binary)
+    print("tui-e2e: ok")
+    if args.show_output:
+        print(transcript)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
