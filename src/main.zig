@@ -149,6 +149,9 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.web_search_mode = .live;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--no-alt-screen")) {
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--")) {
             if (args.next()) |first| {
                 forced_initial_prompt = try joinInitialPrompt(allocator, first, &args);
@@ -552,6 +555,8 @@ fn printHelp() !void {
         \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
+        \\  codex-zig --no-alt-screen
+        \\                          Accept Rust TUI inline-mode flag
         \\  codex-zig --version
         \\                          Print version and exit
         \\  codex-zig mock-demo    Run deterministic local tool demo

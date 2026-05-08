@@ -248,6 +248,7 @@ def run_e2e(binary: Path) -> str:
             proc = subprocess.Popen(
                 [
                     str(binary),
+                    "--no-alt-screen",
                     "-c",
                     f"chatgpt_base_url=http://127.0.0.1:{port}",
                 ],

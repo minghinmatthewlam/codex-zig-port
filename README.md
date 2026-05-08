@@ -11,6 +11,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 
 - launch an interactive terminal UI with `zig build run`
 - accept an optional initial prompt with `codex-zig [PROMPT]`
+- accept the Rust TUI `--no-alt-screen` inline-mode flag as a no-op because
+  the current Zig terminal UI already runs inline
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
 - refresh expired or stale ChatGPT auth tokens from stored refresh tokens
 - manage basic auth with `login status`, `login --with-api-key`,
@@ -125,6 +127,7 @@ codex-zig -c model=gpt-5.5
 codex-zig exec -c sandbox_mode=read-only "say hello"
 codex-zig --oss --local-provider lmstudio
 codex-zig --search
+codex-zig --no-alt-screen
 codex-zig --version
 codex-zig exec --profile work "say hello"
 codex-zig exec resume --all last "continue"

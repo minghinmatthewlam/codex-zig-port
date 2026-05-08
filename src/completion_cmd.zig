@@ -5,12 +5,12 @@ const cli_utils = @import("cli_utils.zig");
 const top_level_commands =
     "app-server auth-status completion debug e exec features fork login logout mcp mcp-server review resume sandbox sessions";
 const global_options =
-    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search";
+    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
     "'app-server' 'auth-status' 'completion' 'debug' 'e' 'exec' 'features' 'fork' 'login' 'logout' 'mcp' 'mcp-server' 'review' 'resume' 'sandbox' 'sessions'";
 const elvish_global_options =
-    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search'";
+    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
 
 const Shell = enum {
@@ -144,6 +144,7 @@ fn appendFishOptions(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !voi
         "complete -c codex-zig -s s -l sandbox -xa 'read-only workspace-write danger-full-access' -d 'Sandbox mode'\n",
         "complete -c codex-zig -l yolo -d 'Disable approvals and sandbox'\n",
         "complete -c codex-zig -l search -d 'Enable live web search'\n",
+        "complete -c codex-zig -l no-alt-screen -d 'Accept Rust TUI inline-mode flag'\n",
     };
     for (lines) |line| try out.appendSlice(allocator, line);
 }
@@ -194,6 +195,7 @@ fn renderZsh(allocator: std.mem.Allocator) ![]const u8 {
         \\        '(-s --sandbox)'{{-s,--sandbox}}'[Sandbox mode]:(read-only workspace-write danger-full-access)' \
         \\        '--yolo[Disable approvals and sandbox]' \
         \\        '--search[Enable live web search]' \
+        \\        '--no-alt-screen[Accept Rust TUI inline-mode flag]' \
         \\        '1:command:($commands)' \
         \\        '*::arg:_files'
         \\}}
