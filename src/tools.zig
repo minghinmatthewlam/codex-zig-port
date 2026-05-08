@@ -2,6 +2,7 @@ const std = @import("std");
 
 const api = @import("api.zig");
 const config = @import("config.zig");
+const sandbox = @import("sandbox.zig");
 
 pub const ToolResult = struct {
     call_id: []const u8,
@@ -57,7 +58,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, isTrustedShellCommand(parsed.value.command))) |result| return result;
-        return runShellCommand(allocator, call.call_id, parsed.value.command);
+        return runShellCommand(allocator, call.call_id, parsed.value.command, policy.sandbox_mode);
     }
 
     if (std.mem.eql(u8, call.name, "shell")) {
@@ -67,7 +68,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         const command = try joinCommand(allocator, parsed.value.command);
         defer allocator.free(command);
         if (try permissionResult(allocator, call.call_id, policy, .shell, command, isTrustedArgv(parsed.value.command))) |result| return result;
-        return runArgv(allocator, call.call_id, parsed.value.command);
+        return runArgv(allocator, call.call_id, parsed.value.command, policy.sandbox_mode);
     }
 
     if (std.mem.eql(u8, call.name, "apply_patch")) {
@@ -144,9 +145,14 @@ fn blockedBySandbox(allocator: std.mem.Allocator, call_id: []const u8, sandbox_m
     };
 }
 
-fn runShellCommand(allocator: std.mem.Allocator, call_id: []const u8, command: []const u8) !ToolResult {
+fn runShellCommand(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    command: []const u8,
+    sandbox_mode: config.SandboxMode,
+) !ToolResult {
     const argv = [_][]const u8{ "/bin/zsh", "-lc", command };
-    return runArgv(allocator, call_id, argv[0..]);
+    return runArgv(allocator, call_id, argv[0..], sandbox_mode);
 }
 
 fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
@@ -172,12 +178,24 @@ fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []con
     };
 }
 
-fn runArgv(allocator: std.mem.Allocator, call_id: []const u8, argv: []const []const u8) !ToolResult {
+fn runArgv(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    argv: []const []const u8,
+    sandbox_mode: config.SandboxMode,
+) !ToolResult {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
+    var sandboxed_argv: ?sandbox.SandboxedArgv = null;
+    defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
+    const effective_argv = if (sandbox.shouldSandbox(sandbox_mode)) blk: {
+        sandboxed_argv = try sandbox.wrapArgv(allocator, sandbox_mode, argv);
+        break :blk sandboxed_argv.?.argv;
+    } else argv;
+
     const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = argv,
+        .argv = effective_argv,
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{

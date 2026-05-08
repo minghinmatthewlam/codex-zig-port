@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
 const git_diff = @import("git_diff.zig");
+const sandbox = @import("sandbox.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
@@ -48,6 +49,10 @@ pub fn main(init: std.process.Init) !void {
             try runMockPolicyDemo(allocator);
             return;
         }
+        if (std.mem.eql(u8, cmd, "mock-sandbox-demo")) {
+            try runMockSandboxDemo(allocator);
+            return;
+        }
         std.debug.print("unknown command: {s}\n\n", .{cmd});
         try printHelp();
         return error.UnknownCommand;
@@ -71,6 +76,8 @@ fn printHelp() !void {
         \\                          Run deterministic apply_patch demo
         \\  codex-zig mock-policy-demo
         \\                          Run deterministic approval/sandbox demo
+        \\  codex-zig mock-sandbox-demo
+        \\                          Run deterministic macOS sandbox demo
         \\
         \\Environment:
         \\  CODEX_HOME             Override Codex home (default: ~/.codex)
@@ -198,6 +205,50 @@ fn runMockPolicyDemo(allocator: std.mem.Allocator) !void {
     std.debug.print("policy: ok\n", .{});
 }
 
+fn runMockSandboxDemo(allocator: std.mem.Allocator) !void {
+    const allowed_file = "codex_zig_sandbox_allowed.txt";
+    const blocked_file = "/tmp/codex_zig_sandbox_blocked.txt";
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().deleteFile(io, allowed_file) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    std.Io.Dir.cwd().deleteFile(io, blocked_file) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
+    const call = api.FunctionCall{
+        .call_id = "call_mock_sandbox",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"printf workspace-ok > codex_zig_sandbox_allowed.txt; printf outside > /tmp/codex_zig_sandbox_blocked.txt\"}",
+    };
+    const result = try tools.runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+    });
+    defer result.deinit(allocator);
+
+    if (std.mem.eql(u8, result.summary, "exit 0")) return error.MockSandboxOutsideWriteAllowed;
+
+    const allowed = try std.Io.Dir.cwd().readFileAlloc(io, allowed_file, allocator, .limited(1024));
+    defer allocator.free(allowed);
+    if (!std.mem.eql(u8, allowed, "workspace-ok")) return error.MockSandboxAllowedWriteMismatch;
+
+    if (std.Io.Dir.cwd().readFileAlloc(io, blocked_file, allocator, .limited(1024))) |blocked| {
+        defer allocator.free(blocked);
+        return error.MockSandboxBlockedFileCreated;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    std.debug.print("sandbox: {s}\n", .{result.summary});
+    std.debug.print("workspace-write: ok\n", .{});
+    std.debug.print("outside-write: blocked\n", .{});
+}
+
 test {
     _ = api;
     _ = auth;
@@ -205,6 +256,7 @@ test {
     _ = env;
     _ = exec;
     _ = git_diff;
+    _ = sandbox;
     _ = session;
     _ = session_store;
     _ = tools;
