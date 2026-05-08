@@ -3,8 +3,17 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
+const session_store = @import("session_store.zig");
+
+pub const Options = struct {
+    resume_target: ?[]const u8 = null,
+};
 
 pub fn run(allocator: std.mem.Allocator) !void {
+    try runWithOptions(allocator, .{});
+}
+
+pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
@@ -14,10 +23,25 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
+    var session_path = if (options.resume_target) |target|
+        try session_store.resolveResumePath(allocator, cfg.codex_home, target)
+    else
+        try session_store.createSessionPath(allocator, cfg.codex_home);
+    defer allocator.free(session_path);
+
+    if (options.resume_target != null) {
+        const loaded = try session_store.loadTranscript(allocator, session_path);
+        transcript.deinit(allocator);
+        transcript = loaded;
+    }
+
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(cwd);
 
     printHeader(cfg, credentials, cwd);
+    if (options.resume_target != null) {
+        std.debug.print("resumed: {s} ({d} items)\n", .{ session_path, transcript.history.items.len });
+    }
 
     var input_buffer: [16 * 1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
@@ -29,7 +53,11 @@ pub fn run(allocator: std.mem.Allocator) !void {
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
         if (std.mem.eql(u8, prompt, "q")) break;
-        if (try handleSlashCommand(allocator, &cfg, credentials, &transcript, cwd, prompt)) |action| {
+        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt) catch |err| {
+            std.debug.print("error: {s}\n", .{@errorName(err)});
+            continue;
+        };
+        if (slash_action) |action| {
             switch (action) {
                 .handled => continue,
                 .quit => break,
@@ -42,6 +70,9 @@ pub fn run(allocator: std.mem.Allocator) !void {
             continue;
         };
         defer allocator.free(answer);
+        session_store.saveTranscript(allocator, session_path, &transcript) catch |err| {
+            std.debug.print("warning: could not save session: {s}\n", .{@errorName(err)});
+        };
         std.debug.print("\nassistant:\n{s}\n", .{answer});
     }
 
@@ -85,6 +116,7 @@ fn handleSlashCommand(
     cfg: *config.Config,
     credentials: auth.Credentials,
     transcript: *session.Transcript,
+    session_path: *[]const u8,
     cwd: []const u8,
     prompt: []const u8,
 ) !?SlashAction {
@@ -103,19 +135,37 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
-        printStatus(cfg.*, credentials, transcript, cwd);
+        printStatus(cfg.*, credentials, transcript, session_path.*, cwd);
         return .handled;
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "clear") or std.ascii.eqlIgnoreCase(parts.name, "new")) {
+        const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         transcript.deinit(allocator);
         transcript.* = .{};
+        allocator.free(session_path.*);
+        session_path.* = next_path;
         if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
             std.debug.print("\x1b[2J\x1b[H", .{});
             printHeader(cfg.*, credentials, cwd);
         } else {
             std.debug.print("started a new chat\n", .{});
         }
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "resume")) {
+        const target = if (parts.args.len == 0) null else parts.args;
+        const next_path = try session_store.resolveResumePath(allocator, cfg.codex_home, target);
+        errdefer allocator.free(next_path);
+        var loaded = try session_store.loadTranscript(allocator, next_path);
+        errdefer loaded.deinit(allocator);
+
+        transcript.deinit(allocator);
+        transcript.* = loaded;
+        allocator.free(session_path.*);
+        session_path.* = next_path;
+        std.debug.print("resumed: {s} ({d} items)\n", .{ session_path.*, transcript.history.items.len });
         return .handled;
     }
 
@@ -153,18 +203,26 @@ fn printSlashHelp() void {
         \\  /model [name]     show or set the in-memory model for this session
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
+        \\  /resume [target]  resume last, a session id, or a JSONL path
         \\  /quit, /exit      exit
         \\
     , .{});
 }
 
-fn printStatus(cfg: config.Config, credentials: auth.Credentials, transcript: *const session.Transcript, cwd: []const u8) void {
+fn printStatus(
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *const session.Transcript,
+    session_path: []const u8,
+    cwd: []const u8,
+) void {
     std.debug.print(
         \\status:
         \\  model:       {s}
         \\  auth:        {s}
         \\  api:         {s}
         \\  cwd:         {s}
+        \\  session:     {s}
         \\  transcript:  {d} items
         \\  tools:       shell, shell_command, apply_patch
         \\  sandbox:     not implemented
@@ -177,6 +235,7 @@ fn printStatus(cfg: config.Config, credentials: auth.Credentials, transcript: *c
             .api_key => cfg.openai_base_url,
         },
         cwd,
+        session_path,
         transcript.history.items.len,
     });
 }

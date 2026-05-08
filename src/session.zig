@@ -21,6 +21,21 @@ pub const Transcript = struct {
         try self.appendMessage(allocator, "assistant", "output_text", text);
     }
 
+    pub fn appendHistoryItem(self: *Transcript, allocator: std.mem.Allocator, item: api.HistoryItem) !void {
+        var owned = api.HistoryItem{ .kind = item.kind };
+        errdefer owned.deinit(allocator);
+
+        owned.role = if (item.role) |value| try allocator.dupe(u8, value) else null;
+        owned.text = if (item.text) |value| try allocator.dupe(u8, value) else null;
+        owned.content_type = if (item.content_type) |value| try allocator.dupe(u8, value) else null;
+        owned.call_id = if (item.call_id) |value| try allocator.dupe(u8, value) else null;
+        owned.name = if (item.name) |value| try allocator.dupe(u8, value) else null;
+        owned.arguments = if (item.arguments) |value| try allocator.dupe(u8, value) else null;
+        owned.output = if (item.output) |value| try allocator.dupe(u8, value) else null;
+
+        try self.history.append(allocator, owned);
+    }
+
     fn appendMessage(
         self: *Transcript,
         allocator: std.mem.Allocator,

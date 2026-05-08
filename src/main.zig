@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
 const session = @import("session.zig");
+const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
 const tui = @import("tui.zig");
 
@@ -27,6 +28,11 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "exec")) {
             try exec.run(allocator, &args);
+            return;
+        }
+        if (std.mem.eql(u8, cmd, "resume")) {
+            const target = args.next() orelse "last";
+            try tui.runWithOptions(allocator, .{ .resume_target = target });
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -51,6 +57,8 @@ fn printHelp() !void {
         \\
         \\Usage:
         \\  codex-zig              Start interactive TUI
+        \\  codex-zig resume [ID|PATH|last]
+        \\                          Start interactive TUI from a saved session
         \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig mock-demo    Run deterministic local tool demo
@@ -136,6 +144,7 @@ test {
     _ = env;
     _ = exec;
     _ = session;
+    _ = session_store;
     _ = tools;
     _ = tui;
 }
