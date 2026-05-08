@@ -42,8 +42,20 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "resume")) {
-            const target = args.next() orelse "last";
-            try tui.runWithOptions(allocator, .{ .resume_target = target });
+            const target = args.next();
+            if (target) |value| {
+                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                    printResumeHelp();
+                    return;
+                }
+                if (std.mem.eql(u8, value, "--last")) {
+                    try tui.runWithOptions(allocator, .{ .resume_target = "last" });
+                    return;
+                }
+                try tui.runWithOptions(allocator, .{ .resume_target = value });
+            } else {
+                try tui.runWithOptions(allocator, .{ .resume_picker = true });
+            }
             return;
         }
         if (std.mem.eql(u8, cmd, "sessions")) {
@@ -80,7 +92,10 @@ fn printHelp() !void {
         \\
         \\Usage:
         \\  codex-zig              Start interactive TUI
-        \\  codex-zig resume [ID|PATH|last]
+        \\  codex-zig resume       Pick a saved Zig session to resume
+        \\  codex-zig resume --last
+        \\                          Resume the latest saved Zig session
+        \\  codex-zig resume ID|PATH|last
         \\                          Start interactive TUI from a saved session
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
@@ -103,6 +118,18 @@ fn printHelp() !void {
         \\  CODEX_ZIG_APPROVAL_POLICY
         \\                         Override approval policy
         \\  CODEX_ZIG_SANDBOX_MODE Override sandbox mode
+        \\
+    , .{});
+}
+
+fn printResumeHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig resume
+        \\  codex-zig resume --last
+        \\  codex-zig resume ID|PATH|last
+        \\
+        \\Without a target, opens a numbered picker for saved Zig sessions.
         \\
     , .{});
 }

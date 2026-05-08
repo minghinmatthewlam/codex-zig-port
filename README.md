@@ -54,7 +54,8 @@ Interactive and non-interactive turns save Zig-native JSONL transcripts under
 
 ```sh
 codex-zig sessions
-codex-zig resume last
+codex-zig resume
+codex-zig resume --last
 codex-zig resume <session-id>
 ```
 

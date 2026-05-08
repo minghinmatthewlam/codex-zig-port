@@ -8,6 +8,7 @@ const session_store = @import("session_store.zig");
 
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
+    resume_picker: bool = false,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -24,13 +25,22 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
-    var session_path = if (options.resume_target) |target|
-        try session_store.resolveResumePath(allocator, cfg.codex_home, target)
-    else
-        try session_store.createSessionPath(allocator, cfg.codex_home);
+    var resumed = false;
+    var session_path = if (options.resume_picker) blk: {
+        const picked_path = try promptResumePicker(allocator, cfg.codex_home);
+        if (picked_path == null) {
+            std.debug.print("resume canceled\n", .{});
+            return;
+        }
+        resumed = true;
+        break :blk picked_path.?;
+    } else if (options.resume_target) |target| blk: {
+        resumed = true;
+        break :blk try session_store.resolveResumePath(allocator, cfg.codex_home, target);
+    } else try session_store.createSessionPath(allocator, cfg.codex_home);
     defer allocator.free(session_path);
 
-    if (options.resume_target != null) {
+    if (resumed) {
         const loaded = try session_store.loadTranscript(allocator, session_path);
         transcript.deinit(allocator);
         transcript = loaded;
@@ -40,7 +50,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     defer allocator.free(cwd);
 
     printHeader(cfg, credentials, cwd);
-    if (options.resume_target != null) {
+    if (resumed) {
         std.debug.print("resumed: {s} ({d} items)\n", .{ session_path, transcript.history.items.len });
     }
 
@@ -108,6 +118,38 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
     });
+}
+
+fn promptResumePicker(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    const sessions = try session_store.listSessions(allocator, codex_home, 10);
+    defer session_store.freeSessionSummaries(allocator, sessions);
+
+    if (sessions.len == 0) {
+        std.debug.print("resume: no saved Zig sessions\n", .{});
+        return null;
+    }
+
+    std.debug.print("resume sessions:\n", .{});
+    for (sessions, 0..) |entry, index| {
+        std.debug.print("  {d}. {s}\n     {s}\n", .{ index + 1, entry.id, entry.path });
+    }
+    std.debug.print("Select session [1-{d}] or press Enter to cancel: ", .{sessions.len});
+
+    var input_buffer: [1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
+    const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+    const line = line_opt orelse return null;
+    const selection = try parseResumeSelection(line, sessions.len) orelse return null;
+    const path = try allocator.dupe(u8, sessions[selection].path);
+    return path;
+}
+
+fn parseResumeSelection(input: []const u8, count: usize) !?usize {
+    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const selected = try std.fmt.parseUnsigned(usize, trimmed, 10);
+    if (selected == 0 or selected > count) return error.InvalidResumeSelection;
+    return selected - 1;
 }
 
 const SlashAction = enum {
@@ -482,6 +524,14 @@ test "parse history limit" {
     try std.testing.expectEqual(@as(usize, 10), try parseSessionListLimit(""));
     try std.testing.expectEqual(@as(usize, 2), try parseSessionListLimit("2"));
     try std.testing.expectError(error.InvalidCharacter, parseSessionListLimit("x"));
+}
+
+test "parse resume picker selection" {
+    try std.testing.expectEqual(@as(?usize, 0), try parseResumeSelection("1\n", 2));
+    try std.testing.expectEqual(@as(?usize, 1), try parseResumeSelection(" 2 ", 2));
+    try std.testing.expectEqual(@as(?usize, null), try parseResumeSelection("\n", 2));
+    try std.testing.expectError(error.InvalidResumeSelection, parseResumeSelection("3", 2));
+    try std.testing.expectError(error.InvalidCharacter, parseResumeSelection("x", 2));
 }
 
 test "parse permission updates" {
