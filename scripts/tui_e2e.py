@@ -30,6 +30,34 @@ def sse(*events: dict) -> bytes:
     return (body + "data: [DONE]\n").encode()
 
 
+def latest_user_text(items: list[object]) -> str:
+    latest = ""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "message" or item.get("role") != "user":
+            continue
+        parts = item.get("content", [])
+        if not isinstance(parts, list):
+            continue
+        texts = [
+            part.get("text", "")
+            for part in parts
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        latest = "\n".join(texts)
+    return latest
+
+
+def has_tool_output(items: list[object], call_id: str) -> bool:
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "function_call_output"
+        and item.get("call_id") == call_id
+        for item in items
+    )
+
+
 class MockResponsesHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -40,11 +68,45 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             request = {}
 
         items = request.get("input", [])
-        has_tool_output = any(
-            isinstance(item, dict) and item.get("type") == "function_call_output"
-            for item in items
-        )
-        if has_tool_output:
+        if not isinstance(items, list):
+            items = []
+        latest_prompt = latest_user_text(items)
+        if "create the demo file" in latest_prompt and has_tool_output(
+            items, "call-tui-e2e-2"
+        ):
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "demo file created\n",
+                },
+            )
+        elif "create the demo file" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll patch in the demo file.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-2",
+                        "name": "apply_patch",
+                        "arguments": json.dumps(
+                            {
+                                "patch": (
+                                    "*** Begin Patch\n"
+                                    "*** Add File: codex_zig_tui_file.txt\n"
+                                    "+created by codex-zig tui e2e\n"
+                                    "*** End Patch"
+                                )
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
+        elif has_tool_output(items, "call-tui-e2e-1"):
             payload = sse(
                 {
                     "type": "response.output_text.delta",
@@ -152,7 +214,7 @@ def send_line(master_fd: int, line: str) -> None:
     os.write(master_fd, line.encode() + b"\n")
 
 
-def run_e2e(repo: Path, binary: Path) -> str:
+def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
 
@@ -175,6 +237,9 @@ def run_e2e(repo: Path, binary: Path) -> str:
                     }
                 )
             )
+            workspace = Path(home) / "workspace"
+            workspace.mkdir()
+            demo_file = workspace / "codex_zig_tui_file.txt"
 
             master_fd, slave_fd = pty.openpty()
             env = os.environ.copy()
@@ -186,7 +251,7 @@ def run_e2e(repo: Path, binary: Path) -> str:
                     "-c",
                     f"chatgpt_base_url=http://127.0.0.1:{port}",
                 ],
-                cwd=repo,
+                cwd=workspace,
                 env=env,
                 stdin=slave_fd,
                 stdout=slave_fd,
@@ -250,6 +315,29 @@ def run_e2e(repo: Path, binary: Path) -> str:
             read_available(master_fd, output, 0.2)
 
             mark = len(output)
+            send_line(master_fd, "create the demo file")
+            wait_for(master_fd, output, b"Tool approval required", 8, mark)
+            wait_for(master_fd, output, b"Run this patch? [y/N]", 5, mark)
+            mark = len(output)
+            send_line(master_fd, "y")
+            wait_for(master_fd, output, b"[tool result] patched +1 ~0 -0", 10, mark)
+            wait_for(master_fd, output, b"demo file created", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            if not demo_file.exists():
+                raise AssertionError(f"expected demo file to exist: {demo_file}")
+            contents = demo_file.read_text()
+            if contents != "created by codex-zig tui e2e\n":
+                raise AssertionError(f"unexpected demo file contents: {contents!r}")
+
+            mark = len(output)
+            send_line(master_fd, "/history 8")
+            wait_for(master_fd, output, b"history: showing 8 of 8 items", 5, mark)
+            wait_for(master_fd, output, b"tool call: apply_patch", 5, mark)
+            wait_for(master_fd, output, b"demo file created", 5, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
             send_line(master_fd, "/stop")
             wait_for(master_fd, output, b"stopped 1 background terminal(s)", 5, mark)
 
@@ -303,7 +391,7 @@ def main() -> int:
     if not binary.is_absolute():
         binary = repo / binary
 
-    transcript = run_e2e(repo, binary)
+    transcript = run_e2e(binary)
     print("tui-e2e: ok")
     if args.show_output:
         print(transcript)
