@@ -4,6 +4,11 @@ const api = @import("api.zig");
 const config = @import("config.zig");
 const sandbox = @import("sandbox.zig");
 
+const session_allocator = std.heap.page_allocator;
+
+var exec_sessions: std.ArrayList(ExecSession) = .empty;
+var next_exec_session_id: u64 = 1000;
+
 pub const ToolResult = struct {
     call_id: []const u8,
     summary: []const u8,
@@ -30,8 +35,52 @@ const ExecCommandArgs = struct {
     login: ?bool = null,
 };
 
+const WriteStdinArgs = struct {
+    session_id: u64,
+    chars: []const u8 = "",
+    yield_time_ms: ?u64 = null,
+    max_output_tokens: ?usize = null,
+};
+
 const ShellArgs = struct {
     command: []const []const u8,
+};
+
+const ExecSession = struct {
+    id: u64,
+    io_instance: std.Io.Threaded,
+    child: std.process.Child,
+    stdin_file: ?std.Io.File,
+    stdout_file: ?std.Io.File,
+    stderr_file: ?std.Io.File,
+    started: std.Io.Timestamp,
+
+    fn deinit(self: *ExecSession) void {
+        if (self.child.id != null) {
+            self.child.kill(self.io_instance.io());
+        } else {
+            self.closeOpenFiles();
+        }
+        self.io_instance.deinit();
+    }
+
+    fn closeOpenFiles(self: *ExecSession) void {
+        if (self.stdin_file) |file| file.close(self.io_instance.io());
+        if (self.stdout_file) |file| file.close(self.io_instance.io());
+        if (self.stderr_file) |file| file.close(self.io_instance.io());
+        self.stdin_file = null;
+        self.stdout_file = null;
+        self.stderr_file = null;
+    }
+};
+
+const SessionRead = struct {
+    output: []const u8,
+    term: ?std.process.Child.Term,
+
+    fn deinit(self: SessionRead, allocator: std.mem.Allocator) void {
+        allocator.free(self.output);
+    }
 };
 
 const ApplyPatchArgs = struct {
@@ -70,6 +119,12 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
         return runExecCommand(allocator, call.call_id, parsed.value, policy.sandbox_mode, policy.additional_writable_roots);
+    }
+
+    if (std.mem.eql(u8, call.name, "write_stdin")) {
+        var parsed = try std.json.parseFromSlice(WriteStdinArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return runWriteStdin(allocator, call.call_id, parsed.value);
     }
 
     if (std.mem.eql(u8, call.name, "shell_command")) {
@@ -181,11 +236,18 @@ fn runExecCommand(
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8,
 ) !ToolResult {
-    _ = args.tty;
-    _ = args.yield_time_ms;
     const shell = args.shell orelse "/bin/zsh";
     const shell_flag = if (args.login orelse false) "-lic" else "-lc";
     const argv = [_][]const u8{ shell, shell_flag, args.cmd };
+    if (args.tty orelse false) {
+        return runExecCommandSession(allocator, call_id, argv[0..], .{
+            .sandbox_mode = sandbox_mode,
+            .additional_writable_roots = additional_writable_roots,
+            .workdir = args.workdir,
+            .yield_time_ms = args.yield_time_ms orelse 1000,
+            .max_output_tokens = args.max_output_tokens,
+        });
+    }
     return runArgvWithOptions(allocator, call_id, argv[0..], .{
         .sandbox_mode = sandbox_mode,
         .additional_writable_roots = additional_writable_roots,
@@ -193,6 +255,131 @@ fn runExecCommand(
         .max_output_tokens = args.max_output_tokens,
         .unified_format = true,
     });
+}
+
+const ExecSessionOptions = struct {
+    sandbox_mode: config.SandboxMode,
+    additional_writable_roots: []const []const u8 = &.{},
+    workdir: ?[]const u8 = null,
+    yield_time_ms: u64 = 1000,
+    max_output_tokens: ?usize = null,
+};
+
+fn runExecCommandSession(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    argv: []const []const u8,
+    options: ExecSessionOptions,
+) !ToolResult {
+    const session_index = try startExecSession(argv, options);
+    var session_registered = true;
+    errdefer if (session_registered) removeExecSession(session_index);
+    const session = &exec_sessions.items[session_index];
+    var read = try readExecSession(allocator, session, options.yield_time_ms, options.max_output_tokens);
+    defer read.deinit(allocator);
+
+    const summary = if (read.term) |term|
+        try termSummary(allocator, term)
+    else
+        try std.fmt.allocPrint(allocator, "session {d}", .{session.id});
+    errdefer allocator.free(summary);
+
+    const output = try renderExecSessionOutput(allocator, session, read.output, read.term);
+    errdefer allocator.free(output);
+
+    const result_call_id = try allocator.dupe(u8, call_id);
+    errdefer allocator.free(result_call_id);
+
+    if (read.term != null) {
+        removeExecSession(session_index);
+        session_registered = false;
+    }
+
+    return .{
+        .call_id = result_call_id,
+        .summary = summary,
+        .output = output,
+    };
+}
+
+fn runWriteStdin(allocator: std.mem.Allocator, call_id: []const u8, args: WriteStdinArgs) !ToolResult {
+    const session_index = findExecSessionIndex(args.session_id) orelse {
+        return .{
+            .call_id = try allocator.dupe(u8, call_id),
+            .summary = try allocator.dupe(u8, "unknown session"),
+            .output = try std.fmt.allocPrint(allocator, "unknown exec session: {d}", .{args.session_id}),
+        };
+    };
+    const session = &exec_sessions.items[session_index];
+    if (args.chars.len > 0) {
+        const stdin_file = session.stdin_file orelse return error.ExecSessionStdinClosed;
+        try stdin_file.writeStreamingAll(session.io_instance.io(), args.chars);
+    }
+
+    var read = try readExecSession(allocator, session, args.yield_time_ms orelse 1000, args.max_output_tokens);
+    defer read.deinit(allocator);
+    var reap_on_error = read.term != null;
+    errdefer if (reap_on_error) removeExecSession(session_index);
+
+    const summary = if (read.term) |term|
+        try termSummary(allocator, term)
+    else
+        try std.fmt.allocPrint(allocator, "session {d}", .{session.id});
+    errdefer allocator.free(summary);
+
+    const output = try renderExecSessionOutput(allocator, session, read.output, read.term);
+    errdefer allocator.free(output);
+
+    if (read.term != null) {
+        removeExecSession(session_index);
+        reap_on_error = false;
+    }
+
+    return .{
+        .call_id = try allocator.dupe(u8, call_id),
+        .summary = summary,
+        .output = output,
+    };
+}
+
+fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usize {
+    var io_instance: std.Io.Threaded = .init(session_allocator, .{});
+    errdefer io_instance.deinit();
+
+    var sandboxed_argv: ?sandbox.SandboxedArgv = null;
+    defer if (sandboxed_argv) |*wrapped| wrapped.deinit(session_allocator);
+    const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
+        sandboxed_argv = try sandbox.wrapArgv(session_allocator, options.sandbox_mode, argv, options.additional_writable_roots);
+        break :blk sandboxed_argv.?.argv;
+    } else argv;
+
+    const cwd: std.process.Child.Cwd = if (options.workdir) |workdir| .{ .path = workdir } else .inherit;
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = effective_argv,
+        .cwd = cwd,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    errdefer child.kill(io_instance.io());
+
+    const id = next_exec_session_id;
+    next_exec_session_id += 1;
+    var session = ExecSession{
+        .id = id,
+        .io_instance = io_instance,
+        .child = child,
+        .stdin_file = child.stdin,
+        .stdout_file = child.stdout,
+        .stderr_file = child.stderr,
+        .started = std.Io.Timestamp.now(io_instance.io(), .awake),
+    };
+    var moved = false;
+    errdefer if (!moved) session.deinit();
+
+    try exec_sessions.append(session_allocator, session);
+    moved = true;
+    return exec_sessions.items.len - 1;
 }
 
 fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
@@ -297,6 +484,173 @@ fn runArgvWithOptions(
     };
 }
 
+fn readExecSession(
+    allocator: std.mem.Allocator,
+    session: *ExecSession,
+    yield_time_ms: u64,
+    max_output_tokens: ?usize,
+) !SessionRead {
+    var raw = std.ArrayList(u8).empty;
+    errdefer raw.deinit(allocator);
+
+    const start = std.Io.Timestamp.now(session.io_instance.io(), .awake);
+    var term: ?std.process.Child.Term = null;
+    while (elapsedMilliseconds(session.io_instance.io(), start) < yield_time_ms) {
+        var made_progress = false;
+        if (try readOnePipeByte(allocator, session, session.stdout_file, &raw, null)) {
+            made_progress = true;
+        }
+        if (try readOnePipeByte(allocator, session, session.stderr_file, &raw, "[stderr]\n")) {
+            made_progress = true;
+        }
+
+        if (pollExecSession(session)) |process_term| {
+            term = process_term;
+            try drainRemainingSessionOutput(session, allocator, &raw);
+            break;
+        }
+
+        if (!made_progress) {
+            // Avoid spinning after both streams timed out.
+            continue;
+        }
+    }
+
+    if (term == null) {
+        if (pollExecSession(session)) |process_term| {
+            term = process_term;
+            try drainRemainingSessionOutput(session, allocator, &raw);
+        }
+    }
+
+    const merged = try raw.toOwnedSlice(allocator);
+    errdefer allocator.free(merged);
+    const rendered = try truncateOutputForTokens(allocator, merged, max_output_tokens);
+    allocator.free(merged);
+    return .{ .output = rendered, .term = term };
+}
+
+fn readOnePipeByte(
+    allocator: std.mem.Allocator,
+    session: *ExecSession,
+    maybe_file: ?std.Io.File,
+    raw: *std.ArrayList(u8),
+    prefix: ?[]const u8,
+) !bool {
+    const file = maybe_file orelse return false;
+    var byte: [1]u8 = undefined;
+    const count = readPipeByteWithTimeout(session, file, byte[0..], 25) catch |err| switch (err) {
+        error.Timeout => return false,
+        error.EndOfStream => return false,
+        else => return err,
+    };
+    if (count == 0) return false;
+    if (prefix) |value| {
+        if (raw.items.len == 0 or std.mem.indexOf(u8, raw.items, value) == null) {
+            try raw.appendSlice(allocator, value);
+        }
+    }
+    try raw.append(allocator, byte[0]);
+    return true;
+}
+
+fn drainRemainingSessionOutput(
+    session: *ExecSession,
+    allocator: std.mem.Allocator,
+    raw: *std.ArrayList(u8),
+) !void {
+    var attempts: usize = 0;
+    while (attempts < 4096) : (attempts += 1) {
+        const before = raw.items.len;
+        _ = try readOnePipeByte(allocator, session, session.stdout_file, raw, null);
+        _ = try readOnePipeByte(allocator, session, session.stderr_file, raw, "[stderr]\n");
+        if (raw.items.len == before) break;
+    }
+}
+
+fn readPipeByteWithTimeout(session: *ExecSession, file: std.Io.File, buffer: []u8, timeout_ms: u64) !usize {
+    const result = try session.io_instance.io().operateTimeout(.{ .file_read_streaming = .{
+        .file = file,
+        .data = &.{buffer},
+    } }, .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } });
+    return result.file_read_streaming;
+}
+
+fn pollExecSession(session: *ExecSession) ?std.process.Child.Term {
+    const pid = session.child.id orelse return null;
+    var status: c_int = 0;
+    const result = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+    if (result == 0) return null;
+    if (result < 0) return null;
+    session.child.id = null;
+
+    const status_u: u32 = @intCast(status);
+    if (std.c.W.IFEXITED(status_u)) return .{ .exited = std.c.W.EXITSTATUS(status_u) };
+    if (std.c.W.IFSIGNALED(status_u)) return .{ .signal = std.c.W.TERMSIG(status_u) };
+    if (std.c.W.IFSTOPPED(status_u)) return .{ .stopped = std.c.W.STOPSIG(status_u) };
+    return .{ .unknown = status_u };
+}
+
+fn elapsedMilliseconds(io: std.Io, started: std.Io.Timestamp) u64 {
+    const elapsed = started.durationTo(std.Io.Timestamp.now(io, .awake));
+    if (elapsed.nanoseconds <= 0) return 0;
+    return @intCast(@divTrunc(elapsed.nanoseconds, std.time.ns_per_ms));
+}
+
+fn renderExecSessionOutput(
+    allocator: std.mem.Allocator,
+    session: *ExecSession,
+    output_text: []const u8,
+    term: ?std.process.Child.Term,
+) ![]const u8 {
+    const elapsed = session.started.durationTo(std.Io.Timestamp.now(session.io_instance.io(), .awake));
+    const elapsed_seconds = @as(f64, @floatFromInt(elapsed.toNanoseconds())) / @as(f64, @floatFromInt(std.time.ns_per_s));
+    const status = if (term) |value|
+        try termStatusLine(allocator, value)
+    else
+        try std.fmt.allocPrint(allocator, "Process running with session ID {d}", .{session.id});
+    defer allocator.free(status);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "Wall time: {d:.3} seconds\n{s}\nOutput:\n{s}",
+        .{ elapsed_seconds, status, output_text },
+    );
+}
+
+fn termSummary(allocator: std.mem.Allocator, term: std.process.Child.Term) ![]const u8 {
+    return switch (term) {
+        .exited => |code| std.fmt.allocPrint(allocator, "exit {d}", .{code}),
+        .signal => |sig| std.fmt.allocPrint(allocator, "signal {d}", .{@intFromEnum(sig)}),
+        .stopped => |sig| std.fmt.allocPrint(allocator, "stopped {d}", .{@intFromEnum(sig)}),
+        .unknown => |code| std.fmt.allocPrint(allocator, "unknown {d}", .{code}),
+    };
+}
+
+fn termStatusLine(allocator: std.mem.Allocator, term: std.process.Child.Term) ![]const u8 {
+    return switch (term) {
+        .exited => |code| std.fmt.allocPrint(allocator, "Process exited with code {d}", .{code}),
+        .signal => |sig| std.fmt.allocPrint(allocator, "Process killed by signal {d}", .{@intFromEnum(sig)}),
+        .stopped => |sig| std.fmt.allocPrint(allocator, "Process stopped by signal {d}", .{@intFromEnum(sig)}),
+        .unknown => |code| std.fmt.allocPrint(allocator, "Process ended with unknown status {d}", .{code}),
+    };
+}
+
+fn findExecSessionIndex(session_id: u64) ?usize {
+    for (exec_sessions.items, 0..) |session, index| {
+        if (session.id == session_id) return index;
+    }
+    return null;
+}
+
+fn removeExecSession(index: usize) void {
+    var removed = exec_sessions.orderedRemove(index);
+    removed.deinit();
+}
+
 fn renderUnifiedExecOutput(
     allocator: std.mem.Allocator,
     term: std.process.Child.Term,
@@ -310,12 +664,7 @@ fn renderUnifiedExecOutput(
     const rendered_output = try truncateOutputForTokens(allocator, raw_output, max_output_tokens);
     defer allocator.free(rendered_output);
 
-    const status = switch (term) {
-        .exited => |code| try std.fmt.allocPrint(allocator, "Process exited with code {d}", .{code}),
-        .signal => |sig| try std.fmt.allocPrint(allocator, "Process killed by signal {d}", .{@intFromEnum(sig)}),
-        .stopped => |sig| try std.fmt.allocPrint(allocator, "Process stopped by signal {d}", .{@intFromEnum(sig)}),
-        .unknown => |code| try std.fmt.allocPrint(allocator, "Process ended with unknown status {d}", .{code}),
-    };
+    const status = try termStatusLine(allocator, term);
     defer allocator.free(status);
 
     return std.fmt.allocPrint(
@@ -700,6 +1049,59 @@ test "exec_command honors workdir" {
     const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.output, cwd) != null);
+}
+
+test "exec_command tty session accepts write_stdin" {
+    const allocator = std.testing.allocator;
+    const start_call = api.FunctionCall{
+        .call_id = "exec-session",
+        .name = "exec_command",
+        .arguments =
+        \\{"cmd":"printf READY; read line; printf \"GOT:%s\" \"$line\"","tty":true,"yield_time_ms":200,"max_output_tokens":100}
+        ,
+    };
+    const start_result = try runFunctionCall(allocator, start_call, .{ .auto_approve = true });
+    defer start_result.deinit(allocator);
+
+    try std.testing.expect(std.mem.startsWith(u8, start_result.summary, "session "));
+    const session_id = try std.fmt.parseInt(u64, start_result.summary["session ".len..], 10);
+    const running_text = try std.fmt.allocPrint(allocator, "Process running with session ID {d}", .{session_id});
+    defer allocator.free(running_text);
+    try std.testing.expect(std.mem.indexOf(u8, start_result.output, running_text) != null);
+    try std.testing.expect(std.mem.indexOf(u8, start_result.output, "Output:\nREADY") != null);
+
+    const write_args = try std.fmt.allocPrint(
+        allocator,
+        "{{\"session_id\":{d},\"chars\":\"hello\\n\",\"yield_time_ms\":1000,\"max_output_tokens\":100}}",
+        .{session_id},
+    );
+    defer allocator.free(write_args);
+    const write_call = api.FunctionCall{
+        .call_id = "write-session",
+        .name = "write_stdin",
+        .arguments = write_args,
+    };
+    const write_result = try runFunctionCall(allocator, write_call, .{ .auto_approve = true });
+    defer write_result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", write_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, write_result.output, "Process exited with code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, write_result.output, "GOT:hello") != null);
+    try std.testing.expect(findExecSessionIndex(session_id) == null);
+}
+
+test "write_stdin reports unknown session" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "write-unknown",
+        .name = "write_stdin",
+        .arguments = "{\"session_id\":999999,\"chars\":\"ignored\"}",
+    };
+    const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("unknown session", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "unknown exec session: 999999") != null);
 }
 
 test "apply_patch adds and updates files" {

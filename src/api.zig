@@ -428,9 +428,17 @@ pub fn buildRequestBodyWithOptions(
     const exec_command_tool = Tool{
         .type = "function",
         .name = "exec_command",
-        .description = "Runs a shell command, returning terminal-style output. Long-running session reuse through write_stdin is not implemented in this Zig port yet.",
+        .description = "Runs a shell command, returning terminal-style output. Set tty=true for a pipe-backed long-running session that can receive input through write_stdin.",
         .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"Accepted for compatibility; PTY allocation is not implemented yet."},"yield_time_ms":{"type":"number","description":"Accepted for compatibility; one-shot Zig exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
+            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a pipe-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
+        ),
+    };
+    const write_stdin_tool = Tool{
+        .type = "function",
+        .name = "write_stdin",
+        .description = "Writes input to a running exec_command session and returns any new output.",
+        .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+            \\{"type":"object","properties":{"session_id":{"type":"number","description":"Session ID returned by exec_command when tty=true."},"chars":{"type":"string","description":"Literal text to write to the session stdin."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for output after writing."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."}},"required":["session_id"],"additionalProperties":false}
         ),
     };
     const shell_command_tool = Tool{
@@ -452,6 +460,7 @@ pub fn buildRequestBodyWithOptions(
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
     try tools_list.append(allocator, exec_command_tool);
+    try tools_list.append(allocator, write_stdin_tool);
     try tools_list.append(allocator, shell_tool);
     try tools_list.append(allocator, shell_command_tool);
     try tools_list.append(allocator, apply_patch_tool);
@@ -570,7 +579,7 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
 
 const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
-    \\When you need to inspect files or run commands, call exec_command. shell_command and shell remain supported.
+    \\When you need to inspect files or run commands, call exec_command. Use write_stdin for running exec_command sessions. shell_command and shell remain supported.
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\Configured MCP server tools may appear as mcp__server__tool function tools.
     \\Keep answers concise and report command outcomes.
@@ -676,6 +685,7 @@ test "builds chronological request input from owned history" {
     try std.testing.expectEqualStrings("function_call_output", input.items[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"exec_command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
 }
 
