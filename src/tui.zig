@@ -221,6 +221,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "permissions")) {
+        try handlePermissions(cfg, parts.args);
+        return .handled;
+    }
+
     std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
     return .handled;
 }
@@ -241,6 +246,7 @@ fn printSlashHelp() void {
         \\  /help             show this help
         \\  /status           show current session settings
         \\  /model [name]     show or set the in-memory model for this session
+        \\  /permissions      show or set approval/sandbox modes
         \\  /approval [mode]  show or set approval policy
         \\  /sandbox [mode]   show or set sandbox mode
         \\  /history [n]      show recent transcript items
@@ -301,6 +307,68 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+const PermissionUpdate = union(enum) {
+    approval: config.ApprovalPolicy,
+    sandbox: config.SandboxMode,
+};
+
+fn handlePermissions(cfg: *config.Config, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        printPermissions(cfg.*);
+        return;
+    }
+
+    var tokens = std.mem.tokenizeAny(u8, trimmed, " \t");
+    while (tokens.next()) |token| {
+        const update = try parsePermissionUpdate(token);
+        switch (update) {
+            .approval => |approval_policy| cfg.approval_policy = approval_policy,
+            .sandbox => |sandbox_mode| cfg.sandbox_mode = sandbox_mode,
+        }
+    }
+
+    printPermissions(cfg.*);
+}
+
+fn printPermissions(cfg: config.Config) void {
+    std.debug.print(
+        \\permissions:
+        \\  approval: {s}
+        \\  sandbox:  {s}
+        \\usage: /permissions [approval=<mode>] [sandbox=<mode>]
+        \\
+    , .{ cfg.approval_policy.label(), cfg.sandbox_mode.label() });
+}
+
+fn parsePermissionUpdate(token: []const u8) !PermissionUpdate {
+    if (std.mem.indexOfScalar(u8, token, '=')) |eq| {
+        const key = token[0..eq];
+        const value = token[eq + 1 ..];
+        if (std.ascii.eqlIgnoreCase(key, "approval")) {
+            return .{ .approval = try config.ApprovalPolicy.parse(value) };
+        }
+        if (std.ascii.eqlIgnoreCase(key, "sandbox")) {
+            return .{ .sandbox = try config.SandboxMode.parse(value) };
+        }
+        return error.InvalidPermissionsArgument;
+    }
+
+    if (config.ApprovalPolicy.parse(token)) |approval_policy| {
+        return .{ .approval = approval_policy };
+    } else |approval_err| switch (approval_err) {
+        error.InvalidApprovalPolicy => {},
+    }
+
+    if (config.SandboxMode.parse(token)) |sandbox_mode| {
+        return .{ .sandbox = sandbox_mode };
+    } else |sandbox_err| switch (sandbox_err) {
+        error.InvalidSandboxMode => {},
+    }
+
+    return error.InvalidPermissionsArgument;
 }
 
 fn printHistory(transcript: *const session.Transcript, limit: usize) void {
@@ -367,6 +435,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("approval", approval.name);
     try std.testing.expectEqualStrings("on-request", approval.args);
 
+    const permissions = parseSlash("/permissions sandbox=read-only").?;
+    try std.testing.expectEqualStrings("permissions", permissions.name);
+    try std.testing.expectEqualStrings("sandbox=read-only", permissions.args);
+
     const history = parseSlash("/history 5").?;
     try std.testing.expectEqualStrings("history", history.name);
     try std.testing.expectEqualStrings("5", history.args);
@@ -386,4 +458,14 @@ test "parse history limit" {
     try std.testing.expectEqual(@as(usize, 20), try parseHistoryLimit(""));
     try std.testing.expectEqual(@as(usize, 3), try parseHistoryLimit(" 3 "));
     try std.testing.expectError(error.InvalidCharacter, parseHistoryLimit("abc"));
+}
+
+test "parse permission updates" {
+    const approval = try parsePermissionUpdate("approval=never");
+    try std.testing.expectEqual(config.ApprovalPolicy.never, approval.approval);
+
+    const sandbox = try parsePermissionUpdate("read-only");
+    try std.testing.expectEqual(config.SandboxMode.read_only, sandbox.sandbox);
+
+    try std.testing.expectError(error.InvalidPermissionsArgument, parsePermissionUpdate("unknown=value"));
 }
