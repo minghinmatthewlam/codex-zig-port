@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const auth = @import("auth.zig");
+const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -132,9 +133,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     }
 
     if (!parsed.json) {
-        try writeStdout(answer);
+        try cli_utils.writeStdout(answer);
         if (answer.len == 0 or answer[answer.len - 1] != '\n') {
-            try writeStdout("\n");
+            try cli_utils.writeStdout("\n");
         }
     }
 }
@@ -316,7 +317,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     }
 
     if (prompt_parts.items.len > 0) {
-        parsed.prompt = try joinPrompt(allocator, prompt_parts.items);
+        parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
     }
 
     return parsed;
@@ -325,16 +326,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
 fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []const u8) !void {
     if (parsed.resume_target) |existing| allocator.free(existing);
     parsed.resume_target = try allocator.dupe(u8, target);
-}
-
-fn joinPrompt(allocator: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
-    var joined = std.ArrayList(u8).empty;
-    errdefer joined.deinit(allocator);
-    for (parts, 0..) |part, index| {
-        if (index > 0) try joined.append(allocator, ' ');
-        try joined.appendSlice(allocator, part);
-    }
-    return joined.toOwnedSlice(allocator);
 }
 
 fn mergeAdditionalWritableRoots(
@@ -373,14 +364,6 @@ fn writeFile(path: []const u8, bytes: []const u8) !void {
         .sub_path = path,
         .data = bytes,
     });
-}
-
-fn writeStdout(bytes: []const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stdout().writer(std.Io.Threaded.global_single_threaded.io(), &buffer);
-    const stdout = &writer.interface;
-    try stdout.writeAll(bytes);
-    try stdout.flush();
 }
 
 fn printHelp() void {

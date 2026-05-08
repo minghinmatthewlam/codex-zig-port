@@ -2,11 +2,13 @@ const std = @import("std");
 
 const api = @import("api.zig");
 const auth = @import("auth.zig");
+const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
+const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -138,6 +140,13 @@ fn mainInner(init: std.process.Init) !void {
             try login.runLogout(allocator);
             return;
         }
+        if (std.mem.eql(u8, cmd, "review")) {
+            try review.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+            });
+            return;
+        }
         if (std.mem.eql(u8, cmd, "exec")) {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -260,17 +269,7 @@ fn joinInitialPrompt(
     while (args.next()) |arg| {
         try parts.append(allocator, arg);
     }
-    return joinPromptParts(allocator, parts.items);
-}
-
-fn joinPromptParts(allocator: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
-    var joined = std.ArrayList(u8).empty;
-    errdefer joined.deinit(allocator);
-    for (parts, 0..) |part, index| {
-        if (index > 0) try joined.append(allocator, ' ');
-        try joined.appendSlice(allocator, part);
-    }
-    return joined.toOwnedSlice(allocator);
+    return cli_utils.joinWithSpaces(allocator, parts.items);
 }
 
 fn printHelp() !void {
@@ -294,6 +293,8 @@ fn printHelp() !void {
         \\  codex-zig login        Sign in with ChatGPT device auth
         \\  codex-zig login status Show login status
         \\  codex-zig logout       Remove local Codex auth
+        \\  codex-zig review --uncommitted
+        \\                          Run a non-interactive code review
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
@@ -556,11 +557,13 @@ fn runMockSandboxDemo(allocator: std.mem.Allocator, additional_writable_roots: [
 test {
     _ = api;
     _ = auth;
+    _ = cli_utils;
     _ = config;
     _ = env;
     _ = exec;
     _ = git_diff;
     _ = login;
+    _ = review;
     _ = sandbox;
     _ = session;
     _ = session_store;
@@ -573,7 +576,7 @@ test "join initial prompt consumes remaining args" {
     const allocator = std.testing.allocator;
     const parts = [_][]const u8{ "hello", "from", "prompt" };
 
-    const prompt = try joinPromptParts(allocator, parts[0..]);
+    const prompt = try cli_utils.joinWithSpaces(allocator, parts[0..]);
     defer allocator.free(prompt);
 
     try std.testing.expectEqualStrings("hello from prompt", prompt);

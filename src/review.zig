@@ -1,0 +1,187 @@
+const std = @import("std");
+
+const auth = @import("auth.zig");
+const cli_utils = @import("cli_utils.zig");
+const config = @import("config.zig");
+const git_diff = @import("git_diff.zig");
+const session = @import("session.zig");
+const session_store = @import("session_store.zig");
+
+const ReviewArgs = struct {
+    help: bool = false,
+    uncommitted: bool = false,
+    prompt: ?[]const u8 = null,
+
+    fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
+        if (self.prompt) |prompt| allocator.free(prompt);
+    }
+};
+
+pub const Options = struct {
+    profile: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
+};
+
+pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
+    var raw_args = std.ArrayList([]const u8).empty;
+    defer raw_args.deinit(allocator);
+    while (args.next()) |arg| {
+        try raw_args.append(allocator, arg);
+    }
+
+    var parsed = try parseArgs(allocator, raw_args.items);
+    defer parsed.deinit(allocator);
+    if (parsed.help) {
+        printHelp();
+        return;
+    }
+
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+
+    var credentials = try auth.load(allocator, cfg.codex_home);
+    defer credentials.deinit(allocator);
+
+    const prompt = try buildPrompt(allocator, parsed);
+    defer allocator.free(prompt);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+
+    const session_path = try session_store.createSessionPath(allocator, cfg.codex_home);
+    defer allocator.free(session_path);
+
+    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
+        .prompt_for_approval = false,
+    });
+    defer allocator.free(answer);
+
+    try session_store.saveTranscript(allocator, session_path, &transcript);
+    try cli_utils.writeStdout(answer);
+    if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+        try cli_utils.writeStdout("\n");
+    }
+}
+
+fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs {
+    var parsed = ReviewArgs{};
+    errdefer parsed.deinit(allocator);
+
+    var prompt_parts = std.ArrayList([]const u8).empty;
+    defer prompt_parts.deinit(allocator);
+
+    var index: usize = 0;
+    var end_options = false;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
+            parsed.help = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--uncommitted")) {
+            parsed.uncommitted = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--base")) {
+            return error.ReviewBaseUnsupported;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--base=")) {
+            return error.ReviewBaseUnsupported;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--commit")) {
+            return error.ReviewCommitUnsupported;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--commit=")) {
+            return error.ReviewCommitUnsupported;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--title")) {
+            return error.ReviewCommitUnsupported;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--title=")) {
+            return error.ReviewCommitUnsupported;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) {
+            return error.UnknownReviewOption;
+        }
+
+        try prompt_parts.append(allocator, arg);
+    }
+
+    if (parsed.uncommitted and prompt_parts.items.len > 0) return error.InvalidReviewArguments;
+    if (prompt_parts.items.len > 0) {
+        parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
+    }
+    if (!parsed.help and !parsed.uncommitted and parsed.prompt == null) return error.MissingReviewTarget;
+
+    return parsed;
+}
+
+fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
+    if (args.uncommitted) {
+        const diff = try git_diff.render(allocator);
+        defer allocator.free(diff);
+        return std.fmt.allocPrint(allocator,
+            \\Review the uncommitted changes below. Focus on bugs, behavioral regressions, security issues, and missing tests. Report findings first, ordered by severity, and say clearly if no actionable issues are found.
+            \\
+            \\```diff
+            \\{s}
+            \\```
+        , .{diff});
+    }
+
+    const prompt = args.prompt orelse return error.MissingReviewTarget;
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) return error.MissingReviewTarget;
+    return std.fmt.allocPrint(allocator,
+        \\Review according to these instructions:
+        \\
+        \\{s}
+    , .{trimmed});
+}
+
+fn printHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig review --uncommitted
+        \\  codex-zig review PROMPT
+        \\
+        \\Options:
+        \\  --uncommitted     Review staged, unstaged, and untracked changes
+        \\
+        \\Planned:
+        \\  --base BRANCH
+        \\  --commit SHA
+        \\
+    , .{});
+}
+
+test "review args parse uncommitted" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{"--uncommitted"};
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.uncommitted);
+    try std.testing.expect(parsed.prompt == null);
+}
+
+test "review args join custom prompt" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "check", "this" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("check this", parsed.prompt.?);
+}
+
+test "review args reject base for now" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--base", "main" };
+
+    try std.testing.expectError(error.ReviewBaseUnsupported, parseArgs(allocator, argv[0..]));
+}
