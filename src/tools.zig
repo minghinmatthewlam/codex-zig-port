@@ -1,8 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const api = @import("api.zig");
 const config = @import("config.zig");
 const sandbox = @import("sandbox.zig");
+
+extern "c" fn openpty(
+    amaster: *c_int,
+    aslave: *c_int,
+    name: ?[*:0]u8,
+    termp: ?*anyopaque,
+    winp: ?*anyopaque,
+) c_int;
 
 const session_allocator = std.heap.page_allocator;
 
@@ -48,6 +57,7 @@ const ShellArgs = struct {
 
 const ExecSession = struct {
     id: u64,
+    kind: ExecSessionKind,
     io_instance: std.Io.Threaded,
     child: std.process.Child,
     stdin_file: ?std.Io.File,
@@ -58,6 +68,13 @@ const ExecSession = struct {
     fn deinit(self: *ExecSession) void {
         if (self.child.id != null) {
             self.child.kill(self.io_instance.io());
+            if (self.kind == .pty) {
+                self.closeOpenFiles();
+            } else {
+                self.stdin_file = null;
+                self.stdout_file = null;
+                self.stderr_file = null;
+            }
         } else {
             self.closeOpenFiles();
         }
@@ -65,13 +82,25 @@ const ExecSession = struct {
     }
 
     fn closeOpenFiles(self: *ExecSession) void {
-        if (self.stdin_file) |file| file.close(self.io_instance.io());
-        if (self.stdout_file) |file| file.close(self.io_instance.io());
-        if (self.stderr_file) |file| file.close(self.io_instance.io());
+        switch (self.kind) {
+            .pty => {
+                if (self.stdin_file) |file| file.close(self.io_instance.io());
+            },
+            .pipes => {
+                if (self.stdin_file) |file| file.close(self.io_instance.io());
+                if (self.stdout_file) |file| file.close(self.io_instance.io());
+                if (self.stderr_file) |file| file.close(self.io_instance.io());
+            },
+        }
         self.stdin_file = null;
         self.stdout_file = null;
         self.stderr_file = null;
     }
+};
+
+const ExecSessionKind = enum {
+    pipes,
+    pty,
 };
 
 const SessionRead = struct {
@@ -246,6 +275,7 @@ fn runExecCommand(
             .workdir = args.workdir,
             .yield_time_ms = args.yield_time_ms orelse 1000,
             .max_output_tokens = args.max_output_tokens,
+            .pty = true,
         });
     }
     return runArgvWithOptions(allocator, call_id, argv[0..], .{
@@ -263,6 +293,7 @@ const ExecSessionOptions = struct {
     workdir: ?[]const u8 = null,
     yield_time_ms: u64 = 1000,
     max_output_tokens: ?usize = null,
+    pty: bool = false,
 };
 
 fn runExecCommandSession(
@@ -354,32 +385,78 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     } else argv;
 
     const cwd: std.process.Child.Cwd = if (options.workdir) |workdir| .{ .path = workdir } else .inherit;
+    var pty_master: ?std.Io.File = null;
+    var pty_slave: ?std.Io.File = null;
+    errdefer {
+        if (pty_slave) |file| file.close(io_instance.io());
+        if (pty_master) |file| file.close(io_instance.io());
+    }
+    if (options.pty) {
+        const handles = try openPtyPair();
+        pty_master = handles.master;
+        pty_slave = handles.slave;
+    }
+    const child_stdio: std.process.SpawnOptions.StdIo = if (pty_slave) |file| .{ .file = file } else .pipe;
     var child = try std.process.spawn(io_instance.io(), .{
         .argv = effective_argv,
         .cwd = cwd,
-        .stdin = .pipe,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdin = child_stdio,
+        .stdout = child_stdio,
+        .stderr = child_stdio,
     });
-    errdefer child.kill(io_instance.io());
+    var child_owned = true;
+    errdefer if (child_owned) child.kill(io_instance.io());
+    if (pty_slave) |file| {
+        file.close(io_instance.io());
+        pty_slave = null;
+    }
 
     const id = next_exec_session_id;
     next_exec_session_id += 1;
+    const kind: ExecSessionKind = if (pty_master != null) .pty else .pipes;
     var session = ExecSession{
         .id = id,
+        .kind = kind,
         .io_instance = io_instance,
         .child = child,
-        .stdin_file = child.stdin,
-        .stdout_file = child.stdout,
-        .stderr_file = child.stderr,
+        .stdin_file = if (pty_master) |file| file else child.stdin,
+        .stdout_file = if (pty_master) |file| file else child.stdout,
+        .stderr_file = if (pty_master == null) child.stderr else null,
         .started = std.Io.Timestamp.now(io_instance.io(), .awake),
     };
+    child_owned = false;
+    if (pty_master != null) pty_master = null;
     var moved = false;
     errdefer if (!moved) session.deinit();
 
     try exec_sessions.append(session_allocator, session);
     moved = true;
     return exec_sessions.items.len - 1;
+}
+
+const PtyPair = struct {
+    master: std.Io.File,
+    slave: std.Io.File,
+};
+
+fn openPtyPair() !PtyPair {
+    if (builtin.os.tag != .macos) return error.PtyUnsupported;
+
+    var master_fd: c_int = undefined;
+    var slave_fd: c_int = undefined;
+    if (openpty(&master_fd, &slave_fd, null, null, null) != 0) return error.OpenPtyFailed;
+
+    return .{
+        .master = fileFromFd(master_fd),
+        .slave = fileFromFd(slave_fd),
+    };
+}
+
+fn fileFromFd(fd: c_int) std.Io.File {
+    return .{
+        .handle = @intCast(fd),
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
@@ -497,11 +574,20 @@ fn readExecSession(
     var term: ?std.process.Child.Term = null;
     while (elapsedMilliseconds(session.io_instance.io(), start) < yield_time_ms) {
         var made_progress = false;
-        if (try readOnePipeByte(allocator, session, session.stdout_file, &raw, null)) {
-            made_progress = true;
-        }
-        if (try readOnePipeByte(allocator, session, session.stderr_file, &raw, "[stderr]\n")) {
-            made_progress = true;
+        switch (session.kind) {
+            .pty => {
+                if (try readOnePipeByte(allocator, session, session.stdout_file, &raw, null)) {
+                    made_progress = true;
+                }
+            },
+            .pipes => {
+                if (try readOnePipeByte(allocator, session, session.stdout_file, &raw, null)) {
+                    made_progress = true;
+                }
+                if (try readOnePipeByte(allocator, session, session.stderr_file, &raw, "[stderr]\n")) {
+                    made_progress = true;
+                }
+            },
         }
 
         if (pollExecSession(session)) |process_term| {
@@ -562,8 +648,13 @@ fn drainRemainingSessionOutput(
     var attempts: usize = 0;
     while (attempts < 4096) : (attempts += 1) {
         const before = raw.items.len;
-        _ = try readOnePipeByte(allocator, session, session.stdout_file, raw, null);
-        _ = try readOnePipeByte(allocator, session, session.stderr_file, raw, "[stderr]\n");
+        switch (session.kind) {
+            .pty => _ = try readOnePipeByte(allocator, session, session.stdout_file, raw, null),
+            .pipes => {
+                _ = try readOnePipeByte(allocator, session, session.stdout_file, raw, null);
+                _ = try readOnePipeByte(allocator, session, session.stderr_file, raw, "[stderr]\n");
+            },
+        }
         if (raw.items.len == before) break;
     }
 }
@@ -1057,7 +1148,7 @@ test "exec_command tty session accepts write_stdin" {
         .call_id = "exec-session",
         .name = "exec_command",
         .arguments =
-        \\{"cmd":"printf READY; read line; printf \"GOT:%s\" \"$line\"","tty":true,"yield_time_ms":200,"max_output_tokens":100}
+        \\{"cmd":"printf READY; if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then printf TTY-OK; else printf TTY-NO; fi; read line; printf \"GOT:%s\" \"$line\"","tty":true,"yield_time_ms":200,"max_output_tokens":100}
         ,
     };
     const start_result = try runFunctionCall(allocator, start_call, .{ .auto_approve = true });
@@ -1069,6 +1160,7 @@ test "exec_command tty session accepts write_stdin" {
     defer allocator.free(running_text);
     try std.testing.expect(std.mem.indexOf(u8, start_result.output, running_text) != null);
     try std.testing.expect(std.mem.indexOf(u8, start_result.output, "Output:\nREADY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, start_result.output, "TTY-OK") != null);
 
     const write_args = try std.fmt.allocPrint(
         allocator,

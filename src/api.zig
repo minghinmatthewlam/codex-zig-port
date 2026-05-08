@@ -428,9 +428,9 @@ pub fn buildRequestBodyWithOptions(
     const exec_command_tool = Tool{
         .type = "function",
         .name = "exec_command",
-        .description = "Runs a shell command, returning terminal-style output. Set tty=true for a pipe-backed long-running session that can receive input through write_stdin.",
+        .description = "Runs a shell command, returning terminal-style output. Set tty=true for a PTY-backed long-running session that can receive input through write_stdin.",
         .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a pipe-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
+            \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a PTY-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
         ),
     };
     const write_stdin_tool = Tool{
