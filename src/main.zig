@@ -44,6 +44,8 @@ fn mainInner(init: std.process.Init) !void {
 
     var overrides = CliOverrides{};
     var cmd_opt: ?[]const u8 = null;
+    var forced_initial_prompt: ?[]const u8 = null;
+    defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
             overrides.profile = args.next() orelse return error.MissingProfileOptionValue;
@@ -110,6 +112,15 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.web_search_mode = .live;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--")) {
+            if (args.next()) |first| {
+                forced_initial_prompt = try joinInitialPrompt(allocator, first, &args);
+            }
+            break;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            return error.UnknownCliOption;
+        }
         cmd_opt = arg;
         break;
     }
@@ -123,6 +134,16 @@ fn mainInner(init: std.process.Init) !void {
         true;
     if (should_apply_cwd) {
         if (overrides.cwd) |cwd| try workdir.change(cwd);
+    }
+
+    if (forced_initial_prompt) |initial_prompt| {
+        try tui.runWithOptions(allocator, .{
+            .profile = overrides.profile,
+            .runtime_overrides = overrides.runtime,
+            .additional_writable_roots = overrides.additional_writable_roots,
+            .initial_prompt = initial_prompt,
+        });
+        return;
     }
 
     if (cmd_opt) |cmd| {
