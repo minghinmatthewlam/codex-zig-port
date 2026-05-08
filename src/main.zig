@@ -18,6 +18,7 @@ const CliOverrides = struct {
     profile: ?[]const u8 = null,
     runtime: config.RuntimeOverrides = .{},
     cwd: ?[]const u8 = null,
+    additional_writable_roots: []const []const u8 = &.{},
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -33,6 +34,9 @@ fn mainInner(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.next();
+
+    var additional_writable_roots = std.ArrayList([]const u8).empty;
+    defer additional_writable_roots.deinit(allocator);
 
     var overrides = CliOverrides{};
     var cmd_opt: ?[]const u8 = null;
@@ -51,6 +55,14 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.startsWith(u8, arg, "--cd=")) {
             overrides.cwd = arg["--cd=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--add-dir")) {
+            try additional_writable_roots.append(allocator, args.next() orelse return error.MissingAddDirOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--add-dir=")) {
+            try additional_writable_roots.append(allocator, arg["--add-dir=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
@@ -93,6 +105,7 @@ fn mainInner(init: std.process.Init) !void {
         cmd_opt = arg;
         break;
     }
+    overrides.additional_writable_roots = additional_writable_roots.items;
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         !std.mem.eql(u8, cmd, "exec") and
@@ -126,6 +139,7 @@ fn mainInner(init: std.process.Init) !void {
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
                 .cwd = overrides.cwd,
+                .additional_writable_roots = overrides.additional_writable_roots,
             });
             return;
         }
@@ -141,6 +155,7 @@ fn mainInner(init: std.process.Init) !void {
                         .resume_target = "last",
                         .profile = overrides.profile,
                         .runtime_overrides = overrides.runtime,
+                        .additional_writable_roots = overrides.additional_writable_roots,
                     });
                     return;
                 }
@@ -148,12 +163,14 @@ fn mainInner(init: std.process.Init) !void {
                     .resume_target = value,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
                 });
             } else {
                 try tui.runWithOptions(allocator, .{
                     .resume_picker = true,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
+                    .additional_writable_roots = overrides.additional_writable_roots,
                 });
             }
             return;
@@ -175,7 +192,7 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-sandbox-demo")) {
-            try runMockSandboxDemo(allocator);
+            try runMockSandboxDemo(allocator, overrides.additional_writable_roots);
             return;
         }
         std.debug.print("unknown command: {s}\n\n", .{cmd});
@@ -186,6 +203,7 @@ fn mainInner(init: std.process.Init) !void {
     try tui.runWithOptions(allocator, .{
         .profile = overrides.profile,
         .runtime_overrides = overrides.runtime,
+        .additional_writable_roots = overrides.additional_writable_roots,
     });
 }
 
@@ -210,6 +228,8 @@ fn printHelp() !void {
         \\                          Select a config profile for the command
         \\  codex-zig --cd DIR ...
         \\                          Use DIR as the working root
+        \\  codex-zig --add-dir DIR ...
+        \\                          Allow workspace-write shell tools to write DIR
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
         \\  codex-zig -a MODE ...
@@ -374,9 +394,15 @@ fn runMockPolicyDemo(allocator: std.mem.Allocator) !void {
     std.debug.print("policy: ok\n", .{});
 }
 
-fn runMockSandboxDemo(allocator: std.mem.Allocator) !void {
+fn runMockSandboxDemo(allocator: std.mem.Allocator, additional_writable_roots: []const []const u8) !void {
     const allowed_file = "codex_zig_sandbox_allowed.txt";
     const blocked_file = "/tmp/codex_zig_sandbox_blocked.txt";
+    const extra_file = if (additional_writable_roots.len > 0)
+        try std.fs.path.join(allocator, &.{ additional_writable_roots[0], "codex_zig_sandbox_extra.txt" })
+    else
+        null;
+    defer if (extra_file) |path| allocator.free(path);
+
     const io = std.Io.Threaded.global_single_threaded.io();
     std.Io.Dir.cwd().deleteFile(io, allowed_file) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -386,15 +412,30 @@ fn runMockSandboxDemo(allocator: std.mem.Allocator) !void {
         error.FileNotFound => {},
         else => return err,
     };
+    if (extra_file) |path| {
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
 
     const call = api.FunctionCall{
         .call_id = "call_mock_sandbox",
         .name = "shell_command",
-        .arguments = "{\"command\":\"printf workspace-ok > codex_zig_sandbox_allowed.txt; printf outside > /tmp/codex_zig_sandbox_blocked.txt\"}",
+        .arguments = if (extra_file) |path|
+            try std.fmt.allocPrint(
+                allocator,
+                "{{\"command\":\"printf workspace-ok > codex_zig_sandbox_allowed.txt; printf extra > {s}; printf outside > /tmp/codex_zig_sandbox_blocked.txt\"}}",
+                .{path},
+            )
+        else
+            "{\"command\":\"printf workspace-ok > codex_zig_sandbox_allowed.txt; printf outside > /tmp/codex_zig_sandbox_blocked.txt\"}",
     };
+    defer if (extra_file != null) allocator.free(call.arguments);
     const result = try tools.runFunctionCall(allocator, call, .{
         .approval_policy = .never,
         .sandbox_mode = .workspace_write,
+        .additional_writable_roots = additional_writable_roots,
         .auto_approve = true,
     });
     defer result.deinit(allocator);
@@ -404,6 +445,12 @@ fn runMockSandboxDemo(allocator: std.mem.Allocator) !void {
     const allowed = try std.Io.Dir.cwd().readFileAlloc(io, allowed_file, allocator, .limited(1024));
     defer allocator.free(allowed);
     if (!std.mem.eql(u8, allowed, "workspace-ok")) return error.MockSandboxAllowedWriteMismatch;
+
+    if (extra_file) |path| {
+        const extra = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024));
+        defer allocator.free(extra);
+        if (!std.mem.eql(u8, extra, "extra")) return error.MockSandboxExtraWriteMismatch;
+    }
 
     if (std.Io.Dir.cwd().readFileAlloc(io, blocked_file, allocator, .limited(1024))) |blocked| {
         defer allocator.free(blocked);
@@ -415,6 +462,7 @@ fn runMockSandboxDemo(allocator: std.mem.Allocator) !void {
 
     std.debug.print("sandbox: {s}\n", .{result.summary});
     std.debug.print("workspace-write: ok\n", .{});
+    if (extra_file != null) std.debug.print("add-dir: ok\n", .{});
     std.debug.print("outside-write: blocked\n", .{});
 }
 

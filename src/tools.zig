@@ -37,6 +37,7 @@ const PatchStats = struct {
 pub const Policy = struct {
     approval_policy: config.ApprovalPolicy = .on_request,
     sandbox_mode: config.SandboxMode = .workspace_write,
+    additional_writable_roots: []const []const u8 = &.{},
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
 };
@@ -58,7 +59,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, isTrustedShellCommand(parsed.value.command))) |result| return result;
-        return runShellCommand(allocator, call.call_id, parsed.value.command, policy.sandbox_mode);
+        return runShellCommand(allocator, call.call_id, parsed.value.command, policy.sandbox_mode, policy.additional_writable_roots);
     }
 
     if (std.mem.eql(u8, call.name, "shell")) {
@@ -68,7 +69,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         const command = try joinCommand(allocator, parsed.value.command);
         defer allocator.free(command);
         if (try permissionResult(allocator, call.call_id, policy, .shell, command, isTrustedArgv(parsed.value.command))) |result| return result;
-        return runArgv(allocator, call.call_id, parsed.value.command, policy.sandbox_mode);
+        return runArgv(allocator, call.call_id, parsed.value.command, policy.sandbox_mode, policy.additional_writable_roots);
     }
 
     if (std.mem.eql(u8, call.name, "apply_patch")) {
@@ -150,9 +151,10 @@ fn runShellCommand(
     call_id: []const u8,
     command: []const u8,
     sandbox_mode: config.SandboxMode,
+    additional_writable_roots: []const []const u8,
 ) !ToolResult {
     const argv = [_][]const u8{ "/bin/zsh", "-lc", command };
-    return runArgv(allocator, call_id, argv[0..], sandbox_mode);
+    return runArgv(allocator, call_id, argv[0..], sandbox_mode, additional_writable_roots);
 }
 
 fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
@@ -183,6 +185,7 @@ fn runArgv(
     call_id: []const u8,
     argv: []const []const u8,
     sandbox_mode: config.SandboxMode,
+    additional_writable_roots: []const []const u8,
 ) !ToolResult {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -190,7 +193,7 @@ fn runArgv(
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox.shouldSandbox(sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgv(allocator, sandbox_mode, argv);
+        sandboxed_argv = try sandbox.wrapArgv(allocator, sandbox_mode, argv, additional_writable_roots);
         break :blk sandboxed_argv.?.argv;
     } else argv;
 

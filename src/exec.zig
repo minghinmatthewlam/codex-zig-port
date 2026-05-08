@@ -17,6 +17,7 @@ const ExecArgs = struct {
     sandbox_mode: ?config.SandboxMode = null,
     profile: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
+    additional_writable_roots: std.ArrayList([]const u8) = .empty,
     resume_target: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
@@ -26,6 +27,9 @@ const ExecArgs = struct {
         if (self.model) |model| allocator.free(model);
         if (self.profile) |profile| allocator.free(profile);
         if (self.cwd) |cwd| allocator.free(cwd);
+        for (self.additional_writable_roots.items) |root| allocator.free(root);
+        var additional_writable_roots = self.additional_writable_roots;
+        additional_writable_roots.deinit(allocator);
         if (self.resume_target) |target| allocator.free(target);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
@@ -35,6 +39,7 @@ pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     cwd: ?[]const u8 = null,
+    additional_writable_roots: []const []const u8 = &.{},
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -68,6 +73,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
+
+    const additional_writable_roots = try mergeAdditionalWritableRoots(
+        allocator,
+        options.additional_writable_roots,
+        parsed.additional_writable_roots.items,
+    );
+    defer allocator.free(additional_writable_roots);
 
     const prompt = if (parsed.read_stdin)
         try readPromptFromStdin(allocator, parsed.prompt)
@@ -107,6 +119,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .auto_approve = parsed.auto_approve,
         .prompt_for_approval = false,
         .json_events = parsed.json,
+        .additional_writable_roots = additional_writable_roots,
     });
     defer allocator.free(answer);
 
@@ -190,6 +203,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
                 parsed.cwd = null;
             }
             parsed.cwd = try allocator.dupe(u8, arg["--cd=".len..]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--add-dir")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            try parsed.additional_writable_roots.append(allocator, try allocator.dupe(u8, args[index]));
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--add-dir=")) {
+            try parsed.additional_writable_roots.append(allocator, try allocator.dupe(u8, arg["--add-dir=".len..]));
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
@@ -314,6 +337,17 @@ fn joinPrompt(allocator: std.mem.Allocator, parts: []const []const u8) ![]const 
     return joined.toOwnedSlice(allocator);
 }
 
+fn mergeAdditionalWritableRoots(
+    allocator: std.mem.Allocator,
+    inherited: []const []const u8,
+    local: []const []const u8,
+) ![]const []const u8 {
+    const merged = try allocator.alloc([]const u8, inherited.len + local.len);
+    @memcpy(merged[0..inherited.len], inherited);
+    @memcpy(merged[inherited.len..], local);
+    return merged;
+}
+
 fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8) ![]const u8 {
     var buffer: [4096]u8 = undefined;
     var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
@@ -362,6 +396,7 @@ fn printHelp() void {
         \\  -m, --model MODEL       Override the model
         \\  --ephemeral             Do not save or resume a session file
         \\  -C, --cd DIR            Use DIR as the working root
+        \\  --add-dir DIR           Allow workspace-write shell tools to write DIR
         \\  -a, --ask-for-approval MODE
         \\                          untrusted, on-failure, on-request, or never
         \\  --approval-policy MODE  Alias for --ask-for-approval
@@ -376,7 +411,7 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -385,6 +420,7 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
     try std.testing.expectEqualStrings("/tmp/demo", parsed.cwd.?);
+    try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }

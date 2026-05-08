@@ -11,6 +11,7 @@ pub const Options = struct {
     resume_picker: bool = false,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    additional_writable_roots: []const []const u8 = &.{},
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -81,6 +82,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         std.debug.print("\nassistant:\n", .{});
         const answer = session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
             .stream_text = true,
+            .additional_writable_roots = options.additional_writable_roots,
         }) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;

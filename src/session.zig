@@ -98,6 +98,7 @@ pub const TurnOptions = struct {
     prompt_for_approval: bool = true,
     json_events: bool = false,
     stream_text: bool = false,
+    additional_writable_roots: []const []const u8 = &.{},
 };
 
 pub fn runTurn(
@@ -159,6 +160,7 @@ pub fn runTurnWithOptions(
             var tool_result = try tools.runFunctionCall(allocator, call, .{
                 .approval_policy = cfg.approval_policy,
                 .sandbox_mode = cfg.sandbox_mode,
+                .additional_writable_roots = options.additional_writable_roots,
                 .auto_approve = options.auto_approve,
                 .prompt_for_approval = options.prompt_for_approval,
             });

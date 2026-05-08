@@ -70,6 +70,7 @@ those same fields.
 codex-zig --profile work auth-status
 codex-zig -m gpt-5.5 -a never -s danger-full-access
 codex-zig --cd ~/dev/my-project
+codex-zig --add-dir ~/scratch
 codex-zig exec --profile work "say hello"
 ```
 
