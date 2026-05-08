@@ -118,11 +118,7 @@ fn mainInner(init: std.process.Init) !void {
             }
             break;
         }
-        if (std.mem.eql(u8, arg, "--help") or
-            std.mem.eql(u8, arg, "-h") or
-            std.mem.eql(u8, arg, "--version") or
-            std.mem.eql(u8, arg, "-V"))
-        {
+        if (isHelpFlag(arg) or isVersionFlag(arg)) {
             cmd_opt = arg;
             break;
         }
@@ -136,10 +132,8 @@ fn mainInner(init: std.process.Init) !void {
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         !std.mem.eql(u8, cmd, "exec") and
-            !std.mem.eql(u8, cmd, "--help") and
-            !std.mem.eql(u8, cmd, "-h") and
-            !std.mem.eql(u8, cmd, "--version") and
-            !std.mem.eql(u8, cmd, "-V")
+            !isHelpFlag(cmd) and
+            !isVersionFlag(cmd)
     else
         true;
     if (should_apply_cwd) {
@@ -157,15 +151,22 @@ fn mainInner(init: std.process.Init) !void {
     }
 
     if (cmd_opt) |cmd| {
-        if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
+        if (isHelpFlag(cmd)) {
             try printHelp();
             return;
         }
-        if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-V")) {
+        if (isVersionFlag(cmd)) {
             printVersion();
             return;
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
+            if (args.next()) |value| {
+                if (isHelpFlag(value)) {
+                    printAuthStatusHelp();
+                    return;
+                }
+                return error.UnknownAuthStatusOption;
+            }
             try runAuthStatus(allocator, overrides);
             return;
         }
@@ -174,6 +175,13 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "logout")) {
+            if (args.next()) |value| {
+                if (isHelpFlag(value)) {
+                    printLogoutHelp();
+                    return;
+                }
+                return error.UnknownLogoutOption;
+            }
             try login.runLogout(allocator);
             return;
         }
@@ -196,7 +204,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "resume")) {
             const target = args.next();
             if (target) |value| {
-                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                if (isHelpFlag(value)) {
                     printResumeHelp();
                     return;
                 }
@@ -228,7 +236,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "fork")) {
             const target = args.next();
             if (target) |value| {
-                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                if (isHelpFlag(value)) {
                     printForkHelp();
                     return;
                 }
@@ -260,7 +268,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "sessions")) {
             const limit_arg = args.next();
             if (limit_arg) |value| {
-                if (std.mem.eql(u8, value, "--help") or std.mem.eql(u8, value, "-h")) {
+                if (isHelpFlag(value)) {
                     printSessionsHelp();
                     return;
                 }
@@ -300,6 +308,14 @@ fn mainInner(init: std.process.Init) !void {
         .runtime_overrides = overrides.runtime,
         .additional_writable_roots = overrides.additional_writable_roots,
     });
+}
+
+fn isHelpFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+}
+
+fn isVersionFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V");
 }
 
 fn joinInitialPrompt(
@@ -381,6 +397,27 @@ fn printHelp() !void {
 
 fn printVersion() void {
     std.debug.print("codex-zig {s}\n", .{version});
+}
+
+fn printAuthStatusHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig auth-status
+        \\
+        \\Shows the selected Codex home, profile, model, auth source, approval policy,
+        \\sandbox mode, web search setting, and API base URL.
+        \\
+    , .{});
+}
+
+fn printLogoutHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig logout
+        \\
+        \\Removes the selected CODEX_HOME/auth.json file.
+        \\
+    , .{});
 }
 
 fn printResumeHelp() void {
