@@ -4,6 +4,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
+const mcp_cmd = @import("mcp_cmd.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -308,6 +309,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "mcp")) {
+        try printMcpStatus(allocator, cfg.codex_home, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "ps")) {
         try printBackgroundTerminals(allocator);
         return .handled;
@@ -453,6 +459,7 @@ fn printSlashHelp() void {
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
+        \\  /mcp [verbose]    list configured MCP servers
         \\  /ps               list background terminals
         \\  /stop             stop all background terminals
         \\  /logout           remove local Codex auth
@@ -566,6 +573,25 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     }
 
     const rendered = try git_diff.render(allocator);
+    defer allocator.free(rendered);
+    std.debug.print("{s}", .{rendered});
+    if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
+        std.debug.print("\n", .{});
+    }
+}
+
+fn printMcpStatus(allocator: std.mem.Allocator, codex_home: []const u8, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    const verbose = if (trimmed.len == 0)
+        false
+    else if (std.ascii.eqlIgnoreCase(trimmed, "verbose"))
+        true
+    else {
+        std.debug.print("usage: /mcp [verbose]\n", .{});
+        return;
+    };
+
+    const rendered = try mcp_cmd.renderStatus(allocator, codex_home, verbose);
     defer allocator.free(rendered);
     std.debug.print("{s}", .{rendered});
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
@@ -748,6 +774,10 @@ test "parse slash command names and args" {
     const diff = parseSlash("/diff").?;
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
+
+    const mcp = parseSlash("/mcp verbose").?;
+    try std.testing.expectEqualStrings("mcp", mcp.name);
+    try std.testing.expectEqualStrings("verbose", mcp.args);
 
     const ps = parseSlash("/ps").?;
     try std.testing.expectEqualStrings("ps", ps.name);

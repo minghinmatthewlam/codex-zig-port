@@ -29,6 +29,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
+- inspect configured MCP servers from the interactive TUI with `/mcp`
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server stdio JSON-RPC transport with an `initialize`
@@ -62,7 +63,7 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/model`, `/permissions`, `/history`, model-requested `exec_command` and
+`/mcp`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
 `apply_patch` tool calls with approval, `/ps`, `/stop`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 and the file created in the temporary workspace. It also launches

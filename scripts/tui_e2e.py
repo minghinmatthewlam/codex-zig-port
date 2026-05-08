@@ -237,6 +237,22 @@ def run_e2e(binary: Path) -> str:
                     }
                 )
             )
+            config_path = Path(home) / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "[mcp_servers.docs]",
+                        'command = "docs-server"',
+                        'args = ["--stdio"]',
+                        "enabled = false",
+                        "",
+                        "[mcp_servers.remote]",
+                        'url = "https://example.com/mcp"',
+                        'bearer_token_env_var = "TOKEN_ENV"',
+                        "",
+                    ]
+                )
+            )
             workspace = Path(home) / "workspace"
             workspace.mkdir()
             demo_file = workspace / "codex_zig_tui_file.txt"
@@ -272,6 +288,17 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"status:", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/mcp")
+            wait_for(master_fd, output, b"mcp servers:", 5, mark)
+            wait_for(master_fd, output, b"docs\tstdio\tdisabled", 5, mark)
+            wait_for(master_fd, output, b"remote\tstreamable_http\tenabled", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/mcp verbose")
+            wait_for(master_fd, output, b"command: docs-server", 5, mark)
+            wait_for(master_fd, output, b"url: https://example.com/mcp", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/model gpt-e2e")

@@ -117,6 +117,36 @@ pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpSer
     return parseServers(allocator, config_bytes orelse "");
 }
 
+pub fn renderStatus(allocator: std.mem.Allocator, codex_home: []const u8, verbose: bool) ![]const u8 {
+    var servers = try loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    if (servers.items.items.len == 0) {
+        try output.appendSlice(allocator, "mcp: no servers configured\n");
+        return output.toOwnedSlice(allocator);
+    }
+
+    try output.appendSlice(allocator, "mcp servers:\n");
+    for (servers.items.items) |server| {
+        if (verbose) {
+            try appendVerboseServerStatus(allocator, &output, server);
+        } else {
+            try output.appendSlice(allocator, "  ");
+            try output.appendSlice(allocator, server.name);
+            try output.append(allocator, '\t');
+            try output.appendSlice(allocator, kindLabel(server));
+            try output.append(allocator, '\t');
+            try output.appendSlice(allocator, statusLabel(server.enabled));
+            try output.append(allocator, '\n');
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
 fn runList(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
     var json = false;
     for (args) |arg| {
@@ -624,6 +654,46 @@ fn printServer(allocator: std.mem.Allocator, server: McpServer) !void {
     }
 }
 
+fn appendVerboseServerStatus(allocator: std.mem.Allocator, output: *std.ArrayList(u8), server: McpServer) !void {
+    try output.appendSlice(allocator, "  ");
+    try output.appendSlice(allocator, server.name);
+    try output.append(allocator, '\n');
+    try output.appendSlice(allocator, "    enabled: ");
+    try output.appendSlice(allocator, statusLabel(server.enabled));
+    try output.append(allocator, '\n');
+    try output.appendSlice(allocator, "    transport: ");
+    try output.appendSlice(allocator, kindLabel(server));
+    try output.append(allocator, '\n');
+
+    if (server.kind == .streamable_http) {
+        try output.appendSlice(allocator, "    url: ");
+        try output.appendSlice(allocator, server.url orelse "-");
+        try output.append(allocator, '\n');
+        if (server.bearer_token_env_var) |token_env| {
+            try output.appendSlice(allocator, "    bearer_token_env_var: ");
+            try output.appendSlice(allocator, token_env);
+            try output.append(allocator, '\n');
+        }
+        return;
+    }
+
+    if (server.kind == .stdio) {
+        try output.appendSlice(allocator, "    command: ");
+        try output.appendSlice(allocator, server.command orelse "-");
+        try output.append(allocator, '\n');
+        const args_display = try cli_utils.joinWithSpaces(allocator, server.args.items);
+        defer allocator.free(args_display);
+        try output.appendSlice(allocator, "    args: ");
+        try output.appendSlice(allocator, if (args_display.len == 0) "-" else args_display);
+        try output.append(allocator, '\n');
+        if (server.env_vars.items.len > 0) {
+            try output.appendSlice(allocator, "    env: ");
+            try output.appendSlice(allocator, if (server.env_vars.items.len == 1) "1 variable" else "multiple variables");
+            try output.append(allocator, '\n');
+        }
+    }
+}
+
 fn kindLabel(server: McpServer) []const u8 {
     return switch (server.kind) {
         .stdio => "stdio",
@@ -708,4 +778,40 @@ test "mcp config parses and renders stdio and http servers" {
 test "mcp server name validation" {
     try validateServerName("docs_1");
     try std.testing.expectError(error.InvalidMcpServerName, validateServerName("bad.name"));
+}
+
+test "mcp status renders terse and verbose configured servers" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "config.toml",
+        .data =
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\args = ["--stdio"]
+        \\enabled = false
+        \\
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\bearer_token_env_var = "TOKEN_ENV"
+        \\
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    const terse = try renderStatus(allocator, codex_home, false);
+    defer allocator.free(terse);
+    try std.testing.expect(std.mem.indexOf(u8, terse, "mcp servers:\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terse, "docs\tstdio\tdisabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terse, "remote\tstreamable_http\tenabled") != null);
+
+    const verbose = try renderStatus(allocator, codex_home, true);
+    defer allocator.free(verbose);
+    try std.testing.expect(std.mem.indexOf(u8, verbose, "command: docs-server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, verbose, "args: --stdio") != null);
+    try std.testing.expect(std.mem.indexOf(u8, verbose, "url: https://example.com/mcp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, verbose, "bearer_token_env_var: TOKEN_ENV") != null);
 }
