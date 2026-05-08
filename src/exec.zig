@@ -4,6 +4,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
+const workdir = @import("workdir.zig");
 
 const ExecArgs = struct {
     auto_approve: bool = false,
@@ -15,6 +16,7 @@ const ExecArgs = struct {
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     profile: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
     resume_target: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
@@ -23,6 +25,7 @@ const ExecArgs = struct {
         if (self.last_message_file) |path| allocator.free(path);
         if (self.model) |model| allocator.free(model);
         if (self.profile) |profile| allocator.free(profile);
+        if (self.cwd) |cwd| allocator.free(cwd);
         if (self.resume_target) |target| allocator.free(target);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
@@ -31,6 +34,7 @@ const ExecArgs = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    cwd: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -61,6 +65,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         std.debug.print("codex-zig exec requires a prompt or - for stdin\n", .{});
         return error.MissingExecPrompt;
     }
+
+    const effective_cwd = parsed.cwd orelse options.cwd;
+    if (effective_cwd) |cwd| try workdir.change(cwd);
 
     const prompt = if (parsed.read_stdin)
         try readPromptFromStdin(allocator, parsed.prompt)
@@ -165,6 +172,24 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.eql(u8, arg, "--ephemeral")) {
             parsed.ephemeral = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            if (parsed.cwd) |existing| {
+                allocator.free(existing);
+                parsed.cwd = null;
+            }
+            parsed.cwd = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--cd=")) {
+            if (parsed.cwd) |existing| {
+                allocator.free(existing);
+                parsed.cwd = null;
+            }
+            parsed.cwd = try allocator.dupe(u8, arg["--cd=".len..]);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
@@ -336,6 +361,7 @@ fn printHelp() void {
         \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
         \\  -m, --model MODEL       Override the model
         \\  --ephemeral             Do not save or resume a session file
+        \\  -C, --cd DIR            Use DIR as the working root
         \\  -a, --ask-for-approval MODE
         \\                          untrusted, on-failure, on-request, or never
         \\  --approval-policy MODE  Alias for --ask-for-approval
@@ -350,7 +376,7 @@ fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--json", "--profile", "work", "-m", "gpt-test", "--cd", "/tmp/demo", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -358,6 +384,7 @@ test "exec args parse prompt and options" {
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
+    try std.testing.expectEqualStrings("/tmp/demo", parsed.cwd.?);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }

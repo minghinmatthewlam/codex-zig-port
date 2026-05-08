@@ -12,10 +12,12 @@ const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
 const tui = @import("tui.zig");
+const workdir = @import("workdir.zig");
 
 const CliOverrides = struct {
     profile: ?[]const u8 = null,
     runtime: config.RuntimeOverrides = .{},
+    cwd: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -41,6 +43,14 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.startsWith(u8, arg, "--profile=")) {
             overrides.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
+            overrides.cwd = args.next() orelse return error.MissingCdOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--cd=")) {
+            overrides.cwd = arg["--cd=".len..];
             continue;
         }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
@@ -84,6 +94,16 @@ fn mainInner(init: std.process.Init) !void {
         break;
     }
 
+    const should_apply_cwd = if (cmd_opt) |cmd|
+        !std.mem.eql(u8, cmd, "exec") and
+            !std.mem.eql(u8, cmd, "--help") and
+            !std.mem.eql(u8, cmd, "-h")
+    else
+        true;
+    if (should_apply_cwd) {
+        if (overrides.cwd) |cwd| try workdir.change(cwd);
+    }
+
     if (cmd_opt) |cmd| {
         if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
             try printHelp();
@@ -105,6 +125,7 @@ fn mainInner(init: std.process.Init) !void {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .cwd = overrides.cwd,
             });
             return;
         }
@@ -187,6 +208,8 @@ fn printHelp() !void {
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
+        \\  codex-zig --cd DIR ...
+        \\                          Use DIR as the working root
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
         \\  codex-zig -a MODE ...
@@ -408,4 +431,5 @@ test {
     _ = session_store;
     _ = tools;
     _ = tui;
+    _ = workdir;
 }
