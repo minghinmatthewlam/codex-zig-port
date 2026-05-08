@@ -72,6 +72,35 @@ pub fn renderCommit(allocator: std.mem.Allocator, commit: []const u8) ![]const u
     return out.toOwnedSlice(allocator);
 }
 
+pub fn renderBase(allocator: std.mem.Allocator, branch: []const u8) ![]const u8 {
+    try validateRevision(branch);
+
+    var merge_base = try runGit(allocator, &.{ "git", "merge-base", "HEAD", branch });
+    defer merge_base.deinit(allocator);
+    if (!merge_base.success()) return gitUnavailable(allocator, merge_base);
+
+    const base = std.mem.trim(u8, merge_base.stdout, " \t\r\n");
+    try validateRevision(base);
+
+    var stat = try runGit(allocator, &.{ "git", "diff", "--stat", base, "--" });
+    defer stat.deinit(allocator);
+    if (!stat.success()) return gitUnavailable(allocator, stat);
+
+    var diff = try runGit(allocator, &.{ "git", "diff", base, "--" });
+    defer diff.deinit(allocator);
+    if (!diff.success()) return gitUnavailable(allocator, diff);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const header = try std.fmt.allocPrint(allocator, "base diff\n\nbase: {s}\nmerge-base: {s}\n\nstat:\n", .{ branch, base });
+    defer allocator.free(header);
+    try out.appendSlice(allocator, header);
+    try appendOrNone(allocator, &out, stat.stdout, "<none>\n");
+    try out.appendSlice(allocator, "\ndiff:\n");
+    try appendOrNone(allocator, &out, diff.stdout, "<none>\n");
+    return out.toOwnedSlice(allocator);
+}
+
 fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !CommandOutput {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();

@@ -22,7 +22,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply focused `apply_patch` file edits after user confirmation
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
-- run narrow non-interactive `review --uncommitted` and `review --commit` flows
+- run narrow non-interactive `review --uncommitted`, `review --base`, and
+  `review --commit` flows
 
 Long-term exact parity is tracked in `docs/parity.md`.
 
@@ -82,6 +83,7 @@ codex-zig --add-dir ~/scratch
 codex-zig --search
 codex-zig exec --profile work "say hello"
 codex-zig review --uncommitted
+codex-zig review --base main
 codex-zig review --commit HEAD
 ```
 
