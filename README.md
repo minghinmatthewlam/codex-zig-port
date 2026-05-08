@@ -10,6 +10,7 @@ original implementation.
 The first demo slice targets macOS and focuses on the interactive CLI surface:
 
 - launch an interactive terminal UI with `zig build run`
+- accept an optional initial prompt with `codex-zig [PROMPT]`
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
 - manage basic auth with `login status`, `login --with-api-key`, `login --device-auth`,
   and `logout`

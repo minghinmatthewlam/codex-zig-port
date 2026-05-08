@@ -180,7 +180,7 @@ pub fn createTurnWithOptions(
     var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
     defer client.deinit();
 
-    var response_body = StreamingResponseWriter.init(allocator, options.stream_callback);
+    var response_body = try StreamingResponseWriter.init(allocator, options.stream_callback);
     defer response_body.deinit();
 
     const result = try client.fetch(.{
@@ -207,6 +207,7 @@ pub fn createTurnWithOptions(
 
 const StreamingResponseWriter = struct {
     allocator: std.mem.Allocator,
+    buffer: []u8,
     writer: std.Io.Writer,
     raw: std.ArrayList(u8) = .empty,
     line: std.ArrayList(u8) = .empty,
@@ -217,11 +218,14 @@ const StreamingResponseWriter = struct {
         .drain = drain,
     };
 
-    fn init(allocator: std.mem.Allocator, callback: ?StreamCallback) StreamingResponseWriter {
+    fn init(allocator: std.mem.Allocator, callback: ?StreamCallback) !StreamingResponseWriter {
+        const buffer = try allocator.alloc(u8, 4096);
+        errdefer allocator.free(buffer);
         return .{
             .allocator = allocator,
+            .buffer = buffer,
             .writer = .{
-                .buffer = &.{},
+                .buffer = buffer,
                 .vtable = &vtable,
             },
             .callback = callback,
@@ -229,11 +233,13 @@ const StreamingResponseWriter = struct {
     }
 
     fn deinit(self: *StreamingResponseWriter) void {
+        self.allocator.free(self.buffer);
         self.raw.deinit(self.allocator);
         self.line.deinit(self.allocator);
     }
 
     fn finish(self: *StreamingResponseWriter) !void {
+        try self.writer.flush();
         if (self.line.items.len > 0) {
             try self.processLine(self.line.items);
             self.line.clearRetainingCapacity();
@@ -246,13 +252,22 @@ const StreamingResponseWriter = struct {
 
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *StreamingResponseWriter = @fieldParentPtr("writer", w);
-        const start_len = self.raw.items.len;
+        var written: usize = 0;
+
+        if (w.end > 0) {
+            self.ingest(w.buffer[0..w.end]) catch |err| {
+                self.failure = err;
+                return error.WriteFailed;
+            };
+            w.end = 0;
+        }
 
         for (data[0 .. data.len - 1]) |bytes| {
             self.ingest(bytes) catch |err| {
                 self.failure = err;
                 return error.WriteFailed;
             };
+            written += bytes.len;
         }
 
         const pattern = data[data.len - 1];
@@ -262,9 +277,10 @@ const StreamingResponseWriter = struct {
                 self.failure = err;
                 return error.WriteFailed;
             };
+            written += pattern.len;
         }
 
-        return self.raw.items.len - start_len;
+        return written;
     }
 
     fn ingest(self: *StreamingResponseWriter, bytes: []const u8) !void {
@@ -519,7 +535,7 @@ test "streaming response writer emits text deltas while retaining raw SSE" {
     var stream_context = TestStreamContext{ .allocator = allocator };
     defer stream_context.deinit();
 
-    var writer = StreamingResponseWriter.init(allocator, .{
+    var writer = try StreamingResponseWriter.init(allocator, .{
         .ctx = &stream_context,
         .on_text_delta = collectTextDelta,
     });

@@ -231,9 +231,15 @@ fn mainInner(init: std.process.Init) !void {
             try runMockSandboxDemo(allocator, overrides.additional_writable_roots);
             return;
         }
-        std.debug.print("unknown command: {s}\n\n", .{cmd});
-        try printHelp();
-        return error.UnknownCommand;
+        const initial_prompt = try joinInitialPrompt(allocator, cmd, &args);
+        defer allocator.free(initial_prompt);
+        try tui.runWithOptions(allocator, .{
+            .profile = overrides.profile,
+            .runtime_overrides = overrides.runtime,
+            .additional_writable_roots = overrides.additional_writable_roots,
+            .initial_prompt = initial_prompt,
+        });
+        return;
     }
 
     try tui.runWithOptions(allocator, .{
@@ -241,6 +247,30 @@ fn mainInner(init: std.process.Init) !void {
         .runtime_overrides = overrides.runtime,
         .additional_writable_roots = overrides.additional_writable_roots,
     });
+}
+
+fn joinInitialPrompt(
+    allocator: std.mem.Allocator,
+    first: []const u8,
+    args: *std.process.Args.Iterator,
+) ![]const u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    try parts.append(allocator, first);
+    while (args.next()) |arg| {
+        try parts.append(allocator, arg);
+    }
+    return joinPromptParts(allocator, parts.items);
+}
+
+fn joinPromptParts(allocator: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
+    var joined = std.ArrayList(u8).empty;
+    errdefer joined.deinit(allocator);
+    for (parts, 0..) |part, index| {
+        if (index > 0) try joined.append(allocator, ' ');
+        try joined.appendSlice(allocator, part);
+    }
+    return joined.toOwnedSlice(allocator);
 }
 
 fn printHelp() !void {
@@ -537,4 +567,14 @@ test {
     _ = tools;
     _ = tui;
     _ = workdir;
+}
+
+test "join initial prompt consumes remaining args" {
+    const allocator = std.testing.allocator;
+    const parts = [_][]const u8{ "hello", "from", "prompt" };
+
+    const prompt = try joinPromptParts(allocator, parts[0..]);
+    defer allocator.free(prompt);
+
+    try std.testing.expectEqualStrings("hello from prompt", prompt);
 }

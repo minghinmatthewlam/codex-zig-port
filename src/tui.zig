@@ -14,6 +14,7 @@ pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     additional_writable_roots: []const []const u8 = &.{},
+    initial_prompt: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -88,6 +89,15 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         std.debug.print("forked: {s} -> {s} ({d} items)\n", .{ path, session_path, transcript.history.items.len });
     }
 
+    if (options.initial_prompt) |initial_prompt| {
+        const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
+        if (prompt.len > 0) {
+            runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots) catch |err| {
+                std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+            };
+        }
+    }
+
     var input_buffer: [16 * 1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
 
@@ -109,24 +119,36 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
-        std.debug.print("\nassistant:\n", .{});
-        const answer = session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
-            .stream_text = true,
-            .additional_writable_roots = options.additional_writable_roots,
-        }) catch |err| {
+        runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
-        defer allocator.free(answer);
-        session_store.saveTranscript(allocator, session_path, &transcript) catch |err| {
-            std.debug.print("warning: could not save session: {s}\n", .{@errorName(err)});
-        };
-        if (answer.len == 0 or answer[answer.len - 1] != '\n') {
-            std.debug.print("\n", .{});
-        }
     }
 
     std.debug.print("\nbye\n", .{});
+}
+
+fn runPrompt(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    prompt: []const u8,
+    additional_writable_roots: []const []const u8,
+) !void {
+    std.debug.print("\nassistant:\n", .{});
+    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{
+        .stream_text = true,
+        .additional_writable_roots = additional_writable_roots,
+    });
+    defer allocator.free(answer);
+    session_store.saveTranscript(allocator, session_path, transcript) catch |err| {
+        std.debug.print("warning: could not save session: {s}\n", .{@errorName(err)});
+    };
+    if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+        std.debug.print("\n", .{});
+    }
 }
 
 fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u8) void {
