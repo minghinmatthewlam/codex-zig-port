@@ -5,6 +5,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
+const git_diff = @import("git_diff.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
@@ -203,6 +204,7 @@ test {
     _ = config;
     _ = env;
     _ = exec;
+    _ = git_diff;
     _ = session;
     _ = session_store;
     _ = tools;

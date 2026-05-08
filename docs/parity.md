@@ -9,7 +9,7 @@ Status values:
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop. Full flag/subcommand parity is planned. |
-| `tui` terminal UI | partial | Current UI is a simple terminal surface with composer/transcript/tool status and local `/help`, `/status`, `/model`, `/approval`, `/sandbox`, `/history`, `/rollout`, `/clear`, `/new`, `/resume`, `/quit`, and `/exit` commands. Full alternate-screen layout, transcript overlay, keymaps, slash popup, resize behavior, fork, and snapshots are planned. |
+| `tui` terminal UI | partial | Current UI is a simple terminal surface with composer/transcript/tool status and local `/help`, `/status`, `/model`, `/approval`, `/sandbox`, `/history`, `/rollout`, `/diff`, `/clear`, `/new`, `/resume`, `/quit`, and `/exit` commands. Full alternate-screen layout, transcript overlay, keymaps, slash popup, resize behavior, fork, and snapshots are planned. |
 | `login` / local auth reuse | partial | Reads `$CODEX_HOME/auth.json` / `~/.codex/auth.json`, ChatGPT bearer token, ChatGPT account header, API-key fallback. Fresh login and refresh are planned. |
 | `core` Responses agent loop | partial | Sends Responses API requests, parses text deltas and function calls, loops tool output back. Context compaction, rollout persistence, model catalog, goals, subagents, and advanced prompts are planned. |
 | `tools` shell execution | partial | Supports minimal `shell` and `shell_command` calls with approval policy decisions, cwd, timeout, stdout/stderr capture, and truncation. Full sandbox enforcement, hooks, and unified exec sessions are planned. |

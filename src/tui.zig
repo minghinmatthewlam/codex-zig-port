@@ -2,6 +2,7 @@ const std = @import("std");
 
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const git_diff = @import("git_diff.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 
@@ -153,6 +154,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "diff")) {
+        try printDiff(allocator, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "clear") or std.ascii.eqlIgnoreCase(parts.name, "new")) {
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         transcript.deinit(allocator);
@@ -239,6 +245,7 @@ fn printSlashHelp() void {
         \\  /sandbox [mode]   show or set sandbox mode
         \\  /history [n]      show recent transcript items
         \\  /rollout          show the active session JSONL path
+        \\  /diff             show git status and diff, including untracked files
         \\  /clear            clear transcript and redraw the header
         \\  /new              start a new transcript
         \\  /resume [target]  resume last, a session id, or a JSONL path
@@ -279,6 +286,21 @@ fn printStatus(
         cfg.sandbox_mode.label(),
         transcript.history.items.len,
     });
+}
+
+fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0) {
+        std.debug.print("usage: /diff\n", .{});
+        return;
+    }
+
+    const rendered = try git_diff.render(allocator);
+    defer allocator.free(rendered);
+    std.debug.print("{s}", .{rendered});
+    if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
+        std.debug.print("\n", .{});
+    }
 }
 
 fn printHistory(transcript: *const session.Transcript, limit: usize) void {
@@ -352,6 +374,10 @@ test "parse slash command names and args" {
     const rollout = parseSlash("/rollout").?;
     try std.testing.expectEqualStrings("rollout", rollout.name);
     try std.testing.expectEqualStrings("", rollout.args);
+
+    const diff = parseSlash("/diff").?;
+    try std.testing.expectEqualStrings("diff", diff.name);
+    try std.testing.expectEqualStrings("", diff.args);
 
     try std.testing.expect(parseSlash("hello") == null);
 }
