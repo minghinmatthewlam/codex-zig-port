@@ -94,6 +94,8 @@ codex-zig --version
 codex-zig exec --profile work "say hello"
 codex-zig sandbox macos -- /bin/echo ok
 codex-zig features list
+codex-zig features enable goals
+codex-zig features disable goals
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD

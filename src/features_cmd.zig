@@ -68,7 +68,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (std.mem.eql(u8, subcommand, "enable") or std.mem.eql(u8, subcommand, "disable")) {
-        return error.UnsupportedFeaturesWrite;
+        const feature = args.next() orelse return error.MissingFeatureName;
+        if (isHelpFlag(feature)) {
+            printSetHelp(subcommand);
+            return;
+        }
+        if (args.next() != null) return error.UnknownFeaturesOption;
+        try setFeature(allocator, options, feature, std.mem.eql(u8, subcommand, "enable"));
+        return;
     }
     return error.UnknownFeaturesSubcommand;
 }
@@ -95,6 +102,33 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
     try cli_utils.writeStdout(rendered);
 }
 
+fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u8, enabled: bool) !void {
+    if (!knownFeature(feature)) return error.UnknownFeature;
+
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    defer cfg.deinit(allocator);
+
+    const config_bytes = try readConfigToml(allocator, cfg.codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", feature, enabled);
+    defer allocator.free(updated);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, cfg.codex_home);
+    const path = try std.fs.path.join(allocator, &.{ cfg.codex_home, "config.toml" });
+    defer allocator.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = path,
+        .data = updated,
+    });
+
+    const verb = if (enabled) "Enabled" else "Disabled";
+    const message = try std.fmt.allocPrint(allocator, "{s} feature `{s}` in config.toml.\n", .{ verb, feature });
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+}
+
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
     defer allocator.free(path);
@@ -109,8 +143,12 @@ fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !Featu
     errdefer overrides.deinit(allocator);
 
     var in_features = false;
-    var iter = std.mem.splitScalar(u8, bytes, '\n');
-    while (iter.next()) |line_raw| {
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
         const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
         const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0) continue;
@@ -133,6 +171,80 @@ fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !Featu
     }
 
     return overrides;
+}
+
+fn updateFeatureConfig(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    feature: []const u8,
+    enabled: bool,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    const replacement = if (enabled) "true" else "false";
+    var in_features = false;
+    var saw_features = false;
+    var wrote_feature = false;
+
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            if (in_features and !wrote_feature) {
+                try appendFeatureLine(allocator, &output, feature, replacement);
+                wrote_feature = true;
+            }
+            in_features = std.mem.eql(u8, trimmed, "[features]");
+            saw_features = saw_features or in_features;
+        }
+
+        if (in_features and featureLineMatches(trimmed, feature)) {
+            try appendFeatureLine(allocator, &output, feature, replacement);
+            wrote_feature = true;
+            continue;
+        }
+
+        try output.appendSlice(allocator, line_raw);
+        try output.append(allocator, '\n');
+    }
+
+    if (!saw_features) {
+        if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') {
+            try output.append(allocator, '\n');
+        }
+        if (output.items.len > 0) try output.append(allocator, '\n');
+        try output.appendSlice(allocator, "[features]\n");
+    }
+    if (!wrote_feature) {
+        try appendFeatureLine(allocator, &output, feature, replacement);
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn featureLineMatches(trimmed: []const u8, feature: []const u8) bool {
+    if (trimmed.len == 0 or trimmed[0] == '[') return false;
+    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return false;
+    const key = std.mem.trim(u8, trimmed[0..eq], " \t");
+    return std.mem.eql(u8, key, feature);
+}
+
+fn appendFeatureLine(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    feature: []const u8,
+    value: []const u8,
+) !void {
+    try output.appendSlice(allocator, feature);
+    try output.appendSlice(allocator, " = ");
+    try output.appendSlice(allocator, value);
+    try output.append(allocator, '\n');
 }
 
 fn knownFeature(key: []const u8) bool {
@@ -181,7 +293,7 @@ fn printHelp() void {
         \\  codex-zig features enable FEATURE
         \\  codex-zig features disable FEATURE
         \\
-        \\Only `features list` is implemented in the Zig port.
+        \\Writes update the top-level [features] table in CODEX_HOME/config.toml.
         \\
     , .{});
 }
@@ -194,6 +306,16 @@ fn printListHelp() void {
         \\Lists known feature flags with stage and effective state.
         \\
     , .{});
+}
+
+fn printSetHelp(action: []const u8) void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig features {s} FEATURE
+        \\
+        \\Updates CODEX_HOME/config.toml for a known feature key.
+        \\
+    , .{action});
 }
 
 const features = [_]FeatureSpec{
@@ -307,4 +429,46 @@ test "feature list renderer includes overrides" {
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "goals  experimental  true\n") != null);
+}
+
+test "feature config update creates features table" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator, "model = \"demo\"\n", "goals", true);
+    defer allocator.free(updated);
+
+    try std.testing.expectEqualStrings(
+        "model = \"demo\"\n\n[features]\ngoals = true\n",
+        updated,
+    );
+}
+
+test "feature config update replaces existing feature" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator,
+        \\model = "demo"
+        \\[features]
+        \\goals = false
+        \\shell_tool = true
+        \\[profiles.work]
+        \\model = "work"
+        \\
+    , "goals", true);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "goals = true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "shell_tool = true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work]\n") != null);
+}
+
+test "feature config update appends to existing features table" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator,
+        \\[features]
+        \\shell_tool = true
+        \\
+    , "goals", false);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "shell_tool = true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "goals = false\n") != null);
 }
