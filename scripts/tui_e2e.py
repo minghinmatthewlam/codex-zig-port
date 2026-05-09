@@ -334,7 +334,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"status:", 5, mark)
             wait_for(master_fd, output, b"service tier: unset", 5, mark)
             wait_for(master_fd, output, b"plan mode:   off", 5, mark)
-            wait_for(master_fd, output, b"term title:  off", 5, mark)
+            wait_for(master_fd, output, b"term title:  on", 5, mark)
             wait_for(master_fd, output, b"status line: <off>", 5, mark)
             wait_for(master_fd, output, b"theme:       catppuccin-mocha", 5, mark)
             wait_for(master_fd, output, b"personality: pragmatic", 5, mark)
@@ -347,10 +347,11 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"renamed thread: Zig demo", 5, mark)
 
             mark = len(output)
-            send_line(master_fd, "/title on")
-            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
+            send_line(master_fd, "/title app-name thread-title")
+            wait_for(master_fd, output, b"\x1b]0;codex | Zig demo\x07", 5, mark)
             wait_for(master_fd, output, b"terminal title: on", 5, mark)
-            wait_for(master_fd, output, b"preview: Codex Zig | Zig demo", 5, mark)
+            wait_for(master_fd, output, b"items: app-name, thread-title", 5, mark)
+            wait_for(master_fd, output, b"preview: codex | Zig demo", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
@@ -364,7 +365,7 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/resume last")
-            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
+            wait_for(master_fd, output, b"\x1b]0;codex | Zig demo\x07", 5, mark)
             wait_for(master_fd, output, b"resumed:", 5, mark)
 
             mark = len(output)
@@ -624,8 +625,8 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"plan mode: off", 5, mark)
 
             mark = len(output)
-            send_line(master_fd, "/title on")
-            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
+            send_line(master_fd, "/title app-name thread-title")
+            wait_for(master_fd, output, b"\x1b]0;codex | Zig demo\x07", 5, mark)
             wait_for(master_fd, output, b"terminal title: on", 5, mark)
 
             mark = len(output)

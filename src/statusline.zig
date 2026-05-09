@@ -102,7 +102,7 @@ pub fn buildPreview(
     return output.toOwnedSlice(allocator);
 }
 
-fn value(
+pub fn value(
     allocator: std.mem.Allocator,
     cfg: config.Config,
     transcript: *const session.Transcript,
