@@ -23,6 +23,7 @@ const modules = .{
     @import("sandbox_cmd.zig"),
     @import("session.zig"),
     @import("session_store.zig"),
+    @import("statusline.zig"),
     @import("tools.zig"),
     @import("tui.zig"),
     @import("workdir.zig"),

@@ -11,6 +11,7 @@ const mcp_cmd = @import("mcp_cmd.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
+const statusline = @import("statusline.zig");
 const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
@@ -374,11 +375,13 @@ const TuiState = struct {
     vim_mode: bool = false,
     plan_mode: bool = false,
     terminal_title_enabled: bool = false,
+    status_line_items: std.ArrayList(statusline.Item) = .empty,
     mentions: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
         self.clearMentions(allocator);
         self.mentions.deinit(allocator);
+        self.status_line_items.deinit(allocator);
     }
 
     fn addMention(self: *TuiState, allocator: std.mem.Allocator, path: []const u8) !void {
@@ -390,6 +393,15 @@ const TuiState = struct {
     fn clearMentions(self: *TuiState, allocator: std.mem.Allocator) void {
         for (self.mentions.items) |path| allocator.free(path);
         self.mentions.clearRetainingCapacity();
+    }
+
+    fn replaceStatusLineItems(self: *TuiState, allocator: std.mem.Allocator, items: []const statusline.Item) !void {
+        self.status_line_items.clearRetainingCapacity();
+        try self.status_line_items.appendSlice(allocator, items);
+    }
+
+    fn clearStatusLine(self: *TuiState) void {
+        self.status_line_items.clearRetainingCapacity();
     }
 };
 
@@ -433,7 +445,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
-        printStatus(cfg.*, credentials, transcript, session_path.*, cwd, state.*);
+        try printStatus(allocator, cfg.*, credentials, transcript, session_path.*, cwd, state.*);
         return .handled;
     }
 
@@ -454,6 +466,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "title")) {
         try handleTerminalTitle(allocator, cwd, transcript, state, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "statusline")) {
+        try handleStatusLine(allocator, cfg.*, transcript, session_path.*, cwd, state, parts.args);
         return .handled;
     }
 
@@ -669,6 +686,8 @@ fn printSlashHelp() void {
         \\                    toggle plan-only mode for normal prompts
         \\  /title [on|off|status]
         \\                    manage the terminal window title
+        \\  /statusline [status|off|default|ITEM...]
+        \\                    configure status line preview items
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -748,13 +767,14 @@ fn runCompact(
 }
 
 fn printStatus(
+    allocator: std.mem.Allocator,
     cfg: config.Config,
     credentials: auth.Credentials,
     transcript: *const session.Transcript,
     session_path: []const u8,
     cwd: []const u8,
     state: TuiState,
-) void {
+) !void {
     const tool_label = if (cfg.web_search_mode) |mode|
         if (mode.externalWebAccess() != null)
             "exec_command, write_stdin, shell, shell_command, apply_patch, web_search"
@@ -762,6 +782,8 @@ fn printStatus(
             "exec_command, write_stdin, shell, shell_command, apply_patch"
     else
         "exec_command, write_stdin, shell, shell_command, apply_patch";
+    const status_line_label = try statusline.itemsLabel(allocator, state.status_line_items.items);
+    defer allocator.free(status_line_label);
 
     std.debug.print(
         \\status:
@@ -777,6 +799,7 @@ fn printStatus(
         \\  service tier: {s}
         \\  plan mode:   {s}
         \\  term title:  {s}
+        \\  status line: {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  mentions:    {d} pending
@@ -799,6 +822,7 @@ fn printStatus(
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.plan_mode) "on" else "off",
         if (state.terminal_title_enabled) "on" else "off",
+        status_line_label,
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         state.mentions.items.len,
@@ -967,6 +991,69 @@ fn writeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) !void {
 
 fn clearTerminalTitle() void {
     std.debug.print("\x1b]0;\x07", .{});
+}
+
+fn handleStatusLine(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    transcript: *const session.Transcript,
+    session_path: []const u8,
+    cwd: []const u8,
+    state: *TuiState,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "off") or std.ascii.eqlIgnoreCase(trimmed, "none") or std.ascii.eqlIgnoreCase(trimmed, "clear")) {
+        state.clearStatusLine();
+        try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "default")) {
+        try state.replaceStatusLineItems(allocator, &.{ .model_name, .project_root, .git_branch });
+        try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
+        return;
+    }
+
+    var parsed = std.ArrayList(statusline.Item).empty;
+    defer parsed.deinit(allocator);
+
+    var tokens = std.mem.tokenizeAny(u8, trimmed, ", \t\r\n");
+    while (tokens.next()) |token| {
+        const item = statusline.parseItem(token) orelse {
+            std.debug.print("unknown status line item: {s}\n", .{token});
+            statusline.printUsage();
+            return;
+        };
+        if (!statusline.containsItem(parsed.items, item)) {
+            try parsed.append(allocator, item);
+        }
+    }
+    if (parsed.items.len == 0) {
+        statusline.printUsage();
+        return;
+    }
+
+    try state.replaceStatusLineItems(allocator, parsed.items);
+    try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
+}
+
+fn printStatusLineStatus(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    transcript: *const session.Transcript,
+    session_path: []const u8,
+    cwd: []const u8,
+    state: *const TuiState,
+) !void {
+    const label = try statusline.itemsLabel(allocator, state.status_line_items.items);
+    defer allocator.free(label);
+    const preview = try statusline.buildPreview(allocator, cfg, transcript, session_path, cwd, state.status_line_items.items, state.raw_output_mode);
+    defer allocator.free(preview);
+    std.debug.print("status line: {s}\n  preview: {s}\n", .{ label, preview });
 }
 
 fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {

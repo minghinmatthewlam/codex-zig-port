@@ -322,6 +322,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"commands:", 5, mark)
             wait_for(master_fd, output, b"/permissions", 5, mark)
             wait_for(master_fd, output, b"/title", 5, mark)
+            wait_for(master_fd, output, b"/statusline", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
@@ -329,6 +330,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"service tier: unset", 5, mark)
             wait_for(master_fd, output, b"plan mode:   off", 5, mark)
             wait_for(master_fd, output, b"term title:  off", 5, mark)
+            wait_for(master_fd, output, b"status line: <off>", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
@@ -368,6 +370,16 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"terminal title: off", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/statusline model project-name thread-title")
+            wait_for(master_fd, output, b"status line: model, project-name, thread-title", 5, mark)
+            wait_for(master_fd, output, b"preview:", 5, mark)
+            wait_for(master_fd, output, b"Zig demo", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"status line: model, project-name, thread-title", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
@@ -394,6 +406,13 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/raw")
             wait_for(master_fd, output, b"raw output mode: on", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/statusline model,fast-mode,raw-output")
+            wait_for(master_fd, output, b"status line: model, fast-mode, raw-output", 5, mark)
+            wait_for(master_fd, output, b"preview:", 5, mark)
+            wait_for(master_fd, output, b"fast", 5, mark)
+            wait_for(master_fd, output, b"raw output", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/raw off")
