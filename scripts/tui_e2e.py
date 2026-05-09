@@ -314,6 +314,16 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/keymap")
+            wait_for(master_fd, output, b"keymap:", 5, mark)
+            wait_for(master_fd, output, b"!COMMAND", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/keymap debug")
+            wait_for(master_fd, output, b"keymap debug:", 5, mark)
+            wait_for(master_fd, output, b"configurable: false", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/fast status")
             wait_for(master_fd, output, b"Fast mode is off.", 5, mark)
 

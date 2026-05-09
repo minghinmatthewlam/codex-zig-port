@@ -311,6 +311,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "keymap")) {
+        printKeymap(parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "history")) {
         printHistory(transcript, try parseHistoryLimit(parts.args));
         return .handled;
@@ -495,6 +500,7 @@ fn printSlashHelp() void {
         \\  /compact          summarize and replace this session's history
         \\  /status           show current session settings
         \\  /debug-config     show effective configuration values
+        \\  /keymap [debug]   show current key bindings
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
         \\                    toggle Fast service tier for this session
@@ -656,6 +662,36 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         cfg.oss_provider orelse "<none>",
         cfg.installation_id,
     });
+}
+
+fn printKeymap(args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0 and !std.ascii.eqlIgnoreCase(trimmed, "debug")) {
+        std.debug.print("usage: /keymap [debug]\n", .{});
+        return;
+    }
+
+    std.debug.print(
+        \\keymap:
+        \\  Enter            submit the current line
+        \\  q                quit from an empty prompt
+        \\  !COMMAND         run a local shell command
+        \\  /quit, /exit     exit Codex Zig
+        \\  /stop, /clean    stop background terminals
+        \\  /raw             toggle raw output mode
+        \\  /vim             toggle Vim mode indicator
+        \\
+    , .{});
+
+    if (trimmed.len != 0) {
+        std.debug.print(
+            \\keymap debug:
+            \\  backend: built-in
+            \\  configurable: false
+            \\  alternate screen: disabled in current Zig TUI
+            \\
+        , .{});
+    }
 }
 
 fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
@@ -1004,6 +1040,10 @@ test "parse slash command names and args" {
     const debug_config = parseSlash("/debug-config").?;
     try std.testing.expectEqualStrings("debug-config", debug_config.name);
     try std.testing.expectEqualStrings("", debug_config.args);
+
+    const keymap = parseSlash("/keymap debug").?;
+    try std.testing.expectEqualStrings("keymap", keymap.name);
+    try std.testing.expectEqualStrings("debug", keymap.args);
 
     const model = parseSlash("/model gpt-test").?;
     try std.testing.expectEqualStrings("model", model.name);

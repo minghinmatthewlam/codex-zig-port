@@ -24,6 +24,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - create a repository guide through interactive `/init`
 - compact an interactive session into a continuation summary with `/compact`
 - inspect effective interactive configuration with `/debug-config`
+- inspect current built-in key bindings with `/keymap`
 - enable native Responses web search with `--search` or `web_search = "live"`
 - accept modern `exec_command` tool calls for one-shot command execution and
   PTY-backed `write_stdin` session input
@@ -69,7 +70,7 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/debug-config`, `/fast`, `/copy`, `/raw`, `/vim`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
+`/debug-config`, `/keymap`, `/fast`, `/copy`, `/raw`, `/vim`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches
