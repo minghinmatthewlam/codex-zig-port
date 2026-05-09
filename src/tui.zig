@@ -306,6 +306,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "debug-config")) {
+        printDebugConfig(cfg.*, credentials);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "history")) {
         printHistory(transcript, try parseHistoryLimit(parts.args));
         return .handled;
@@ -489,6 +494,7 @@ fn printSlashHelp() void {
         \\  /init             create an AGENTS.md contributor guide
         \\  /compact          summarize and replace this session's history
         \\  /status           show current session settings
+        \\  /debug-config     show effective configuration values
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
         \\                    toggle Fast service tier for this session
@@ -613,6 +619,42 @@ fn printStatus(
         if (state.vim_mode) "on" else "off",
         transcript.history.items.len,
         tool_label,
+    });
+}
+
+fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
+    std.debug.print(
+        \\/debug-config
+        \\
+        \\effective config:
+        \\  codex_home:     {s}
+        \\  active_profile: {s}
+        \\  model:          {s}
+        \\  auth:           {s}
+        \\  openai_base:    {s}
+        \\  chatgpt_base:   {s}
+        \\  approval:       {s}
+        \\  sandbox:        {s}
+        \\  web_search:     {s}
+        \\  service_tier:   {s}
+        \\  oss_provider:   {s}
+        \\  installation:   {s}
+        \\
+        \\config layers: not yet implemented in the Zig port
+        \\
+    , .{
+        cfg.codex_home,
+        cfg.active_profile orelse "<none>",
+        cfg.model,
+        credentials.describe(),
+        cfg.openai_base_url,
+        cfg.chatgpt_base_url,
+        cfg.approval_policy.label(),
+        cfg.sandbox_mode.label(),
+        config.webSearchLabel(cfg.web_search_mode),
+        cfg.service_tier orelse "<none>",
+        cfg.oss_provider orelse "<none>",
+        cfg.installation_id,
     });
 }
 
@@ -958,6 +1000,10 @@ test "parse slash command names and args" {
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
     try std.testing.expectEqualStrings("", status.args);
+
+    const debug_config = parseSlash("/debug-config").?;
+    try std.testing.expectEqualStrings("debug-config", debug_config.name);
+    try std.testing.expectEqualStrings("", debug_config.args);
 
     const model = parseSlash("/model gpt-test").?;
     try std.testing.expectEqualStrings("model", model.name);

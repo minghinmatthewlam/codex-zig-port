@@ -308,6 +308,12 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"tools:", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/debug-config")
+            wait_for(master_fd, output, b"/debug-config", 5, mark)
+            wait_for(master_fd, output, b"effective config:", 5, mark)
+            wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/fast status")
             wait_for(master_fd, output, b"Fast mode is off.", 5, mark)
 
