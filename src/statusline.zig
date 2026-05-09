@@ -133,7 +133,7 @@ pub fn value(
         .fast_mode => if (cfg.service_tier != null and std.mem.eql(u8, cfg.service_tier.?, "priority")) try allocator.dupe(u8, "fast") else null,
         .raw_output => if (raw_output_mode) try allocator.dupe(u8, "raw output") else null,
         .thread_title => if (transcript.title) |title| try allocator.dupe(u8, title) else null,
-        .task_progress => null,
+        .task_progress => try transcript.plan.progressLabel(allocator),
     };
 }
 

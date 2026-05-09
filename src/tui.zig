@@ -830,11 +830,11 @@ fn printStatus(
 ) !void {
     const tool_label = if (cfg.web_search_mode) |mode|
         if (mode.externalWebAccess() != null)
-            "exec_command, write_stdin, shell, shell_command, apply_patch, web_search"
+            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan, web_search"
         else
-            "exec_command, write_stdin, shell, shell_command, apply_patch"
+            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan"
     else
-        "exec_command, write_stdin, shell, shell_command, apply_patch";
+        "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan";
     const status_line_label = try statusline.itemsLabel(allocator, state.status_line_items.items);
     defer allocator.free(status_line_label);
 

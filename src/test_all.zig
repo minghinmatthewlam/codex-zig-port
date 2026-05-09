@@ -18,6 +18,7 @@ const modules = .{
     @import("mcp_server_cmd.zig"),
     @import("mcp_runtime.zig"),
     @import("main.zig"),
+    @import("plan_tool.zig"),
     @import("review.zig"),
     @import("sandbox.zig"),
     @import("sandbox_cmd.zig"),

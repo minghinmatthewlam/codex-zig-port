@@ -151,7 +151,7 @@ fn value(
         .fast_mode => try truncatedStatusLineValue(allocator, cfg, transcript, session_path, cwd, raw_output_mode, .fast_mode, 32),
         .model_name => try truncateOwned(allocator, try allocator.dupe(u8, cfg.model), 32),
         .model_with_reasoning => try truncatedStatusLineValue(allocator, cfg, transcript, session_path, cwd, raw_output_mode, .model_with_reasoning, 32),
-        .task_progress => null,
+        .task_progress => try truncatedStatusLineValue(allocator, cfg, transcript, session_path, cwd, raw_output_mode, .task_progress, 32),
     };
 }
 

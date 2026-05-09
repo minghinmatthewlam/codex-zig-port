@@ -34,6 +34,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - enable native Responses web search with `--search` or `web_search = "live"`
 - accept modern `exec_command` tool calls for one-shot command execution and
   PTY-backed `write_stdin` session input
+- accept `update_plan` tool calls and surface task progress in the TUI
 - run explicit local TUI shell commands with `!COMMAND`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
@@ -78,7 +79,7 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/debug-config`, `/keymap`, `/plan`, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
+`/debug-config`, `/keymap`, `/plan`, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches

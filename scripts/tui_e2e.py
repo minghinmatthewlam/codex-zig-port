@@ -92,6 +92,41 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "side answer\n",
                 },
             )
+        elif "track this checklist" in latest_prompt and has_tool_output(
+            items, "call-tui-e2e-plan"
+        ):
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "plan tracked\n",
+                },
+            )
+        elif "track this checklist" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll track it.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-plan",
+                        "name": "update_plan",
+                        "arguments": json.dumps(
+                            {
+                                "explanation": "Demo progress",
+                                "plan": [
+                                    {"step": "Inspect repo", "status": "completed"},
+                                    {"step": "Patch feature", "status": "in_progress"},
+                                    {"step": "Verify behavior", "status": "pending"},
+                                ],
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
         elif "create the demo file" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-2"
         ):
@@ -549,6 +584,32 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"mentioned file received", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "track this checklist")
+            wait_for(master_fd, output, b"[tool requested] update_plan", 8, mark)
+            wait_for(master_fd, output, b"plan:", 5, mark)
+            wait_for(master_fd, output, b"[x] Inspect repo", 5, mark)
+            wait_for(master_fd, output, b"[>] Patch feature", 5, mark)
+            wait_for(master_fd, output, b"[ ] Verify behavior", 5, mark)
+            wait_for(master_fd, output, b"[tool result] plan updated 1/3", 8, mark)
+            wait_for(master_fd, output, b"plan tracked", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
+            send_line(master_fd, "/statusline task-progress")
+            wait_for(master_fd, output, b"status line: task-progress", 5, mark)
+            wait_for(master_fd, output, b"preview: Tasks 1/3", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/title task-progress")
+            wait_for(master_fd, output, b"\x1b]0;Tasks 1/3\x07", 5, mark)
+            wait_for(master_fd, output, b"terminal title: on", 5, mark)
+            wait_for(master_fd, output, b"items: task-progress", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/statusline model,fast-mode,raw-output")
+            wait_for(master_fd, output, b"status line: model, fast-mode, raw-output", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "start a background terminal")
             wait_for(master_fd, output, b"Tool approval required", 8, mark)
             wait_for(master_fd, output, b"Run this command? [y/N]", 5, mark)
@@ -569,9 +630,9 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/history 4")
-            wait_for(master_fd, output, b"history: showing 4 of 6 items", 5, mark)
+            wait_for(master_fd, output, b"history: showing 4 of 10 items", 5, mark)
             wait_for(master_fd, output, b"tool call: exec_command", 5, mark)
-            wait_for(master_fd, output, b"#6 assistant:", 5, mark)
+            wait_for(master_fd, output, b"#10 assistant:", 5, mark)
             read_available(master_fd, output, 0.2)
 
             mark = len(output)
@@ -598,7 +659,7 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/history 8")
-            wait_for(master_fd, output, b"history: showing 8 of 10 items", 5, mark)
+            wait_for(master_fd, output, b"history: showing 8 of 14 items", 5, mark)
             wait_for(master_fd, output, b"tool call: apply_patch", 5, mark)
             wait_for(master_fd, output, b"demo file created", 5, mark)
             read_available(master_fd, output, 0.2)

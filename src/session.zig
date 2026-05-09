@@ -4,14 +4,17 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
+const plan_tool = @import("plan_tool.zig");
 const tools = @import("tools.zig");
 
 pub const Transcript = struct {
     title: ?[]const u8 = null,
     history: std.ArrayList(api.HistoryItem) = .empty,
+    plan: plan_tool.State = .{},
 
     pub fn deinit(self: *Transcript, allocator: std.mem.Allocator) void {
         self.clearTitle(allocator);
+        self.plan.deinit(allocator);
         for (self.history.items) |item| item.deinit(allocator);
         self.history.deinit(allocator);
     }
@@ -38,6 +41,7 @@ pub const Transcript = struct {
         errdefer copy.deinit(allocator);
 
         if (self.title) |title| try copy.setTitle(allocator, title);
+        copy.plan = try self.plan.clone(allocator);
         for (self.history.items) |item| try copy.appendHistoryItem(allocator, item);
 
         return copy;
@@ -211,7 +215,7 @@ pub fn runTurnWithOptions(
                 std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
             }
 
-            var tool_result = try runToolCall(allocator, cfg, mcp_catalog, call, options);
+            var tool_result = try runToolCall(allocator, cfg, mcp_catalog, call, transcript, options);
             defer tool_result.deinit(allocator);
 
             if (options.json_events) {
@@ -233,8 +237,22 @@ fn runToolCall(
     cfg: config.Config,
     mcp_catalog: mcp_runtime.Catalog,
     call: api.FunctionCall,
+    transcript: *Transcript,
     options: TurnOptions,
 ) !tools.ToolResult {
+    if (std.mem.eql(u8, call.name, "update_plan")) {
+        var update = try plan_tool.applyUpdate(allocator, &transcript.plan, call.arguments);
+        defer update.deinit(allocator);
+        if (!options.json_events) {
+            std.debug.print("{s}", .{update.output});
+        }
+        return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, update.summary),
+            .output = try allocator.dupe(u8, update.output),
+        };
+    }
+
     if (mcp_catalog.find(call.name)) |mcp_tool| {
         var output = mcp_runtime.callTool(allocator, cfg.codex_home, mcp_tool, call.arguments) catch |err| {
             return .{

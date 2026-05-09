@@ -464,11 +464,20 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"patch":{"type":"string","description":"Patch text with Add File, Update File, or Delete File sections."}},"required":["patch"],"additionalProperties":false}
             ),
         };
+        const update_plan_tool = Tool{
+            .type = "function",
+            .name = "update_plan",
+            .description = "Update the visible task plan with ordered items and statuses.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"explanation":{"type":"string","description":"Optional short explanation for the plan update."},"plan":{"type":"array","description":"Ordered plan items.","items":{"type":"object","properties":{"step":{"type":"string","description":"A concise task step."},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Current status for the step."}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}
+            ),
+        };
         try tools_list.append(allocator, exec_command_tool);
         try tools_list.append(allocator, write_stdin_tool);
         try tools_list.append(allocator, shell_tool);
         try tools_list.append(allocator, shell_command_tool);
         try tools_list.append(allocator, apply_patch_tool);
+        try tools_list.append(allocator, update_plan_tool);
         if (cfg.web_search_mode) |web_search_mode| {
             if (web_search_mode.externalWebAccess()) |external_web_access| {
                 try tools_list.append(allocator, .{
@@ -590,6 +599,7 @@ const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
     \\When you need to inspect files or run commands, call exec_command. Use write_stdin for running exec_command sessions. shell_command and shell remain supported.
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
+    \\For multi-step work, call update_plan with concise steps and current statuses.
     \\Configured MCP server tools may appear as mcp__server__tool function tools.
     \\Keep answers concise and report command outcomes.
 ;
@@ -720,6 +730,7 @@ test "builds chronological request input from owned history" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"exec_command\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"update_plan\"") != null);
 }
 
 test "builds input images on latest user message" {
