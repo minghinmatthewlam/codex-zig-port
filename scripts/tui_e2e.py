@@ -321,12 +321,14 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/help")
             wait_for(master_fd, output, b"commands:", 5, mark)
             wait_for(master_fd, output, b"/permissions", 5, mark)
+            wait_for(master_fd, output, b"/title", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"status:", 5, mark)
             wait_for(master_fd, output, b"service tier: unset", 5, mark)
             wait_for(master_fd, output, b"plan mode:   off", 5, mark)
+            wait_for(master_fd, output, b"term title:  off", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
@@ -336,8 +338,15 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"renamed thread: Zig demo", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/title on")
+            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
+            wait_for(master_fd, output, b"terminal title: on", 5, mark)
+            wait_for(master_fd, output, b"preview: Codex Zig | Zig demo", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"title:       Zig demo", 5, mark)
+            wait_for(master_fd, output, b"term title:  on", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/sessions 1")
@@ -346,11 +355,17 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/resume last")
+            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
             wait_for(master_fd, output, b"resumed:", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"title:       Zig demo", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/title off")
+            wait_for(master_fd, output, b"\x1b]0;\x07", 5, mark)
+            wait_for(master_fd, output, b"terminal title: off", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/debug-config")

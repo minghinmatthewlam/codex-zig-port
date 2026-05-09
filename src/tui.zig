@@ -15,6 +15,7 @@ const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
 const mention_file_limit = 128 * 1024;
+const terminal_title_limit = 240;
 const init_prompt =
     \\Create an AGENTS.md file for this repository.
     \\Make it a concise contributor guide with practical headings and repository-specific guidance.
@@ -163,6 +164,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         };
     }
 
+    if (state.terminal_title_enabled) clearTerminalTitle();
     std.debug.print("\nbye\n", .{});
 }
 
@@ -371,6 +373,7 @@ const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
     plan_mode: bool = false,
+    terminal_title_enabled: bool = false,
     mentions: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
@@ -449,8 +452,15 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "title")) {
+        try handleTerminalTitle(allocator, cwd, transcript, state, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
-        try renameThread(allocator, transcript, session_path.*, parts.args);
+        if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
+            try refreshTerminalTitle(allocator, cwd, transcript, state);
+        }
         return .handled;
     }
 
@@ -536,6 +546,7 @@ fn handleSlashCommand(
         transcript.deinit(allocator);
         transcript.* = .{};
         state.clearMentions(allocator);
+        try refreshTerminalTitle(allocator, cwd, transcript, state);
         allocator.free(session_path.*);
         session_path.* = next_path;
         if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
@@ -557,6 +568,7 @@ fn handleSlashCommand(
         transcript.deinit(allocator);
         transcript.* = loaded;
         state.clearMentions(allocator);
+        try refreshTerminalTitle(allocator, cwd, transcript, state);
         allocator.free(session_path.*);
         session_path.* = next_path;
         std.debug.print("resumed: {s} ({d} items)\n", .{ session_path.*, transcript.history.items.len });
@@ -577,6 +589,7 @@ fn handleSlashCommand(
             transcript.* = loaded;
         }
         state.clearMentions(allocator);
+        try refreshTerminalTitle(allocator, cwd, transcript, state);
 
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         errdefer allocator.free(next_path);
@@ -654,6 +667,8 @@ fn printSlashHelp() void {
         \\  /keymap [debug]   show current key bindings
         \\  /plan [on|off|status]
         \\                    toggle plan-only mode for normal prompts
+        \\  /title [on|off|status]
+        \\                    manage the terminal window title
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -761,6 +776,7 @@ fn printStatus(
         \\  search:      {s}
         \\  service tier: {s}
         \\  plan mode:   {s}
+        \\  term title:  {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  mentions:    {d} pending
@@ -782,6 +798,7 @@ fn printStatus(
         config.webSearchLabel(cfg.web_search_mode),
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.plan_mode) "on" else "off",
+        if (state.terminal_title_enabled) "on" else "off",
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         state.mentions.items.len,
@@ -884,20 +901,111 @@ fn printPlanMode(enabled: bool) void {
     std.debug.print("plan mode: {s}\n", .{if (enabled) "on" else "off"});
 }
 
+fn handleTerminalTitle(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+    state: *TuiState,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        try printTerminalTitleStatus(allocator, cwd, transcript, state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        state.terminal_title_enabled = true;
+        try refreshTerminalTitle(allocator, cwd, transcript, state);
+        try printTerminalTitleStatus(allocator, cwd, transcript, state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        state.terminal_title_enabled = false;
+        clearTerminalTitle();
+        try printTerminalTitleStatus(allocator, cwd, transcript, state);
+        return;
+    }
+    std.debug.print("usage: /title [on|off|status]\n", .{});
+}
+
+fn printTerminalTitleStatus(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+    state: *const TuiState,
+) !void {
+    const title = try buildTerminalTitle(allocator, cwd, transcript);
+    defer allocator.free(title);
+    const sanitized = try sanitizeTerminalTitle(allocator, title);
+    defer allocator.free(sanitized);
+    std.debug.print("terminal title: {s}\n  preview: {s}\n", .{ if (state.terminal_title_enabled) "on" else "off", sanitized });
+}
+
+fn refreshTerminalTitle(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+    state: *const TuiState,
+) !void {
+    if (!state.terminal_title_enabled) return;
+    const title = try buildTerminalTitle(allocator, cwd, transcript);
+    defer allocator.free(title);
+    try writeTerminalTitle(allocator, title);
+}
+
+fn buildTerminalTitle(allocator: std.mem.Allocator, cwd: []const u8, transcript: *const session.Transcript) ![]const u8 {
+    const label = transcript.title orelse std.fs.path.basename(cwd);
+    return std.fmt.allocPrint(allocator, "Codex Zig | {s}", .{label});
+}
+
+fn writeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) !void {
+    const sanitized = try sanitizeTerminalTitle(allocator, title);
+    defer allocator.free(sanitized);
+    if (sanitized.len == 0) return;
+    std.debug.print("\x1b]0;{s}\x07", .{sanitized});
+}
+
+fn clearTerminalTitle() void {
+    std.debug.print("\x1b]0;\x07", .{});
+}
+
+fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var pending_space = false;
+    for (title) |byte| {
+        if (byte == 0x1b or byte == 0x07 or byte == 0x9b or byte == 0x9c or byte == 0x7f) continue;
+        if (byte <= ' ') {
+            pending_space = output.items.len > 0;
+            continue;
+        }
+        if (pending_space and output.items.len < terminal_title_limit) {
+            try output.append(allocator, ' ');
+        }
+        pending_space = false;
+        if (output.items.len >= terminal_title_limit) break;
+        try output.append(allocator, byte);
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
 fn renameThread(
     allocator: std.mem.Allocator,
     transcript: *session.Transcript,
     session_path: []const u8,
     args: []const u8,
-) !void {
+) !bool {
     const title = std.mem.trim(u8, args, " \t\r\n");
     if (title.len == 0) {
         std.debug.print("usage: /rename <title>\n", .{});
-        return;
+        return false;
     }
     try transcript.setTitle(allocator, title);
     try session_store.saveTranscript(allocator, session_path, transcript);
     std.debug.print("renamed thread: {s}\n", .{transcript.title.?});
+    return true;
 }
 
 fn mentionFile(allocator: std.mem.Allocator, cwd: []const u8, state: *TuiState, args: []const u8) !void {
@@ -1278,6 +1386,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("plan", plan.name);
     try std.testing.expectEqualStrings("on", plan.args);
 
+    const title = parseSlash("/title status").?;
+    try std.testing.expectEqualStrings("title", title.name);
+    try std.testing.expectEqualStrings("status", title.args);
+
     const rename = parseSlash("/rename demo title").?;
     try std.testing.expectEqualStrings("rename", rename.name);
     try std.testing.expectEqualStrings("demo title", rename.args);
@@ -1373,6 +1485,37 @@ test "parse raw output mode args" {
     try std.testing.expectEqual(true, try parseRawOutputMode(" on ", false));
     try std.testing.expectEqual(false, try parseRawOutputMode("OFF", true));
     try std.testing.expectError(error.InvalidRawOutputMode, parseRawOutputMode("status", false));
+}
+
+test "sanitizes terminal title text" {
+    const allocator = std.testing.allocator;
+
+    const sanitized = try sanitizeTerminalTitle(allocator, "  Project\t|\nWorking\x1b\x07 |  Thread  ");
+    defer allocator.free(sanitized);
+    try std.testing.expectEqualStrings("Project | Working | Thread", sanitized);
+
+    const long_title = try allocator.alloc(u8, terminal_title_limit + 16);
+    defer allocator.free(long_title);
+    @memset(long_title, 'x');
+
+    const truncated = try sanitizeTerminalTitle(allocator, long_title);
+    defer allocator.free(truncated);
+    try std.testing.expectEqual(@as(usize, terminal_title_limit), truncated.len);
+}
+
+test "builds terminal title from thread title or cwd" {
+    const allocator = std.testing.allocator;
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+
+    const cwd_title = try buildTerminalTitle(allocator, "/tmp/codex-zig-port", &transcript);
+    defer allocator.free(cwd_title);
+    try std.testing.expectEqualStrings("Codex Zig | codex-zig-port", cwd_title);
+
+    try transcript.setTitle(allocator, "Demo");
+    const thread_title = try buildTerminalTitle(allocator, "/tmp/codex-zig-port", &transcript);
+    defer allocator.free(thread_title);
+    try std.testing.expectEqualStrings("Codex Zig | Demo", thread_title);
 }
 
 test "finds last assistant message for copy" {
