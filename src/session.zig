@@ -33,6 +33,16 @@ pub const Transcript = struct {
         return self.title orelse "<none>";
     }
 
+    pub fn clone(self: *const Transcript, allocator: std.mem.Allocator) !Transcript {
+        var copy = Transcript{};
+        errdefer copy.deinit(allocator);
+
+        if (self.title) |title| try copy.setTitle(allocator, title);
+        for (self.history.items) |item| try copy.appendHistoryItem(allocator, item);
+
+        return copy;
+    }
+
     pub fn appendUserMessage(self: *Transcript, allocator: std.mem.Allocator, text: []const u8) !void {
         try self.appendMessage(allocator, "user", "input_text", text);
     }
@@ -285,4 +295,27 @@ test "replace transcript with compacted summary" {
     try std.testing.expectEqualStrings("user", transcript.history.items[0].role.?);
     try std.testing.expectEqualStrings("input_text", transcript.history.items[0].content_type.?);
     try std.testing.expectEqualStrings("summary", transcript.history.items[0].text.?);
+}
+
+test "clone transcript copies title and history" {
+    const allocator = std.testing.allocator;
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try transcript.setTitle(allocator, "source title");
+    try transcript.appendUserMessage(allocator, "hello");
+
+    var copy = try transcript.clone(allocator);
+    defer copy.deinit(allocator);
+
+    try std.testing.expectEqualStrings("source title", copy.title.?);
+    try std.testing.expectEqual(@as(usize, 1), copy.history.items.len);
+    try std.testing.expectEqualStrings("hello", copy.history.items[0].text.?);
+
+    try transcript.setTitle(allocator, "changed title");
+    try transcript.appendAssistantMessage(allocator, "later");
+
+    try std.testing.expectEqualStrings("source title", copy.title.?);
+    try std.testing.expectEqual(@as(usize, 1), copy.history.items.len);
+    try std.testing.expectEqualStrings("hello", copy.history.items[0].text.?);
 }

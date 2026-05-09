@@ -214,6 +214,34 @@ fn runUserPrompt(
     state.clearMentions(allocator);
 }
 
+fn runSidePrompt(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *const session.Transcript,
+    prompt: []const u8,
+    additional_writable_roots: []const []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) {
+        std.debug.print("usage: /side <prompt>\n", .{});
+        return;
+    }
+
+    var side_transcript = try transcript.clone(allocator);
+    defer side_transcript.deinit(allocator);
+
+    std.debug.print("\nside conversation:\n", .{});
+    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &side_transcript, trimmed, .{
+        .stream_text = true,
+        .additional_writable_roots = additional_writable_roots,
+    });
+    defer allocator.free(answer);
+    if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+        std.debug.print("\n", .{});
+    }
+}
+
 fn buildPromptWithMentions(
     allocator: std.mem.Allocator,
     prompt: []const u8,
@@ -416,6 +444,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "side")) {
+        try runSidePrompt(allocator, cfg.*, credentials, transcript, parts.args, additional_writable_roots);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rollout")) {
         std.debug.print("rollout: {s}\n", .{session_path.*});
         return .handled;
@@ -608,6 +641,7 @@ fn printSlashHelp() void {
         \\  /sandbox [mode]   show or set sandbox mode
         \\  /history [n]      show recent transcript items
         \\  /mention <path>   include a file in the next message
+        \\  /side <prompt>    ask in an ephemeral fork
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
@@ -1215,6 +1249,10 @@ test "parse slash command names and args" {
     const mention = parseSlash("/mention README.md").?;
     try std.testing.expectEqualStrings("mention", mention.name);
     try std.testing.expectEqualStrings("README.md", mention.args);
+
+    const side = parseSlash("/side explore alternative").?;
+    try std.testing.expectEqualStrings("side", side.name);
+    try std.testing.expectEqualStrings("explore alternative", side.args);
 
     const rollout = parseSlash("/rollout").?;
     try std.testing.expectEqualStrings("rollout", rollout.name);

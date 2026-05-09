@@ -38,6 +38,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - toggle copy-friendly transcript output from the interactive TUI with `/raw`
 - toggle the in-memory Vim composer mode indicator with `/vim`
 - include file contents in the next interactive prompt with `/mention`
+- ask a question in an ephemeral fork with `/side`
 - inspect configured MCP servers from the interactive TUI with `/mcp`
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
@@ -72,7 +73,7 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/debug-config`, `/keymap`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
+`/debug-config`, `/keymap`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches

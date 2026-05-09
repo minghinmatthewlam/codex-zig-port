@@ -78,6 +78,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "mentioned file received\n",
                 },
             )
+        elif "side question" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "side answer\n",
+                },
+            )
         elif "create the demo file" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-2"
         ):
@@ -429,6 +436,17 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"mentions:    0 pending", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/side side question")
+            wait_for(master_fd, output, b"side conversation:", 8, mark)
+            wait_for(master_fd, output, b"side answer", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
+            send_line(master_fd, "/history 2")
+            wait_for(master_fd, output, b"history: showing 2 of 2 items", 5, mark)
+            wait_for(master_fd, output, b"mentioned file received", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "start a background terminal")
