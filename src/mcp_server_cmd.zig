@@ -390,6 +390,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .web_search_mode = source.web_search_mode,
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
+        .personality = source.personality,
     };
 }
 
@@ -496,6 +497,7 @@ test "mcp server turn config applies direct call overrides" {
         .web_search_mode = null,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     var credentials = try auth.localOssCredentials(allocator);
     defer credentials.deinit(allocator);

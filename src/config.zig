@@ -14,6 +14,7 @@ pub const Config = struct {
     web_search_mode: ?WebSearchMode,
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
+    personality: ?Personality,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -43,6 +44,7 @@ pub const RuntimeOverrides = struct {
     web_search_mode: ?WebSearchMode = null,
     service_tier: ?[]const u8 = null,
     syntax_theme: ?[]const u8 = null,
+    personality: ?Personality = null,
 };
 
 pub fn applyRuntimeOverrides(
@@ -89,6 +91,9 @@ pub fn applyRuntimeOverrides(
         if (cfg.syntax_theme) |existing| allocator.free(existing);
         cfg.syntax_theme = next_syntax_theme;
     }
+    if (overrides.personality) |personality| {
+        cfg.personality = personality;
+    }
 }
 
 pub fn applyRawConfigOverride(
@@ -121,6 +126,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.service_tier = value;
     } else if (std.mem.eql(u8, key, "syntax_theme")) {
         runtime_overrides.syntax_theme = value;
+    } else if (std.mem.eql(u8, key, "personality")) {
+        runtime_overrides.personality = try Personality.parse(value);
     }
 }
 
@@ -203,6 +210,35 @@ pub const WebSearchMode = enum {
         if (std.mem.eql(u8, value, "cached")) return .cached;
         if (std.mem.eql(u8, value, "live")) return .live;
         return error.InvalidWebSearchMode;
+    }
+};
+
+pub const Personality = enum {
+    none,
+    friendly,
+    pragmatic,
+
+    pub fn label(self: Personality) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .friendly => "friendly",
+            .pragmatic => "pragmatic",
+        };
+    }
+
+    pub fn parse(value: []const u8) !Personality {
+        if (std.ascii.eqlIgnoreCase(value, "none")) return .none;
+        if (std.ascii.eqlIgnoreCase(value, "friendly")) return .friendly;
+        if (std.ascii.eqlIgnoreCase(value, "pragmatic")) return .pragmatic;
+        return error.InvalidPersonality;
+    }
+
+    pub fn description(self: Personality) []const u8 {
+        return switch (self) {
+            .none => "No personality instructions.",
+            .friendly => "Warm, collaborative, and helpful.",
+            .pragmatic => "Concise, task-focused, and direct.",
+        };
     }
 };
 
@@ -327,6 +363,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
     errdefer if (syntax_theme) |value| allocator.free(value);
+    const personality = try resolvePersonality(allocator, config_view, active_profile);
 
     return .{
         .codex_home = codex_home,
@@ -341,6 +378,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .web_search_mode = web_search_mode,
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
+        .personality = personality,
     };
 }
 
@@ -486,6 +524,20 @@ fn resolveSyntaxTheme(allocator: std.mem.Allocator, config_view: ConfigView, act
     }
 
     return config_view.getScopedString(allocator, active_profile, "syntax_theme");
+}
+
+fn resolvePersonality(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?Personality {
+    if (try env.getOwned(allocator, "CODEX_ZIG_PERSONALITY")) |value| {
+        defer allocator.free(value);
+        return try Personality.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "personality")) |value| {
+        defer allocator.free(value);
+        return try Personality.parse(value);
+    }
+
+    return .pragmatic;
 }
 
 pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -690,6 +742,7 @@ test "approval and sandbox labels parse config strings" {
     try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
     try std.testing.expectEqual(WebSearchMode.live, try WebSearchMode.parse("live"));
     try std.testing.expectEqualStrings("cached", WebSearchMode.cached.label());
+    try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, null)).?);
 }
 
 test "profile values override top-level config values" {
@@ -704,6 +757,7 @@ test "profile values override top-level config values" {
         \\web_search = "cached"
         \\service_tier = "flex"
         \\syntax_theme = "github"
+        \\personality = "friendly"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
@@ -714,6 +768,7 @@ test "profile values override top-level config values" {
         \\web_search = "live"
         \\service_tier = "fast"
         \\syntax_theme = "dracula"
+        \\personality = "pragmatic"
         \\chatgpt_base_url = "https://profile.example/codex"
         \\
         ,
@@ -746,6 +801,7 @@ test "profile values override top-level config values" {
     const syntax_theme = try resolveSyntaxTheme(allocator, view, active_profile.?);
     defer allocator.free(syntax_theme.?);
     try std.testing.expectEqualStrings("dracula", syntax_theme.?);
+    try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, active_profile.?)).?);
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
@@ -828,6 +884,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "web_search=live");
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
     try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
+    try applyRawConfigOverride(&runtime, &profile, "personality=friendly");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
@@ -840,6 +897,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
     try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
+    try std.testing.expectEqual(Personality.friendly, runtime.personality.?);
 }
 
 test "raw cli config override rejects missing assignment" {
@@ -880,6 +938,7 @@ test "oss mode applies local provider defaults" {
         .web_search_mode = null,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     defer cfg.deinit(allocator);
 

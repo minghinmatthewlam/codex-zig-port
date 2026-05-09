@@ -494,7 +494,9 @@ pub fn buildRequestBodyWithOptions(
     }
     const include = [_][]const u8{};
 
-    const instructions = try agents_md.buildInstructions(allocator, baseInstructions);
+    const base_instructions = try baseInstructionsForConfig(allocator, cfg);
+    defer allocator.free(base_instructions);
+    const instructions = try agents_md.buildInstructions(allocator, base_instructions);
     defer allocator.free(instructions);
 
     const text_controls: ?TextControls = if (options.output_schema) |schema|
@@ -592,6 +594,25 @@ const baseInstructions =
     \\Keep answers concise and report command outcomes.
 ;
 
+const friendlyPersonalityInstructions =
+    "You optimize for team morale and being a supportive teammate as much as code quality.";
+const pragmaticPersonalityInstructions =
+    "You are a deeply pragmatic, effective software engineer.";
+
+fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
+    const personality = cfg.personality orelse return allocator.dupe(u8, baseInstructions);
+    const message = switch (personality) {
+        .none => return allocator.dupe(u8, baseInstructions),
+        .friendly => friendlyPersonalityInstructions,
+        .pragmatic => pragmaticPersonalityInstructions,
+    };
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n<personality_spec>\nThe user has requested a new communication style. Future messages should adhere to the following personality:\n{s}\n</personality_spec>\n",
+        .{ baseInstructions, message },
+    );
+}
+
 test "parses SSE text and function call" {
     const allocator = std.testing.allocator;
     const body =
@@ -657,6 +678,7 @@ test "builds chronological request input from owned history" {
         .web_search_mode = null,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -713,6 +735,7 @@ test "builds input images on latest user message" {
         .web_search_mode = null,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -753,6 +776,7 @@ test "builds web search tool from config mode" {
         .web_search_mode = .live,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -798,6 +822,7 @@ test "builds mcp function tools from catalog" {
         .web_search_mode = null,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -851,6 +876,7 @@ test "can omit tools for compact-style turns" {
         .web_search_mode = .live,
         .service_tier = null,
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -894,6 +920,7 @@ test "builds output schema text format" {
         .web_search_mode = null,
         .service_tier = "priority",
         .syntax_theme = null,
+        .personality = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -918,4 +945,40 @@ test "builds output schema text format" {
     try std.testing.expectEqualStrings("codex_output_schema", format.get("name").?.string);
     try std.testing.expect(format.get("strict").?.bool);
     try std.testing.expectEqualStrings("object", format.get("schema").?.object.get("type").?.string);
+}
+
+test "personality config adds personality instructions" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = .friendly,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "<personality_spec>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, friendlyPersonalityInstructions) != null);
 }

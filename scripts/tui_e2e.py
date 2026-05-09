@@ -327,6 +327,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"/title", 5, mark)
             wait_for(master_fd, output, b"/statusline", 5, mark)
             wait_for(master_fd, output, b"/theme", 5, mark)
+            wait_for(master_fd, output, b"/personality", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
@@ -336,6 +337,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"term title:  off", 5, mark)
             wait_for(master_fd, output, b"status line: <off>", 5, mark)
             wait_for(master_fd, output, b"theme:       catppuccin-mocha", 5, mark)
+            wait_for(master_fd, output, b"personality: pragmatic", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
@@ -407,10 +409,25 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"theme:       custom-demo", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/personality list")
+            wait_for(master_fd, output, b"personalities:", 5, mark)
+            wait_for(master_fd, output, b"friendly - Warm, collaborative, and helpful.", 5, mark)
+            wait_for(master_fd, output, b"pragmatic - Concise, task-focused, and direct.", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/personality friendly")
+            wait_for(master_fd, output, b"personality: friendly", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"personality: friendly", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
             wait_for(master_fd, output, b"syntax_theme:   custom-demo", 5, mark)
+            wait_for(master_fd, output, b"personality:    friendly", 5, mark)
             wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
 
             mark = len(output)
@@ -626,6 +643,13 @@ def run_e2e(binary: Path) -> str:
         ]
         if not any(body.get("tools") == [] for body in plan_bodies):
             raise AssertionError("expected plan-mode request to omit tools")
+        instructions = [
+            body.get("instructions", "")
+            for body in server.request_bodies
+            if isinstance(body.get("instructions", ""), str)
+        ]
+        if not any("<personality_spec>" in text and "team morale" in text for text in instructions):
+            raise AssertionError("expected friendly personality instructions in an API request")
         return output.decode(errors="replace")
     finally:
         server.shutdown()

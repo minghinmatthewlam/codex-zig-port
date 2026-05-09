@@ -493,6 +493,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "personality")) {
+        handlePersonality(cfg, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
         if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
             try refreshTerminalTitle(allocator, cwd, transcript, state);
@@ -709,6 +714,8 @@ fn printSlashHelp() void {
         \\                    configure status line preview items
         \\  /theme [status|list|NAME]
         \\                    choose a syntax highlighting theme
+        \\  /personality [status|list|none|friendly|pragmatic]
+        \\                    choose a communication style
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -822,6 +829,7 @@ fn printStatus(
         \\  term title:  {s}
         \\  status line: {s}
         \\  theme:       {s}
+        \\  personality: {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  mentions:    {d} pending
@@ -846,6 +854,7 @@ fn printStatus(
         if (state.terminal_title_enabled) "on" else "off",
         status_line_label,
         state.syntaxThemeName(),
+        personalityLabel(cfg.personality),
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         state.mentions.items.len,
@@ -870,6 +879,7 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         \\  web_search:     {s}
         \\  service_tier:   {s}
         \\  syntax_theme:   {s}
+        \\  personality:    {s}
         \\  oss_provider:   {s}
         \\  installation:   {s}
         \\
@@ -887,6 +897,7 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         config.webSearchLabel(cfg.web_search_mode),
         cfg.service_tier orelse "<none>",
         cfg.syntax_theme orelse "<default>",
+        personalityLabel(cfg.personality),
         cfg.oss_provider orelse "<none>",
         cfg.installation_id,
     });
@@ -1137,6 +1148,45 @@ fn printThemeList(allocator: std.mem.Allocator, codex_home: []const u8, current_
         const suffix: []const u8 = if (entry.is_custom) " (custom)" else "";
         std.debug.print("  {s} {s}{s}\n", .{ marker, entry.name, suffix });
     }
+}
+
+fn handlePersonality(cfg: *config.Config, args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printPersonalityStatus(cfg.personality);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "list")) {
+        printPersonalityList(cfg.personality);
+        return;
+    }
+    const personality = config.Personality.parse(trimmed) catch {
+        std.debug.print("unknown personality: {s}\n", .{trimmed});
+        printPersonalityUsage();
+        return;
+    };
+    cfg.personality = personality;
+    printPersonalityStatus(cfg.personality);
+}
+
+fn printPersonalityStatus(personality: ?config.Personality) void {
+    std.debug.print("personality: {s}\n", .{personalityLabel(personality)});
+}
+
+fn printPersonalityList(current: ?config.Personality) void {
+    std.debug.print("personalities:\n", .{});
+    for ([_]config.Personality{ .none, .friendly, .pragmatic }) |personality| {
+        const marker: []const u8 = if (current != null and current.? == personality) "*" else " ";
+        std.debug.print("  {s} {s} - {s}\n", .{ marker, personality.label(), personality.description() });
+    }
+}
+
+fn printPersonalityUsage() void {
+    std.debug.print("usage: /personality [status|list|none|friendly|pragmatic]\n", .{});
+}
+
+fn personalityLabel(personality: ?config.Personality) []const u8 {
+    return if (personality) |value| value.label() else "unset";
 }
 
 fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
