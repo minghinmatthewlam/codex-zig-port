@@ -68,7 +68,7 @@ zig build e2e
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
 `/copy`, `/raw`, `/vim`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
-`apply_patch` tool calls with approval, `/ps`, `/stop`, and `/quit`, then checks
+`apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 and the file created in the temporary workspace. It also launches
 `codex-zig app-server` as a subprocess and verifies a newline-delimited

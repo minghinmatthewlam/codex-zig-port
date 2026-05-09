@@ -413,7 +413,7 @@ def run_e2e(binary: Path) -> str:
             read_available(master_fd, output, 0.2)
 
             mark = len(output)
-            send_line(master_fd, "/stop")
+            send_line(master_fd, "/clean")
             wait_for(master_fd, output, b"stopped 1 background terminal(s)", 5, mark)
 
             mark = len(output)

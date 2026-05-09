@@ -352,7 +352,7 @@ fn handleSlashCommand(
         return .handled;
     }
 
-    if (std.ascii.eqlIgnoreCase(parts.name, "stop")) {
+    if (std.ascii.eqlIgnoreCase(parts.name, "stop") or std.ascii.eqlIgnoreCase(parts.name, "clean")) {
         const stopped = tools.stopAllExecSessions();
         std.debug.print("stopped {d} background terminal(s)\n", .{stopped});
         return .handled;
@@ -497,7 +497,7 @@ fn printSlashHelp() void {
         \\  /vim              toggle Vim composer mode
         \\  /mcp [verbose]    list configured MCP servers
         \\  /ps               list background terminals
-        \\  /stop             stop all background terminals
+        \\  /stop, /clean     stop all background terminals
         \\  /logout           remove local Codex auth
         \\  /review [text]    review current changes or custom instructions
         \\  /clear            clear transcript and redraw the header
@@ -956,6 +956,10 @@ test "parse slash command names and args" {
     const stop = parseSlash("/stop").?;
     try std.testing.expectEqualStrings("stop", stop.name);
     try std.testing.expectEqualStrings("", stop.args);
+
+    const clean = parseSlash("/clean").?;
+    try std.testing.expectEqualStrings("clean", clean.name);
+    try std.testing.expectEqualStrings("", clean.args);
 
     const logout = parseSlash("/logout").?;
     try std.testing.expectEqualStrings("logout", logout.name);
