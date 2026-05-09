@@ -302,6 +302,8 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"status:", 5, mark)
+            wait_for(master_fd, output, b"raw output:  off", 5, mark)
+            wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
 
             mark = len(output)
@@ -311,6 +313,14 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/raw off")
             wait_for(master_fd, output, b"raw output mode: off", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/vim")
+            wait_for(master_fd, output, b"vim mode: on", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/vim")
+            wait_for(master_fd, output, b"vim mode: off", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/mcp")

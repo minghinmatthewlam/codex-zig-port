@@ -117,7 +117,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         std.debug.print("forked: {s} -> {s} ({d} items)\n", .{ path, session_path, transcript.history.items.len });
     }
 
-    var raw_output_mode = false;
+    var state = TuiState{};
 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -144,7 +144,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             };
             continue;
         }
-        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, &raw_output_mode, options.additional_writable_roots) catch |err| {
+        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, &state, options.additional_writable_roots) catch |err| {
             std.debug.print("error: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -257,6 +257,11 @@ const SlashParts = struct {
     args: []const u8,
 };
 
+const TuiState = struct {
+    raw_output_mode: bool = false,
+    vim_mode: bool = false,
+};
+
 fn handleSlashCommand(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -265,7 +270,7 @@ fn handleSlashCommand(
     session_path: *[]const u8,
     cwd: []const u8,
     prompt: []const u8,
-    raw_output_mode: *bool,
+    state: *TuiState,
     additional_writable_roots: []const []const u8,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
@@ -297,7 +302,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
-        printStatus(cfg.*, credentials, transcript, session_path.*, cwd);
+        printStatus(cfg.*, credentials, transcript, session_path.*, cwd, state.*);
         return .handled;
     }
 
@@ -327,7 +332,13 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "raw")) {
-        handleRawOutputMode(raw_output_mode, parts.args);
+        handleRawOutputMode(&state.raw_output_mode, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "vim")) {
+        state.vim_mode = !state.vim_mode;
+        std.debug.print("vim mode: {s}\n", .{if (state.vim_mode) "on" else "off"});
         return .handled;
     }
 
@@ -483,6 +494,7 @@ fn printSlashHelp() void {
         \\  /diff             show git status and diff, including untracked files
         \\  /copy             copy the last assistant response
         \\  /raw [on|off]     toggle copy-friendly transcript output
+        \\  /vim              toggle Vim composer mode
         \\  /mcp [verbose]    list configured MCP servers
         \\  /ps               list background terminals
         \\  /stop             stop all background terminals
@@ -551,6 +563,7 @@ fn printStatus(
     transcript: *const session.Transcript,
     session_path: []const u8,
     cwd: []const u8,
+    state: TuiState,
 ) void {
     const tool_label = if (cfg.web_search_mode) |mode|
         if (mode.externalWebAccess() != null)
@@ -570,6 +583,8 @@ fn printStatus(
         \\  approval:    {s}
         \\  sandbox:     {s}
         \\  search:      {s}
+        \\  raw output:  {s}
+        \\  vim:         {s}
         \\  transcript:  {d} items
         \\  tools:       {s}
         \\
@@ -585,6 +600,8 @@ fn printStatus(
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
+        if (state.raw_output_mode) "on" else "off",
+        if (state.vim_mode) "on" else "off",
         transcript.history.items.len,
         tool_label,
     });
@@ -923,6 +940,10 @@ test "parse slash command names and args" {
     const raw = parseSlash("/raw on").?;
     try std.testing.expectEqualStrings("raw", raw.name);
     try std.testing.expectEqualStrings("on", raw.args);
+
+    const vim = parseSlash("/vim").?;
+    try std.testing.expectEqualStrings("vim", vim.name);
+    try std.testing.expectEqualStrings("", vim.args);
 
     const mcp = parseSlash("/mcp verbose").?;
     try std.testing.expectEqualStrings("mcp", mcp.name);
