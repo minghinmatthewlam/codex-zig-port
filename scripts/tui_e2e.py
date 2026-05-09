@@ -82,7 +82,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             payload = sse(
                 {
                     "type": "response.output_text.delta",
-                    "delta": "plan response\n",
+                    "delta": (
+                        "Plan intro\n"
+                        "<proposed_plan>\n"
+                        "1. Inspect the repo\n"
+                        "2. Patch the feature\n"
+                        "3. Verify the TUI\n"
+                        "</proposed_plan>\n"
+                        "Plan outro\n"
+                    ),
                 },
             )
         elif "side question" in latest_prompt:
@@ -678,7 +686,12 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "draft a plan")
-            wait_for(master_fd, output, b"plan response", 8, mark)
+            wait_for(master_fd, output, b"Plan intro", 8, mark)
+            wait_for(master_fd, output, b"proposed plan:", 8, mark)
+            wait_for(master_fd, output, b"1. Inspect the repo", 8, mark)
+            wait_for(master_fd, output, b"3. Verify the TUI", 8, mark)
+            if b"<proposed_plan>" in output[mark:]:
+                raise AssertionError("plan-mode transcript leaked <proposed_plan> tag")
             read_available(master_fd, output, 0.2)
 
             mark = len(output)

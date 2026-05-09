@@ -5,6 +5,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const plan_tool = @import("plan_tool.zig");
+const proposed_plan = @import("proposed_plan.zig");
 const tools = @import("tools.zig");
 
 pub const Transcript = struct {
@@ -150,6 +151,7 @@ pub const TurnOptions = struct {
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
     include_tools: bool = true,
+    plan_mode: bool = false,
 };
 
 pub fn runTurn(
@@ -187,7 +189,7 @@ pub fn runTurnWithOptions(
         create_options.input_images = options.input_images;
         create_options.include_tools = options.include_tools;
         create_options.mcp_tools = if (options.include_tools) mcp_catalog.tools else &.{};
-        if (options.stream_text and !options.json_events) {
+        if (options.stream_text and !options.json_events and !options.plan_mode) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,
                 .on_text_delta = streamTextDelta,
@@ -201,8 +203,13 @@ pub fn runTurnWithOptions(
         }
 
         if (response.function_calls.len == 0) {
-            const answer = try final_text.toOwnedSlice(allocator);
+            var answer = try final_text.toOwnedSlice(allocator);
             errdefer allocator.free(answer);
+            if (options.plan_mode) {
+                const rendered = try proposed_plan.renderPlanMode(allocator, answer);
+                allocator.free(answer);
+                answer = rendered;
+            }
             if (answer.len > 0) try transcript.appendAssistantMessage(allocator, answer);
             if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.completed", .message = answer });
             return answer;

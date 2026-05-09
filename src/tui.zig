@@ -191,7 +191,7 @@ fn runPrompt(
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
 ) !void {
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false);
 }
 
 fn runPromptWithToolMode(
@@ -203,14 +203,19 @@ fn runPromptWithToolMode(
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
     include_tools: bool,
+    render_plan_blocks: bool,
 ) !void {
     std.debug.print("\nassistant:\n", .{});
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
         .include_tools = include_tools,
+        .plan_mode = render_plan_blocks,
     });
     defer allocator.free(answer);
+    if (render_plan_blocks and answer.len > 0) {
+        std.debug.print("{s}", .{answer});
+    }
     session_store.saveTranscript(allocator, session_path, transcript) catch |err| {
         std.debug.print("warning: could not save session: {s}\n", .{@errorName(err)});
     };
@@ -240,7 +245,7 @@ fn runUserPrompt(
         break :blk value;
     };
 
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode);
     state.clearMentions(allocator);
 }
 
