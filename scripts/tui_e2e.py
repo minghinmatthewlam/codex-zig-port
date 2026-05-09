@@ -435,6 +435,10 @@ def run_e2e(binary: Path) -> str:
                 raise AssertionError(f"expected persisted tui theme in config.toml:\n{config_text}")
             if 'personality = "friendly"' not in config_text:
                 raise AssertionError(f"expected persisted personality in config.toml:\n{config_text}")
+            if 'terminal_title = []' not in config_text:
+                raise AssertionError(f"expected disabled terminal title in config.toml:\n{config_text}")
+            if 'status_line = ["model", "project-name", "thread-title"]' not in config_text:
+                raise AssertionError(f"expected persisted status line in config.toml:\n{config_text}")
             if "[mcp_servers.docs]" not in config_text or "[mcp_servers.remote]" not in config_text:
                 raise AssertionError(f"expected existing MCP config to be preserved:\n{config_text}")
 
@@ -620,6 +624,11 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"plan mode: off", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/title on")
+            wait_for(master_fd, output, b"\x1b]0;Codex Zig | Zig demo\x07", 5, mark)
+            wait_for(master_fd, output, b"terminal title: on", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/quit")
             wait_for(master_fd, output, b"bye", 5, mark)
             read_available(master_fd, output)
@@ -650,6 +659,8 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"Type /help for commands", 8, len(output))
             mark = len(output)
             send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"term title:  on", 5, mark)
+            wait_for(master_fd, output, b"status line: model, fast-mode, raw-output", 5, mark)
             wait_for(master_fd, output, b"theme:       custom-demo", 5, mark)
             wait_for(master_fd, output, b"personality: friendly", 5, mark)
             mark = len(output)

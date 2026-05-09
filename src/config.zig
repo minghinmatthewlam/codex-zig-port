@@ -15,6 +15,8 @@ pub const Config = struct {
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
+    tui_status_line: ?StringList,
+    tui_terminal_title: ?StringList,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -26,6 +28,32 @@ pub const Config = struct {
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
         if (self.syntax_theme) |value| allocator.free(value);
+        if (self.tui_status_line) |*value| value.deinit(allocator);
+        if (self.tui_terminal_title) |*value| value.deinit(allocator);
+    }
+};
+
+pub const StringList = struct {
+    items: []const []const u8,
+
+    pub fn deinit(self: *StringList, allocator: std.mem.Allocator) void {
+        for (self.items) |item| allocator.free(item);
+        allocator.free(self.items);
+        self.items = &.{};
+    }
+
+    pub fn clone(self: StringList, allocator: std.mem.Allocator) !StringList {
+        const items = try allocator.alloc([]const u8, self.items.len);
+        errdefer allocator.free(items);
+        var copied: usize = 0;
+        errdefer {
+            for (items[0..copied]) |item| allocator.free(item);
+        }
+        for (self.items, 0..) |item, index| {
+            items[index] = try allocator.dupe(u8, item);
+            copied += 1;
+        }
+        return .{ .items = items };
     }
 };
 
@@ -364,6 +392,10 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
     errdefer if (syntax_theme) |value| allocator.free(value);
     const personality = try resolvePersonality(allocator, config_view, active_profile);
+    var tui_status_line = try resolveTuiStringArray(allocator, config_view, "status_line");
+    errdefer if (tui_status_line) |*value| value.deinit(allocator);
+    var tui_terminal_title = try resolveTuiStringArray(allocator, config_view, "terminal_title");
+    errdefer if (tui_terminal_title) |*value| value.deinit(allocator);
 
     return .{
         .codex_home = codex_home,
@@ -379,6 +411,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
+        .tui_status_line = tui_status_line,
+        .tui_terminal_title = tui_terminal_title,
     };
 }
 
@@ -544,6 +578,10 @@ fn resolvePersonality(allocator: std.mem.Allocator, config_view: ConfigView, act
     return .pragmatic;
 }
 
+fn resolveTuiStringArray(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?StringList {
+    return config_view.getSectionStringArray(allocator, "tui", key);
+}
+
 pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (std.ascii.eqlIgnoreCase(trimmed, "fast") or std.ascii.eqlIgnoreCase(trimmed, "priority")) {
@@ -584,6 +622,23 @@ pub fn persistPersonality(allocator: std.mem.Allocator, codex_home: []const u8, 
     try writeConfigToml(allocator, codex_home, updated);
 }
 
+pub fn persistTuiStatusLine(allocator: std.mem.Allocator, codex_home: []const u8, ids: []const []const u8) !void {
+    try persistTuiStringArray(allocator, codex_home, "status_line", ids);
+}
+
+pub fn persistTuiTerminalTitle(allocator: std.mem.Allocator, codex_home: []const u8, ids: []const []const u8) !void {
+    try persistTuiStringArray(allocator, codex_home, "terminal_title", ids);
+}
+
+fn persistTuiStringArray(allocator: std.mem.Allocator, codex_home: []const u8, key: []const u8, values: []const []const u8) !void {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    const updated = try updateTomlStringArrayValue(allocator, bytes orelse "", .{ .section = "tui" }, key, values);
+    defer allocator.free(updated);
+    try writeConfigToml(allocator, codex_home, updated);
+}
+
 fn writeConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, bytes: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, codex_home);
@@ -605,6 +660,32 @@ fn updateTomlStringValue(
     key: []const u8,
     value: []const u8,
 ) ![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    defer rendered.deinit(allocator);
+    try appendTomlStringLiteral(allocator, &rendered, value);
+    return updateTomlRawValue(allocator, bytes, section, key, rendered.items);
+}
+
+fn updateTomlStringArrayValue(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    section: TomlEditSection,
+    key: []const u8,
+    values: []const []const u8,
+) ![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    defer rendered.deinit(allocator);
+    try appendTomlStringArrayLiteral(allocator, &rendered, values);
+    return updateTomlRawValue(allocator, bytes, section, key, rendered.items);
+}
+
+fn updateTomlRawValue(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    section: TomlEditSection,
+    key: []const u8,
+    raw_value: []const u8,
+) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
@@ -622,7 +703,7 @@ fn updateTomlStringValue(
         const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
         if (trimmed.len > 0 and trimmed[0] == '[') {
             if (in_target and !wrote_key) {
-                try appendTomlStringLine(allocator, &output, key, value);
+                try appendTomlRawLine(allocator, &output, key, raw_value);
                 wrote_key = true;
             }
             in_target = tomlSectionMatches(trimmed, section);
@@ -630,7 +711,7 @@ fn updateTomlStringValue(
         }
 
         if (in_target and tomlKeyMatches(trimmed, key)) {
-            try appendTomlStringLine(allocator, &output, key, value);
+            try appendTomlRawLine(allocator, &output, key, raw_value);
             wrote_key = true;
             continue;
         }
@@ -645,7 +726,7 @@ fn updateTomlStringValue(
         saw_target = true;
     }
     if (saw_target and !wrote_key) {
-        try appendTomlStringLine(allocator, &output, key, value);
+        try appendTomlRawLine(allocator, &output, key, raw_value);
     }
 
     return output.toOwnedSlice(allocator);
@@ -695,11 +776,20 @@ fn appendTomlSectionHeader(allocator: std.mem.Allocator, output: *std.ArrayList(
     }
 }
 
-fn appendTomlStringLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+fn appendTomlRawLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), key: []const u8, raw_value: []const u8) !void {
     try output.appendSlice(allocator, key);
     try output.appendSlice(allocator, " = ");
-    try appendTomlStringLiteral(allocator, output, value);
+    try output.appendSlice(allocator, raw_value);
     try output.append(allocator, '\n');
+}
+
+fn appendTomlStringArrayLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(u8), values: []const []const u8) !void {
+    try output.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index > 0) try output.appendSlice(allocator, ", ");
+        try appendTomlStringLiteral(allocator, output, value);
+    }
+    try output.append(allocator, ']');
 }
 
 fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
@@ -751,6 +841,27 @@ const ConfigView = struct {
             }
             if (!in_section) continue;
             if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
+    fn getSectionStringArray(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        section_name: []const u8,
+        key: []const u8,
+    ) !?StringList {
+        var in_section = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_section = isExactSection(line, section_name);
+                continue;
+            }
+            if (!in_section) continue;
+            if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
         }
         return null;
     }
@@ -827,6 +938,14 @@ fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []cons
     return parseTomlString(allocator, rhs);
 }
 
+fn stringArrayValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?StringList {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    return parseTomlStringArray(allocator, rhs);
+}
+
 fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
     if (rhs.len < 2 or rhs[0] != '"') return null;
 
@@ -859,6 +978,59 @@ fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
     }
 
     return error.InvalidTomlString;
+}
+
+fn parseTomlStringArray(allocator: std.mem.Allocator, rhs: []const u8) !?StringList {
+    if (rhs.len == 0 or rhs[0] != '[') return null;
+
+    var items = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit(allocator);
+    }
+
+    var index: usize = 1;
+    while (index < rhs.len) {
+        while (index < rhs.len and (rhs[index] == ' ' or rhs[index] == '\t' or rhs[index] == '\r' or rhs[index] == '\n' or rhs[index] == ',')) : (index += 1) {}
+        if (index >= rhs.len) return error.InvalidTomlStringArray;
+        if (rhs[index] == ']') {
+            return .{ .items = try items.toOwnedSlice(allocator) };
+        }
+        if (rhs[index] != '"') return error.InvalidTomlStringArray;
+
+        index += 1;
+        var output = std.ArrayList(u8).empty;
+        errdefer output.deinit(allocator);
+        while (index < rhs.len) : (index += 1) {
+            const byte = rhs[index];
+            if (byte == '"') {
+                var value: ?[]const u8 = try output.toOwnedSlice(allocator);
+                errdefer if (value) |owned| allocator.free(owned);
+                try items.append(allocator, value.?);
+                value = null;
+                index += 1;
+                break;
+            }
+            if (byte != '\\') {
+                try output.append(allocator, byte);
+                continue;
+            }
+
+            index += 1;
+            if (index >= rhs.len) return error.InvalidTomlStringArray;
+            const escaped: u8 = switch (rhs[index]) {
+                '"' => '"',
+                '\\' => '\\',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                else => return error.InvalidTomlStringArray,
+            };
+            try output.append(allocator, escaped);
+        } else return error.InvalidTomlStringArray;
+    }
+
+    return error.InvalidTomlStringArray;
 }
 
 fn isProfileSection(line: []const u8, profile: []const u8) bool {
@@ -992,6 +1164,8 @@ test "tui theme table overrides legacy syntax theme key" {
         \\
         \\[tui]
         \\theme = "dracula"
+        \\status_line = ["model-with-reasoning", "current-dir"]
+        \\terminal_title = []
         \\
         ,
     };
@@ -999,6 +1173,16 @@ test "tui theme table overrides legacy syntax theme key" {
     const syntax_theme = try resolveSyntaxTheme(allocator, view, null);
     defer allocator.free(syntax_theme.?);
     try std.testing.expectEqualStrings("dracula", syntax_theme.?);
+
+    var status_line = (try resolveTuiStringArray(allocator, view, "status_line")).?;
+    defer status_line.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), status_line.items.len);
+    try std.testing.expectEqualStrings("model-with-reasoning", status_line.items[0]);
+    try std.testing.expectEqualStrings("current-dir", status_line.items[1]);
+
+    var terminal_title = (try resolveTuiStringArray(allocator, view, "terminal_title")).?;
+    defer terminal_title.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), terminal_title.items.len);
 }
 
 test "toml string update writes top-level section and profile values" {
@@ -1045,6 +1229,16 @@ test "toml string update writes top-level section and profile values" {
     );
     defer allocator.free(with_profile);
     try std.testing.expect(std.mem.indexOf(u8, with_profile, "[profiles.\"team a\"]\npersonality = \"pragmatic\"") != null);
+
+    const with_array = try updateTomlStringArrayValue(
+        allocator,
+        "[tui]\ntheme = \"custom-demo\"\n",
+        .{ .section = "tui" },
+        "status_line",
+        &.{ "model-with-reasoning", "current-dir" },
+    );
+    defer allocator.free(with_array);
+    try std.testing.expect(std.mem.indexOf(u8, with_array, "status_line = [\"model-with-reasoning\", \"current-dir\"]") != null);
 }
 
 test "quoted profile section names are supported" {
@@ -1179,6 +1373,8 @@ test "oss mode applies local provider defaults" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     defer cfg.deinit(allocator);
 

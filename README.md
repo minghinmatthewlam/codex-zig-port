@@ -132,7 +132,8 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 `chatgpt_base_url`, `approval_policy`, `sandbox_mode`, `oss_provider`,
 `personality`, and `profile` from top-level keys in
 `$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
-those same fields, reads `[tui].theme` for the TUI syntax theme, and reads
+those same fields, reads `[tui].theme`, `[tui].status_line`, and
+`[tui].terminal_title` for TUI preferences, and reads
 `[model_providers.<name>].base_url` for custom Responses-compatible providers.
 
 ```sh

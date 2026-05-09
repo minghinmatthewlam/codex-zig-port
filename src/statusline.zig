@@ -55,6 +55,8 @@ pub const Item = enum {
     }
 };
 
+pub const default_items = [_]Item{ .model_with_reasoning, .current_dir };
+
 pub fn printUsage() void {
     std.debug.print(
         \\usage: /statusline [status|off|default|ITEM...]

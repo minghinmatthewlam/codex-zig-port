@@ -18,6 +18,8 @@ const tools = @import("tools.zig");
 const agents_filename = "AGENTS.md";
 const mention_file_limit = 128 * 1024;
 const terminal_title_limit = 240;
+const default_status_line_ids = [_][]const u8{ "model-with-reasoning", "current-dir" };
+const default_terminal_title_ids = [_][]const u8{ "activity", "project-name" };
 const init_prompt =
     \\Create an AGENTS.md file for this repository.
     \\Make it a concise contributor guide with practical headings and repository-specific guidance.
@@ -124,6 +126,11 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var state = TuiState{};
     defer state.deinit(allocator);
     state.syntax_theme = try theme.initialTheme(allocator, cfg.syntax_theme);
+    if (cfg.tui_status_line) |ids| {
+        try applyConfiguredStatusLine(allocator, &state, ids.items);
+    }
+    state.terminal_title_enabled = if (cfg.tui_terminal_title) |ids| ids.items.len > 0 else false;
+    try refreshTerminalTitle(allocator, cwd, &transcript, &state);
 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -479,7 +486,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "title")) {
-        try handleTerminalTitle(allocator, cwd, transcript, state, parts.args);
+        try handleTerminalTitle(allocator, cfg.*, cwd, transcript, state, parts.args);
         return .handled;
     }
 
@@ -963,6 +970,7 @@ fn printPlanMode(enabled: bool) void {
 
 fn handleTerminalTitle(
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     cwd: []const u8,
     transcript: *const session.Transcript,
     state: *TuiState,
@@ -974,12 +982,14 @@ fn handleTerminalTitle(
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        try config.persistTuiTerminalTitle(allocator, cfg.codex_home, &default_terminal_title_ids);
         state.terminal_title_enabled = true;
         try refreshTerminalTitle(allocator, cwd, transcript, state);
         try printTerminalTitleStatus(allocator, cwd, transcript, state);
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        try config.persistTuiTerminalTitle(allocator, cfg.codex_home, &.{});
         state.terminal_title_enabled = false;
         clearTerminalTitle();
         try printTerminalTitleStatus(allocator, cwd, transcript, state);
@@ -1044,12 +1054,14 @@ fn handleStatusLine(
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "off") or std.ascii.eqlIgnoreCase(trimmed, "none") or std.ascii.eqlIgnoreCase(trimmed, "clear")) {
+        try config.persistTuiStatusLine(allocator, cfg.codex_home, &.{});
         state.clearStatusLine();
         try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "default")) {
-        try state.replaceStatusLineItems(allocator, &.{ .model_name, .project_root, .git_branch });
+        try config.persistTuiStatusLine(allocator, cfg.codex_home, &default_status_line_ids);
+        try state.replaceStatusLineItems(allocator, &statusline.default_items);
         try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
         return;
     }
@@ -1073,8 +1085,24 @@ fn handleStatusLine(
         return;
     }
 
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    for (parsed.items) |item| try ids.append(allocator, item.id());
+    try config.persistTuiStatusLine(allocator, cfg.codex_home, ids.items);
     try state.replaceStatusLineItems(allocator, parsed.items);
     try printStatusLineStatus(allocator, cfg, transcript, session_path, cwd, state);
+}
+
+fn applyConfiguredStatusLine(allocator: std.mem.Allocator, state: *TuiState, ids: []const []const u8) !void {
+    var parsed = std.ArrayList(statusline.Item).empty;
+    defer parsed.deinit(allocator);
+    for (ids) |id| {
+        const item = statusline.parseItem(id) orelse continue;
+        if (!statusline.containsItem(parsed.items, item)) {
+            try parsed.append(allocator, item);
+        }
+    }
+    try state.replaceStatusLineItems(allocator, parsed.items);
 }
 
 fn printStatusLineStatus(

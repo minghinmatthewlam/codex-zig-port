@@ -679,6 +679,8 @@ test "builds chronological request input from owned history" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -736,6 +738,8 @@ test "builds input images on latest user message" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -777,6 +781,8 @@ test "builds web search tool from config mode" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -823,6 +829,8 @@ test "builds mcp function tools from catalog" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -877,6 +885,8 @@ test "can omit tools for compact-style turns" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -921,6 +931,8 @@ test "builds output schema text format" {
         .service_tier = "priority",
         .syntax_theme = null,
         .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -963,6 +975,8 @@ test "personality config adds personality instructions" {
         .service_tier = null,
         .syntax_theme = null,
         .personality = .friendly,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
     };
     const history = [_]HistoryItem{
         .{
