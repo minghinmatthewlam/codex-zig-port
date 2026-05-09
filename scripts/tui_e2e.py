@@ -308,6 +308,14 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"tools:", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/rename Zig demo")
+            wait_for(master_fd, output, b"renamed thread: Zig demo", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"title:       Zig demo", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
