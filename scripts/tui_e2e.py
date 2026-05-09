@@ -256,10 +256,25 @@ def run_e2e(binary: Path) -> str:
             workspace = Path(home) / "workspace"
             workspace.mkdir()
             demo_file = workspace / "codex_zig_tui_file.txt"
+            copy_capture = Path(home) / "copied.txt"
+            copy_command = Path(home) / "copy_capture.py"
+            copy_command.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env python3",
+                        "import pathlib",
+                        "import sys",
+                        f"pathlib.Path({str(copy_capture)!r}).write_text(sys.stdin.read())",
+                        "",
+                    ]
+                )
+            )
+            copy_command.chmod(0o755)
 
             master_fd, slave_fd = pty.openpty()
             env = os.environ.copy()
             env["CODEX_HOME"] = home
+            env["CODEX_ZIG_COPY_COMMAND"] = str(copy_command)
             env.setdefault("TERM", "xterm-256color")
             proc = subprocess.Popen(
                 [
@@ -341,6 +356,15 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"[tool result] session 1000", 10, mark)
             wait_for(master_fd, output, b"background terminal started", 8, mark)
             read_available(master_fd, output, 0.2)
+
+            mark = len(output)
+            send_line(master_fd, "/copy")
+            wait_for(master_fd, output, b"copied ", 5, mark)
+            expected_copy = "I'll start a background command.\nbackground terminal started\n"
+            if copy_capture.read_text() != expected_copy:
+                raise AssertionError(
+                    f"unexpected copied content: {copy_capture.read_text()!r}"
+                )
 
             mark = len(output)
             send_line(master_fd, "/history 4")

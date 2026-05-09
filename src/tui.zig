@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const env = @import("env.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
@@ -319,6 +321,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "copy")) {
+        copyLastAssistantMessage(allocator, transcript);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "raw")) {
         handleRawOutputMode(raw_output_mode, parts.args);
         return .handled;
@@ -474,6 +481,7 @@ fn printSlashHelp() void {
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
+        \\  /copy             copy the last assistant response
         \\  /raw [on|off]     toggle copy-friendly transcript output
         \\  /mcp [verbose]    list configured MCP servers
         \\  /ps               list background terminals
@@ -594,6 +602,67 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     std.debug.print("{s}", .{rendered});
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
+    }
+}
+
+fn copyLastAssistantMessage(allocator: std.mem.Allocator, transcript: *const session.Transcript) void {
+    const text = lastAssistantMessage(transcript) orelse {
+        std.debug.print("copy: no assistant response yet\n", .{});
+        return;
+    };
+    copyToClipboard(allocator, text) catch |err| {
+        std.debug.print("copy failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    std.debug.print("copied {d} bytes to clipboard\n", .{text.len});
+}
+
+fn lastAssistantMessage(transcript: *const session.Transcript) ?[]const u8 {
+    var index = transcript.history.items.len;
+    while (index > 0) {
+        index -= 1;
+        const item = transcript.history.items[index];
+        if (item.kind != .message) continue;
+        const role = item.role orelse continue;
+        if (!std.ascii.eqlIgnoreCase(role, "assistant")) continue;
+        const text = item.text orelse continue;
+        if (text.len == 0) continue;
+        return text;
+    }
+    return null;
+}
+
+fn copyToClipboard(allocator: std.mem.Allocator, text: []const u8) !void {
+    const command_override = try env.getOwned(allocator, "CODEX_ZIG_COPY_COMMAND");
+    defer if (command_override) |command| allocator.free(command);
+
+    const command = command_override orelse switch (builtin.os.tag) {
+        .macos => "/usr/bin/pbcopy",
+        else => return error.ClipboardUnsupported,
+    };
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const argv = [_][]const u8{command};
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = &argv,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    errdefer child.kill(io_instance.io());
+
+    if (child.stdin) |stdin_file| {
+        try stdin_file.writeStreamingAll(io_instance.io(), text);
+        stdin_file.close(io_instance.io());
+        child.stdin = null;
+    }
+
+    const term = try child.wait(io_instance.io());
+    switch (term) {
+        .exited => |code| if (code != 0) return error.ClipboardCommandFailed,
+        .signal, .stopped, .unknown => return error.ClipboardCommandFailed,
     }
 }
 
@@ -847,6 +916,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
 
+    const copy = parseSlash("/copy").?;
+    try std.testing.expectEqualStrings("copy", copy.name);
+    try std.testing.expectEqualStrings("", copy.args);
+
     const raw = parseSlash("/raw on").?;
     try std.testing.expectEqualStrings("raw", raw.name);
     try std.testing.expectEqualStrings("on", raw.args);
@@ -886,6 +959,21 @@ test "parse raw output mode args" {
     try std.testing.expectEqual(true, try parseRawOutputMode(" on ", false));
     try std.testing.expectEqual(false, try parseRawOutputMode("OFF", true));
     try std.testing.expectError(error.InvalidRawOutputMode, parseRawOutputMode("status", false));
+}
+
+test "finds last assistant message for copy" {
+    const allocator = std.testing.allocator;
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+
+    try std.testing.expect(lastAssistantMessage(&transcript) == null);
+    try transcript.appendUserMessage(allocator, "hello");
+    try std.testing.expect(lastAssistantMessage(&transcript) == null);
+    try transcript.appendAssistantMessage(allocator, "first answer");
+    try transcript.appendUserMessage(allocator, "next");
+    try transcript.appendAssistantMessage(allocator, "second answer");
+
+    try std.testing.expectEqualStrings("second answer", lastAssistantMessage(&transcript).?);
 }
 
 test "agents file existence check" {
