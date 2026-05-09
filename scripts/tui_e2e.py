@@ -71,7 +71,14 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         if not isinstance(items, list):
             items = []
         latest_prompt = latest_user_text(items)
-        if "create the demo file" in latest_prompt and has_tool_output(
+        if "summarize the mentioned file" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "mentioned file received\n",
+                },
+            )
+        elif "create the demo file" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-2"
         ):
             payload = sse(
@@ -256,6 +263,8 @@ def run_e2e(binary: Path) -> str:
             workspace = Path(home) / "workspace"
             workspace.mkdir()
             demo_file = workspace / "codex_zig_tui_file.txt"
+            mention_file = workspace / "mention_context.txt"
+            mention_file.write_text("codex zig mention context\n")
             copy_capture = Path(home) / "copied.txt"
             copy_command = Path(home) / "copy_capture.py"
             copy_command.write_text(
@@ -404,6 +413,24 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"<empty>", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/mention mention_context.txt")
+            wait_for(master_fd, output, b"mentioned:", 5, mark)
+            wait_for(master_fd, output, b"mention_context.txt", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"mentions:    1 pending", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "summarize the mentioned file")
+            wait_for(master_fd, output, b"mentioned file received", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"mentions:    0 pending", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "start a background terminal")
             wait_for(master_fd, output, b"Tool approval required", 8, mark)
             wait_for(master_fd, output, b"Run this command? [y/N]", 5, mark)
@@ -424,9 +451,9 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/history 4")
-            wait_for(master_fd, output, b"history: showing 4 of 4 items", 5, mark)
+            wait_for(master_fd, output, b"history: showing 4 of 6 items", 5, mark)
             wait_for(master_fd, output, b"tool call: exec_command", 5, mark)
-            wait_for(master_fd, output, b"#4 assistant:", 5, mark)
+            wait_for(master_fd, output, b"#6 assistant:", 5, mark)
             read_available(master_fd, output, 0.2)
 
             mark = len(output)
@@ -453,7 +480,7 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "/history 8")
-            wait_for(master_fd, output, b"history: showing 8 of 8 items", 5, mark)
+            wait_for(master_fd, output, b"history: showing 8 of 10 items", 5, mark)
             wait_for(master_fd, output, b"tool call: apply_patch", 5, mark)
             wait_for(master_fd, output, b"demo file created", 5, mark)
             read_available(master_fd, output, 0.2)
@@ -484,6 +511,13 @@ def run_e2e(binary: Path) -> str:
             raise AssertionError(
                 f"expected priority service tier in API requests, saw {service_tiers!r}"
             )
+        user_texts = [
+            latest_user_text(body.get("input", []))
+            for body in server.request_bodies
+            if isinstance(body.get("input", []), list)
+        ]
+        if not any("codex zig mention context" in text for text in user_texts):
+            raise AssertionError("expected mentioned file content in an API request")
         return output.decode(errors="replace")
     finally:
         server.shutdown()

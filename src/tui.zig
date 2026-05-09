@@ -14,6 +14,7 @@ const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
+const mention_file_limit = 128 * 1024;
 const init_prompt =
     \\Create an AGENTS.md file for this repository.
     \\Make it a concise contributor guide with practical headings and repository-specific guidance.
@@ -118,6 +119,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     var state = TuiState{};
+    defer state.deinit(allocator);
 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -155,7 +157,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
-        runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots) catch |err| {
+        runUserPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -185,6 +187,72 @@ fn runPrompt(
     if (answer.len == 0 or answer[answer.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+fn runUserPrompt(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    prompt: []const u8,
+    additional_writable_roots: []const []const u8,
+    state: *TuiState,
+) !void {
+    var expanded_prompt: ?[]const u8 = null;
+    defer if (expanded_prompt) |value| allocator.free(value);
+
+    const prompt_for_model = if (state.mentions.items.len == 0)
+        prompt
+    else blk: {
+        const value = try buildPromptWithMentions(allocator, prompt, state.mentions.items);
+        expanded_prompt = value;
+        break :blk value;
+    };
+
+    try runPrompt(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots);
+    state.clearMentions(allocator);
+}
+
+fn buildPromptWithMentions(
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    mention_paths: []const []const u8,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    try output.appendSlice(allocator, prompt);
+    try output.appendSlice(allocator, "\n\nMentioned files:\n");
+
+    for (mention_paths) |path| {
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            std.Io.Threaded.global_single_threaded.io(),
+            path,
+            allocator,
+            .limited(mention_file_limit),
+        ) catch |err| switch (err) {
+            error.FileTooBig => {
+                try output.appendSlice(allocator, "\n--- ");
+                try output.appendSlice(allocator, path);
+                try output.appendSlice(allocator, " ---\n");
+                try output.print(allocator, "[file omitted: larger than {d} bytes]\n", .{mention_file_limit});
+                continue;
+            },
+            else => return err,
+        };
+        defer allocator.free(content);
+
+        try output.appendSlice(allocator, "\n--- ");
+        try output.appendSlice(allocator, path);
+        try output.appendSlice(allocator, " ---\n");
+        try output.appendSlice(allocator, content);
+        if (content.len == 0 or content[content.len - 1] != '\n') {
+            try output.append(allocator, '\n');
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
 }
 
 fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u8) void {
@@ -260,6 +328,23 @@ const SlashParts = struct {
 const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
+    mentions: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
+        self.clearMentions(allocator);
+        self.mentions.deinit(allocator);
+    }
+
+    fn addMention(self: *TuiState, allocator: std.mem.Allocator, path: []const u8) !void {
+        const copy = try allocator.dupe(u8, path);
+        errdefer allocator.free(copy);
+        try self.mentions.append(allocator, copy);
+    }
+
+    fn clearMentions(self: *TuiState, allocator: std.mem.Allocator) void {
+        for (self.mentions.items) |path| allocator.free(path);
+        self.mentions.clearRetainingCapacity();
+    }
 };
 
 fn handleSlashCommand(
@@ -323,6 +408,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "history")) {
         printHistory(transcript, try parseHistoryLimit(parts.args));
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "mention")) {
+        try mentionFile(allocator, cwd, state, parts.args);
         return .handled;
     }
 
@@ -392,6 +482,7 @@ fn handleSlashCommand(
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         transcript.deinit(allocator);
         transcript.* = .{};
+        state.clearMentions(allocator);
         allocator.free(session_path.*);
         session_path.* = next_path;
         if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
@@ -412,6 +503,7 @@ fn handleSlashCommand(
 
         transcript.deinit(allocator);
         transcript.* = loaded;
+        state.clearMentions(allocator);
         allocator.free(session_path.*);
         session_path.* = next_path;
         std.debug.print("resumed: {s} ({d} items)\n", .{ session_path.*, transcript.history.items.len });
@@ -431,6 +523,7 @@ fn handleSlashCommand(
             transcript.deinit(allocator);
             transcript.* = loaded;
         }
+        state.clearMentions(allocator);
 
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         errdefer allocator.free(next_path);
@@ -514,6 +607,7 @@ fn printSlashHelp() void {
         \\  /approval [mode]  show or set approval policy
         \\  /sandbox [mode]   show or set sandbox mode
         \\  /history [n]      show recent transcript items
+        \\  /mention <path>   include a file in the next message
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
@@ -612,6 +706,7 @@ fn printStatus(
         \\  service tier: {s}
         \\  raw output:  {s}
         \\  vim:         {s}
+        \\  mentions:    {d} pending
         \\  transcript:  {d} items
         \\  tools:       {s}
         \\
@@ -631,6 +726,7 @@ fn printStatus(
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
+        state.mentions.items.len,
         transcript.history.items.len,
         tool_label,
     });
@@ -716,6 +812,29 @@ fn renameThread(
     try transcript.setTitle(allocator, title);
     try session_store.saveTranscript(allocator, session_path, transcript);
     std.debug.print("renamed thread: {s}\n", .{transcript.title.?});
+}
+
+fn mentionFile(allocator: std.mem.Allocator, cwd: []const u8, state: *TuiState, args: []const u8) !void {
+    const raw_path = std.mem.trim(u8, args, " \t\r\n");
+    if (raw_path.len == 0) {
+        std.debug.print("usage: /mention <path>\n", .{});
+        return;
+    }
+    if (std.mem.indexOfScalar(u8, raw_path, 0) != null) return error.InvalidMentionPath;
+
+    const path = if (std.fs.path.isAbsolute(raw_path))
+        try allocator.dupe(u8, raw_path)
+    else
+        try std.fs.path.join(allocator, &.{ cwd, raw_path });
+    defer allocator.free(path);
+
+    std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch |err| {
+        std.debug.print("mention failed: {s}: {s}\n", .{ path, @errorName(err) });
+        return;
+    };
+
+    try state.addMention(allocator, path);
+    std.debug.print("mentioned: {s}\n", .{path});
 }
 
 fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
@@ -1093,6 +1212,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("history", history.name);
     try std.testing.expectEqualStrings("5", history.args);
 
+    const mention = parseSlash("/mention README.md").?;
+    try std.testing.expectEqualStrings("mention", mention.name);
+    try std.testing.expectEqualStrings("README.md", mention.args);
+
     const rollout = parseSlash("/rollout").?;
     try std.testing.expectEqualStrings("rollout", rollout.name);
     try std.testing.expectEqualStrings("", rollout.args);
@@ -1171,6 +1294,32 @@ test "finds last assistant message for copy" {
     try transcript.appendAssistantMessage(allocator, "second answer");
 
     try std.testing.expectEqualStrings("second answer", lastAssistantMessage(&transcript).?);
+}
+
+test "build prompt with mentioned files" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "context.txt",
+        .data = "important context\n",
+    });
+
+    const path = try std.fs.path.join(allocator, &.{ root, "context.txt" });
+    defer allocator.free(path);
+    const mentions = [_][]const u8{path};
+
+    const prompt = try buildPromptWithMentions(allocator, "summarize this", &mentions);
+    defer allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "summarize this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Mentioned files:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "context.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "important context") != null);
 }
 
 test "agents file existence check" {
