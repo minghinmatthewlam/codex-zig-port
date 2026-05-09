@@ -302,9 +302,18 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"status:", 5, mark)
+            wait_for(master_fd, output, b"service tier: unset", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/fast status")
+            wait_for(master_fd, output, b"Fast mode is off.", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/fast on")
+            wait_for(master_fd, output, b"Fast mode is on.", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/raw")
@@ -433,6 +442,11 @@ def run_e2e(binary: Path) -> str:
         models = [body.get("model") for body in server.request_bodies]
         if "gpt-e2e" not in models:
             raise AssertionError(f"expected model override in API requests, saw {models!r}")
+        service_tiers = [body.get("service_tier") for body in server.request_bodies]
+        if "priority" not in service_tiers:
+            raise AssertionError(
+                f"expected priority service tier in API requests, saw {service_tiers!r}"
+            )
         return output.decode(errors="replace")
     finally:
         server.shutdown()

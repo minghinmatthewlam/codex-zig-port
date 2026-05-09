@@ -19,6 +19,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `login --with-access-token`, `login --device-auth`, and `logout`
 - send a Responses API turn
 - stream assistant text deltas in the interactive TUI
+- set the `priority` service tier for later turns with `/fast`
 - include discovered `AGENTS.md` project instructions in API turns
 - create a repository guide through interactive `/init`
 - compact an interactive session into a continuation summary with `/compact`
@@ -67,10 +68,10 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/copy`, `/raw`, `/vim`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
+`/fast`, `/copy`, `/raw`, `/vim`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `exec_command` and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
-and the file created in the temporary workspace. It also launches
+propagated service tier, and the file created in the temporary workspace. It also launches
 `codex-zig app-server` as a subprocess and verifies a newline-delimited
 JSON-RPC stdio initialize request and unsupported-method error. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the

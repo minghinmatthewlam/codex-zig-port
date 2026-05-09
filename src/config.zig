@@ -12,6 +12,7 @@ pub const Config = struct {
     approval_policy: ApprovalPolicy,
     sandbox_mode: SandboxMode,
     web_search_mode: ?WebSearchMode,
+    service_tier: ?[]const u8,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -21,6 +22,7 @@ pub const Config = struct {
         allocator.free(self.chatgpt_base_url);
         if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
+        if (self.service_tier) |value| allocator.free(value);
     }
 };
 
@@ -37,6 +39,7 @@ pub const RuntimeOverrides = struct {
     approval_policy: ?ApprovalPolicy = null,
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
+    service_tier: ?[]const u8 = null,
 };
 
 pub fn applyRuntimeOverrides(
@@ -73,6 +76,11 @@ pub fn applyRuntimeOverrides(
     if (overrides.web_search_mode) |web_search_mode| {
         cfg.web_search_mode = web_search_mode;
     }
+    if (overrides.service_tier) |service_tier| {
+        const next_service_tier = try normalizeServiceTier(allocator, service_tier);
+        if (cfg.service_tier) |existing| allocator.free(existing);
+        cfg.service_tier = next_service_tier;
+    }
 }
 
 pub fn applyRawConfigOverride(
@@ -101,6 +109,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.sandbox_mode = try SandboxMode.parse(value);
     } else if (std.mem.eql(u8, key, "web_search")) {
         runtime_overrides.web_search_mode = try WebSearchMode.parse(value);
+    } else if (std.mem.eql(u8, key, "service_tier")) {
+        runtime_overrides.service_tier = value;
     }
 }
 
@@ -303,6 +313,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
     const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
+    const service_tier = try resolveServiceTier(allocator, config_view, active_profile);
+    errdefer if (service_tier) |value| allocator.free(value);
 
     return .{
         .codex_home = codex_home,
@@ -315,6 +327,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
+        .service_tier = service_tier,
     };
 }
 
@@ -438,6 +451,31 @@ fn resolveWebSearchMode(allocator: std.mem.Allocator, config_view: ConfigView, a
     }
 
     return null;
+}
+
+fn resolveServiceTier(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    if (try env.getOwned(allocator, "CODEX_ZIG_SERVICE_TIER")) |value| {
+        defer allocator.free(value);
+        return try normalizeServiceTier(allocator, value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "service_tier")) |value| {
+        defer allocator.free(value);
+        return try normalizeServiceTier(allocator, value);
+    }
+
+    return null;
+}
+
+pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(trimmed, "fast") or std.ascii.eqlIgnoreCase(trimmed, "priority")) {
+        return allocator.dupe(u8, "priority");
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "flex")) {
+        return allocator.dupe(u8, "flex");
+    }
+    return allocator.dupe(u8, trimmed);
 }
 
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -643,6 +681,7 @@ test "profile values override top-level config values" {
         \\approval_policy = "on-request"
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
+        \\service_tier = "flex"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
@@ -651,6 +690,7 @@ test "profile values override top-level config values" {
         \\approval_policy = "never"
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
+        \\service_tier = "fast"
         \\chatgpt_base_url = "https://profile.example/codex"
         \\
         ,
@@ -677,6 +717,9 @@ test "profile values override top-level config values" {
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
     try std.testing.expectEqual(WebSearchMode.live, (try resolveWebSearchMode(allocator, view, active_profile.?)).?);
+    const service_tier = try resolveServiceTier(allocator, view, active_profile.?);
+    defer allocator.free(service_tier.?);
+    try std.testing.expectEqualStrings("priority", service_tier.?);
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
@@ -757,6 +800,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "approval_policy=never");
     try applyRawConfigOverride(&runtime, &profile, "sandbox_mode=read-only");
     try applyRawConfigOverride(&runtime, &profile, "web_search=live");
+    try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
@@ -767,12 +811,30 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqual(ApprovalPolicy.never, runtime.approval_policy.?);
     try std.testing.expectEqual(SandboxMode.read_only, runtime.sandbox_mode.?);
     try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
+    try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
 }
 
 test "raw cli config override rejects missing assignment" {
     var runtime = RuntimeOverrides{};
     var profile: ?[]const u8 = null;
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
+}
+
+test "service tier normalization maps fast aliases" {
+    const allocator = std.testing.allocator;
+    const fast = try normalizeServiceTier(allocator, "fast");
+    defer allocator.free(fast);
+    const priority = try normalizeServiceTier(allocator, "priority");
+    defer allocator.free(priority);
+    const flex = try normalizeServiceTier(allocator, "FLEX");
+    defer allocator.free(flex);
+    const custom = try normalizeServiceTier(allocator, "batch");
+    defer allocator.free(custom);
+
+    try std.testing.expectEqualStrings("priority", fast);
+    try std.testing.expectEqualStrings("priority", priority);
+    try std.testing.expectEqualStrings("flex", flex);
+    try std.testing.expectEqualStrings("batch", custom);
 }
 
 test "oss mode applies local provider defaults" {
@@ -788,6 +850,7 @@ test "oss mode applies local provider defaults" {
         .approval_policy = .never,
         .sandbox_mode = .read_only,
         .web_search_mode = null,
+        .service_tier = null,
     };
     defer cfg.deinit(allocator);
 

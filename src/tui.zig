@@ -438,6 +438,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "fast")) {
+        try handleFastMode(allocator, cfg, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "approval")) {
         if (parts.args.len == 0) {
             std.debug.print("approval: {s}\n", .{cfg.approval_policy.label()});
@@ -485,6 +490,8 @@ fn printSlashHelp() void {
         \\  /compact          summarize and replace this session's history
         \\  /status           show current session settings
         \\  /model [name]     show or set the in-memory model for this session
+        \\  /fast [on|off|status]
+        \\                    toggle Fast service tier for this session
         \\  /permissions      show or set approval/sandbox modes
         \\  /approval [mode]  show or set approval policy
         \\  /sandbox [mode]   show or set sandbox mode
@@ -583,6 +590,7 @@ fn printStatus(
         \\  approval:    {s}
         \\  sandbox:     {s}
         \\  search:      {s}
+        \\  service tier: {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  transcript:  {d} items
@@ -600,6 +608,7 @@ fn printStatus(
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
+        if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         transcript.history.items.len,
@@ -620,6 +629,51 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+fn handleFastMode(allocator: std.mem.Allocator, cfg: *config.Config, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        try setFastMode(allocator, cfg, !isFastMode(cfg.*));
+        printFastMode(cfg.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        try setFastMode(allocator, cfg, true);
+        printFastMode(cfg.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        try setFastMode(allocator, cfg, false);
+        printFastMode(cfg.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printFastMode(cfg.*);
+        return;
+    }
+    std.debug.print("usage: /fast [on|off|status]\n", .{});
+}
+
+fn setFastMode(allocator: std.mem.Allocator, cfg: *config.Config, enabled: bool) !void {
+    if (cfg.service_tier) |existing| {
+        allocator.free(existing);
+        cfg.service_tier = null;
+    }
+    if (enabled) {
+        cfg.service_tier = try allocator.dupe(u8, "priority");
+    }
+}
+
+fn isFastMode(cfg: config.Config) bool {
+    return if (cfg.service_tier) |service_tier|
+        std.ascii.eqlIgnoreCase(service_tier, "priority") or std.ascii.eqlIgnoreCase(service_tier, "fast")
+    else
+        false;
+}
+
+fn printFastMode(cfg: config.Config) void {
+    std.debug.print("Fast mode is {s}.\n", .{if (isFastMode(cfg)) "on" else "off"});
 }
 
 fn copyLastAssistantMessage(allocator: std.mem.Allocator, transcript: *const session.Transcript) void {
@@ -908,6 +962,10 @@ test "parse slash command names and args" {
     const model = parseSlash("/model gpt-test").?;
     try std.testing.expectEqualStrings("model", model.name);
     try std.testing.expectEqualStrings("gpt-test", model.args);
+
+    const fast = parseSlash("/fast status").?;
+    try std.testing.expectEqualStrings("fast", fast.name);
+    try std.testing.expectEqualStrings("status", fast.args);
 
     const approval = parseSlash("/approval on-request").?;
     try std.testing.expectEqualStrings("approval", approval.name);

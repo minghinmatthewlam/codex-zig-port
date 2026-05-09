@@ -668,6 +668,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     std.debug.print("approval_policy: {s}\n", .{cfg.approval_policy.label()});
     std.debug.print("sandbox_mode: {s}\n", .{cfg.sandbox_mode.label()});
     std.debug.print("web_search: {s}\n", .{config.webSearchLabel(cfg.web_search_mode)});
+    std.debug.print("service_tier: {s}\n", .{cfg.service_tier orelse "<none>"});
     std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
         .chatgpt, .agent_identity => cfg.chatgpt_base_url,
         .api_key, .local_oss => cfg.openai_base_url,

@@ -102,6 +102,7 @@ const Request = struct {
     tool_choice: []const u8 = "auto",
     parallel_tool_calls: bool = false,
     reasoning: ?Reasoning = null,
+    service_tier: ?[]const u8 = null,
     store: bool = false,
     stream: bool = true,
     include: []const []const u8,
@@ -508,6 +509,7 @@ pub fn buildRequestBodyWithOptions(
         .tools = tools_list.items,
         .text = text_controls,
         .reasoning = .{},
+        .service_tier = cfg.service_tier,
         .include = include[0..],
         .prompt_cache_key = cfg.installation_id,
         .client_metadata = .{ .@"x-codex-installation-id" = cfg.installation_id },
@@ -653,6 +655,7 @@ test "builds chronological request input from owned history" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
+        .service_tier = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -707,6 +710,7 @@ test "builds input images on latest user message" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
+        .service_tier = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -745,6 +749,7 @@ test "builds web search tool from config mode" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = .live,
+        .service_tier = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -788,6 +793,7 @@ test "builds mcp function tools from catalog" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
+        .service_tier = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -839,6 +845,7 @@ test "can omit tools for compact-style turns" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = .live,
+        .service_tier = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -880,6 +887,7 @@ test "builds output schema text format" {
         .approval_policy = .on_request,
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
+        .service_tier = "priority",
     };
     const history = [_]HistoryItem{
         .{
@@ -900,6 +908,7 @@ test "builds output schema text format" {
     const format = parsed.value.object.get("text").?.object.get("format").?.object;
 
     try std.testing.expectEqualStrings("json_schema", format.get("type").?.string);
+    try std.testing.expectEqualStrings("priority", parsed.value.object.get("service_tier").?.string);
     try std.testing.expectEqualStrings("codex_output_schema", format.get("name").?.string);
     try std.testing.expect(format.get("strict").?.bool);
     try std.testing.expectEqualStrings("object", format.get("schema").?.object.get("type").?.string);
