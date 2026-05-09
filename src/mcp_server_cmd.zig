@@ -374,6 +374,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer allocator.free(installation_id);
     const service_tier = if (source.service_tier) |value| try allocator.dupe(u8, value) else null;
     errdefer if (service_tier) |value| allocator.free(value);
+    const syntax_theme = if (source.syntax_theme) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (syntax_theme) |value| allocator.free(value);
 
     return .{
         .codex_home = codex_home,
@@ -387,6 +389,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .sandbox_mode = source.sandbox_mode,
         .web_search_mode = source.web_search_mode,
         .service_tier = service_tier,
+        .syntax_theme = syntax_theme,
     };
 }
 
@@ -492,6 +495,7 @@ test "mcp server turn config applies direct call overrides" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .service_tier = null,
+        .syntax_theme = null,
     };
     var credentials = try auth.localOssCredentials(allocator);
     defer credentials.deinit(allocator);

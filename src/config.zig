@@ -13,6 +13,7 @@ pub const Config = struct {
     sandbox_mode: SandboxMode,
     web_search_mode: ?WebSearchMode,
     service_tier: ?[]const u8,
+    syntax_theme: ?[]const u8,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -23,6 +24,7 @@ pub const Config = struct {
         if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
+        if (self.syntax_theme) |value| allocator.free(value);
     }
 };
 
@@ -40,6 +42,7 @@ pub const RuntimeOverrides = struct {
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
     service_tier: ?[]const u8 = null,
+    syntax_theme: ?[]const u8 = null,
 };
 
 pub fn applyRuntimeOverrides(
@@ -81,6 +84,11 @@ pub fn applyRuntimeOverrides(
         if (cfg.service_tier) |existing| allocator.free(existing);
         cfg.service_tier = next_service_tier;
     }
+    if (overrides.syntax_theme) |syntax_theme| {
+        const next_syntax_theme = try allocator.dupe(u8, syntax_theme);
+        if (cfg.syntax_theme) |existing| allocator.free(existing);
+        cfg.syntax_theme = next_syntax_theme;
+    }
 }
 
 pub fn applyRawConfigOverride(
@@ -111,6 +119,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.web_search_mode = try WebSearchMode.parse(value);
     } else if (std.mem.eql(u8, key, "service_tier")) {
         runtime_overrides.service_tier = value;
+    } else if (std.mem.eql(u8, key, "syntax_theme")) {
+        runtime_overrides.syntax_theme = value;
     }
 }
 
@@ -315,6 +325,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
     const service_tier = try resolveServiceTier(allocator, config_view, active_profile);
     errdefer if (service_tier) |value| allocator.free(value);
+    const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
+    errdefer if (syntax_theme) |value| allocator.free(value);
 
     return .{
         .codex_home = codex_home,
@@ -328,6 +340,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .service_tier = service_tier,
+        .syntax_theme = syntax_theme,
     };
 }
 
@@ -465,6 +478,14 @@ fn resolveServiceTier(allocator: std.mem.Allocator, config_view: ConfigView, act
     }
 
     return null;
+}
+
+fn resolveSyntaxTheme(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    if (try env.getOwned(allocator, "CODEX_ZIG_SYNTAX_THEME")) |value| {
+        return value;
+    }
+
+    return config_view.getScopedString(allocator, active_profile, "syntax_theme");
 }
 
 pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -682,6 +703,7 @@ test "profile values override top-level config values" {
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
         \\service_tier = "flex"
+        \\syntax_theme = "github"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
@@ -691,6 +713,7 @@ test "profile values override top-level config values" {
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
         \\service_tier = "fast"
+        \\syntax_theme = "dracula"
         \\chatgpt_base_url = "https://profile.example/codex"
         \\
         ,
@@ -720,6 +743,9 @@ test "profile values override top-level config values" {
     const service_tier = try resolveServiceTier(allocator, view, active_profile.?);
     defer allocator.free(service_tier.?);
     try std.testing.expectEqualStrings("priority", service_tier.?);
+    const syntax_theme = try resolveSyntaxTheme(allocator, view, active_profile.?);
+    defer allocator.free(syntax_theme.?);
+    try std.testing.expectEqualStrings("dracula", syntax_theme.?);
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
@@ -801,6 +827,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "sandbox_mode=read-only");
     try applyRawConfigOverride(&runtime, &profile, "web_search=live");
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
+    try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
@@ -812,6 +839,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqual(SandboxMode.read_only, runtime.sandbox_mode.?);
     try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
+    try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
 }
 
 test "raw cli config override rejects missing assignment" {
@@ -851,6 +879,7 @@ test "oss mode applies local provider defaults" {
         .sandbox_mode = .read_only,
         .web_search_mode = null,
         .service_tier = null,
+        .syntax_theme = null,
     };
     defer cfg.deinit(allocator);
 

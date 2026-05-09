@@ -24,6 +24,7 @@ const modules = .{
     @import("session.zig"),
     @import("session_store.zig"),
     @import("statusline.zig"),
+    @import("theme.zig"),
     @import("tools.zig"),
     @import("tui.zig"),
     @import("workdir.zig"),

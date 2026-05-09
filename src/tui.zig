@@ -12,6 +12,7 @@ const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const statusline = @import("statusline.zig");
+const theme = @import("theme.zig");
 const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
@@ -122,6 +123,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
 
     var state = TuiState{};
     defer state.deinit(allocator);
+    state.syntax_theme = try theme.initialTheme(allocator, cfg.syntax_theme);
 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -376,9 +378,11 @@ const TuiState = struct {
     plan_mode: bool = false,
     terminal_title_enabled: bool = false,
     status_line_items: std.ArrayList(statusline.Item) = .empty,
+    syntax_theme: ?[]const u8 = null,
     mentions: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
+        if (self.syntax_theme) |value| allocator.free(value);
         self.clearMentions(allocator);
         self.mentions.deinit(allocator);
         self.status_line_items.deinit(allocator);
@@ -402,6 +406,16 @@ const TuiState = struct {
 
     fn clearStatusLine(self: *TuiState) void {
         self.status_line_items.clearRetainingCapacity();
+    }
+
+    fn setSyntaxTheme(self: *TuiState, allocator: std.mem.Allocator, name: []const u8) !void {
+        const next = try allocator.dupe(u8, name);
+        if (self.syntax_theme) |existing| allocator.free(existing);
+        self.syntax_theme = next;
+    }
+
+    fn syntaxThemeName(self: TuiState) []const u8 {
+        return self.syntax_theme orelse theme.default_theme;
     }
 };
 
@@ -471,6 +485,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "statusline")) {
         try handleStatusLine(allocator, cfg.*, transcript, session_path.*, cwd, state, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "theme")) {
+        try handleTheme(allocator, cfg, state, parts.args);
         return .handled;
     }
 
@@ -688,6 +707,8 @@ fn printSlashHelp() void {
         \\                    manage the terminal window title
         \\  /statusline [status|off|default|ITEM...]
         \\                    configure status line preview items
+        \\  /theme [status|list|NAME]
+        \\                    choose a syntax highlighting theme
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -800,6 +821,7 @@ fn printStatus(
         \\  plan mode:   {s}
         \\  term title:  {s}
         \\  status line: {s}
+        \\  theme:       {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  mentions:    {d} pending
@@ -823,6 +845,7 @@ fn printStatus(
         if (state.plan_mode) "on" else "off",
         if (state.terminal_title_enabled) "on" else "off",
         status_line_label,
+        state.syntaxThemeName(),
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         state.mentions.items.len,
@@ -846,6 +869,7 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         \\  sandbox:        {s}
         \\  web_search:     {s}
         \\  service_tier:   {s}
+        \\  syntax_theme:   {s}
         \\  oss_provider:   {s}
         \\  installation:   {s}
         \\
@@ -862,6 +886,7 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
         cfg.service_tier orelse "<none>",
+        cfg.syntax_theme orelse "<default>",
         cfg.oss_provider orelse "<none>",
         cfg.installation_id,
     });
@@ -1054,6 +1079,64 @@ fn printStatusLineStatus(
     const preview = try statusline.buildPreview(allocator, cfg, transcript, session_path, cwd, state.status_line_items.items, state.raw_output_mode);
     defer allocator.free(preview);
     std.debug.print("status line: {s}\n  preview: {s}\n", .{ label, preview });
+}
+
+fn handleTheme(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    state: *TuiState,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printThemeStatus(state.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "list")) {
+        try printThemeList(allocator, cfg.codex_home, state.syntaxThemeName());
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "default") or std.ascii.eqlIgnoreCase(trimmed, "auto")) {
+        try setSyntaxTheme(allocator, cfg, state, theme.default_theme);
+        printThemeStatus(state.*);
+        return;
+    }
+    if (!try theme.isAvailable(allocator, cfg.codex_home, trimmed)) {
+        std.debug.print("unknown theme: {s}\n", .{trimmed});
+        theme.printUsage();
+        return;
+    }
+    try setSyntaxTheme(allocator, cfg, state, trimmed);
+    printThemeStatus(state.*);
+}
+
+fn setSyntaxTheme(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    state: *TuiState,
+    name: []const u8,
+) !void {
+    const next_cfg_value = try allocator.dupe(u8, name);
+    errdefer allocator.free(next_cfg_value);
+    try state.setSyntaxTheme(allocator, name);
+    if (cfg.syntax_theme) |existing| allocator.free(existing);
+    cfg.syntax_theme = next_cfg_value;
+}
+
+fn printThemeStatus(state: TuiState) void {
+    std.debug.print("theme: {s}\n", .{state.syntaxThemeName()});
+}
+
+fn printThemeList(allocator: std.mem.Allocator, codex_home: []const u8, current_theme: []const u8) !void {
+    var list = try theme.listAvailable(allocator, codex_home);
+    defer list.deinit(allocator);
+
+    std.debug.print("themes:\n", .{});
+    for (list.items.items) |entry| {
+        const marker: []const u8 = if (std.mem.eql(u8, entry.name, current_theme)) "*" else " ";
+        const suffix: []const u8 = if (entry.is_custom) " (custom)" else "";
+        std.debug.print("  {s} {s}{s}\n", .{ marker, entry.name, suffix });
+    }
 }
 
 fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {

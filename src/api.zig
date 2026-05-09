@@ -656,6 +656,7 @@ test "builds chronological request input from owned history" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .service_tier = null,
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -711,6 +712,7 @@ test "builds input images on latest user message" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .service_tier = null,
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -750,6 +752,7 @@ test "builds web search tool from config mode" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = .live,
         .service_tier = null,
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -794,6 +797,7 @@ test "builds mcp function tools from catalog" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .service_tier = null,
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -846,6 +850,7 @@ test "can omit tools for compact-style turns" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = .live,
         .service_tier = null,
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{
@@ -888,6 +893,7 @@ test "builds output schema text format" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .service_tier = "priority",
+        .syntax_theme = null,
     };
     const history = [_]HistoryItem{
         .{

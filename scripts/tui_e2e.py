@@ -274,6 +274,9 @@ def run_e2e(binary: Path) -> str:
                     ]
                 )
             )
+            themes_dir = Path(home) / "themes"
+            themes_dir.mkdir()
+            (themes_dir / "custom-demo.tmTheme").write_text("placeholder")
             workspace = Path(home) / "workspace"
             workspace.mkdir()
             demo_file = workspace / "codex_zig_tui_file.txt"
@@ -323,6 +326,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"/permissions", 5, mark)
             wait_for(master_fd, output, b"/title", 5, mark)
             wait_for(master_fd, output, b"/statusline", 5, mark)
+            wait_for(master_fd, output, b"/theme", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/status")
@@ -331,6 +335,7 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"plan mode:   off", 5, mark)
             wait_for(master_fd, output, b"term title:  off", 5, mark)
             wait_for(master_fd, output, b"status line: <off>", 5, mark)
+            wait_for(master_fd, output, b"theme:       catppuccin-mocha", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
@@ -380,9 +385,32 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"status line: model, project-name, thread-title", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/theme")
+            wait_for(master_fd, output, b"theme: catppuccin-mocha", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/theme list")
+            wait_for(master_fd, output, b"themes:", 5, mark)
+            wait_for(master_fd, output, b"* catppuccin-mocha", 5, mark)
+            wait_for(master_fd, output, b"custom-demo (custom)", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/theme dracula")
+            wait_for(master_fd, output, b"theme: dracula", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/theme custom-demo")
+            wait_for(master_fd, output, b"theme: custom-demo", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"theme:       custom-demo", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
+            wait_for(master_fd, output, b"syntax_theme:   custom-demo", 5, mark)
             wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
 
             mark = len(output)
