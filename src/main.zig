@@ -32,6 +32,7 @@ const CliOverrides = struct {
     oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
+    no_alt_screen: bool = false,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -150,6 +151,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--no-alt-screen")) {
+            overrides.no_alt_screen = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--")) {
@@ -189,6 +191,7 @@ fn mainInner(init: std.process.Init) !void {
             .oss_provider = overrides.oss_provider,
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
+            .no_alt_screen = overrides.no_alt_screen,
         });
         return;
     }
@@ -308,6 +311,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
                 return;
             }
@@ -319,6 +323,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
             } else {
                 try tui.runWithOptions(allocator, .{
@@ -328,6 +333,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
             }
             return;
@@ -348,6 +354,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
                 return;
             }
@@ -359,6 +366,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
             } else {
                 try tui.runWithOptions(allocator, .{
@@ -368,6 +376,7 @@ fn mainInner(init: std.process.Init) !void {
                     .oss = overrides.oss,
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
+                    .no_alt_screen = overrides.no_alt_screen,
                 });
             }
             return;
@@ -408,6 +417,7 @@ fn mainInner(init: std.process.Init) !void {
             .oss_provider = overrides.oss_provider,
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
+            .no_alt_screen = overrides.no_alt_screen,
         });
         return;
     }
@@ -418,6 +428,7 @@ fn mainInner(init: std.process.Init) !void {
         .oss = overrides.oss,
         .oss_provider = overrides.oss_provider,
         .additional_writable_roots = overrides.additional_writable_roots,
+        .no_alt_screen = overrides.no_alt_screen,
     });
 }
 
@@ -556,7 +567,7 @@ fn printHelp() !void {
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
         \\  codex-zig --no-alt-screen
-        \\                          Accept Rust TUI inline-mode flag
+        \\                          Disable alternate-screen TUI mode
         \\  codex-zig --version
         \\                          Print version and exit
         \\  codex-zig mock-demo    Run deterministic local tool demo

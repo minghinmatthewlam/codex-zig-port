@@ -15,6 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+ALT_SCREEN_ENTER = b"\x1b[?1049h"
+ALT_SCREEN_LEAVE = b"\x1b[?1049l"
+
+
 def free_port() -> int:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -278,6 +282,51 @@ def send_line(master_fd: int, line: str) -> None:
     os.write(master_fd, line.encode() + b"\n")
 
 
+def run_alt_screen_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+) -> None:
+    alt_output = bytearray()
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+        ],
+        cwd=workspace,
+        env=env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    try:
+        wait_for(master_fd, alt_output, ALT_SCREEN_ENTER, 5)
+        wait_for(master_fd, alt_output, b"Type /help for commands", 5)
+        mark = len(alt_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, alt_output, ALT_SCREEN_LEAVE, 5, mark)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = alt_output.decode(errors="replace")
+            raise AssertionError(
+                f"alternate-screen smoke exited with {exit_code}\n\n{rendered}"
+            )
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        os.close(master_fd)
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -499,6 +548,7 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/keymap debug")
             wait_for(master_fd, output, b"keymap debug:", 5, mark)
             wait_for(master_fd, output, b"configurable: false", 5, mark)
+            wait_for(master_fd, output, b"alternate screen: supported", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/fast status")
@@ -718,6 +768,10 @@ def run_e2e(binary: Path) -> str:
             master_fd = -1
             proc = None
 
+            if ALT_SCREEN_ENTER in output or ALT_SCREEN_LEAVE in output:
+                raise AssertionError("--no-alt-screen emitted alternate-screen escapes")
+            run_alt_screen_smoke(binary, env, workspace, port)
+
             master_fd, slave_fd = pty.openpty()
             proc = subprocess.Popen(
                 [
@@ -784,6 +838,8 @@ def run_e2e(binary: Path) -> str:
         ]
         if not any("<personality_spec>" in text and "team morale" in text for text in instructions):
             raise AssertionError("expected friendly personality instructions in an API request")
+        if ALT_SCREEN_ENTER in output or ALT_SCREEN_LEAVE in output:
+            raise AssertionError("--no-alt-screen emitted alternate-screen escapes")
         return output.decode(errors="replace")
     finally:
         server.shutdown()

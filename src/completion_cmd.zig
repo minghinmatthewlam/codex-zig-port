@@ -144,7 +144,7 @@ fn appendFishOptions(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !voi
         "complete -c codex-zig -s s -l sandbox -xa 'read-only workspace-write danger-full-access' -d 'Sandbox mode'\n",
         "complete -c codex-zig -l yolo -d 'Disable approvals and sandbox'\n",
         "complete -c codex-zig -l search -d 'Enable live web search'\n",
-        "complete -c codex-zig -l no-alt-screen -d 'Accept Rust TUI inline-mode flag'\n",
+        "complete -c codex-zig -l no-alt-screen -d 'Disable alternate-screen TUI mode'\n",
     };
     for (lines) |line| try out.appendSlice(allocator, line);
 }
@@ -195,7 +195,7 @@ fn renderZsh(allocator: std.mem.Allocator) ![]const u8 {
         \\        '(-s --sandbox)'{{-s,--sandbox}}'[Sandbox mode]:(read-only workspace-write danger-full-access)' \
         \\        '--yolo[Disable approvals and sandbox]' \
         \\        '--search[Enable live web search]' \
-        \\        '--no-alt-screen[Accept Rust TUI inline-mode flag]' \
+        \\        '--no-alt-screen[Disable alternate-screen TUI mode]' \
         \\        '1:command:($commands)' \
         \\        '*::arg:_files'
         \\}}

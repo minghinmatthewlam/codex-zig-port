@@ -11,8 +11,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 
 - launch an interactive terminal UI with `zig build run`
 - accept an optional initial prompt with `codex-zig [PROMPT]`
-- accept the Rust TUI `--no-alt-screen` inline-mode flag as a no-op because
-  the current Zig terminal UI already runs inline
+- use alternate-screen terminal mode by default and preserve inline scrollback
+  with the Rust-compatible `--no-alt-screen` flag
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
 - refresh expired or stale ChatGPT auth tokens from stored refresh tokens
 - manage basic auth with `login status`, `login --with-api-key`,
@@ -84,7 +84,8 @@ The `e2e` step starts a local mock Responses server, launches the real
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches
-`codex-zig app-server` as a subprocess and verifies a newline-delimited
+the TUI once without `--no-alt-screen` to verify alternate-screen enter/leave
+escape sequences, then launches `codex-zig app-server` as a subprocess and verifies a newline-delimited
 JSON-RPC stdio initialize request and unsupported-method error. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.

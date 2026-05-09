@@ -43,6 +43,7 @@ pub const Options = struct {
     oss_provider: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     initial_prompt: ?[]const u8 = null,
+    no_alt_screen: bool = false,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -115,6 +116,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(cwd);
 
+    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen);
+    if (use_alt_screen) enterAlternateScreen();
+    defer if (use_alt_screen) leaveAlternateScreen();
+
     printHeader(cfg, credentials, cwd);
     if (resumed) {
         std.debug.print("resumed: {s} ({d} items)\n", .{ session_path, transcript.history.items.len });
@@ -180,6 +185,20 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
 
     if (state.terminal_title_items.items.len > 0) clearTerminalTitle();
     std.debug.print("\nbye\n", .{});
+}
+
+fn enterAlternateScreen() void {
+    std.debug.print("\x1b[?1049h", .{});
+}
+
+fn leaveAlternateScreen() void {
+    std.debug.print("\x1b[?1049l", .{});
+}
+
+fn shouldUseAlternateScreen(no_alt_screen: bool) bool {
+    if (no_alt_screen) return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.File.stdout().isTty(io) catch false;
 }
 
 fn runPrompt(
@@ -980,7 +999,7 @@ fn printKeymap(args: []const u8) void {
             \\keymap debug:
             \\  backend: built-in
             \\  configurable: false
-            \\  alternate screen: disabled in current Zig TUI
+            \\  alternate screen: supported; disable with --no-alt-screen
             \\
         , .{});
     }
