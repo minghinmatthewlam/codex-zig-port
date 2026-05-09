@@ -7,11 +7,30 @@ const mcp_runtime = @import("mcp_runtime.zig");
 const tools = @import("tools.zig");
 
 pub const Transcript = struct {
+    title: ?[]const u8 = null,
     history: std.ArrayList(api.HistoryItem) = .empty,
 
     pub fn deinit(self: *Transcript, allocator: std.mem.Allocator) void {
+        self.clearTitle(allocator);
         for (self.history.items) |item| item.deinit(allocator);
         self.history.deinit(allocator);
+    }
+
+    pub fn setTitle(self: *Transcript, allocator: std.mem.Allocator, title: []const u8) !void {
+        const copy = try allocator.dupe(u8, title);
+        self.clearTitle(allocator);
+        self.title = copy;
+    }
+
+    pub fn clearTitle(self: *Transcript, allocator: std.mem.Allocator) void {
+        if (self.title) |title| {
+            allocator.free(title);
+            self.title = null;
+        }
+    }
+
+    pub fn titleLabel(self: *const Transcript) []const u8 {
+        return self.title orelse "<none>";
     }
 
     pub fn appendUserMessage(self: *Transcript, allocator: std.mem.Allocator, text: []const u8) !void {
@@ -101,6 +120,7 @@ pub const Transcript = struct {
         var replacement = Transcript{};
         errdefer replacement.deinit(allocator);
 
+        if (self.title) |title| try replacement.setTitle(allocator, title);
         try replacement.appendUserMessage(allocator, summary);
         self.deinit(allocator);
         self.* = replacement;
@@ -254,10 +274,12 @@ test "replace transcript with compacted summary" {
     var transcript = Transcript{};
     defer transcript.deinit(allocator);
 
+    try transcript.setTitle(allocator, "demo title");
     try transcript.appendUserMessage(allocator, "first");
     try transcript.appendAssistantMessage(allocator, "second");
     try transcript.replaceWithCompactedSummary(allocator, "summary");
 
+    try std.testing.expectEqualStrings("demo title", transcript.title.?);
     try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, transcript.history.items[0].kind);
     try std.testing.expectEqualStrings("user", transcript.history.items[0].role.?);

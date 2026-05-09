@@ -118,7 +118,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     var state = TuiState{};
-    defer state.deinit(allocator);
 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -227,7 +226,7 @@ fn promptSessionPicker(allocator: std.mem.Allocator, codex_home: []const u8, act
 
     std.debug.print("{s} sessions:\n", .{action});
     for (sessions, 0..) |entry, index| {
-        std.debug.print("  {d}. {s}\n     {s}\n", .{ index + 1, entry.id, entry.path });
+        session_store.printSessionSummary(index, entry);
     }
     std.debug.print("Select session [1-{d}] or press Enter to cancel: ", .{sessions.len});
 
@@ -261,28 +260,6 @@ const SlashParts = struct {
 const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
-    thread_title: ?[]const u8 = null,
-
-    fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
-        self.clearThreadTitle(allocator);
-    }
-
-    fn setThreadTitle(self: *TuiState, allocator: std.mem.Allocator, title: []const u8) !void {
-        const copy = try allocator.dupe(u8, title);
-        self.clearThreadTitle(allocator);
-        self.thread_title = copy;
-    }
-
-    fn clearThreadTitle(self: *TuiState, allocator: std.mem.Allocator) void {
-        if (self.thread_title) |title| {
-            allocator.free(title);
-            self.thread_title = null;
-        }
-    }
-
-    fn titleLabel(self: TuiState) []const u8 {
-        return self.thread_title orelse "<none>";
-    }
 };
 
 fn handleSlashCommand(
@@ -340,7 +317,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
-        try renameThread(allocator, state, parts.args);
+        try renameThread(allocator, transcript, session_path.*, parts.args);
         return .handled;
     }
 
@@ -415,7 +392,6 @@ fn handleSlashCommand(
         const next_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         transcript.deinit(allocator);
         transcript.* = .{};
-        state.clearThreadTitle(allocator);
         allocator.free(session_path.*);
         session_path.* = next_path;
         if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
@@ -530,7 +506,7 @@ fn printSlashHelp() void {
         \\  /status           show current session settings
         \\  /debug-config     show effective configuration values
         \\  /keymap [debug]   show current key bindings
-        \\  /rename <title>   set this session's in-memory title
+        \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
         \\                    toggle Fast service tier for this session
@@ -648,7 +624,7 @@ fn printStatus(
         },
         cwd,
         session_path,
-        state.titleLabel(),
+        transcript.titleLabel(),
         cfg.approval_policy.label(),
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
@@ -726,14 +702,20 @@ fn printKeymap(args: []const u8) void {
     }
 }
 
-fn renameThread(allocator: std.mem.Allocator, state: *TuiState, args: []const u8) !void {
+fn renameThread(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    args: []const u8,
+) !void {
     const title = std.mem.trim(u8, args, " \t\r\n");
     if (title.len == 0) {
         std.debug.print("usage: /rename <title>\n", .{});
         return;
     }
-    try state.setThreadTitle(allocator, title);
-    std.debug.print("renamed thread: {s}\n", .{state.thread_title.?});
+    try transcript.setTitle(allocator, title);
+    try session_store.saveTranscript(allocator, session_path, transcript);
+    std.debug.print("renamed thread: {s}\n", .{transcript.title.?});
 }
 
 fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {

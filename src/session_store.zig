@@ -7,6 +7,7 @@ const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
 
 const StoredLine = struct {
     type: []const u8,
+    title: ?[]const u8 = null,
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
@@ -19,10 +20,12 @@ const StoredLine = struct {
 pub const SessionSummary = struct {
     id: []const u8,
     path: []const u8,
+    title: ?[]const u8 = null,
 
     pub fn deinit(self: SessionSummary, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.path);
+        if (self.title) |title| allocator.free(title);
     }
 };
 
@@ -57,12 +60,13 @@ pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
+    if (transcript.title) |title| {
+        try appendStoredLineJson(allocator, &output, .{ .type = "metadata", .title = title });
+    }
+
     for (transcript.history.items) |item| {
         const stored = try storedLineFromHistoryItem(item);
-        const line = try std.json.Stringify.valueAlloc(allocator, stored, .{ .emit_null_optional_fields = false });
-        defer allocator.free(line);
-        try output.appendSlice(allocator, line);
-        try output.append(allocator, '\n');
+        try appendStoredLineJson(allocator, &output, stored);
     }
 
     try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
@@ -90,6 +94,11 @@ pub fn loadTranscript(allocator: std.mem.Allocator, path: []const u8) !session.T
 
         var parsed = try std.json.parseFromSlice(StoredLine, allocator, line, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
+
+        if (std.mem.eql(u8, parsed.value.type, "metadata")) {
+            if (parsed.value.title) |title| try transcript.setTitle(allocator, title);
+            continue;
+        }
 
         const item = try historyItemFromStoredLine(parsed.value);
         try transcript.appendHistoryItem(allocator, item);
@@ -165,9 +174,16 @@ pub fn listSessions(allocator: std.mem.Allocator, codex_home: []const u8, limit:
         const id = try sessionIdFromFilename(allocator, name);
         errdefer allocator.free(id);
         const path = try sessionFilePath(allocator, codex_home, name);
+        errdefer allocator.free(path);
+        const title = readSessionTitle(allocator, path) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        errdefer if (title) |value| allocator.free(value);
         summaries[index] = .{
             .id = id,
             .path = path,
+            .title = title,
         };
         initialized += 1;
     }
@@ -191,8 +207,23 @@ pub fn printSessionList(allocator: std.mem.Allocator, codex_home: []const u8, li
 
     std.debug.print("sessions: showing {d}\n", .{sessions.len});
     for (sessions, 0..) |entry, index| {
+        printSessionSummary(index, entry);
+    }
+}
+
+pub fn printSessionSummary(index: usize, entry: SessionSummary) void {
+    if (entry.title) |title| {
+        std.debug.print("  {d}. {s} - {s}\n     {s}\n", .{ index + 1, entry.id, title, entry.path });
+    } else {
         std.debug.print("  {d}. {s}\n     {s}\n", .{ index + 1, entry.id, entry.path });
     }
+}
+
+fn appendStoredLineJson(allocator: std.mem.Allocator, output: *std.ArrayList(u8), stored: StoredLine) !void {
+    const line = try std.json.Stringify.valueAlloc(allocator, stored, .{ .emit_null_optional_fields = false });
+    defer allocator.free(line);
+    try output.appendSlice(allocator, line);
+    try output.append(allocator, '\n');
 }
 
 fn sessionsDirPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -267,6 +298,39 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
     };
 }
 
+fn readSessionTitle(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    var buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    while (true) {
+        const line_raw = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+            error.StreamTooLong => return null,
+            else => return err,
+        } orelse return null;
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+
+        var parsed = std.json.parseFromSlice(StoredLine, allocator, line, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer parsed.deinit();
+
+        if (std.mem.eql(u8, parsed.value.type, "metadata")) {
+            if (parsed.value.title) |title| {
+                const copy = try allocator.dupe(u8, title);
+                return copy;
+            }
+            return null;
+        }
+
+        return null;
+    }
+}
+
 fn historyItemFromStoredLine(line: StoredLine) !api.HistoryItem {
     if (std.mem.eql(u8, line.type, "message")) {
         if (line.role == null or line.content_type == null or line.text == null) return error.InvalidSessionLine;
@@ -310,6 +374,7 @@ test "session store round trips transcript jsonl" {
 
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
+    try transcript.setTitle(allocator, "demo transcript");
     try transcript.appendUserMessage(allocator, "hello");
     try transcript.appendAssistantMessage(allocator, "hi");
     try transcript.appendHistoryItem(allocator, .{
@@ -327,6 +392,7 @@ test "session store round trips transcript jsonl" {
     var loaded = try loadTranscript(allocator, path);
     defer loaded.deinit(allocator);
 
+    try std.testing.expectEqualStrings("demo transcript", loaded.title.?);
     try std.testing.expectEqual(@as(usize, 4), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
@@ -334,6 +400,57 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[2].kind);
     try std.testing.expectEqualStrings("shell_command", loaded.history.items[2].name.?);
     try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[3].output.?);
+}
+
+test "list sessions includes persisted title metadata" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.setTitle(allocator, "important demo");
+    try transcript.appendUserMessage(allocator, "session");
+
+    const path = try createSessionPathForId(allocator, root, "001-titled");
+    defer allocator.free(path);
+    try saveTranscript(allocator, path, &transcript);
+
+    const sessions = try listSessions(allocator, root, 1);
+    defer freeSessionSummaries(allocator, sessions);
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("001-titled", sessions[0].id);
+    try std.testing.expectEqualStrings("important demo", sessions[0].title.?);
+}
+
+test "list sessions tolerates large untitled transcript lines" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const long_text = try allocator.alloc(u8, 8192);
+    defer allocator.free(long_text);
+    @memset(long_text, 'a');
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.appendUserMessage(allocator, long_text);
+
+    const path = try createSessionPathForId(allocator, root, "001-large");
+    defer allocator.free(path);
+    try saveTranscript(allocator, path, &transcript);
+
+    const sessions = try listSessions(allocator, root, 1);
+    defer freeSessionSummaries(allocator, sessions);
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("001-large", sessions[0].id);
+    try std.testing.expect(sessions[0].title == null);
 }
 
 test "latest session path picks lexicographically newest rollout" {

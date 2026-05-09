@@ -316,6 +316,19 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"title:       Zig demo", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/sessions 1")
+            wait_for(master_fd, output, b"sessions: showing 1", 5, mark)
+            wait_for(master_fd, output, b"Zig demo", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/resume last")
+            wait_for(master_fd, output, b"resumed:", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"title:       Zig demo", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
