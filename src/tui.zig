@@ -970,16 +970,50 @@ fn clearTerminalTitle() void {
 }
 
 fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
+    const view = std.unicode.Utf8View.init(title) catch {
+        return sanitizeTerminalTitleBytes(allocator, title);
+    };
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var chars_written: usize = 0;
+    var pending_space = false;
+    var iterator = view.iterator();
+    while (iterator.nextCodepointSlice()) |codepoint_slice| {
+        const codepoint = std.unicode.utf8Decode(codepoint_slice) catch unreachable;
+        if (isTerminalTitleWhitespace(codepoint)) {
+            pending_space = output.items.len > 0;
+            continue;
+        }
+        if (isDisallowedTerminalTitleCodepoint(codepoint)) continue;
+        if (pending_space) {
+            const remaining = terminal_title_limit - chars_written;
+            if (remaining > 1) {
+                try output.append(allocator, ' ');
+                chars_written += 1;
+            }
+            pending_space = false;
+        }
+        if (chars_written >= terminal_title_limit) break;
+        try output.appendSlice(allocator, codepoint_slice);
+        chars_written += 1;
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn sanitizeTerminalTitleBytes(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
     var pending_space = false;
     for (title) |byte| {
-        if (byte == 0x1b or byte == 0x07 or byte == 0x9b or byte == 0x9c or byte == 0x7f) continue;
-        if (byte <= ' ') {
+        if (isTerminalTitleWhitespace(byte)) {
             pending_space = output.items.len > 0;
             continue;
         }
+        if (isDisallowedTerminalTitleCodepoint(byte)) continue;
         if (pending_space and output.items.len < terminal_title_limit) {
             try output.append(allocator, ' ');
         }
@@ -989,6 +1023,41 @@ fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]con
     }
 
     return output.toOwnedSlice(allocator);
+}
+
+fn isTerminalTitleWhitespace(codepoint: u21) bool {
+    return codepoint == 0x09 or
+        codepoint == 0x0a or
+        codepoint == 0x0b or
+        codepoint == 0x0c or
+        codepoint == 0x0d or
+        codepoint == 0x20 or
+        codepoint == 0x85 or
+        codepoint == 0xa0 or
+        codepoint == 0x1680 or
+        (codepoint >= 0x2000 and codepoint <= 0x200a) or
+        codepoint == 0x2028 or
+        codepoint == 0x2029 or
+        codepoint == 0x202f or
+        codepoint == 0x205f or
+        codepoint == 0x3000;
+}
+
+fn isDisallowedTerminalTitleCodepoint(codepoint: u21) bool {
+    if (codepoint <= 0x1f) return true;
+    if (codepoint >= 0x7f and codepoint <= 0x9f) return true;
+    return codepoint == 0x00ad or
+        codepoint == 0x034f or
+        codepoint == 0x061c or
+        codepoint == 0x180e or
+        (codepoint >= 0x200b and codepoint <= 0x200f) or
+        (codepoint >= 0x202a and codepoint <= 0x202e) or
+        (codepoint >= 0x2060 and codepoint <= 0x206f) or
+        (codepoint >= 0xfe00 and codepoint <= 0xfe0f) or
+        codepoint == 0xfeff or
+        (codepoint >= 0xfff9 and codepoint <= 0xfffb) or
+        (codepoint >= 0x1bca0 and codepoint <= 0x1bca3) or
+        (codepoint >= 0xe0100 and codepoint <= 0xe01ef);
 }
 
 fn renameThread(
@@ -1490,9 +1559,17 @@ test "parse raw output mode args" {
 test "sanitizes terminal title text" {
     const allocator = std.testing.allocator;
 
-    const sanitized = try sanitizeTerminalTitle(allocator, "  Project\t|\nWorking\x1b\x07 |  Thread  ");
+    const sanitized = try sanitizeTerminalTitle(allocator, "  Project\t|\nWorking\x1b\x07\u{009d}\u{009c} |  Thread  ");
     defer allocator.free(sanitized);
     try std.testing.expectEqualStrings("Project | Working | Thread", sanitized);
+
+    const invisible = try sanitizeTerminalTitle(allocator, "Pro\u{202e}j\u{2066}e\u{200f}c\u{061c}t\u{200b} \u{feff}Title");
+    defer allocator.free(invisible);
+    try std.testing.expectEqualStrings("Project Title", invisible);
+
+    const unicode = try sanitizeTerminalTitle(allocator, "Project \u{1f680}");
+    defer allocator.free(unicode);
+    try std.testing.expectEqualStrings("Project \u{1f680}", unicode);
 
     const long_title = try allocator.alloc(u8, terminal_title_limit + 16);
     defer allocator.free(long_title);
@@ -1501,6 +1578,16 @@ test "sanitizes terminal title text" {
     const truncated = try sanitizeTerminalTitle(allocator, long_title);
     defer allocator.free(truncated);
     try std.testing.expectEqual(@as(usize, terminal_title_limit), truncated.len);
+
+    const prefix = try allocator.alloc(u8, terminal_title_limit - 1);
+    defer allocator.free(prefix);
+    @memset(prefix, 'a');
+    const pending_space_input = try std.fmt.allocPrint(allocator, "{s} b", .{prefix});
+    defer allocator.free(pending_space_input);
+    const pending_space = try sanitizeTerminalTitle(allocator, pending_space_input);
+    defer allocator.free(pending_space);
+    try std.testing.expectEqual(@as(usize, terminal_title_limit), pending_space.len);
+    try std.testing.expectEqual(@as(u8, 'b'), pending_space[pending_space.len - 1]);
 }
 
 test "builds terminal title from thread title or cwd" {
