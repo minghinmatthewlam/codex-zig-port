@@ -23,7 +23,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - include discovered `AGENTS.md` project instructions in API turns
 - create a repository guide through interactive `/init`
 - compact an interactive session into a continuation summary with `/compact`
-- inspect effective interactive configuration with `/debug-config`
+- inspect effective interactive configuration and local config source status with `/debug-config`
 - inspect current built-in key bindings with `/keymap`
 - toggle plan-only prompts with `/plan`
 - render plan-mode `<proposed_plan>` blocks without leaking markup
@@ -80,7 +80,7 @@ zig build e2e
 
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
-`/debug-config`, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
+`/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches

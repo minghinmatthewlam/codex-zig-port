@@ -593,8 +593,12 @@ pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]
     return allocator.dupe(u8, trimmed);
 }
 
+pub fn configTomlPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+}
+
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    const path = try configTomlPath(allocator, codex_home);
     defer allocator.free(path);
 
     return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
@@ -642,7 +646,7 @@ fn persistTuiStringArray(allocator: std.mem.Allocator, codex_home: []const u8, k
 fn writeConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, bytes: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, codex_home);
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    const path = try configTomlPath(allocator, codex_home);
     defer allocator.free(path);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
 }

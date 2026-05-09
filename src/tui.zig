@@ -490,7 +490,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "debug-config")) {
-        printDebugConfig(cfg.*, credentials);
+        try printDebugConfig(allocator, cfg.*, credentials);
         return .handled;
     }
 
@@ -893,7 +893,12 @@ fn printStatus(
     });
 }
 
-fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
+fn printDebugConfig(allocator: std.mem.Allocator, cfg: config.Config, credentials: auth.Credentials) !void {
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const user_config_status = configFileStatus(config_path);
+    const profile_status = if (cfg.active_profile == null) "not selected" else "active";
+
     std.debug.print(
         \\/debug-config
         \\
@@ -913,7 +918,11 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         \\  oss_provider:   {s}
         \\  installation:   {s}
         \\
-        \\config layers: not yet implemented in the Zig port
+        \\config layers:
+        \\  defaults:      built-in
+        \\  user config:   {s} ({s})
+        \\  profile:       {s} ({s})
+        \\  runtime:       interactive slash-command changes are reflected above
         \\
     , .{
         cfg.codex_home,
@@ -930,7 +939,21 @@ fn printDebugConfig(cfg: config.Config, credentials: auth.Credentials) void {
         personalityLabel(cfg.personality),
         cfg.oss_provider orelse "<none>",
         cfg.installation_id,
+        config_path,
+        user_config_status,
+        cfg.active_profile orelse "<none>",
+        profile_status,
     });
+}
+
+fn configFileStatus(path: []const u8) []const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return "missing",
+        error.AccessDenied => return "unreadable",
+        else => return "unavailable",
+    };
+    return "present";
 }
 
 fn printKeymap(args: []const u8) void {

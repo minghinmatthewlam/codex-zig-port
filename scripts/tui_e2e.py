@@ -472,7 +472,11 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"effective config:", 5, mark)
             wait_for(master_fd, output, b"syntax_theme:   custom-demo", 5, mark)
             wait_for(master_fd, output, b"personality:    friendly", 5, mark)
-            wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
+            wait_for(master_fd, output, b"config layers:", 5, mark)
+            wait_for(master_fd, output, b"defaults:      built-in", 5, mark)
+            wait_for(master_fd, output, b"user config:", 5, mark)
+            wait_for(master_fd, output, b"config.toml (present)", 5, mark)
+            wait_for(master_fd, output, b"profile:       <none> (not selected)", 5, mark)
 
             config_text = config_path.read_text()
             if "[tui]" not in config_text or 'theme = "custom-demo"' not in config_text:
