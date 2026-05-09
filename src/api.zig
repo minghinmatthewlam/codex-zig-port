@@ -691,6 +691,7 @@ test "builds chronological request input from owned history" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -751,6 +752,7 @@ test "builds input images on latest user message" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -794,6 +796,7 @@ test "builds web search tool from config mode" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -842,6 +845,7 @@ test "builds mcp function tools from catalog" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -898,6 +902,7 @@ test "can omit tools for compact-style turns" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -944,6 +949,7 @@ test "builds output schema text format" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{
@@ -988,6 +994,7 @@ test "personality config adds personality instructions" {
         .personality = .friendly,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     const history = [_]HistoryItem{
         .{

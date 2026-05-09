@@ -17,6 +17,7 @@ pub const Config = struct {
     personality: ?Personality,
     tui_status_line: ?StringList,
     tui_terminal_title: ?StringList,
+    tui_alternate_screen: AltScreenMode,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -73,6 +74,28 @@ pub const RuntimeOverrides = struct {
     service_tier: ?[]const u8 = null,
     syntax_theme: ?[]const u8 = null,
     personality: ?Personality = null,
+    tui_alternate_screen: ?AltScreenMode = null,
+};
+
+pub const AltScreenMode = enum {
+    auto,
+    always,
+    never,
+
+    pub fn parse(value: []const u8) !AltScreenMode {
+        if (std.ascii.eqlIgnoreCase(value, "auto")) return .auto;
+        if (std.ascii.eqlIgnoreCase(value, "always")) return .always;
+        if (std.ascii.eqlIgnoreCase(value, "never")) return .never;
+        return error.InvalidAltScreenMode;
+    }
+
+    pub fn label(self: AltScreenMode) []const u8 {
+        return switch (self) {
+            .auto => "auto",
+            .always => "always",
+            .never => "never",
+        };
+    }
 };
 
 pub fn applyRuntimeOverrides(
@@ -122,6 +145,9 @@ pub fn applyRuntimeOverrides(
     if (overrides.personality) |personality| {
         cfg.personality = personality;
     }
+    if (overrides.tui_alternate_screen) |mode| {
+        cfg.tui_alternate_screen = mode;
+    }
 }
 
 pub fn applyRawConfigOverride(
@@ -156,6 +182,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.syntax_theme = value;
     } else if (std.mem.eql(u8, key, "personality")) {
         runtime_overrides.personality = try Personality.parse(value);
+    } else if (std.mem.eql(u8, key, "tui.alternate_screen") or std.mem.eql(u8, key, "tui_alternate_screen")) {
+        runtime_overrides.tui_alternate_screen = try AltScreenMode.parse(value);
     }
 }
 
@@ -396,6 +424,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer if (tui_status_line) |*value| value.deinit(allocator);
     var tui_terminal_title = try resolveTuiStringArray(allocator, config_view, "terminal_title");
     errdefer if (tui_terminal_title) |*value| value.deinit(allocator);
+    const tui_alternate_screen = try resolveTuiAlternateScreen(allocator, config_view);
 
     return .{
         .codex_home = codex_home,
@@ -413,6 +442,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .personality = personality,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
+        .tui_alternate_screen = tui_alternate_screen,
     };
 }
 
@@ -580,6 +610,12 @@ fn resolvePersonality(allocator: std.mem.Allocator, config_view: ConfigView, act
 
 fn resolveTuiStringArray(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?StringList {
     return config_view.getSectionStringArray(allocator, "tui", key);
+}
+
+fn resolveTuiAlternateScreen(allocator: std.mem.Allocator, config_view: ConfigView) !AltScreenMode {
+    const value = try config_view.getSectionString(allocator, "tui", "alternate_screen") orelse return .auto;
+    defer allocator.free(value);
+    return AltScreenMode.parse(value);
 }
 
 pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -1170,6 +1206,7 @@ test "tui theme table overrides legacy syntax theme key" {
         \\theme = "dracula"
         \\status_line = ["model-with-reasoning", "current-dir"]
         \\terminal_title = []
+        \\alternate_screen = "never"
         \\
         ,
     };
@@ -1187,6 +1224,8 @@ test "tui theme table overrides legacy syntax theme key" {
     var terminal_title = (try resolveTuiStringArray(allocator, view, "terminal_title")).?;
     defer terminal_title.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), terminal_title.items.len);
+    try std.testing.expectEqual(AltScreenMode.never, try resolveTuiAlternateScreen(allocator, view));
+    try std.testing.expectEqualStrings("always", (try AltScreenMode.parse("ALWAYS")).label());
 }
 
 test "toml string update writes top-level section and profile values" {
@@ -1323,6 +1362,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
     try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
     try applyRawConfigOverride(&runtime, &profile, "personality=friendly");
+    try applyRawConfigOverride(&runtime, &profile, "tui.alternate_screen=never");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
@@ -1336,6 +1376,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
     try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
     try std.testing.expectEqual(Personality.friendly, runtime.personality.?);
+    try std.testing.expectEqual(AltScreenMode.never, runtime.tui_alternate_screen.?);
 }
 
 test "raw cli config override rejects missing assignment" {
@@ -1379,6 +1420,7 @@ test "oss mode applies local provider defaults" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     defer cfg.deinit(allocator);
 

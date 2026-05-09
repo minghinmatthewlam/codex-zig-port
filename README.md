@@ -84,8 +84,8 @@ The `e2e` step starts a local mock Responses server, launches the real
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
 propagated service tier, and the file created in the temporary workspace. It also launches
-the TUI once without `--no-alt-screen` to verify alternate-screen enter/leave
-escape sequences, then launches `codex-zig app-server` as a subprocess and verifies a newline-delimited
+the TUI without `--no-alt-screen` to verify alternate-screen enter/leave
+escape sequences, checks `tui.alternate_screen = "never"` stays inline, then launches `codex-zig app-server` as a subprocess and verifies a newline-delimited
 JSON-RPC stdio initialize request and unsupported-method error. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.

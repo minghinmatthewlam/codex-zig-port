@@ -397,6 +397,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .personality = source.personality,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
+        .tui_alternate_screen = source.tui_alternate_screen,
     };
 }
 
@@ -506,6 +507,7 @@ test "mcp server turn config applies direct call overrides" {
         .personality = null,
         .tui_status_line = null,
         .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
     var credentials = try auth.localOssCredentials(allocator);
     defer credentials.deinit(allocator);

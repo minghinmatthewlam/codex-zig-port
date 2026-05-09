@@ -327,6 +327,63 @@ def run_alt_screen_smoke(
         os.close(master_fd)
 
 
+def run_alt_screen_never_config_smoke(
+    binary: Path,
+    base_env: dict[str, str],
+    workspace: Path,
+    port: int,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="codex-zig-alt-screen-never.") as home:
+        Path(home, "auth.json").write_text(
+            json.dumps({"tokens": {"access_token": "alt-screen-token", "account_id": "acct"}})
+        )
+        Path(home, "config.toml").write_text('[tui]\nalternate_screen = "never"\n')
+        env = base_env.copy()
+        env["CODEX_HOME"] = home
+
+        alt_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        try:
+            wait_for(master_fd, alt_output, b"Type /help for commands", 5)
+            if ALT_SCREEN_ENTER in alt_output or ALT_SCREEN_LEAVE in alt_output:
+                raise AssertionError('tui.alternate_screen = "never" emitted alternate-screen escapes')
+            mark = len(alt_output)
+            send_line(master_fd, "/quit")
+            wait_for(master_fd, alt_output, b"bye", 5, mark)
+            read_available(master_fd, alt_output)
+            if ALT_SCREEN_ENTER in alt_output or ALT_SCREEN_LEAVE in alt_output:
+                raise AssertionError('tui.alternate_screen = "never" emitted alternate-screen escapes')
+            exit_code = proc.wait(timeout=5)
+            if exit_code != 0:
+                rendered = alt_output.decode(errors="replace")
+                raise AssertionError(
+                    f'alternate-screen "never" smoke exited with {exit_code}\n\n{rendered}'
+                )
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            os.close(master_fd)
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -394,6 +451,8 @@ def run_e2e(binary: Path) -> str:
             env["CODEX_HOME"] = home
             env["CODEX_ZIG_COPY_COMMAND"] = str(copy_command)
             env.setdefault("TERM", "xterm-256color")
+            env.pop("ZELLIJ", None)
+            env.pop("ZELLIJ_SESSION_NAME", None)
             proc = subprocess.Popen(
                 [
                     str(binary),
@@ -500,6 +559,7 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"theme:       custom-demo", 5, mark)
+            wait_for(master_fd, output, b"alt screen:   auto", 5, mark)
 
             mark = len(output)
             send_line(master_fd, "/personality list")
@@ -519,6 +579,7 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/debug-config")
             wait_for(master_fd, output, b"/debug-config", 5, mark)
             wait_for(master_fd, output, b"effective config:", 5, mark)
+            wait_for(master_fd, output, b"alt_screen:     auto", 5, mark)
             wait_for(master_fd, output, b"syntax_theme:   custom-demo", 5, mark)
             wait_for(master_fd, output, b"personality:    friendly", 5, mark)
             wait_for(master_fd, output, b"config layers:", 5, mark)
@@ -771,6 +832,7 @@ def run_e2e(binary: Path) -> str:
             if ALT_SCREEN_ENTER in output or ALT_SCREEN_LEAVE in output:
                 raise AssertionError("--no-alt-screen emitted alternate-screen escapes")
             run_alt_screen_smoke(binary, env, workspace, port)
+            run_alt_screen_never_config_smoke(binary, env, workspace, port)
 
             master_fd, slave_fd = pty.openpty()
             proc = subprocess.Popen(

@@ -116,7 +116,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(cwd);
 
-    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen);
+    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen, cfg.tui_alternate_screen);
     if (use_alt_screen) enterAlternateScreen();
     defer if (use_alt_screen) leaveAlternateScreen();
 
@@ -195,10 +195,19 @@ fn leaveAlternateScreen() void {
     std.debug.print("\x1b[?1049l", .{});
 }
 
-fn shouldUseAlternateScreen(no_alt_screen: bool) bool {
+fn shouldUseAlternateScreen(no_alt_screen: bool, mode: config.AltScreenMode) bool {
     if (no_alt_screen) return false;
     const io = std.Io.Threaded.global_single_threaded.io();
-    return std.Io.File.stdout().isTty(io) catch false;
+    if (!(std.Io.File.stdout().isTty(io) catch false)) return false;
+    return switch (mode) {
+        .always => true,
+        .never => false,
+        .auto => !isZellij(),
+    };
+}
+
+fn isZellij() bool {
+    return std.c.getenv("ZELLIJ") != null or std.c.getenv("ZELLIJ_SESSION_NAME") != null;
 }
 
 fn runPrompt(
@@ -875,6 +884,7 @@ fn printStatus(
         \\  search:      {s}
         \\  service tier: {s}
         \\  plan mode:   {s}
+        \\  alt screen:   {s}
         \\  term title:  {s}
         \\  status line: {s}
         \\  theme:       {s}
@@ -900,6 +910,7 @@ fn printStatus(
         config.webSearchLabel(cfg.web_search_mode),
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.plan_mode) "on" else "off",
+        cfg.tui_alternate_screen.label(),
         if (state.terminal_title_items.items.len > 0) "on" else "off",
         status_line_label,
         state.syntaxThemeName(),
@@ -932,6 +943,7 @@ fn printDebugConfig(allocator: std.mem.Allocator, cfg: config.Config, credential
         \\  sandbox:        {s}
         \\  web_search:     {s}
         \\  service_tier:   {s}
+        \\  alt_screen:     {s}
         \\  syntax_theme:   {s}
         \\  personality:    {s}
         \\  oss_provider:   {s}
@@ -954,6 +966,7 @@ fn printDebugConfig(allocator: std.mem.Allocator, cfg: config.Config, credential
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
         cfg.service_tier orelse "<none>",
+        cfg.tui_alternate_screen.label(),
         cfg.syntax_theme orelse "<default>",
         personalityLabel(cfg.personality),
         cfg.oss_provider orelse "<none>",
