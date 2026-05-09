@@ -115,6 +115,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         std.debug.print("forked: {s} -> {s} ({d} items)\n", .{ path, session_path, transcript.history.items.len });
     }
 
+    var raw_output_mode = false;
+
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
@@ -140,7 +142,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             };
             continue;
         }
-        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, options.additional_writable_roots) catch |err| {
+        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, &raw_output_mode, options.additional_writable_roots) catch |err| {
             std.debug.print("error: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -261,6 +263,7 @@ fn handleSlashCommand(
     session_path: *[]const u8,
     cwd: []const u8,
     prompt: []const u8,
+    raw_output_mode: *bool,
     additional_writable_roots: []const []const u8,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
@@ -313,6 +316,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "diff")) {
         try printDiff(allocator, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "raw")) {
+        handleRawOutputMode(raw_output_mode, parts.args);
         return .handled;
     }
 
@@ -466,6 +474,7 @@ fn printSlashHelp() void {
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
+        \\  /raw [on|off]     toggle copy-friendly transcript output
         \\  /mcp [verbose]    list configured MCP servers
         \\  /ps               list background terminals
         \\  /stop             stop all background terminals
@@ -586,6 +595,25 @@ fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+fn handleRawOutputMode(raw_output_mode: *bool, args: []const u8) void {
+    const next_mode = parseRawOutputMode(args, raw_output_mode.*) catch |err| switch (err) {
+        error.InvalidRawOutputMode => {
+            std.debug.print("usage: /raw [on|off]\n", .{});
+            return;
+        },
+    };
+    raw_output_mode.* = next_mode;
+    std.debug.print("raw output mode: {s}\n", .{if (raw_output_mode.*) "on" else "off"});
+}
+
+fn parseRawOutputMode(args: []const u8, current: bool) !bool {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) return !current;
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) return false;
+    return error.InvalidRawOutputMode;
 }
 
 fn printMcpStatus(allocator: std.mem.Allocator, codex_home: []const u8, args: []const u8) !void {
@@ -819,6 +847,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("diff", diff.name);
     try std.testing.expectEqualStrings("", diff.args);
 
+    const raw = parseSlash("/raw on").?;
+    try std.testing.expectEqualStrings("raw", raw.name);
+    try std.testing.expectEqualStrings("on", raw.args);
+
     const mcp = parseSlash("/mcp verbose").?;
     try std.testing.expectEqualStrings("mcp", mcp.name);
     try std.testing.expectEqualStrings("verbose", mcp.args);
@@ -846,6 +878,14 @@ test "parse bang shell command" {
     try std.testing.expect(parseBangShellCommand("hello") == null);
     try std.testing.expectEqualStrings("echo hi", parseBangShellCommand("! echo hi").?);
     try std.testing.expectEqualStrings("", parseBangShellCommand("!   ").?);
+}
+
+test "parse raw output mode args" {
+    try std.testing.expectEqual(true, try parseRawOutputMode("", false));
+    try std.testing.expectEqual(false, try parseRawOutputMode("", true));
+    try std.testing.expectEqual(true, try parseRawOutputMode(" on ", false));
+    try std.testing.expectEqual(false, try parseRawOutputMode("OFF", true));
+    try std.testing.expectError(error.InvalidRawOutputMode, parseRawOutputMode("status", false));
 }
 
 test "agents file existence check" {

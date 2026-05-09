@@ -290,6 +290,14 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"tools:", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/raw")
+            wait_for(master_fd, output, b"raw output mode: on", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/raw off")
+            wait_for(master_fd, output, b"raw output mode: off", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/mcp")
             wait_for(master_fd, output, b"mcp servers:", 5, mark)
             wait_for(master_fd, output, b"docs\tstdio\tdisabled", 5, mark)
