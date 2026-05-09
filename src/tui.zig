@@ -494,7 +494,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "personality")) {
-        handlePersonality(cfg, parts.args);
+        try handlePersonality(allocator, cfg, parts.args);
         return .handled;
     }
 
@@ -1108,6 +1108,7 @@ fn handleTheme(
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "default") or std.ascii.eqlIgnoreCase(trimmed, "auto")) {
+        try config.persistTuiTheme(allocator, cfg.codex_home, theme.default_theme);
         try setSyntaxTheme(allocator, cfg, state, theme.default_theme);
         printThemeStatus(state.*);
         return;
@@ -1117,6 +1118,7 @@ fn handleTheme(
         theme.printUsage();
         return;
     }
+    try config.persistTuiTheme(allocator, cfg.codex_home, trimmed);
     try setSyntaxTheme(allocator, cfg, state, trimmed);
     printThemeStatus(state.*);
 }
@@ -1150,7 +1152,7 @@ fn printThemeList(allocator: std.mem.Allocator, codex_home: []const u8, current_
     }
 }
 
-fn handlePersonality(cfg: *config.Config, args: []const u8) void {
+fn handlePersonality(allocator: std.mem.Allocator, cfg: *config.Config, args: []const u8) !void {
     const trimmed = std.mem.trim(u8, args, " \t\r\n");
     if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
         printPersonalityStatus(cfg.personality);
@@ -1165,6 +1167,7 @@ fn handlePersonality(cfg: *config.Config, args: []const u8) void {
         printPersonalityUsage();
         return;
     };
+    try config.persistPersonality(allocator, cfg.codex_home, cfg.active_profile, personality);
     cfg.personality = personality;
     printPersonalityStatus(cfg.personality);
 }

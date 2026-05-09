@@ -430,6 +430,14 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"personality:    friendly", 5, mark)
             wait_for(master_fd, output, b"config layers: not yet implemented", 5, mark)
 
+            config_text = config_path.read_text()
+            if "[tui]" not in config_text or 'theme = "custom-demo"' not in config_text:
+                raise AssertionError(f"expected persisted tui theme in config.toml:\n{config_text}")
+            if 'personality = "friendly"' not in config_text:
+                raise AssertionError(f"expected persisted personality in config.toml:\n{config_text}")
+            if "[mcp_servers.docs]" not in config_text or "[mcp_servers.remote]" not in config_text:
+                raise AssertionError(f"expected existing MCP config to be preserved:\n{config_text}")
+
             mark = len(output)
             send_line(master_fd, "/keymap")
             wait_for(master_fd, output, b"keymap:", 5, mark)
@@ -618,6 +626,42 @@ def run_e2e(binary: Path) -> str:
             exit_code = proc.wait(timeout=5)
             if exit_code != 0:
                 raise AssertionError(f"codex-zig exited with {exit_code}")
+            os.close(master_fd)
+            master_fd = -1
+            proc = None
+
+            master_fd, slave_fd = pty.openpty()
+            proc = subprocess.Popen(
+                [
+                    str(binary),
+                    "--no-alt-screen",
+                    "-c",
+                    f"chatgpt_base_url=http://127.0.0.1:{port}",
+                ],
+                cwd=workspace,
+                env=env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+
+            wait_for(master_fd, output, b"Type /help for commands", 8, len(output))
+            mark = len(output)
+            send_line(master_fd, "/status")
+            wait_for(master_fd, output, b"theme:       custom-demo", 5, mark)
+            wait_for(master_fd, output, b"personality: friendly", 5, mark)
+            mark = len(output)
+            send_line(master_fd, "/quit")
+            wait_for(master_fd, output, b"bye", 5, mark)
+            read_available(master_fd, output)
+            exit_code = proc.wait(timeout=5)
+            if exit_code != 0:
+                raise AssertionError(f"fresh codex-zig exited with {exit_code}")
+            os.close(master_fd)
+            master_fd = -1
+            proc = None
 
         if server.request_count < 2:
             raise AssertionError(f"expected at least 2 API requests, saw {server.request_count}")

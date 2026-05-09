@@ -523,6 +523,10 @@ fn resolveSyntaxTheme(allocator: std.mem.Allocator, config_view: ConfigView, act
         return value;
     }
 
+    if (try config_view.getSectionString(allocator, "tui", "theme")) |value| {
+        return value;
+    }
+
     return config_view.getScopedString(allocator, active_profile, "syntax_theme");
 }
 
@@ -561,6 +565,158 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
     };
 }
 
+pub fn persistTuiTheme(allocator: std.mem.Allocator, codex_home: []const u8, name: []const u8) !void {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    const updated = try updateTomlStringValue(allocator, bytes orelse "", .{ .section = "tui" }, "theme", name);
+    defer allocator.free(updated);
+    try writeConfigToml(allocator, codex_home, updated);
+}
+
+pub fn persistPersonality(allocator: std.mem.Allocator, codex_home: []const u8, active_profile: ?[]const u8, personality: Personality) !void {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    const section = if (active_profile) |profile| TomlEditSection{ .profile = profile } else TomlEditSection.top_level;
+    const updated = try updateTomlStringValue(allocator, bytes orelse "", section, "personality", personality.label());
+    defer allocator.free(updated);
+    try writeConfigToml(allocator, codex_home, updated);
+}
+
+fn writeConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, bytes: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, codex_home);
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    defer allocator.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
+}
+
+const TomlEditSection = union(enum) {
+    top_level,
+    section: []const u8,
+    profile: []const u8,
+};
+
+fn updateTomlStringValue(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    section: TomlEditSection,
+    key: []const u8,
+    value: []const u8,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var in_target = section == .top_level;
+    var saw_target = section == .top_level;
+    var wrote_key = false;
+
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            if (in_target and !wrote_key) {
+                try appendTomlStringLine(allocator, &output, key, value);
+                wrote_key = true;
+            }
+            in_target = tomlSectionMatches(trimmed, section);
+            saw_target = saw_target or in_target;
+        }
+
+        if (in_target and tomlKeyMatches(trimmed, key)) {
+            try appendTomlStringLine(allocator, &output, key, value);
+            wrote_key = true;
+            continue;
+        }
+
+        try output.appendSlice(allocator, line_raw);
+        try output.append(allocator, '\n');
+    }
+
+    if (!saw_target) {
+        try ensureTomlTrailingGap(allocator, &output);
+        try appendTomlSectionHeader(allocator, &output, section);
+        saw_target = true;
+    }
+    if (saw_target and !wrote_key) {
+        try appendTomlStringLine(allocator, &output, key, value);
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn tomlSectionMatches(line: []const u8, section: TomlEditSection) bool {
+    return switch (section) {
+        .top_level => false,
+        .section => |name| isExactSection(line, name),
+        .profile => |profile| isProfileSection(line, profile),
+    };
+}
+
+fn isExactSection(line: []const u8, name: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    return std.mem.eql(u8, section, name);
+}
+
+fn tomlKeyMatches(trimmed: []const u8, key: []const u8) bool {
+    if (trimmed.len == 0 or trimmed[0] == '[') return false;
+    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return false;
+    const lhs = std.mem.trim(u8, trimmed[0..eq], " \t");
+    return std.mem.eql(u8, lhs, key);
+}
+
+fn ensureTomlTrailingGap(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') {
+        try output.append(allocator, '\n');
+    }
+    if (output.items.len > 0) try output.append(allocator, '\n');
+}
+
+fn appendTomlSectionHeader(allocator: std.mem.Allocator, output: *std.ArrayList(u8), section: TomlEditSection) !void {
+    switch (section) {
+        .top_level => {},
+        .section => |name| {
+            try output.append(allocator, '[');
+            try output.appendSlice(allocator, name);
+            try output.appendSlice(allocator, "]\n");
+        },
+        .profile => |profile| {
+            try output.appendSlice(allocator, "[profiles.");
+            try appendTomlStringLiteral(allocator, output, profile);
+            try output.appendSlice(allocator, "]\n");
+        },
+    }
+}
+
+fn appendTomlStringLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+    try output.appendSlice(allocator, key);
+    try output.appendSlice(allocator, " = ");
+    try appendTomlStringLiteral(allocator, output, value);
+    try output.append(allocator, '\n');
+}
+
+fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
+    try output.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try output.appendSlice(allocator, "\\\""),
+            '\\' => try output.appendSlice(allocator, "\\\\"),
+            '\n' => try output.appendSlice(allocator, "\\n"),
+            '\r' => try output.appendSlice(allocator, "\\r"),
+            '\t' => try output.appendSlice(allocator, "\\t"),
+            else => try output.append(allocator, byte),
+        }
+    }
+    try output.append(allocator, '"');
+}
+
 const ConfigView = struct {
     bytes: []const u8,
 
@@ -576,6 +732,27 @@ const ConfigView = struct {
             }
         }
         return self.getTopLevelString(allocator, key);
+    }
+
+    fn getSectionString(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        section_name: []const u8,
+        key: []const u8,
+    ) !?[]const u8 {
+        var in_section = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_section = isExactSection(line, section_name);
+                continue;
+            }
+            if (!in_section) continue;
+            if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
     }
 
     fn getTopLevelString(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
@@ -805,6 +982,69 @@ test "profile values override top-level config values" {
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
+}
+
+test "tui theme table overrides legacy syntax theme key" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\syntax_theme = "github"
+        \\
+        \\[tui]
+        \\theme = "dracula"
+        \\
+        ,
+    };
+
+    const syntax_theme = try resolveSyntaxTheme(allocator, view, null);
+    defer allocator.free(syntax_theme.?);
+    try std.testing.expectEqualStrings("dracula", syntax_theme.?);
+}
+
+test "toml string update writes top-level section and profile values" {
+    const allocator = std.testing.allocator;
+
+    const with_theme = try updateTomlStringValue(
+        allocator,
+        "[mcp_servers.docs]\ncommand = \"docs-server\"\n",
+        .{ .section = "tui" },
+        "theme",
+        "custom-demo",
+    );
+    defer allocator.free(with_theme);
+    try std.testing.expect(std.mem.indexOf(u8, with_theme, "[mcp_servers.docs]\ncommand = \"docs-server\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_theme, "[tui]\ntheme = \"custom-demo\"") != null);
+
+    const replaced_theme = try updateTomlStringValue(
+        allocator,
+        "[tui]\ntheme = \"old\"\nstatus_line_use_colors = \"true\"\n",
+        .{ .section = "tui" },
+        "theme",
+        "dracula",
+    );
+    defer allocator.free(replaced_theme);
+    try std.testing.expect(std.mem.indexOf(u8, replaced_theme, "theme = \"old\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, replaced_theme, "[tui]\ntheme = \"dracula\"\nstatus_line_use_colors = \"true\"") != null);
+
+    const with_top_level = try updateTomlStringValue(
+        allocator,
+        "[tui]\ntheme = \"custom-demo\"\n",
+        .top_level,
+        "personality",
+        "friendly",
+    );
+    defer allocator.free(with_top_level);
+    try std.testing.expect(std.mem.startsWith(u8, with_top_level, "personality = \"friendly\"\n[tui]"));
+
+    const with_profile = try updateTomlStringValue(
+        allocator,
+        "model = \"base\"\n",
+        .{ .profile = "team a" },
+        "personality",
+        "pragmatic",
+    );
+    defer allocator.free(with_profile);
+    try std.testing.expect(std.mem.indexOf(u8, with_profile, "[profiles.\"team a\"]\npersonality = \"pragmatic\"") != null);
 }
 
 test "quoted profile section names are supported" {
