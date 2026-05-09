@@ -78,6 +78,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "mentioned file received\n",
                 },
             )
+        elif "draft a plan" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "plan response\n",
+                },
+            )
         elif "side question" in latest_prompt:
             payload = sse(
                 {
@@ -319,6 +326,7 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/status")
             wait_for(master_fd, output, b"status:", 5, mark)
             wait_for(master_fd, output, b"service tier: unset", 5, mark)
+            wait_for(master_fd, output, b"plan mode:   off", 5, mark)
             wait_for(master_fd, output, b"raw output:  off", 5, mark)
             wait_for(master_fd, output, b"vim:         off", 5, mark)
             wait_for(master_fd, output, b"tools:", 5, mark)
@@ -512,6 +520,19 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"background terminals: none", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/plan on")
+            wait_for(master_fd, output, b"plan mode: on", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "draft a plan")
+            wait_for(master_fd, output, b"plan response", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
+            send_line(master_fd, "/plan off")
+            wait_for(master_fd, output, b"plan mode: off", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/quit")
             wait_for(master_fd, output, b"bye", 5, mark)
             read_available(master_fd, output)
@@ -536,6 +557,13 @@ def run_e2e(binary: Path) -> str:
         ]
         if not any("codex zig mention context" in text for text in user_texts):
             raise AssertionError("expected mentioned file content in an API request")
+        plan_bodies = [
+            body
+            for body in server.request_bodies
+            if "draft a plan" in latest_user_text(body.get("input", []))
+        ]
+        if not any(body.get("tools") == [] for body in plan_bodies):
+            raise AssertionError("expected plan-mode request to omit tools")
         return output.decode(errors="replace")
     finally:
         server.shutdown()

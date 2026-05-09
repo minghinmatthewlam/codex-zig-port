@@ -175,10 +175,24 @@ fn runPrompt(
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
 ) !void {
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true);
+}
+
+fn runPromptWithToolMode(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    prompt: []const u8,
+    additional_writable_roots: []const []const u8,
+    include_tools: bool,
+) !void {
     std.debug.print("\nassistant:\n", .{});
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
+        .include_tools = include_tools,
     });
     defer allocator.free(answer);
     session_store.saveTranscript(allocator, session_path, transcript) catch |err| {
@@ -210,7 +224,7 @@ fn runUserPrompt(
         break :blk value;
     };
 
-    try runPrompt(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode);
     state.clearMentions(allocator);
 }
 
@@ -356,6 +370,7 @@ const SlashParts = struct {
 const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
+    plan_mode: bool = false,
     mentions: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
@@ -426,6 +441,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "keymap")) {
         printKeymap(parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "plan")) {
+        handlePlanMode(&state.plan_mode, parts.args);
         return .handled;
     }
 
@@ -632,6 +652,8 @@ fn printSlashHelp() void {
         \\  /status           show current session settings
         \\  /debug-config     show effective configuration values
         \\  /keymap [debug]   show current key bindings
+        \\  /plan [on|off|status]
+        \\                    toggle plan-only mode for normal prompts
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -738,6 +760,7 @@ fn printStatus(
         \\  sandbox:     {s}
         \\  search:      {s}
         \\  service tier: {s}
+        \\  plan mode:   {s}
         \\  raw output:  {s}
         \\  vim:         {s}
         \\  mentions:    {d} pending
@@ -758,6 +781,7 @@ fn printStatus(
         cfg.sandbox_mode.label(),
         config.webSearchLabel(cfg.web_search_mode),
         if (cfg.service_tier) |service_tier| service_tier else "unset",
+        if (state.plan_mode) "on" else "off",
         if (state.raw_output_mode) "on" else "off",
         if (state.vim_mode) "on" else "off",
         state.mentions.items.len,
@@ -830,6 +854,34 @@ fn printKeymap(args: []const u8) void {
             \\
         , .{});
     }
+}
+
+fn handlePlanMode(plan_mode: *bool, args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        plan_mode.* = !plan_mode.*;
+        printPlanMode(plan_mode.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        plan_mode.* = true;
+        printPlanMode(plan_mode.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        plan_mode.* = false;
+        printPlanMode(plan_mode.*);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printPlanMode(plan_mode.*);
+        return;
+    }
+    std.debug.print("usage: /plan [on|off|status]\n", .{});
+}
+
+fn printPlanMode(enabled: bool) void {
+    std.debug.print("plan mode: {s}\n", .{if (enabled) "on" else "off"});
 }
 
 fn renameThread(
@@ -1221,6 +1273,10 @@ test "parse slash command names and args" {
     const keymap = parseSlash("/keymap debug").?;
     try std.testing.expectEqualStrings("keymap", keymap.name);
     try std.testing.expectEqualStrings("debug", keymap.args);
+
+    const plan = parseSlash("/plan on").?;
+    try std.testing.expectEqualStrings("plan", plan.name);
+    try std.testing.expectEqualStrings("on", plan.args);
 
     const rename = parseSlash("/rename demo title").?;
     try std.testing.expectEqualStrings("rename", rename.name);
