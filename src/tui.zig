@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const git_diff = @import("git_diff.zig");
@@ -133,6 +134,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
         if (std.mem.eql(u8, prompt, "q")) break;
+        if (parseBangShellCommand(prompt)) |command| {
+            runUserShellCommand(allocator, cfg, command, options.additional_writable_roots) catch |err| {
+                std.debug.print("shell error: {s}\n", .{@errorName(err)});
+            };
+            continue;
+        }
         const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, options.additional_writable_roots) catch |err| {
             std.debug.print("error: {s}\n", .{@errorName(err)});
             continue;
@@ -469,6 +476,7 @@ fn printSlashHelp() void {
         \\  /resume [target]  resume last, a session id, or a JSONL path
         \\  /fork [target]    fork current, last, a session id, or a JSONL path
         \\  /quit, /exit      exit
+        \\  !COMMAND          run a local shell command without sending to the model
         \\
     , .{});
 }
@@ -597,6 +605,42 @@ fn printMcpStatus(allocator: std.mem.Allocator, codex_home: []const u8, args: []
     if (rendered.len == 0 or rendered[rendered.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+fn parseBangShellCommand(prompt: []const u8) ?[]const u8 {
+    if (prompt.len == 0 or prompt[0] != '!') return null;
+    return std.mem.trim(u8, prompt[1..], " \t\r\n");
+}
+
+fn runUserShellCommand(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    command: []const u8,
+    additional_writable_roots: []const []const u8,
+) !void {
+    if (command.len == 0) {
+        std.debug.print("usage: !COMMAND\n", .{});
+        return;
+    }
+
+    const arguments = try std.json.Stringify.valueAlloc(allocator, .{ .command = command }, .{});
+    defer allocator.free(arguments);
+
+    const call = api.FunctionCall{
+        .call_id = "user-shell",
+        .name = "shell_command",
+        .arguments = arguments,
+    };
+    var result = try tools.runFunctionCall(allocator, call, .{
+        .approval_policy = cfg.approval_policy,
+        .sandbox_mode = cfg.sandbox_mode,
+        .additional_writable_roots = additional_writable_roots,
+        .auto_approve = true,
+        .prompt_for_approval = false,
+    });
+    defer result.deinit(allocator);
+
+    std.debug.print("shell: {s}\n{s}\n", .{ result.summary, result.output });
 }
 
 fn printBackgroundTerminals(allocator: std.mem.Allocator) !void {
@@ -796,6 +840,12 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "parse bang shell command" {
+    try std.testing.expect(parseBangShellCommand("hello") == null);
+    try std.testing.expectEqualStrings("echo hi", parseBangShellCommand("! echo hi").?);
+    try std.testing.expectEqualStrings("", parseBangShellCommand("!   ").?);
 }
 
 test "agents file existence check" {

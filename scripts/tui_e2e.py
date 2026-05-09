@@ -301,6 +301,11 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"url: https://example.com/mcp", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "!printf bang-shell-ok")
+            wait_for(master_fd, output, b"shell: exit 0", 5, mark)
+            wait_for(master_fd, output, b"bang-shell-ok", 5, mark)
+
+            mark = len(output)
             send_line(master_fd, "/model gpt-e2e")
             wait_for(master_fd, output, b"model: gpt-e2e", 5, mark)
 
