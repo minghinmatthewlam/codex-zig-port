@@ -54,6 +54,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake
+- handle app-server filesystem JSON-RPC methods for read, write, mkdir,
+  metadata, directory listing, remove, and copy
 - proxy stdio JSON-RPC to the app-server Unix control socket with
   `app-server proxy`
 - accept Rust-compatible app-server `--analytics-default-enabled` and websocket
@@ -123,8 +125,10 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
-and plugin RPC stubs, and checks app-server flag compatibility for analytics
-defaults plus websocket auth parsing. Run
+and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
+directory listing, copy, and remove behavior against a temporary directory, and
+checks app-server flag compatibility for analytics defaults plus websocket auth
+parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
