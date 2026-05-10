@@ -103,8 +103,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `hooks.json` with app-server `hooks/list`, including user hook-state
   enable/trust metadata and enabled local plugin-cache hooks
 - list local app-server skills from repo, user, and per-cwd extra roots with
-  `skills/list`, including `forceReload` cache refreshes and
-  `agents/openai.yaml` interface/dependency metadata plus
+  `skills/list`, including enabled local plugin-cache skill roots,
+  `forceReload` cache refreshes, and `agents/openai.yaml` interface/dependency metadata plus
   `skills/config/write` enablement toggles
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
   `exec-server`, and `update` without treating them as prompt text
@@ -163,9 +163,9 @@ and plugin RPC stubs, verifies app-server hooks-list discovery for user and
 project `config.toml` / `hooks.json` command hooks, enabled local plugin-cache
 command hooks, persisted user hook state, and malformed JSON warnings, verifies
 app-server
-skills-list discovery plus
-`forceReload` cache behavior, `agents/openai.yaml` interface/dependency
-metadata, and `skills/changed` invalidations for in-process skill and config
+skills-list discovery for repo, user, extra, and enabled local plugin-cache
+skill roots plus `forceReload` cache behavior, `agents/openai.yaml`
+interface/dependency metadata, and `skills/changed` invalidations for in-process skill and config
 mutations, verifies
 app-server MCP server status pagination and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove

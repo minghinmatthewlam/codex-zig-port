@@ -992,6 +992,8 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
     config_path = codex_home / "config.toml"
     cwd = root / "repo"
     repo_skill = cwd / ".codex" / "skills" / "repo-skill"
+    plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
+    plugin_skill = plugin_root / "skills" / "plugin-search"
     extra_root = root / "extra-skills"
     user_skill = extra_root / "user-skill"
     invalid_skill = extra_root / "invalid-skill"
@@ -1000,8 +1002,23 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
     try:
         codex_home.mkdir()
         repo_skill.mkdir(parents=True)
+        (plugin_root / ".codex-plugin").mkdir(parents=True)
+        plugin_skill.mkdir(parents=True)
         user_skill.mkdir(parents=True)
         invalid_skill.mkdir(parents=True)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."sample@test"]',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         (repo_skill / "SKILL.md").write_text(
             "\n".join(
                 [
@@ -1011,6 +1028,22 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
                     'short_description: "Repo short"',
                     "---",
                     "Use this repo skill.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps({"name": "sample"}),
+            encoding="utf-8",
+        )
+        (plugin_skill / "SKILL.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "name: plugin-search",
+                    "description: Plugin skill description",
+                    "---",
+                    "Use this plugin-provided skill.",
                 ]
             ),
             encoding="utf-8",
@@ -1098,6 +1131,10 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         assert by_name["repo-skill"]["scope"] == "repo"
         assert by_name["repo-skill"]["enabled"] is True
         assert by_name["repo-skill"]["path"] == str((repo_skill / "SKILL.md").resolve())
+        assert by_name["sample:plugin-search"]["description"] == "Plugin skill description"
+        assert by_name["sample:plugin-search"]["scope"] == "user"
+        assert by_name["sample:plugin-search"]["enabled"] is True
+        assert by_name["sample:plugin-search"]["path"] == str((plugin_skill / "SKILL.md").resolve())
         assert by_name["user-skill"]["description"] == "User skill description"
         assert by_name["user-skill"]["scope"] == "user"
         assert by_name["user-skill"]["path"] == str((user_skill / "SKILL.md").resolve())
