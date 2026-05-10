@@ -131,7 +131,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `config/batchWrite`, including table-object merge/replace behavior
 - report absent, system `requirements.toml`, and legacy managed config
   requirements with `configRequirements/read`, including system feature and
-  residency requirements plus basic network scalar requirements
+  residency requirements plus network scalar, domain, and socket requirements
 - clear memory directories and SQLite memory-state rows with `memory/reset`
 - list app-server collaboration mode presets with `collaborationMode/list`
 - list app-server experimental feature metadata and patch process-local runtime
