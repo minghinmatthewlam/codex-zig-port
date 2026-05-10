@@ -3793,6 +3793,18 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[tools]",
                 "view_image = true",
                 "",
+                "[apps.app1]",
+                'default_tools_approval_mode = "approve"',
+                "",
+                "[apps.app1.tools.search]",
+                'approval_mode = "prompt"',
+                "",
+                "[apps.app3]",
+                "enabled = false",
+                "",
+                "[apps.app3.tools.deploy]",
+                "enabled = true",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -4194,6 +4206,56 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
             "view_image": True,
         }
+        assert project_config_body["apps"] == {
+            "_default": {
+                "enabled": False,
+                "destructive_enabled": False,
+                "open_world_enabled": True,
+            },
+            "app1": {
+                "enabled": False,
+                "destructive_enabled": False,
+                "open_world_enabled": True,
+                "default_tools_approval_mode": "approve",
+                "default_tools_enabled": False,
+                "tools": {
+                    "search": {
+                        "enabled": True,
+                        "approval_mode": "prompt",
+                    },
+                    "summarize": {
+                        "enabled": False,
+                        "approval_mode": None,
+                    },
+                },
+            },
+            "app3": {
+                "enabled": False,
+                "destructive_enabled": None,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": None,
+                "default_tools_enabled": None,
+                "tools": {
+                    "deploy": {
+                        "enabled": True,
+                        "approval_mode": None,
+                    },
+                },
+            },
+            "app2": {
+                "enabled": False,
+                "destructive_enabled": None,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": "approve",
+                "default_tools_enabled": None,
+                "tools": {
+                    "export": {
+                        "enabled": None,
+                        "approval_mode": "prompt",
+                    },
+                },
+            },
+        }
         assert project_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-project-root"],
             "network_access": False,
@@ -4216,6 +4278,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.context_size",
             "tools.web_search.location.region",
             "tools.view_image",
+            "apps.app1.default_tools_approval_mode",
+            "apps.app1.tools.search.approval_mode",
+            "apps.app3.enabled",
+            "apps.app3.tools.deploy.enabled",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
         ]:
@@ -4226,6 +4292,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.location.country",
             "tools.web_search.location.city",
             "tools.web_search.location.timezone",
+            "apps._default.enabled",
+            "apps._default.destructive_enabled",
+            "apps._default.open_world_enabled",
+            "apps.app1.enabled",
+            "apps.app1.destructive_enabled",
+            "apps.app1.open_world_enabled",
+            "apps.app1.default_tools_enabled",
+            "apps.app1.tools.search.enabled",
         ]:
             assert project_origins[key]["name"] == {"type": "user", "file": config_path}
             assert project_origins[key]["version"].startswith("sha256:")
@@ -4235,6 +4309,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "file": config_path,
         }
         assert project_origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == system_source
+        for key in [
+            "apps.app1.tools.summarize.enabled",
+            "apps.app2.enabled",
+            "apps.app2.default_tools_approval_mode",
+            "apps.app2.tools.export.approval_mode",
+        ]:
+            assert project_origins[key]["name"] == system_source
+            assert project_origins[key]["version"].startswith("sha256:")
         project_layers = project_config_read["result"]["layers"]
         assert len(project_layers) == 3
         assert project_layers[0]["name"] == project_source
@@ -4264,6 +4346,35 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
                 "view_image": True,
+            },
+            "apps": {
+                "_default": None,
+                "app1": {
+                    "enabled": True,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": "approve",
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "search": {
+                            "enabled": None,
+                            "approval_mode": "prompt",
+                        },
+                    },
+                },
+                "app3": {
+                    "enabled": False,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": None,
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "deploy": {
+                            "enabled": True,
+                            "approval_mode": None,
+                        },
+                    },
+                },
             },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
@@ -4374,6 +4485,35 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
                 "view_image": True,
+            },
+            "apps": {
+                "_default": None,
+                "app1": {
+                    "enabled": True,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": "approve",
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "search": {
+                            "enabled": None,
+                            "approval_mode": "prompt",
+                        },
+                    },
+                },
+                "app3": {
+                    "enabled": False,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": None,
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "deploy": {
+                            "enabled": True,
+                            "approval_mode": None,
+                        },
+                    },
+                },
             },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
