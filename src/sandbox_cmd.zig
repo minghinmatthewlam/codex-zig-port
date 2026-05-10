@@ -54,7 +54,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     }
     const kind = parseSandboxKind(subcommand) orelse return error.UnknownSandboxSubcommand;
 
-    var parsed = try parseMacosArgs(allocator, raw_args.items[1..]);
+    var parsed = try parseSandboxArgs(allocator, raw_args.items[1..]);
     defer parsed.deinit(allocator);
 
     if (parsed.help) {
@@ -93,7 +93,7 @@ fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
     return null;
 }
 
-fn parseMacosArgs(allocator: std.mem.Allocator, args: []const []const u8) !SandboxArgs {
+fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !SandboxArgs {
     var parsed = SandboxArgs{};
     errdefer parsed.deinit(allocator);
 
@@ -226,7 +226,7 @@ fn printMacosHelp() void {
 test "sandbox macos args parse command and options" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "--sandbox", "read-only", "--add-dir", "/tmp/extra", "--", "/bin/echo", "ok" };
-    const parsed = try parseMacosArgs(allocator, argv[0..]);
+    const parsed = try parseSandboxArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(config.SandboxMode.read_only, parsed.mode.?);
@@ -238,7 +238,7 @@ test "sandbox macos args parse command and options" {
 test "sandbox macos args parse help" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{"--help"};
-    const parsed = try parseMacosArgs(allocator, argv[0..]);
+    const parsed = try parseSandboxArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.help);
@@ -256,5 +256,5 @@ test "sandbox kind recognizes Rust platform aliases" {
 test "sandbox args reject removed full auto flag" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "--full-auto", "--" };
-    try std.testing.expectError(error.UnknownSandboxOption, parseMacosArgs(allocator, argv[0..]));
+    try std.testing.expectError(error.UnknownSandboxOption, parseSandboxArgs(allocator, argv[0..]));
 }
