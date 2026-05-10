@@ -67,6 +67,8 @@ prefix_rule(
     decision = "forbidden",
     justification = "pushing is blocked in this repo",
 )
+network_rule(host = "API.GITHUB.COM:443", protocol = "https_connect", decision = "allow")
+network_rule(host = "blocked.example.com", protocol = "https", decision = "deny")
 """,
             encoding="utf-8",
         )
@@ -139,6 +141,31 @@ host_executable(name = "git", paths = ["/usr/bin/git"])
                 }
             ],
         }
+
+        invalid_network_rules_path = temp_root / "invalid-network.rules"
+        invalid_network_rules_path.write_text(
+            """
+network_rule(host = "*", protocol = "http", decision = "allow")
+""",
+            encoding="utf-8",
+        )
+        invalid_network_result = subprocess.run(
+            [
+                str(binary),
+                "execpolicy",
+                "check",
+                "--rules",
+                str(invalid_network_rules_path),
+                "curl",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert invalid_network_result.returncode != 0
+        assert "WildcardNetworkRuleHost" in invalid_network_result.stderr
 
         help_result = subprocess.run(
             [str(binary), "help", "execpolicy"],
