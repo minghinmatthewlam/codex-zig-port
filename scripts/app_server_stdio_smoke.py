@@ -4428,6 +4428,80 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             assert after["id"] == "after-login"
             assert after["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
 
+            access_token = encode_unsigned_jwt(
+                {
+                    "email": "external@example.com",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_plan_type": "pro",
+                        "chatgpt_account_id": "acct_external",
+                    },
+                }
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "login-auth-tokens",
+                    "method": "account/login/start",
+                    "params": {
+                        "type": "chatgptAuthTokens",
+                        "accessToken": access_token,
+                        "chatgptAccountId": "acct_external",
+                        "chatgptPlanType": "pro",
+                    },
+                },
+            )
+            auth_tokens_login = read_json_line(proc, 5)
+            assert auth_tokens_login["id"] == "login-auth-tokens"
+            assert auth_tokens_login["result"] == {"type": "chatgptAuthTokens"}
+
+            auth_tokens_completed = read_json_line(proc, 5)
+            assert auth_tokens_completed == {
+                "method": "account/login/completed",
+                "params": {"loginId": None, "success": True, "error": None},
+            }
+
+            auth_tokens_updated = read_json_line(proc, 5)
+            assert auth_tokens_updated == {
+                "method": "account/updated",
+                "params": {"authMode": "chatgptAuthTokens", "planType": "pro"},
+            }
+
+            auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+            assert auth_json["auth_mode"] == "chatgptAuthTokens"
+            assert auth_json["tokens"] == {
+                "id_token": access_token,
+                "access_token": access_token,
+                "refresh_token": "",
+                "account_id": "acct_external",
+            }
+            assert isinstance(auth_json["last_refresh"], str)
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "after-auth-token-login", "method": "account/read"})
+            after_auth_token_login = read_json_line(proc, 5)
+            assert after_auth_token_login["id"] == "after-auth-token-login"
+            assert after_auth_token_login["result"] == {
+                "account": {"type": "chatgpt", "email": "external@example.com", "planType": "pro"},
+                "requiresOpenaiAuth": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "auth-token-status",
+                    "method": "getAuthStatus",
+                    "params": {"includeToken": True},
+                },
+            )
+            auth_token_status = read_json_line(proc, 5)
+            assert auth_token_status["id"] == "auth-token-status"
+            assert auth_token_status["result"] == {
+                "authMethod": "chatgptAuthTokens",
+                "authToken": access_token,
+                "requiresOpenaiAuth": True,
+            }
+
             write_json_line(
                 proc,
                 {
@@ -4440,6 +4514,19 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             missing_api_key = read_json_line(proc, 5)
             assert missing_api_key["id"] == "missing-api-key"
             assert missing_api_key["error"]["code"] == -32602
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "missing-auth-token",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgptAuthTokens", "chatgptAccountId": "acct_external"},
+                },
+            )
+            missing_auth_token = read_json_line(proc, 5)
+            assert missing_auth_token["id"] == "missing-auth-token"
+            assert missing_auth_token["error"]["code"] == -32602
 
             write_json_line(
                 proc,
