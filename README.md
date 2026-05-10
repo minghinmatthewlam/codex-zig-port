@@ -50,6 +50,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - include file contents in the next interactive prompt with `/mention`
 - ask a question in an ephemeral fork with `/side`
 - inspect configured MCP servers from the interactive TUI with `/mcp`
+- accept app-server MCP config reload requests and list server status with
+  `config/mcpServer/reload` and `mcpServerStatus/list`
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
@@ -150,6 +152,7 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 and plugin RPC stubs, verifies app-server skills-list discovery, verifies
+app-server MCP server status pagination and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory,
 checks app-server model catalog, provider-capability, git-diff-to-remote,
