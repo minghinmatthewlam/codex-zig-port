@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import json
 import os
 import selectors
@@ -344,6 +345,120 @@ def run_plugin_rpc_smoke(binary: Path) -> None:
     assert invalid_read["error"]["code"] == -32602
 
 
+def run_filesystem_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
+    env = os.environ.copy()
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        return request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            env,
+        )
+
+    try:
+        nested_dir = root / "nested"
+        file_path = nested_dir / "hello.txt"
+        copied_file = root / "hello-copy.txt"
+        copied_dir = root / "nested-copy"
+        payload = b"hello from app-server fs"
+        payload_base64 = base64.b64encode(payload).decode("ascii")
+
+        created = rpc("fs-create", "fs/createDirectory", {"path": str(nested_dir)})
+        assert created["id"] == "fs-create"
+        assert created["result"] == {}
+        assert nested_dir.is_dir()
+
+        written = rpc(
+            "fs-write",
+            "fs/writeFile",
+            {"path": str(file_path), "dataBase64": payload_base64},
+        )
+        assert written["id"] == "fs-write"
+        assert written["result"] == {}
+        assert file_path.read_bytes() == payload
+
+        read = rpc("fs-read", "fs/readFile", {"path": str(file_path)})
+        assert read["id"] == "fs-read"
+        assert base64.b64decode(read["result"]["dataBase64"]) == payload
+
+        metadata = rpc("fs-metadata", "fs/getMetadata", {"path": str(file_path)})
+        assert metadata["id"] == "fs-metadata"
+        assert metadata["result"]["isFile"] is True
+        assert metadata["result"]["isDirectory"] is False
+        assert metadata["result"]["isSymlink"] is False
+        assert isinstance(metadata["result"]["createdAtMs"], int)
+        assert metadata["result"]["modifiedAtMs"] > 0
+
+        file_copy = rpc(
+            "fs-copy-file",
+            "fs/copy",
+            {"sourcePath": str(file_path), "destinationPath": str(copied_file)},
+        )
+        assert file_copy["id"] == "fs-copy-file"
+        assert file_copy["result"] == {}
+        assert copied_file.read_bytes() == payload
+
+        dir_copy = rpc(
+            "fs-copy-dir",
+            "fs/copy",
+            {
+                "sourcePath": str(nested_dir),
+                "destinationPath": str(copied_dir),
+                "recursive": True,
+            },
+        )
+        assert dir_copy["id"] == "fs-copy-dir"
+        assert dir_copy["result"] == {}
+        assert (copied_dir / "hello.txt").read_bytes() == payload
+
+        listed = rpc("fs-list", "fs/readDirectory", {"path": str(root)})
+        assert listed["id"] == "fs-list"
+        entries = {entry["fileName"]: entry for entry in listed["result"]["entries"]}
+        assert entries["nested"]["isDirectory"] is True
+        assert entries["hello-copy.txt"]["isFile"] is True
+        assert entries["nested-copy"]["isDirectory"] is True
+
+        removed = rpc("fs-remove", "fs/remove", {"path": str(copied_dir)})
+        assert removed["id"] == "fs-remove"
+        assert removed["result"] == {}
+        assert not copied_dir.exists()
+
+        missing_removed = rpc("fs-remove-missing", "fs/remove", {"path": str(copied_dir)})
+        assert missing_removed["id"] == "fs-remove-missing"
+        assert missing_removed["result"] == {}
+
+        watch = rpc(
+            "fs-watch",
+            "fs/watch",
+            {"watchId": "watch-1", "path": str(nested_dir)},
+        )
+        assert watch["id"] == "fs-watch"
+        assert watch["error"]["code"] == -32603
+        assert "fs/watch is parsed but not implemented yet" in watch["error"]["message"]
+
+        unwatch = rpc("fs-unwatch", "fs/unwatch", {"watchId": "watch-1"})
+        assert unwatch["id"] == "fs-unwatch"
+        assert unwatch["error"]["code"] == -32603
+        assert "fs/unwatch is parsed but not implemented yet" in unwatch["error"]["message"]
+
+        relative = rpc("fs-relative", "fs/readFile", {"path": "relative.txt"})
+        assert relative["id"] == "fs-relative"
+        assert relative["error"]["code"] == -32602
+        assert "AbsolutePathBuf deserialized without a base path" in relative["error"]["message"]
+
+        invalid_base64 = rpc(
+            "fs-invalid-base64",
+            "fs/writeFile",
+            {"path": str(file_path), "dataBase64": "not base64"},
+        )
+        assert invalid_base64["id"] == "fs-invalid-base64"
+        assert invalid_base64["error"]["code"] == -32602
+        assert "valid base64 dataBase64" in invalid_base64["error"]["message"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -583,6 +698,8 @@ def main() -> None:
     print("app-server-marketplace-rpc-e2e: ok")
     run_plugin_rpc_smoke(binary)
     print("app-server-plugin-rpc-e2e: ok")
+    run_filesystem_rpc_smoke(binary)
+    print("app-server-filesystem-rpc-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
