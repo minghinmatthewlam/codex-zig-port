@@ -1304,6 +1304,76 @@ def run_remote_flag_smoke(
         )
 
 
+def run_session_command_option_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    image_path = workspace / "resume-option.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-resume-option-smoke\n")
+    extra_root = workspace / "extra-writable"
+    extra_root.mkdir()
+
+    resume_result = subprocess.run(
+        [
+            str(binary),
+            "resume",
+            "sid",
+            "--oss",
+            "--local-provider=ollama",
+            "--search",
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "on-request",
+            "-m",
+            "gpt-resume",
+            "-p",
+            "work",
+            "-C",
+            str(workspace),
+            "--add-dir",
+            str(extra_root),
+            "-i",
+            str(image_path),
+            "--remote=ws://127.0.0.1:4500",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resume_result.returncode == 0:
+        raise AssertionError("resume option-placement smoke unexpectedly succeeded")
+    if "remote app-server TUI is parsed but not implemented yet" not in resume_result.stderr:
+        raise AssertionError(
+            f"expected resume remote not-implemented message:\n{resume_result.stderr}"
+        )
+
+    fork_result = subprocess.run(
+        [
+            str(binary),
+            "fork",
+            "--all",
+            "--yolo",
+            "--no-alt-screen",
+            "--remote=ws://127.0.0.1:4500",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if fork_result.returncode == 0:
+        raise AssertionError("fork option-placement smoke unexpectedly succeeded")
+    if "remote app-server TUI is parsed but not implemented yet" not in fork_result.stderr:
+        raise AssertionError(
+            f"expected fork remote not-implemented message:\n{fork_result.stderr}"
+        )
+
+
 def git(repo: Path, *args: str) -> None:
     git_env = os.environ.copy()
     git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
@@ -1457,6 +1527,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
+            run_session_command_option_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
             run_plugin_marketplace_smoke(binary, env, workspace)
             run_debug_clear_memories_smoke(binary, env, workspace)
