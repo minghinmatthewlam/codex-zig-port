@@ -33,6 +33,9 @@ jobs:
       - name: Check Python smoke scripts
         run: python3 -m py_compile scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/tui_e2e.py
 
+      - name: Build executable
+        run: zig build
+
       - name: Run unit tests
         run: zig build test
 
