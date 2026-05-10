@@ -374,8 +374,10 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 those same fields, reads `[tui].theme`, `[tui].status_line`,
 `[tui].terminal_title`, and `[tui].alternate_screen` for TUI preferences, and reads
 `[model_providers.<name>].base_url`, `wire_api`, `env_key`, and
-`experimental_bearer_token` for custom providers. The current port supports
-`wire_api = "responses"` and rejects the removed `wire_api = "chat"` setting.
+`experimental_bearer_token` for custom providers. It also supports
+`[model_providers.<name>.auth]` `command`, `args`, `cwd`, and `timeout_ms`
+for command-backed bearer tokens. The current port supports Responses wire API
+providers and rejects the removed `wire_api = "chat"` setting.
 
 ```sh
 codex-zig --profile work auth-status
