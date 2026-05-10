@@ -117,7 +117,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - remove app-server auth with `account/logout` and emit `account/updated`
 - read app-server config basics plus effective feature flags, user
   config-origin/layer metadata, and trusted project-stack
-  `model_reasoning_effort` layers with `config/read`
+  scalar layers with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
 - merge and replace existing app-server TOML table objects with
@@ -261,7 +261,8 @@ checks app-server model catalog, provider-capability, collaboration-mode-list,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
-account-add-credits-nudge, config-read with user origin/layer metadata,
+account-add-credits-nudge, config-read with user origin/layer metadata and
+trusted project scalar layers,
 config-value-write including table-object merge/replace behavior,
 config-batch-write including table-object merge/replace behavior, and
 config-requirements RPCs against temporary config homes, including legacy
