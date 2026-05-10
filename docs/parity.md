@@ -74,9 +74,10 @@ macOS sandbox-backed managed profiles, including enabled and restricted network
 smoke coverage; `sandboxPolicy.networkAccess` is enforced for supported
 read-only/workspace-write policies, including the Rust-shaped default network
 deny, and workspace-write `sandboxPolicy` temp-root defaults plus
-`excludeTmpdirEnvVar` / `excludeSlashTmp` flags are enforced. Follow-up calls
-return inactive-process errors until true async command sessions are
-implemented.
+`excludeTmpdirEnvVar` / `excludeSlashTmp` flags are enforced; implicit
+config-driven workspace-write command execution uses the same default temp
+roots. Follow-up calls return inactive-process errors until true async command
+sessions are implemented.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
