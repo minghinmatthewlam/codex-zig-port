@@ -623,6 +623,138 @@ def run_plugin_rpc_smoke(binary: Path) -> None:
     assert invalid_read["error"]["code"] == -32602
 
 
+def run_skills_list_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-skills-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    repo_skill = cwd / ".codex" / "skills" / "repo-skill"
+    extra_root = root / "extra-skills"
+    user_skill = extra_root / "user-skill"
+    invalid_skill = extra_root / "invalid-skill"
+    try:
+        codex_home.mkdir()
+        repo_skill.mkdir(parents=True)
+        user_skill.mkdir(parents=True)
+        invalid_skill.mkdir(parents=True)
+        (repo_skill / "SKILL.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "name: repo-skill",
+                    "description: Repo skill description",
+                    'short_description: "Repo short"',
+                    "---",
+                    "Use this repo skill.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (user_skill / "SKILL.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "name: user-skill",
+                    "description: User skill description",
+                    "---",
+                    "Use this user skill.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (invalid_skill / "SKILL.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "name: invalid-skill",
+                    "---",
+                    "Missing description.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        skills = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-list",
+                "method": "skills/list",
+                "params": {
+                    "cwds": [str(cwd)],
+                    "forceReload": True,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(extra_root)]}
+                    ],
+                },
+            },
+            env,
+        )
+        assert skills["id"] == "skills-list"
+        assert len(skills["result"]["data"]) == 1
+        entry = skills["result"]["data"][0]
+        assert entry["cwd"] == str(cwd)
+        by_name = {skill["name"]: skill for skill in entry["skills"]}
+        assert by_name["repo-skill"]["description"] == "Repo skill description"
+        assert by_name["repo-skill"]["shortDescription"] == "Repo short"
+        assert by_name["repo-skill"]["scope"] == "repo"
+        assert by_name["repo-skill"]["enabled"] is True
+        assert by_name["repo-skill"]["path"] == str(repo_skill / "SKILL.md")
+        assert by_name["user-skill"]["description"] == "User skill description"
+        assert by_name["user-skill"]["scope"] == "user"
+        assert by_name["user-skill"]["path"] == str(user_skill / "SKILL.md")
+        assert any("missing description" in error["message"] for error in entry["errors"])
+        assert any(error["path"] == str(invalid_skill / "SKILL.md") for error in entry["errors"])
+
+        invalid_cwds = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-invalid-cwds",
+                "method": "skills/list",
+                "params": {"cwds": "not-a-list"},
+            },
+            env,
+        )
+        assert invalid_cwds["id"] == "skills-invalid-cwds"
+        assert invalid_cwds["error"]["code"] == -32602
+
+        invalid_force_reload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-invalid-force-reload",
+                "method": "skills/list",
+                "params": {"forceReload": "yes"},
+            },
+            env,
+        )
+        assert invalid_force_reload["id"] == "skills-invalid-force-reload"
+        assert invalid_force_reload["error"]["code"] == -32602
+
+        invalid_extra_root = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-invalid-extra-root",
+                "method": "skills/list",
+                "params": {
+                    "cwds": [str(cwd)],
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": ["relative-skills"]}
+                    ],
+                },
+            },
+            env,
+        )
+        assert invalid_extra_root["id"] == "skills-invalid-extra-root"
+        assert invalid_extra_root["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_filesystem_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
     env = os.environ.copy()
@@ -2276,6 +2408,8 @@ def main() -> None:
     print("app-server-marketplace-rpc-e2e: ok")
     run_plugin_rpc_smoke(binary)
     print("app-server-plugin-rpc-e2e: ok")
+    run_skills_list_rpc_smoke(binary)
+    print("app-server-skills-list-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
