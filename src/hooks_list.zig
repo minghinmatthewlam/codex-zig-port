@@ -211,11 +211,29 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
     defer allocator.free(project_config_path);
     try appendHooksFromConfig(allocator, project_config_path, .project, &hooks, &warnings, &errors, &display_order);
 
+    const owned_cwd = try allocator.dupe(u8, cwd);
+    errdefer allocator.free(owned_cwd);
+    const owned_hooks = try hooks.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_hooks) |hook| hook.deinit(allocator);
+        allocator.free(owned_hooks);
+    }
+    const owned_warnings = try warnings.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_warnings) |warning| allocator.free(warning);
+        allocator.free(owned_warnings);
+    }
+    const owned_errors = try errors.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_errors) |err| err.deinit(allocator);
+        allocator.free(owned_errors);
+    }
+
     return .{
-        .cwd = try allocator.dupe(u8, cwd),
-        .hooks = try hooks.toOwnedSlice(allocator),
-        .warnings = try warnings.toOwnedSlice(allocator),
-        .errors = try errors.toOwnedSlice(allocator),
+        .cwd = owned_cwd,
+        .hooks = owned_hooks,
+        .warnings = owned_warnings,
+        .errors = owned_errors,
     };
 }
 
@@ -409,15 +427,23 @@ fn flushPartialHook(
     errdefer allocator.free(key);
     const current_hash = try commandHookHash(allocator, group.event_name, group.matcher, command, timeout_sec, hook.status_message);
     errdefer allocator.free(current_hash);
+    const owned_matcher = if (group.matcher) |matcher| try allocator.dupe(u8, matcher) else null;
+    errdefer if (owned_matcher) |matcher| allocator.free(matcher);
+    const owned_command = try allocator.dupe(u8, command);
+    errdefer allocator.free(owned_command);
+    const owned_status_message = if (hook.status_message) |status| try allocator.dupe(u8, status) else null;
+    errdefer if (owned_status_message) |status| allocator.free(status);
+    const owned_source_path = try allocator.dupe(u8, source_path);
+    errdefer allocator.free(owned_source_path);
 
     const owned = Hook{
         .key = key,
         .event_name = group.event_name,
-        .matcher = if (group.matcher) |matcher| try allocator.dupe(u8, matcher) else null,
-        .command = try allocator.dupe(u8, command),
+        .matcher = owned_matcher,
+        .command = owned_command,
         .timeout_sec = timeout_sec,
-        .status_message = if (hook.status_message) |status| try allocator.dupe(u8, status) else null,
-        .source_path = try allocator.dupe(u8, source_path),
+        .status_message = owned_status_message,
+        .source_path = owned_source_path,
         .source = source,
         .display_order = display_order.*,
         .current_hash = current_hash,
