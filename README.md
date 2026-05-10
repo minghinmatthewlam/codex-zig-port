@@ -129,8 +129,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `config/value/write`
 - apply multiple app-server config edits in one file write with
   `config/batchWrite`, including table-object merge/replace behavior
-- report absent and legacy managed config requirements with
-  `configRequirements/read`
+- report absent, system `requirements.toml`, and legacy managed config
+  requirements with `configRequirements/read`
 - clear memory directories and SQLite memory-state rows with `memory/reset`
 - list app-server collaboration mode presets with `collaborationMode/list`
 - list app-server experimental feature metadata and patch process-local runtime
@@ -288,8 +288,9 @@ precedence, required empty user/system layers, and legacy managed
 scalar/tool/app/sandbox overrides,
 config-value-write including table-object merge/replace behavior,
 config-batch-write including table-object merge/replace behavior, and
-config-requirements RPCs against temporary config homes, including legacy
-managed-config requirements, and a mock backend, checks app-server experimental
+config-requirements RPCs against temporary config homes, including system
+requirements precedence and legacy managed-config requirements, and a mock
+backend, checks app-server experimental
 feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
