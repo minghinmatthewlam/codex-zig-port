@@ -679,7 +679,6 @@ def run_unimplemented_command_smoke(
     workspace: Path,
 ) -> None:
     for command in [
-        "plugin",
         "remote-control",
         "app",
         "update",
@@ -701,6 +700,92 @@ def run_unimplemented_command_smoke(
         if "parsed but not implemented yet" not in result.stderr:
             raise AssertionError(
                 f"expected not-implemented message for {command}:\n{result.stderr}"
+            )
+
+
+def run_plugin_marketplace_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    root_help = subprocess.run(
+        [str(binary), "plugin", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig plugin marketplace <COMMAND>" not in root_help.stderr:
+        raise AssertionError(f"expected plugin root help output:\n{root_help.stderr}")
+
+    help_command = subprocess.run(
+        [str(binary), "help", "plugin"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig plugin marketplace <COMMAND>" not in help_command.stderr:
+        raise AssertionError(f"expected help plugin output:\n{help_command.stderr}")
+
+    marketplace_help = subprocess.run(
+        [str(binary), "plugin", "marketplace", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig plugin marketplace <COMMAND>" not in marketplace_help.stderr:
+        raise AssertionError(
+            f"expected plugin marketplace help output:\n{marketplace_help.stderr}"
+        )
+
+    help_cases = [
+        (["add", "--help"], "codex-zig plugin marketplace add"),
+        (["upgrade", "--help"], "codex-zig plugin marketplace upgrade"),
+        (["remove", "--help"], "codex-zig plugin marketplace remove"),
+    ]
+    for args, usage in help_cases:
+        result = subprocess.run(
+            [str(binary), "plugin", "marketplace", *args],
+            cwd=workspace,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if usage not in result.stderr:
+            raise AssertionError(f"expected {usage} help output:\n{result.stderr}")
+
+    command_cases = [
+        [
+            "add",
+            "--ref",
+            "main",
+            "--sparse",
+            "agents",
+            "owner/repo",
+        ],
+        ["upgrade", "debug"],
+        ["remove", "debug"],
+    ]
+    for args in command_cases:
+        result = subprocess.run(
+            [str(binary), "plugin", "marketplace", *args],
+            cwd=workspace,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            raise AssertionError(f"plugin marketplace {args[0]} unexpectedly succeeded")
+        if "parsed but not implemented yet" not in result.stderr:
+            raise AssertionError(
+                f"expected plugin marketplace not-implemented output:\n{result.stderr}"
             )
 
 
@@ -1107,6 +1192,7 @@ def run_e2e(binary: Path) -> str:
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
+            run_plugin_marketplace_smoke(binary, env, workspace)
             run_debug_clear_memories_smoke(binary, env, workspace)
             run_debug_stub_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
