@@ -4340,7 +4340,16 @@ fn handleCommandExecMethod(
     if (std.mem.eql(u8, method, "command/exec")) {
         return handleCommandExec(allocator, id_value, params_value);
     }
-    return renderParsedButNotImplemented(allocator, id_value, method);
+    if (std.mem.eql(u8, method, "command/exec/write")) {
+        return handleCommandExecWrite(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "command/exec/terminate")) {
+        return handleCommandExecTerminate(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "command/exec/resize")) {
+        return handleCommandExecResize(allocator, id_value, params_value);
+    }
+    return try renderJsonRpcError(allocator, id_value, -32601, "unknown command exec method");
 }
 
 const COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP = 64 * 1024;
@@ -4372,9 +4381,9 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
         command[index] = item.string;
     }
 
-    if (commandExecOptionalString(object, "processId") catch {
+    const process_id = commandExecOptionalString(object, "processId") catch {
         return renderJsonRpcError(allocator, id_value, -32602, "processId must be a string or null");
-    }) |_| {}
+    };
 
     const tty = commandExecOptionalBool(object, "tty", false) catch |err| {
         return commandExecBoolError(allocator, id_value, err, "tty must be a boolean");
@@ -4389,6 +4398,9 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
         if (size != .null and !tty) return renderJsonRpcError(allocator, id_value, -32602, "command/exec size requires tty: true");
     }
     if (tty or stream_stdin or stream_stdout_stderr) {
+        if (process_id == null) {
+            return renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
+        }
         return renderJsonRpcError(allocator, id_value, -32603, "command/exec streaming and tty modes are parsed but not implemented yet");
     }
 
@@ -4504,6 +4516,122 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     );
     defer allocator.free(response);
     return renderJsonRpcResult(allocator, id_value, response);
+}
+
+fn handleCommandExecWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (commandExecObjectParams(params_value, "command/exec/write")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const process_id = switch (commandExecRequiredStringField(object, "processId", "processId must be a string")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const close_stdin = commandExecOptionalBool(object, "closeStdin", false) catch |err| {
+        return commandExecBoolError(allocator, id_value, err, "closeStdin must be a boolean");
+    };
+
+    const delta_base64 = commandExecOptionalString(object, "deltaBase64") catch |err| switch (err) {
+        error.InvalidCommandExecString => return renderJsonRpcError(allocator, id_value, -32602, "deltaBase64 must be a string or null"),
+    };
+    if (delta_base64 == null and !close_stdin) {
+        return renderJsonRpcError(allocator, id_value, -32602, "command/exec/write requires deltaBase64 or closeStdin");
+    }
+    if (delta_base64) |value| {
+        const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(value) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "invalid deltaBase64: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        };
+        const decoded = try allocator.alloc(u8, decoded_len);
+        defer allocator.free(decoded);
+        std.base64.standard.Decoder.decode(decoded, value) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "invalid deltaBase64: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        };
+    }
+    return renderNoActiveCommandExec(allocator, id_value, process_id);
+}
+
+fn handleCommandExecTerminate(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (commandExecObjectParams(params_value, "command/exec/terminate")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const process_id = switch (commandExecRequiredStringField(object, "processId", "processId must be a string")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    return renderNoActiveCommandExec(allocator, id_value, process_id);
+}
+
+fn handleCommandExecResize(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (commandExecObjectParams(params_value, "command/exec/resize")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const process_id = switch (commandExecRequiredStringField(object, "processId", "processId must be a string")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const size_value = object.get("size") orelse return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
+    if (size_value != .object) return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
+    _ = commandExecRequiredPositiveU16(size_value.object, "rows") catch |err| switch (err) {
+        error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+    };
+    _ = commandExecRequiredPositiveU16(size_value.object, "cols") catch |err| switch (err) {
+        error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+    };
+    return renderNoActiveCommandExec(allocator, id_value, process_id);
+}
+
+const CommandExecObjectParams = union(enum) {
+    object: std.json.ObjectMap,
+    message: []const u8,
+};
+
+const CommandExecStringField = union(enum) {
+    value: []const u8,
+    message: []const u8,
+};
+
+fn commandExecObjectParams(params_value: ?std.json.Value, method: []const u8) CommandExecObjectParams {
+    const params = params_value orelse return .{ .message = commandExecParamsMessage(method) };
+    if (params != .object) return .{ .message = commandExecParamsMessage(method) };
+    return .{ .object = params.object };
+}
+
+fn commandExecParamsMessage(method: []const u8) []const u8 {
+    if (std.mem.eql(u8, method, "command/exec/write")) return "command/exec/write params must be an object";
+    if (std.mem.eql(u8, method, "command/exec/terminate")) return "command/exec/terminate params must be an object";
+    if (std.mem.eql(u8, method, "command/exec/resize")) return "command/exec/resize params must be an object";
+    return "command/exec params must be an object";
+}
+
+fn commandExecRequiredStringField(object: std.json.ObjectMap, field: []const u8, message: []const u8) CommandExecStringField {
+    const value = object.get(field) orelse return .{ .message = message };
+    if (value != .string) return .{ .message = message };
+    return .{ .value = value.string };
+}
+
+fn commandExecRequiredPositiveU16(object: std.json.ObjectMap, field: []const u8) !u16 {
+    const value = object.get(field) orelse return error.InvalidCommandExecTerminalSize;
+    const integer = switch (value) {
+        .integer => |raw| raw,
+        .number_string => |raw| std.fmt.parseInt(i64, raw, 10) catch return error.InvalidCommandExecTerminalSize,
+        else => return error.InvalidCommandExecTerminalSize,
+    };
+    if (integer <= 0) return error.InvalidCommandExecTerminalSize;
+    return std.math.cast(u16, integer) orelse error.InvalidCommandExecTerminalSize;
+}
+
+fn renderNoActiveCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, process_id: []const u8) ![]const u8 {
+    const process_id_json = try std.json.Stringify.valueAlloc(allocator, process_id, .{});
+    defer allocator.free(process_id_json);
+    const message = try std.fmt.allocPrint(allocator, "no active command/exec for process id {s}", .{process_id_json});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
 }
 
 fn commandExecExitCode(term: std.process.Child.Term) i32 {
