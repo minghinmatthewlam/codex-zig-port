@@ -69,9 +69,10 @@ accepts supported `permissionProfile` shapes for disabled, root-read-only,
 managed-unrestricted, project-roots workspace-write, and absolute writable-root
 profiles, with command-cwd sandbox rooting for project roots. Unsupported
 profile entries return explicit not-implemented errors rather than weakening
-sandbox behavior. Permission-profile network policy is parsed but not separately
-enforced beyond the current macOS legacy sandbox wrapper. Follow-up calls return
-inactive-process errors until true async command sessions are implemented.
+sandbox behavior. Permission-profile network policy is enforced for supported
+macOS sandbox-backed managed profiles, including enabled and restricted network
+smoke coverage. Follow-up calls return inactive-process errors until true async
+command sessions are implemented.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
