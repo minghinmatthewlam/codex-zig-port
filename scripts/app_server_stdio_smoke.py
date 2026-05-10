@@ -1214,7 +1214,17 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
         )
         return access_token
 
+    def write_agent_identity_home(codex_home: Path, base_url: str) -> str:
+        access_token = encode_unsigned_jwt({"account_id": "acct_agent"})
+        (codex_home / "config.toml").write_text(f'chatgpt_base_url = "{base_url}"\n', encoding="utf-8")
+        (codex_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "agentIdentity", "agent_identity": access_token}),
+            encoding="utf-8",
+        )
+        return access_token
+
     chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-chatgpt-", dir="/tmp"))
+    agent_identity_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-agent-", dir="/tmp"))
     cooldown_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-cooldown-", dir="/tmp"))
     failure_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-failure-", dir="/tmp"))
     no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-none-", dir="/tmp"))
@@ -1237,6 +1247,18 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
                 "body": {"credit_type": "usage_limit"},
             }
         ]
+
+        agent_token = write_agent_identity_home(agent_identity_home, base_url)
+        agent_sent = request(agent_identity_home, "add-credits-agent", {"creditType": "credits"})
+        assert agent_sent["id"] == "add-credits-agent"
+        assert agent_sent["result"] == {"status": "sent"}
+        assert AddCreditsNudgeBackendHandler.requests[-1] == {
+            "path": "/api/codex/accounts/send_add_credits_nudge_email",
+            "authorization": f"Bearer {agent_token}",
+            "account_id": "acct_agent",
+            "content_type": "application/json",
+            "body": {"credit_type": "credits"},
+        }
         server.shutdown()
         server.server_close()
         server = None
@@ -1292,6 +1314,7 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
             failure_server.shutdown()
             failure_server.server_close()
         shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(agent_identity_home, ignore_errors=True)
         shutil.rmtree(cooldown_home, ignore_errors=True)
         shutil.rmtree(failure_home, ignore_errors=True)
         shutil.rmtree(no_auth_home, ignore_errors=True)
