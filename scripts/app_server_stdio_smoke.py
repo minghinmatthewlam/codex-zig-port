@@ -641,10 +641,17 @@ def run_plugin_rpc_smoke(binary: Path) -> None:
         codex_home.mkdir()
         repo.joinpath(".agents", "plugins").mkdir(parents=True)
         plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        plugin_root.joinpath("skills", "thread-summarizer").mkdir(parents=True)
+        plugin_root.joinpath("hooks").mkdir()
         installed_root.joinpath(".codex-plugin").mkdir(parents=True)
         codex_home.joinpath("config.toml").write_text(
             """[features]
 plugins = true
+plugin_hooks = true
+
+[[skills.config]]
+name = "enabled-plugin:thread-summarizer"
+enabled = false
 
 [plugins."enabled-plugin@local-market"]
 enabled = true
@@ -683,6 +690,47 @@ enabled = true
                     },
                 }
             ),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath("skills", "thread-summarizer", "SKILL.md").write_text(
+            """---
+name: thread-summarizer
+description: Summarize plugin smoke threads
+---
+
+# Thread Summarizer
+""",
+            encoding="utf-8",
+        )
+        plugin_root.joinpath("hooks", "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {"type": "command", "command": "echo plugin startup"}
+                                ]
+                            }
+                        ],
+                        "PreToolUse": [
+                            {
+                                "hooks": [
+                                    {"type": "command", "command": "echo plugin pre tool"}
+                                ]
+                            }
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath(".app.json").write_text(
+            json.dumps({"apps": {"gmail": {"id": "gmail", "name": "Gmail"}}}),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath(".mcp.json").write_text(
+            json.dumps({"mcpServers": {"demo": {"command": "demo-server"}}}),
             encoding="utf-8",
         )
         installed_root.joinpath(".codex-plugin", "plugin.json").write_text(
@@ -752,10 +800,30 @@ enabled = true
         assert detail["summary"]["enabled"] is True
         assert detail["summary"]["interface"]["displayName"] == "Enabled Plugin"
         assert detail["description"] is None
-        assert detail["skills"] == []
-        assert detail["hooks"] == []
-        assert detail["apps"] == []
-        assert detail["mcpServers"] == []
+        assert len(detail["skills"]) == 1
+        assert detail["skills"][0]["name"] == "enabled-plugin:thread-summarizer"
+        assert detail["skills"][0]["description"] == "Summarize plugin smoke threads"
+        assert detail["skills"][0]["enabled"] is False
+        assert detail["hooks"] == [
+            {
+                "key": "enabled-plugin@local-market:hooks/hooks.json:pre_tool_use:0:0",
+                "eventName": "preToolUse",
+            },
+            {
+                "key": "enabled-plugin@local-market:hooks/hooks.json:session_start:0:0",
+                "eventName": "sessionStart",
+            },
+        ]
+        assert detail["apps"] == [
+            {
+                "id": "gmail",
+                "name": "Gmail",
+                "description": None,
+                "installUrl": "https://chatgpt.com/apps/gmail/gmail",
+                "needsAuth": True,
+            }
+        ]
+        assert detail["mcpServers"] == ["demo"]
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
