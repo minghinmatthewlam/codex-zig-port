@@ -704,6 +704,110 @@ def run_unimplemented_command_smoke(
             )
 
 
+def assert_empty_dir(path: Path) -> None:
+    if not path.is_dir():
+        raise AssertionError(f"expected directory to exist: {path}")
+    entries = list(path.iterdir())
+    if entries:
+        raise AssertionError(f"expected empty directory {path}, saw {entries!r}")
+
+
+def run_debug_clear_memories_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    codex_home = Path(env["CODEX_HOME"])
+    memories = codex_home / "memories"
+    rollout_summaries = memories / "rollout_summaries"
+    extensions = codex_home / "memories_extensions"
+    rollout_summaries.mkdir(parents=True)
+    extensions.mkdir()
+    (memories / "MEMORY.md").write_text("stale memory index\n")
+    (rollout_summaries / "rollout.md").write_text("stale rollout\n")
+    (extensions / "scratch.txt").write_text("stale extension\n")
+
+    help_result = subprocess.run(
+        [str(binary), "debug", "clear-memories", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig debug clear-memories" not in help_result.stderr:
+        raise AssertionError(
+            f"expected debug clear-memories help output:\n{help_result.stderr}"
+        )
+
+    result = subprocess.run(
+        [str(binary), "debug", "clear-memories"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "No state db found" not in result.stdout:
+        raise AssertionError(f"expected no-state-db output:\n{result.stdout}")
+    if "Cleared memory directories under" not in result.stdout:
+        raise AssertionError(f"expected clear-directories output:\n{result.stdout}")
+    assert_empty_dir(memories)
+    assert_empty_dir(extensions)
+
+    with tempfile.TemporaryDirectory(prefix="codex-zig-memory-state-db.") as state_home:
+        state_env = env.copy()
+        state_env["CODEX_HOME"] = state_home
+        state_memories = Path(state_home) / "memories"
+        state_memories.mkdir()
+        state_memory_file = state_memories / "MEMORY.md"
+        state_memory_file.write_text("keep until full reset is implemented\n")
+        (Path(state_home) / "state_5.sqlite").write_text("placeholder\n")
+
+        state_result = subprocess.run(
+            [str(binary), "debug", "clear-memories"],
+            cwd=workspace,
+            env=state_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if state_result.returncode == 0:
+            raise AssertionError("debug clear-memories accepted an existing state db")
+        if "MemoryStateDbClearNotImplemented" not in state_result.stderr:
+            raise AssertionError(
+                f"expected state-db refusal:\n{state_result.stderr}"
+            )
+        if state_memory_file.read_text() != "keep until full reset is implemented\n":
+            raise AssertionError("state-db refusal should not clear memory directories")
+
+    with tempfile.TemporaryDirectory(prefix="codex-zig-memory-symlink.") as linked_home:
+        linked_env = env.copy()
+        linked_env["CODEX_HOME"] = linked_home
+        target = Path(linked_home) / "outside"
+        target.mkdir()
+        target_file = target / "keep.txt"
+        target_file.write_text("keep\n")
+        (Path(linked_home) / "memories").symlink_to(target, target_is_directory=True)
+
+        rejected = subprocess.run(
+            [str(binary), "debug", "clear-memories"],
+            cwd=workspace,
+            env=linked_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if rejected.returncode == 0:
+            raise AssertionError("debug clear-memories accepted a symlinked root")
+        if "SymlinkedMemoryRoot" not in rejected.stderr:
+            raise AssertionError(
+                f"expected symlinked-root rejection:\n{rejected.stderr}"
+            )
+        if target_file.read_text() != "keep\n":
+            raise AssertionError("symlink rejection modified the target directory")
+
+
 def run_remote_flag_smoke(
     binary: Path,
     env: dict[str, str],
@@ -934,6 +1038,7 @@ def run_e2e(binary: Path) -> str:
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
+            run_debug_clear_memories_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
 
