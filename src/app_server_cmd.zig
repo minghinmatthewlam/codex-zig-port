@@ -4525,6 +4525,7 @@ const CommandExecSandbox = struct {
     mode: config.SandboxMode,
     writable_roots: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
 
     fn deinit(self: *CommandExecSandbox, allocator: std.mem.Allocator) void {
         allocator.free(self.writable_roots);
@@ -4655,7 +4656,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     var sandboxed_argv: ?sandbox_mod.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox_mod.shouldSandbox(command_sandbox.mode)) blk: {
-        sandboxed_argv = try sandbox_mod.wrapArgvWithCwdOptions(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, sandbox_cwd, command_sandbox.include_cwd_write_root, true);
+        sandboxed_argv = try sandbox_mod.wrapArgvWithCwdOptions(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, sandbox_cwd, command_sandbox.include_cwd_write_root, command_sandbox.network_enabled);
         break :blk sandboxed_argv.?.argv;
     } else command;
 
@@ -4904,14 +4905,14 @@ fn parseCommandExecPermissionProfile(
         return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
     }
     if (std.mem.eql(u8, type_value.string, "external")) {
-        try validateCommandExecPermissionNetwork(value.object.get("network"));
+        _ = try parseCommandExecPermissionNetwork(value.object.get("network"));
         return error.CommandExecExternalSandboxNotImplemented;
     }
     if (!std.mem.eql(u8, type_value.string, "managed")) {
         return error.InvalidCommandExecPermissionProfileType;
     }
 
-    try validateCommandExecPermissionNetwork(value.object.get("network"));
+    const network_enabled = try parseCommandExecPermissionNetwork(value.object.get("network"));
     const file_system_value = value.object.get("file_system") orelse return error.InvalidCommandExecPermissionProfileFileSystem;
     if (file_system_value != .object) return error.InvalidCommandExecPermissionProfileFileSystem;
     const file_system_type = file_system_value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileFileSystemType;
@@ -4942,19 +4943,19 @@ fn parseCommandExecPermissionProfile(
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
         const roots = try summary.path_writable_roots.toOwnedSlice(allocator);
         summary.path_writable_roots = .empty;
-        return .{ .mode = .workspace_write, .writable_roots = roots, .include_cwd_write_root = summary.project_roots_write };
+        return .{ .mode = .workspace_write, .writable_roots = roots, .include_cwd_write_root = summary.project_roots_write, .network_enabled = network_enabled };
     }
     if (summary.root_read) {
-        return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0) };
+        return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     return error.UnsupportedCommandExecPermissionProfile;
 }
 
-fn validateCommandExecPermissionNetwork(value: ?std.json.Value) !void {
+fn parseCommandExecPermissionNetwork(value: ?std.json.Value) !bool {
     const network = value orelse return error.InvalidCommandExecPermissionProfileNetwork;
     if (network != .string) return error.InvalidCommandExecPermissionProfileNetwork;
-    if (std.mem.eql(u8, network.string, "restricted")) return;
-    if (std.mem.eql(u8, network.string, "enabled")) return;
+    if (std.mem.eql(u8, network.string, "restricted")) return false;
+    if (std.mem.eql(u8, network.string, "enabled")) return true;
     return error.InvalidCommandExecPermissionProfileNetwork;
 }
 
