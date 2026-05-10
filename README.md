@@ -118,8 +118,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - read app-server config basics plus effective feature flags, user
   config-origin/layer metadata, user sandbox workspace settings, user tools
   and apps config including app defaults, policy flags, and per-app tool
-  overrides, trusted project-stack scalar, tool, and sandbox workspace layers,
-  system scalar/tool/app/sandbox workspace precedence, required empty
+  overrides, trusted project-stack scalar, tool, app, and sandbox workspace
+  layers, system scalar/tool/app/sandbox workspace precedence, required empty
   user/system layers, and legacy managed scalar/tool/sandbox overrides with
   `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
@@ -267,8 +267,8 @@ account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read with user origin/layer metadata, user
 sandbox workspace settings, tools/apps config including app defaults, policy
-flags, and per-app tool overrides, trusted project scalar and sandbox workspace
-layers plus project tool layers, system scalar/tool/app/sandbox workspace
+flags, and per-app tool overrides, trusted project scalar, tool, app, and
+sandbox workspace layers, system scalar/tool/app/sandbox workspace
 precedence, required empty user/system layers, and legacy managed
 scalar/tool/sandbox overrides,
 config-value-write including table-object merge/replace behavior,
