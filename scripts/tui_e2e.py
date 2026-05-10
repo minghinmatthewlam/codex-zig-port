@@ -1165,27 +1165,9 @@ def run_debug_stub_smoke(
         raise AssertionError(
             f"expected debug trace-reduce help output:\n{trace_help.stderr}"
         )
-
-    trace_result = subprocess.run(
-        [
-            str(binary),
-            "debug",
-            "trace-reduce",
-            "--output",
-            str(workspace / "state.json"),
-            str(workspace / "trace-bundle"),
-        ],
-        cwd=workspace,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if trace_result.returncode == 0:
-        raise AssertionError("debug trace-reduce unexpectedly succeeded")
-    if "parsed but not implemented yet" not in trace_result.stderr:
+    if "Replays stable rollout trace bundle lifecycle events into state JSON" not in trace_help.stderr:
         raise AssertionError(
-            f"expected trace-reduce not-implemented output:\n{trace_result.stderr}"
+            f"expected debug trace-reduce implemented help output:\n{trace_help.stderr}"
         )
 
 

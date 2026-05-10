@@ -841,6 +841,202 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_debug_trace_reduce_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-trace-reduce-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        bundle = temp_root / "trace-bundle"
+        payloads = bundle / "payloads"
+        payloads.mkdir(parents=True)
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "trace_id": "trace-1",
+                    "rollout_id": "rollout-1",
+                    "root_thread_id": "thread-root",
+                    "started_at_unix_ms": 1000,
+                    "raw_event_log": "trace.jsonl",
+                    "payloads_dir": "payloads",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (payloads / "1.json").write_text(
+            json.dumps({"agent_path": "/root", "nickname": "Root", "model": "gpt-test"}),
+            encoding="utf-8",
+        )
+        (payloads / "2.json").write_text(
+            json.dumps({"model": "gpt-test", "input": []}),
+            encoding="utf-8",
+        )
+        (payloads / "3.json").write_text(
+            json.dumps({"response_id": "resp-1", "output": []}),
+            encoding="utf-8",
+        )
+
+        metadata_payload = {
+            "raw_payload_id": "raw_payload:1",
+            "kind": {"type": "session_metadata"},
+            "path": "payloads/1.json",
+        }
+        request_payload = {
+            "raw_payload_id": "raw_payload:2",
+            "kind": {"type": "inference_request"},
+            "path": "payloads/2.json",
+        }
+        response_payload = {
+            "raw_payload_id": "raw_payload:3",
+            "kind": {"type": "inference_response"},
+            "path": "payloads/3.json",
+        }
+        events = [
+            {
+                "schema_version": 1,
+                "seq": 1,
+                "wall_time_unix_ms": 1000,
+                "rollout_id": "rollout-1",
+                "thread_id": None,
+                "codex_turn_id": None,
+                "payload": {"type": "rollout_started", "trace_id": "trace-1", "root_thread_id": "thread-root"},
+            },
+            {
+                "schema_version": 1,
+                "seq": 2,
+                "wall_time_unix_ms": 1010,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": None,
+                "payload": {
+                    "type": "thread_started",
+                    "thread_id": "thread-root",
+                    "agent_path": "/root",
+                    "metadata_payload": metadata_payload,
+                },
+            },
+            {
+                "schema_version": 1,
+                "seq": 3,
+                "wall_time_unix_ms": 1020,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": "turn-1",
+                "payload": {
+                    "type": "codex_turn_started",
+                    "codex_turn_id": "turn-1",
+                    "thread_id": "thread-root",
+                },
+            },
+            {
+                "schema_version": 1,
+                "seq": 4,
+                "wall_time_unix_ms": 1030,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": "turn-1",
+                "payload": {
+                    "type": "inference_started",
+                    "inference_call_id": "inference-1",
+                    "thread_id": "thread-root",
+                    "codex_turn_id": "turn-1",
+                    "model": "gpt-test",
+                    "provider_name": "test-provider",
+                    "request_payload": request_payload,
+                },
+            },
+            {
+                "schema_version": 1,
+                "seq": 5,
+                "wall_time_unix_ms": 1040,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": "turn-1",
+                "payload": {
+                    "type": "inference_completed",
+                    "inference_call_id": "inference-1",
+                    "response_id": "resp-1",
+                    "upstream_request_id": "req-1",
+                    "response_payload": response_payload,
+                },
+            },
+            {
+                "schema_version": 1,
+                "seq": 6,
+                "wall_time_unix_ms": 1050,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": "turn-1",
+                "payload": {"type": "codex_turn_ended", "codex_turn_id": "turn-1", "status": "completed"},
+            },
+            {
+                "schema_version": 1,
+                "seq": 7,
+                "wall_time_unix_ms": 1060,
+                "rollout_id": "rollout-1",
+                "thread_id": "thread-root",
+                "codex_turn_id": None,
+                "payload": {"type": "thread_ended", "thread_id": "thread-root", "status": "completed"},
+            },
+            {
+                "schema_version": 1,
+                "seq": 8,
+                "wall_time_unix_ms": 1070,
+                "rollout_id": "rollout-1",
+                "thread_id": None,
+                "codex_turn_id": None,
+                "payload": {"type": "rollout_ended", "status": "completed"},
+            },
+        ]
+        (bundle / "trace.jsonl").write_text(
+            "".join(json.dumps(event) + "\n" for event in events),
+            encoding="utf-8",
+        )
+
+        output = temp_root / "reduced.json"
+        result = subprocess.run(
+            [str(binary.resolve()), "debug", "trace-reduce", "--output", str(output), str(bundle)],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == f"{output}\n"
+        assert result.stderr == ""
+
+        state = json.loads(output.read_text(encoding="utf-8"))
+        assert state["schema_version"] == 1
+        assert state["trace_id"] == "trace-1"
+        assert state["rollout_id"] == "rollout-1"
+        assert state["status"] == "completed"
+        assert state["ended_at_unix_ms"] == 1070
+        assert state["root_thread_id"] == "thread-root"
+        assert state["threads"]["thread-root"]["agent_path"] == "/root"
+        assert state["threads"]["thread-root"]["nickname"] == "Root"
+        assert state["threads"]["thread-root"]["default_model"] == "gpt-test"
+        assert state["threads"]["thread-root"]["origin"] == {"type": "root"}
+        assert state["threads"]["thread-root"]["execution"]["status"] == "completed"
+        assert state["codex_turns"]["turn-1"]["thread_id"] == "thread-root"
+        assert state["codex_turns"]["turn-1"]["execution"]["status"] == "completed"
+        inference = state["inference_calls"]["inference-1"]
+        assert inference["response_id"] == "resp-1"
+        assert inference["upstream_request_id"] == "req-1"
+        assert inference["raw_request_payload_id"] == "raw_payload:2"
+        assert inference["raw_response_payload_id"] == "raw_payload:3"
+        assert inference["execution"]["status"] == "completed"
+        assert state["raw_payloads"]["raw_payload:1"]["kind"] == {"type": "session_metadata"}
+        assert state["raw_payloads"]["raw_payload:2"]["path"] == "payloads/2.json"
+        assert state["raw_payloads"]["raw_payload:3"]["kind"] == {"type": "inference_response"}
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -855,6 +1051,7 @@ def main() -> None:
     run_full_auto_compat_smoke(binary)
     run_removed_top_level_command_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
+    run_debug_trace_reduce_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
@@ -867,6 +1064,7 @@ def main() -> None:
     print("cli-full-auto-compat-e2e: ok")
     print("cli-removed-top-level-e2e: ok")
     print("cli-sandbox-permission-profile-e2e: ok")
+    print("cli-debug-trace-reduce-e2e: ok")
 
 
 if __name__ == "__main__":
