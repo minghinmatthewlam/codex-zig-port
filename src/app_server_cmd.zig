@@ -2179,6 +2179,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "fuzzyFileSearch")) {
         return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
     }
+    if (isThreadMethod(method)) {
+        return try handleThreadMethod(allocator, id_value.?, method, object.get("params"));
+    }
     if (isFuzzyFileSearchSessionMethod(method)) {
         return try handleFuzzyFileSearchSessionMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -2331,6 +2334,42 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
     }
     try out.appendSlice(allocator, "]}");
     return out.toOwnedSlice(allocator);
+}
+
+fn isThreadMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "thread/loaded/list");
+}
+
+fn handleThreadMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "thread/loaded/list")) {
+        if (validateThreadLoadedListParams(params_value)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
+    }
+    return renderParsedButNotImplemented(allocator, id_value, method);
+}
+
+fn validateThreadLoadedListParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return "thread/loaded/list params must be an object";
+    if (params.object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (params.object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
+    }
+    return null;
 }
 
 fn isFuzzyFileSearchSessionMethod(method: []const u8) bool {
