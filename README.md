@@ -97,8 +97,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake
-- generate minimal app-server JSON Schema bundles with
-  `app-server generate-json-schema -o DIR [--experimental]` and the hidden
+- generate minimal app-server TypeScript bindings and JSON Schema bundles with
+  `app-server generate-ts -o DIR [--experimental]` and
+  `app-server generate-json-schema -o DIR [--experimental]`, plus the hidden
   internal `RolloutLine.json` schema with
   `app-server generate-internal-json-schema -o DIR`
 - handle app-server filesystem JSON-RPC methods for read, write, mkdir,
@@ -301,8 +302,8 @@ requirements precedence and legacy managed-config requirements, and a mock
 backend, checks app-server experimental
 feature listing and runtime
 enablement patching against temporary config homes, verifies minimal app-server
-JSON Schema generation and the hidden internal `RolloutLine.json` schema
-generator, and checks app-server flag
+TypeScript/JSON Schema generation and the hidden internal `RolloutLine.json`
+schema generator, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
 CLI smokes for profile-scoped feature enablement writes and reads, `exec review`
 dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
