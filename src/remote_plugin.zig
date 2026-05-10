@@ -112,6 +112,11 @@ const RemoteWorkspacePluginCreateResponsePayload = struct {
     share_url: ?[]const u8 = null,
 };
 
+const ArchiveTreeEntry = struct {
+    name: []u8,
+    kind: std.Io.File.Kind,
+};
+
 const RemotePluginInstalledItemPayload = struct {
     id: []const u8,
     name: ?[]const u8 = null,
@@ -1526,7 +1531,7 @@ fn archivePluginForUpload(allocator: std.mem.Allocator, plugin_path: []const u8)
     const tar_bytes = try tar_out.toOwnedSlice();
     defer allocator.free(tar_bytes);
 
-    return gzipStored(allocator, tar_bytes, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
+    return gzipCompressed(allocator, tar_bytes, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
 }
 
 fn appendPluginTreeToTar(
@@ -1539,19 +1544,23 @@ fn appendPluginTreeToTar(
     var dir = try std.Io.Dir.openDirAbsolute(io, current_path, .{ .iterate = true });
     defer dir.close(io);
 
-    var names = std.ArrayList([]u8).empty;
+    var entries = std.ArrayList(ArchiveTreeEntry).empty;
     defer {
-        for (names.items) |name| allocator.free(name);
-        names.deinit(allocator);
+        for (entries.items) |entry| allocator.free(entry.name);
+        entries.deinit(allocator);
     }
 
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
-        try names.append(allocator, try allocator.dupe(u8, entry.name));
+        try entries.append(allocator, .{
+            .name = try allocator.dupe(u8, entry.name),
+            .kind = entry.kind,
+        });
     }
-    std.mem.sort([]u8, names.items, {}, stringSliceLessThan);
+    std.mem.sort(ArchiveTreeEntry, entries.items, {}, archiveTreeEntryLessThan);
 
-    for (names.items) |name| {
+    for (entries.items) |entry| {
+        const name = entry.name;
         const full_path = try std.fs.path.join(allocator, &.{ current_path, name });
         defer allocator.free(full_path);
         const rel_path = if (relative_prefix.len == 0)
@@ -1560,11 +1569,10 @@ fn appendPluginTreeToTar(
             try std.fmt.allocPrint(allocator, "{s}/{s}", .{ relative_prefix, name });
         defer allocator.free(rel_path);
 
-        const metadata = try std.Io.Dir.cwd().statFile(io, full_path, .{});
-        if (metadata.kind == .directory) {
+        if (entry.kind == .directory) {
             try tar_writer.writeDir(rel_path, .{ .mode = 0o755, .mtime = 0 });
             try appendPluginTreeToTar(allocator, tar_writer, full_path, rel_path);
-        } else if (metadata.kind == .file) {
+        } else if (entry.kind == .file) {
             const bytes = try std.Io.Dir.cwd().readFileAlloc(io, full_path, allocator, .limited(REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES + 1));
             defer allocator.free(bytes);
             try tar_writer.writeFileBytes(rel_path, bytes, .{ .mode = 0o644, .mtime = 0 });
@@ -1574,30 +1582,18 @@ fn appendPluginTreeToTar(
     }
 }
 
-fn stringSliceLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
-    return std.mem.lessThan(u8, lhs, rhs);
+fn archiveTreeEntryLessThan(_: void, lhs: ArchiveTreeEntry, rhs: ArchiveTreeEntry) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
 }
 
-fn gzipStored(allocator: std.mem.Allocator, payload: []const u8, max_bytes: usize) ![]const u8 {
-    var out = try std.Io.Writer.Allocating.initCapacity(allocator, payload.len + 32 + ((payload.len / 65535) + 1) * 5);
+fn gzipCompressed(allocator: std.mem.Allocator, payload: []const u8, max_bytes: usize) ![]const u8 {
+    var out = try std.Io.Writer.Allocating.initCapacity(allocator, @min(payload.len + 18, max_bytes + 1));
     errdefer out.deinit();
 
-    try out.writer.writeAll(&.{ 0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 });
-    var offset: usize = 0;
-    while (true) {
-        const remaining = payload.len - offset;
-        const chunk_len = @min(remaining, 65535);
-        const final_block = offset + chunk_len >= payload.len;
-        try out.writer.writeByte(if (final_block) 0x01 else 0x00);
-        const len16: u16 = @intCast(chunk_len);
-        try out.writer.writeInt(u16, len16, .little);
-        try out.writer.writeInt(u16, ~len16, .little);
-        try out.writer.writeAll(payload[offset .. offset + chunk_len]);
-        offset += chunk_len;
-        if (final_block) break;
-    }
-    try out.writer.writeInt(u32, std.hash.Crc32.hash(payload), .little);
-    try out.writer.writeInt(u32, @as(u32, @truncate(payload.len)), .little);
+    var compressor_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+    var compressor = try std.compress.flate.Compress.init(&out.writer, &compressor_buffer, .gzip, .default);
+    try compressor.writer.writeAll(payload);
+    try compressor.finish();
 
     if (out.writer.end > max_bytes) return error.RemotePluginArchiveTooLarge;
     return out.toOwnedSlice();
@@ -2111,6 +2107,28 @@ test "remote share archive is gzip tar with plugin files" {
     }
     try std.testing.expect(saw_manifest);
     try std.testing.expect(saw_skill);
+}
+
+test "remote share archive rejects symlink entries" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "shared/.codex-plugin");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "shared/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"shared\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "outside.txt",
+        .data = "outside",
+    });
+    try dir.dir.symLink(io, "../outside.txt", "shared/leak.txt", .{});
+
+    const plugin_path = try dir.dir.realPathFileAlloc(io, "shared", allocator);
+    defer allocator.free(plugin_path);
+    try std.testing.expectError(error.RemotePluginUnsupportedArchiveEntry, archivePluginForUpload(allocator, plugin_path));
 }
 
 test "remote share local path removal preserves unrelated mappings" {
