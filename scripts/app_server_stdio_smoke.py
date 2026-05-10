@@ -4074,6 +4074,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "",
                     "[sandbox_workspace_write]",
                     'writable_roots = ["/tmp/codex-zig-managed-root"]',
+                    "network_access = false",
                     "exclude_tmpdir_env_var = true",
                     "",
                 ]
@@ -4092,7 +4093,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["sandbox_mode"] == "danger-full-access"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
-            "network_access": True,
+            "network_access": False,
             "exclude_tmpdir_env_var": True,
             "exclude_slash_tmp": True,
         }
@@ -4105,6 +4106,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model",
             "approval_policy",
             "sandbox_workspace_write.writable_roots.0",
+            "sandbox_workspace_write.network_access",
             "sandbox_workspace_write.exclude_tmpdir_env_var",
         ]:
             assert managed_origins[key]["name"] == managed_source
@@ -4112,7 +4114,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         for key in [
             "profile",
             "sandbox_mode",
-            "sandbox_workspace_write.network_access",
             "sandbox_workspace_write.exclude_slash_tmp",
             "web_search",
             "service_tier",
