@@ -331,7 +331,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
     else
-        try auth.loadForConfig(allocator, cfg);
+        try auth.loadForConfig(allocator, &cfg);
     var credentials_owned = true;
     defer if (credentials_owned) credentials.deinit(allocator);
 

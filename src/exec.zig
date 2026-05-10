@@ -163,7 +163,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var credentials = if (effective_oss)
         try auth.localOssCredentials(allocator)
     else
-        try auth.loadForConfig(allocator, cfg);
+        try auth.loadForConfig(allocator, &cfg);
     defer credentials.deinit(allocator);
 
     var output_schema = try loadOutputSchema(allocator, parsed.output_schema_file);

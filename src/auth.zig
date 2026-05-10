@@ -104,7 +104,7 @@ pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
     return loadWithProviderAuth(allocator, codex_home, null, null, true);
 }
 
-pub fn loadForConfig(allocator: std.mem.Allocator, cfg: config.Config) !Credentials {
+pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
     return loadWithProviderAuth(
         allocator,
         cfg.codex_home,

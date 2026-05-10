@@ -199,7 +199,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
     else
-        try auth.loadForConfig(allocator, cfg);
+        try auth.loadForConfig(allocator, &cfg);
     defer credentials.deinit(allocator);
 
     var transcript = session.Transcript{};
