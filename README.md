@@ -59,6 +59,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - answer app-server model catalog and provider-capability JSON-RPC methods
 - report app-server account state with `account/read` for no-auth, API-key,
   ChatGPT, Bedrock, custom no-auth provider, and local-OSS cases
+- remove app-server auth with `account/logout` and emit `account/updated`
 - read app-server config basics plus effective feature flags with `config/read`
 - report absent managed config requirements with `configRequirements/read`
 - list app-server experimental feature metadata and patch process-local runtime
@@ -135,10 +136,10 @@ hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
 directory listing, copy, and remove behavior against a temporary directory,
 checks app-server model catalog, provider-capability, account-read,
-config-read, and config-requirements RPCs against temporary config homes,
-checks app-server experimental feature listing and runtime enablement patching
-against temporary config homes, and checks app-server flag compatibility for
-analytics defaults plus websocket auth parsing. Run
+account-logout, config-read, and config-requirements RPCs against temporary
+config homes, checks app-server experimental feature listing and runtime
+enablement patching against temporary config homes, and checks app-server flag
+compatibility for analytics defaults plus websocket auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
