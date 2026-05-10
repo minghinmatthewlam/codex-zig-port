@@ -65,8 +65,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   metadata, installed/enabled state, disabled remote skills, app ids, and
   remote source summaries
 - read remote app-server plugin skill Markdown with `plugin/skill/read`
-- list, retarget, and delete remote app-server plugin shares with
-  `plugin/share/list`, `plugin/share/updateTargets`, and `plugin/share/delete`
+- create, list, retarget, and delete remote app-server plugin shares with
+  `plugin/share/save`, `plugin/share/list`, `plugin/share/updateTargets`, and
+  `plugin/share/delete`
 - uninstall local and remote app-server plugins with `plugin/uninstall`,
   including local cache/config cleanup and remote cloud mutation
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
@@ -179,9 +180,9 @@ script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 stubs, local app-server `plugin/list` marketplace discovery, remote
 `plugin/list` catalog fetching, remote `plugin/read` detail fetching, remote
-`plugin/skill/read` Markdown fetching, remote plugin share list/update/delete
+`plugin/skill/read` Markdown fetching, remote plugin share save/list/update/delete
 behavior, local `plugin/uninstall` cache/config cleanup, remote
-`plugin/uninstall` cache cleanup, remaining plugin save/install RPC stubs, and
+`plugin/uninstall` cache cleanup, remaining plugin install RPC stub, and
 local `plugin/read` details for skills, hooks, apps, and MCP servers,
 verifies app-server hooks-list discovery for user and
 project `config.toml` / `hooks.json` command hooks, enabled local plugin-cache
