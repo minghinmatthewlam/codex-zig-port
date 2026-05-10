@@ -24,7 +24,9 @@ pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
+const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
 const UNIX_MANAGED_CONFIG_SYSTEM_PATH = "/etc/codex/managed_config.toml";
+const UNIX_SYSTEM_CONFIG_PATH = "/etc/codex/config.toml";
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -3221,6 +3223,19 @@ fn managedConfigPath(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, UNIX_MANAGED_CONFIG_SYSTEM_PATH);
 }
 
+fn systemConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, SYSTEM_CONFIG_PATH_ENV_VAR)) |path| {
+        if (path.len > 0) return path;
+        allocator.free(path);
+    }
+    if (builtin.os.tag == .windows) {
+        const codex_home = try resolveCodexHome(allocator);
+        defer allocator.free(codex_home);
+        return std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    }
+    return allocator.dupe(u8, UNIX_SYSTEM_CONFIG_PATH);
+}
+
 fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requirements: LegacyManagedConfigRequirements) ![]const u8 {
     if (requirements.isEmpty()) return allocator.dupe(u8, "{\"requirements\":null}");
 
@@ -3574,12 +3589,17 @@ fn handleConfigRead(
     };
     defer if (managed_layer) |*layer| layer.deinit(allocator);
 
+    var system_layer = loadConfigReadSystemLayer(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read system config", err);
+    };
+    defer if (system_layer) |*layer| layer.deinit(allocator);
+
     var project_layers = loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, config_bytes) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read project config", err);
     };
     defer project_layers.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, managed_layer, project_layers, user_layer);
+    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, managed_layer, project_layers, user_layer, system_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -3723,6 +3743,7 @@ fn renderConfigReadResponse(
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
 ) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -3736,7 +3757,7 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
     const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse cfg.sandbox_mode else project_layers.sandboxMode() orelse cfg.sandbox_mode;
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
-    try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer));
+    try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer, system_layer));
     const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, if (user_layer) |layer| layer.tools else null);
@@ -3750,9 +3771,9 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
     try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
     try result.appendSlice(allocator, "},\"origins\":");
-    try appendConfigReadOrigins(allocator, &result, managed_layer, project_layers, user_layer);
+    try appendConfigReadOrigins(allocator, &result, managed_layer, project_layers, user_layer, system_layer);
     try result.appendSlice(allocator, ",\"layers\":");
-    try appendConfigReadLayers(allocator, &result, cfg, include_layers, managed_layer, project_layers, user_layer);
+    try appendConfigReadLayers(allocator, &result, cfg, include_layers, managed_layer, project_layers, user_layer, system_layer);
     try result.appendSlice(allocator, "}");
 
     return result.toOwnedSlice(allocator);
@@ -3805,6 +3826,21 @@ const ConfigReadProjectLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
+        for (self.origin_keys) |key| allocator.free(key);
+        if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.sandbox_workspace_write.deinit(allocator);
+    }
+};
+
+const ConfigReadSystemLayer = struct {
+    file_path: []const u8,
+    version: []const u8,
+    origin_keys: []const []const u8,
+    sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
+
+    fn deinit(self: *ConfigReadSystemLayer, allocator: std.mem.Allocator) void {
+        allocator.free(self.file_path);
+        allocator.free(self.version);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.sandbox_workspace_write.deinit(allocator);
@@ -4030,21 +4066,23 @@ fn effectiveConfigReadSandboxWorkspaceWrite(
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
 ) ?ConfigReadSandboxWorkspaceWrite {
     const managed = if (managed_layer) |layer| layer.sandbox_workspace_write else ConfigReadSandboxWorkspaceWrite{};
     const project = project_layers.sandboxWorkspaceWrite();
     const user = if (user_layer) |layer| layer.sandbox_workspace_write else ConfigReadSandboxWorkspaceWrite{};
-    if (!managed.present and !project.present and !user.present) return null;
+    const system = if (system_layer) |layer| layer.sandbox_workspace_write else ConfigReadSandboxWorkspaceWrite{};
+    if (!managed.present and !project.present and !user.present and !system.present) return null;
 
     return .{
         .present = true,
-        .writable_roots = managed.writable_roots orelse project.writable_roots orelse user.writable_roots,
-        .network_access = if (managed.network_access_present) managed.network_access else if (project.network_access_present) project.network_access else user.network_access,
-        .network_access_present = managed.network_access_present or project.network_access_present or user.network_access_present,
-        .exclude_tmpdir_env_var = if (managed.exclude_tmpdir_env_var_present) managed.exclude_tmpdir_env_var else if (project.exclude_tmpdir_env_var_present) project.exclude_tmpdir_env_var else user.exclude_tmpdir_env_var,
-        .exclude_tmpdir_env_var_present = managed.exclude_tmpdir_env_var_present or project.exclude_tmpdir_env_var_present or user.exclude_tmpdir_env_var_present,
-        .exclude_slash_tmp = if (managed.exclude_slash_tmp_present) managed.exclude_slash_tmp else if (project.exclude_slash_tmp_present) project.exclude_slash_tmp else user.exclude_slash_tmp,
-        .exclude_slash_tmp_present = managed.exclude_slash_tmp_present or project.exclude_slash_tmp_present or user.exclude_slash_tmp_present,
+        .writable_roots = managed.writable_roots orelse project.writable_roots orelse user.writable_roots orelse system.writable_roots,
+        .network_access = if (managed.network_access_present) managed.network_access else if (project.network_access_present) project.network_access else if (user.network_access_present) user.network_access else system.network_access,
+        .network_access_present = managed.network_access_present or project.network_access_present or user.network_access_present or system.network_access_present,
+        .exclude_tmpdir_env_var = if (managed.exclude_tmpdir_env_var_present) managed.exclude_tmpdir_env_var else if (project.exclude_tmpdir_env_var_present) project.exclude_tmpdir_env_var else if (user.exclude_tmpdir_env_var_present) user.exclude_tmpdir_env_var else system.exclude_tmpdir_env_var,
+        .exclude_tmpdir_env_var_present = managed.exclude_tmpdir_env_var_present or project.exclude_tmpdir_env_var_present or user.exclude_tmpdir_env_var_present or system.exclude_tmpdir_env_var_present,
+        .exclude_slash_tmp = if (managed.exclude_slash_tmp_present) managed.exclude_slash_tmp else if (project.exclude_slash_tmp_present) project.exclude_slash_tmp else if (user.exclude_slash_tmp_present) user.exclude_slash_tmp else system.exclude_slash_tmp,
+        .exclude_slash_tmp_present = managed.exclude_slash_tmp_present or project.exclude_slash_tmp_present or user.exclude_slash_tmp_present or system.exclude_slash_tmp_present,
     };
 }
 
@@ -4492,6 +4530,39 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     };
 }
 
+fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !?ConfigReadSystemLayer {
+    const file_path = try systemConfigPath(allocator);
+    errdefer allocator.free(file_path);
+    const bytes = try config.readConfigTomlFile(allocator, file_path);
+    const payload = bytes orelse {
+        allocator.free(file_path);
+        return null;
+    };
+    defer allocator.free(payload);
+
+    var origin_keys = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (origin_keys.items) |key| allocator.free(key);
+        origin_keys.deinit(allocator);
+    }
+
+    var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, payload);
+    errdefer sandbox_workspace_write.deinit(allocator);
+    try appendConfigReadSandboxWorkspaceOriginKeys(allocator, &origin_keys, sandbox_workspace_write);
+
+    const owned_origin_keys = if (origin_keys.items.len > 0)
+        try origin_keys.toOwnedSlice(allocator)
+    else
+        &.{};
+
+    return .{
+        .file_path = file_path,
+        .version = try configVersionAlloc(allocator, payload),
+        .origin_keys = owned_origin_keys,
+        .sandbox_workspace_write = sandbox_workspace_write,
+    };
+}
+
 fn loadConfigReadSandboxWorkspaceWrite(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadSandboxWorkspaceWrite {
     var sandbox = ConfigReadSandboxWorkspaceWrite{};
     errdefer sandbox.deinit(allocator);
@@ -4841,6 +4912,7 @@ fn appendConfigReadOrigins(
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
 ) !void {
     try result.append(allocator, '{');
     var first = true;
@@ -4870,6 +4942,20 @@ fn appendConfigReadOrigins(
         try appendConfigReadUserToolsOrigins(allocator, result, &first, layer);
         try appendConfigReadUserAppsOrigins(allocator, result, &first, layer);
         try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, managed_layer, project_layers, layer);
+    }
+    if (system_layer) |layer| {
+        for (layer.origin_keys) |key| {
+            if (isConfigReadSandboxWorkspaceRootOriginKey(key)) {
+                if (if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) continue;
+                if (project_layers.hasSandboxWorkspaceWriteRoot()) continue;
+                if (if (user_layer) |user| user.sandbox_workspace_write.writable_roots != null else false) continue;
+            } else {
+                if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
+                if (project_layers.hasOriginKey(key)) continue;
+                if (if (user_layer) |user| configReadUserLayerHasOriginKey(user, key) else false) continue;
+            }
+            try appendConfigReadSystemOrigin(allocator, result, &first, layer, key);
+        }
     }
     try result.append(allocator, '}');
 }
@@ -5025,6 +5111,16 @@ fn configReadProjectSliceHasOriginKey(layers: []const ConfigReadProjectLayer, ke
     return false;
 }
 
+fn configReadUserLayerHasOriginKey(layer: ConfigReadUserLayer, key: []const u8) bool {
+    for (layer.origin_keys) |origin_key| {
+        if (std.mem.eql(u8, origin_key, key)) return true;
+    }
+    if (std.mem.eql(u8, key, "sandbox_workspace_write.network_access")) return layer.sandbox_workspace_write.network_access_present;
+    if (std.mem.eql(u8, key, "sandbox_workspace_write.exclude_tmpdir_env_var")) return layer.sandbox_workspace_write.exclude_tmpdir_env_var_present;
+    if (std.mem.eql(u8, key, "sandbox_workspace_write.exclude_slash_tmp")) return layer.sandbox_workspace_write.exclude_slash_tmp_present;
+    return false;
+}
+
 fn configReadProjectSliceHasSandboxWorkspaceWriteRoot(layers: []const ConfigReadProjectLayer) bool {
     for (layers) |layer| {
         if (layer.sandbox_workspace_write.writable_roots != null) return true;
@@ -5057,6 +5153,18 @@ fn appendConfigReadProjectOrigin(
 ) !void {
     try appendConfigReadOriginName(allocator, result, first, key);
     try appendConfigReadProjectSource(allocator, result, layer.dot_codex_folder);
+    try appendConfigReadOriginVersion(allocator, result, layer.version);
+}
+
+fn appendConfigReadSystemOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadSystemLayer,
+    key: []const u8,
+) !void {
+    try appendConfigReadOriginName(allocator, result, first, key);
+    try appendConfigReadSystemSource(allocator, result, layer.file_path);
     try appendConfigReadOriginVersion(allocator, result, layer.version);
 }
 
@@ -5109,6 +5217,7 @@ fn appendConfigReadLayers(
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
 ) !void {
     if (!include_layers) {
         try result.appendSlice(allocator, "null");
@@ -5125,6 +5234,9 @@ fn appendConfigReadLayers(
     }
     if (user_layer) |layer| {
         try appendConfigReadUserLayer(allocator, result, &first, cfg, layer);
+    }
+    if (system_layer) |layer| {
+        try appendConfigReadSystemLayer(allocator, result, &first, layer);
     }
     try result.append(allocator, ']');
 }
@@ -5181,6 +5293,23 @@ fn appendConfigReadUserLayer(
     try result.append(allocator, '}');
 }
 
+fn appendConfigReadSystemLayer(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadSystemLayer,
+) !void {
+    try appendConfigReadLayerStart(allocator, result, first);
+    try appendConfigReadSystemSource(allocator, result, layer.file_path);
+    try result.appendSlice(allocator, ",\"version\":");
+    const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
+    defer allocator.free(version_json);
+    try result.appendSlice(allocator, version_json);
+    try result.appendSlice(allocator, ",\"config\":");
+    try appendConfigReadSystemLayerConfig(allocator, result, layer);
+    try result.append(allocator, '}');
+}
+
 fn appendConfigReadLayerStart(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
@@ -5214,6 +5343,18 @@ fn appendConfigReadUserSource(
     const file_json = try std.json.Stringify.valueAlloc(allocator, file_path, .{});
     defer allocator.free(file_json);
     try result.appendSlice(allocator, "{\"type\":\"user\",\"file\":");
+    try result.appendSlice(allocator, file_json);
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadSystemSource(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    file_path: []const u8,
+) !void {
+    const file_json = try std.json.Stringify.valueAlloc(allocator, file_path, .{});
+    defer allocator.free(file_json);
+    try result.appendSlice(allocator, "{\"type\":\"system\",\"file\":");
     try result.appendSlice(allocator, file_json);
     try result.append(allocator, '}');
 }
@@ -5269,6 +5410,20 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.model) |value| try appendJsonStringField(allocator, result, &first, "model", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
+    if (layer.sandbox_workspace_write.present) {
+        try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
+        try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadSystemLayerConfig(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    layer: ConfigReadSystemLayer,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
         try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
