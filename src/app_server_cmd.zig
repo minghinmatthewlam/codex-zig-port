@@ -999,6 +999,15 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/skill/read")) {
         return handlePluginSkillRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/share/updateTargets")) {
+        return handlePluginShareUpdateTargets(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "plugin/share/list")) {
+        return handlePluginShareList(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "plugin/share/delete")) {
+        return handlePluginShareDelete(allocator, state, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "plugin/uninstall")) {
         return handlePluginUninstall(allocator, state, id_value, params_value);
     }
@@ -1144,6 +1153,137 @@ fn parsePluginSkillReadParams(params_value: ?std.json.Value) !ParsedPluginSkillR
         .remote_plugin_id = remote_plugin_id,
         .skill_name = skill_name,
     };
+}
+
+fn handlePluginShareList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validateOptionalObjectParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    var context = loadRemotePluginShareContext(allocator) catch |err| {
+        return renderRemotePluginShareContextError(allocator, id_value, "plugin/share/list", err);
+    };
+    defer context.deinit(allocator);
+
+    const result = remote_plugin.fetchShareListJson(allocator, context.cfg.chatgpt_base_url, context.credentials, context.cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/share/list failed to list remote plugin shares", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handlePluginShareUpdateTargets(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validatePluginShareUpdateTargetsParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const params = parsePluginShareUpdateTargetsParams(params_value);
+    if (!remote_plugin.isValidRemotePluginId(params.remote_plugin_id)) {
+        return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
+    }
+
+    var context = loadRemotePluginShareContext(allocator) catch |err| {
+        return renderRemotePluginShareContextError(allocator, id_value, "plugin/share/updateTargets", err);
+    };
+    defer context.deinit(allocator);
+
+    const result = remote_plugin.updateShareTargetsJson(allocator, context.cfg.chatgpt_base_url, context.credentials, params.remote_plugin_id, params.share_targets) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/share/updateTargets failed to update remote plugin share targets", err);
+    };
+    defer allocator.free(result);
+    clearSkillsListCache(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handlePluginShareDelete(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validatePluginShareDeleteParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const remote_plugin_id = parsePluginShareDeleteParams(params_value);
+    if (!remote_plugin.isValidRemotePluginId(remote_plugin_id)) {
+        return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
+    }
+
+    var context = loadRemotePluginShareContext(allocator) catch |err| {
+        return renderRemotePluginShareContextError(allocator, id_value, "plugin/share/delete", err);
+    };
+    defer context.deinit(allocator);
+
+    remote_plugin.deleteShare(allocator, context.cfg.chatgpt_base_url, context.credentials, context.cfg.codex_home, remote_plugin_id) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/share/delete failed to delete remote plugin share", err);
+    };
+    clearSkillsListCache(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+const RemotePluginShareContext = struct {
+    cfg: config.Config,
+    credentials: auth_mod.Credentials,
+
+    fn deinit(self: *RemotePluginShareContext, allocator: std.mem.Allocator) void {
+        self.credentials.deinit(allocator);
+        self.cfg.deinit(allocator);
+    }
+};
+
+fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShareContext {
+    var cfg = try config.loadWithOptions(allocator, .{});
+    errdefer cfg.deinit(allocator);
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
+        return error.RemotePluginShareFeatureDisabled;
+    }
+
+    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        error.NoUsableAuth => return error.RemotePluginShareAuthRequired,
+        else => return err,
+    };
+    errdefer credentials.deinit(allocator);
+    switch (credentials.mode) {
+        .chatgpt, .agent_identity => {},
+        .api_key, .local_oss => return error.RemotePluginShareAuthRequired,
+    }
+
+    return .{ .cfg = cfg, .credentials = credentials };
+}
+
+fn renderRemotePluginShareContextError(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    err: anyerror,
+) ![]const u8 {
+    if (err == error.RemotePluginShareFeatureDisabled) {
+        return renderJsonRpcError(allocator, id_value, -32600, "plugin sharing is not enabled");
+    }
+    if (err == error.RemotePluginShareAuthRequired) {
+        return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to share plugins");
+    }
+
+    const context = try std.fmt.allocPrint(allocator, "{s} failed to load remote plugin share context", .{method});
+    defer allocator.free(context);
+    return renderJsonRpcErrorForFailure(allocator, id_value, context, err);
+}
+
+const ParsedPluginShareUpdateTargetsParams = struct {
+    remote_plugin_id: []const u8,
+    share_targets: []const std.json.Value,
+};
+
+fn parsePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ParsedPluginShareUpdateTargetsParams {
+    const params = params_value.?;
+    const object = params.object;
+    return .{
+        .remote_plugin_id = object.get("remotePluginId").?.string,
+        .share_targets = object.get("shareTargets").?.array.items,
+    };
+}
+
+fn parsePluginShareDeleteParams(params_value: ?std.json.Value) []const u8 {
+    return params_value.?.object.get("remotePluginId").?.string;
 }
 
 fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -4450,9 +4590,6 @@ test "app-server plugin methods validate params and return not implemented" {
 
     const cases = [_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-update\",\"method\":\"plugin/share/updateTargets\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"shareTargets\":[{\"principalType\":\"workspace\",\"principalId\":\"workspace-1\"}]}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-list\",\"method\":\"plugin/share/list\",\"params\":{}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-delete\",\"method\":\"plugin/share/delete\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"gmail\"}}",
     };
 
@@ -4494,6 +4631,15 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_skill_name.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_skill_name.?, "\"code\":-32600") != null);
+
+    const invalid_share_id = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-share-id\",\"method\":\"plugin/share/delete\",\"params\":{\"remotePluginId\":\"plugins/Plugin_123\"}}",
+    );
+    defer allocator.free(invalid_share_id.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_share_id.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_share_id.?, "invalid remote plugin id") != null);
 
     const invalid_uninstall_id = try handleJsonRpcLine(
         allocator,
