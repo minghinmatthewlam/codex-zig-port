@@ -146,7 +146,7 @@ fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_
     const config_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const add = marketplace_config.addLocalMarketplace(allocator, config_bytes orelse "", source, ref_name, sparse_paths) catch |err| {
+    const add = marketplace_config.addMarketplace(allocator, codex_home, config_bytes orelse "", source, ref_name, sparse_paths) catch |err| {
         try printAddError(allocator, err);
         return err;
     };
@@ -154,9 +154,9 @@ fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_
     try config.writeConfigTomlFile(config_path, add.updated_config);
 
     if (add.already_added) {
-        std.debug.print("Marketplace `{s}` is already added from {s}.\n", .{ add.marketplace_name, add.installed_root });
+        std.debug.print("Marketplace `{s}` is already added from {s}.\n", .{ add.marketplace_name, add.source_display });
     } else {
-        std.debug.print("Added marketplace `{s}` from {s}.\n", .{ add.marketplace_name, add.installed_root });
+        std.debug.print("Added marketplace `{s}` from {s}.\n", .{ add.marketplace_name, add.source_display });
     }
     std.debug.print("Installed marketplace root: {s}\n", .{add.installed_root});
 }
@@ -184,7 +184,7 @@ fn removeMarketplaceAndPrint(allocator: std.mem.Allocator, marketplace_name: []c
 
 fn printAddError(allocator: std.mem.Allocator, err: anyerror) !void {
     return switch (err) {
-        error.UnsupportedMarketplaceSource => std.debug.print("codex-zig plugin marketplace add is parsed for git sources but not implemented yet\n", .{}),
+        error.InvalidMarketplaceSourceFormat => std.debug.print("invalid marketplace source format; expected owner/repo, a git URL, or a local marketplace path\n", .{}),
         error.MarketplaceSourceEmpty => std.debug.print("marketplace source must not be empty\n", .{}),
         error.RefUnsupportedForLocalSource => std.debug.print("--ref is only supported for git marketplace sources\n", .{}),
         error.SparseUnsupportedForLocalSource => std.debug.print("--sparse is only supported for git marketplace sources\n", .{}),
@@ -194,6 +194,7 @@ fn printAddError(allocator: std.mem.Allocator, err: anyerror) !void {
         error.InvalidMarketplaceName => std.debug.print("invalid marketplace name\n", .{}),
         error.ReservedMarketplaceName => std.debug.print("marketplace 'openai-curated' is reserved and cannot be added from this source\n", .{}),
         error.MarketplaceAlreadyAddedDifferentSource => std.debug.print("marketplace is already added from a different source; remove it before adding this source\n", .{}),
+        error.GitCommandFailed => std.debug.print("failed to clone marketplace git source\n", .{}),
         else => {
             const message = try std.fmt.allocPrint(allocator, "failed to add marketplace: {s}\n", .{@errorName(err)});
             defer allocator.free(message);

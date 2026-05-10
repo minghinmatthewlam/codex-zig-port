@@ -948,7 +948,7 @@ fn handleMarketplaceAdd(allocator: std.mem.Allocator, id_value: std.json.Value, 
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const add = marketplace_config.addLocalMarketplace(allocator, config_bytes orelse "", source, ref_name, sparse_paths) catch |err| {
+    const add = marketplace_config.addMarketplace(allocator, codex_home, config_bytes orelse "", source, ref_name, sparse_paths) catch |err| {
         return renderMarketplaceAddError(allocator, id_value, err);
     };
     defer add.deinit(allocator);
@@ -1008,7 +1008,7 @@ fn optionalStringArray(allocator: std.mem.Allocator, object: std.json.ObjectMap,
 
 fn renderMarketplaceAddError(allocator: std.mem.Allocator, id_value: std.json.Value, err: anyerror) ![]const u8 {
     return switch (err) {
-        error.UnsupportedMarketplaceSource => renderJsonRpcError(allocator, id_value, -32603, "marketplace/add source is parsed but not implemented yet"),
+        error.InvalidMarketplaceSourceFormat => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace source format; expected owner/repo, a git URL, or a local marketplace path"),
         error.MarketplaceSourceEmpty => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace source must not be empty"),
         error.RefUnsupportedForLocalSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: --ref is only supported for git marketplace sources"),
         error.SparseUnsupportedForLocalSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: --sparse is only supported for git marketplace sources"),
@@ -1018,6 +1018,7 @@ fn renderMarketplaceAddError(allocator: std.mem.Allocator, id_value: std.json.Va
         error.InvalidMarketplaceName => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace name"),
         error.ReservedMarketplaceName => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace 'openai-curated' is reserved and cannot be added from this source"),
         error.MarketplaceAlreadyAddedDifferentSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace is already added from a different source; remove it before adding this source"),
+        error.GitCommandFailed => renderJsonRpcError(allocator, id_value, -32603, "failed to clone marketplace git source"),
         else => renderJsonRpcErrorForFailure(allocator, id_value, "failed to add marketplace", err),
     };
 }
@@ -4880,14 +4881,14 @@ test "app-server marketplace methods validate params and preserve unsupported st
     var state = AppServerState{};
     defer state.deinit(allocator);
 
-    const valid_add = try handleJsonRpcLine(
+    const invalid_source_add = try handleJsonRpcLine(
         allocator,
         &state,
-        "{\"jsonrpc\":\"2.0\",\"id\":\"add\",\"method\":\"marketplace/add\",\"params\":{\"source\":\"owner/repo\",\"refName\":\"main\",\"sparsePaths\":[\"plugins/foo\"]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"add\",\"method\":\"marketplace/add\",\"params\":{\"source\":\"not-valid\",\"refName\":\"main\",\"sparsePaths\":[\"plugins/foo\"]}}",
     );
-    defer allocator.free(valid_add.?);
-    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "\"code\":-32603") != null);
-    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "marketplace/add source is parsed but not implemented yet") != null);
+    defer allocator.free(invalid_source_add.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_source_add.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_source_add.?, "invalid marketplace source format") != null);
 
     const valid_remove = try handleJsonRpcLine(
         allocator,
