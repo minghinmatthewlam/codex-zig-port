@@ -75,6 +75,24 @@ const NetworkRule = struct {
     }
 };
 
+const Examples = []const []const []const u8;
+
+const ParsedPrefixRule = struct {
+    rule: PrefixRule,
+    match_examples: ?Examples = null,
+    not_match_examples: ?Examples = null,
+};
+
+const PendingExampleValidation = struct {
+    match_examples: ?Examples = null,
+    not_match_examples: ?Examples = null,
+
+    fn deinit(self: PendingExampleValidation, allocator: std.mem.Allocator) void {
+        if (self.match_examples) |examples| freeExamples(allocator, examples);
+        if (self.not_match_examples) |examples| freeExamples(allocator, examples);
+    }
+};
+
 const RuleMatch = struct {
     rule: *const PrefixRule,
     matched_prefix: []const []const u8,
@@ -230,14 +248,33 @@ fn parsePolicy(
     network_rules: *std.ArrayList(NetworkRule),
 ) !void {
     var pos: usize = 0;
+    var pending_validations = std.ArrayList(PendingExampleValidation).empty;
+    defer {
+        for (pending_validations.items) |validation| validation.deinit(allocator);
+        pending_validations.deinit(allocator);
+    }
     while (findPolicyCallOpen(contents, pos)) |call| {
         const close_index = try findMatchingParen(contents, call.open_index);
         const body = contents[call.open_index + 1 .. close_index];
         switch (call.kind) {
             .prefix_rule => {
-                const rule = try parsePrefixRule(allocator, body);
-                errdefer rule.deinit(allocator);
-                try rules.append(allocator, rule);
+                var parsed = try parsePrefixRule(allocator, body);
+                var rule_appended = false;
+                var examples_appended = false;
+                errdefer {
+                    if (!rule_appended) parsed.rule.deinit(allocator);
+                    if (!examples_appended) {
+                        if (parsed.match_examples) |examples| freeExamples(allocator, examples);
+                        if (parsed.not_match_examples) |examples| freeExamples(allocator, examples);
+                    }
+                }
+                try rules.append(allocator, parsed.rule);
+                rule_appended = true;
+                try pending_validations.append(allocator, .{
+                    .match_examples = parsed.match_examples,
+                    .not_match_examples = parsed.not_match_examples,
+                });
+                examples_appended = true;
             },
             .host_executable => {
                 const host_executable = try parseHostExecutable(allocator, body);
@@ -252,6 +289,7 @@ fn parsePolicy(
         }
         pos = close_index + 1;
     }
+    try validatePendingExamples(rules.items, host_executables.items, pending_validations.items);
 }
 
 fn parsePolicyWithHosts(
@@ -366,12 +404,16 @@ fn findMatchingParen(contents: []const u8, open_index: usize) !usize {
     return error.UnbalancedExecPolicyRule;
 }
 
-fn parsePrefixRule(allocator: std.mem.Allocator, body: []const u8) !PrefixRule {
+fn parsePrefixRule(allocator: std.mem.Allocator, body: []const u8) !ParsedPrefixRule {
     var pattern: ?[]PatternToken = null;
     errdefer if (pattern) |owned| deinitPattern(allocator, owned);
     var decision: Decision = .allow;
     var justification: ?[]const u8 = null;
     errdefer if (justification) |owned| allocator.free(owned);
+    var match_examples: ?Examples = null;
+    errdefer if (match_examples) |owned| freeExamples(allocator, owned);
+    var not_match_examples: ?Examples = null;
+    errdefer if (not_match_examples) |owned| freeExamples(allocator, owned);
 
     var pos: usize = 0;
     while (try nextAssignment(body, &pos)) |assignment| {
@@ -394,12 +436,26 @@ fn parsePrefixRule(allocator: std.mem.Allocator, body: []const u8) !PrefixRule {
             justification = parsed;
             continue;
         }
+        if (std.mem.eql(u8, assignment.key, "match")) {
+            if (match_examples != null) return error.DuplicateExecPolicyField;
+            match_examples = try parseExamplesValue(allocator, assignment.value);
+            continue;
+        }
+        if (std.mem.eql(u8, assignment.key, "not_match")) {
+            if (not_match_examples != null) return error.DuplicateExecPolicyField;
+            not_match_examples = try parseExamplesValue(allocator, assignment.value);
+            continue;
+        }
     }
 
     return .{
-        .pattern = pattern orelse return error.MissingExecPolicyPattern,
-        .decision = decision,
-        .justification = justification,
+        .rule = .{
+            .pattern = pattern orelse return error.MissingExecPolicyPattern,
+            .decision = decision,
+            .justification = justification,
+        },
+        .match_examples = match_examples,
+        .not_match_examples = not_match_examples,
     };
 }
 
@@ -580,7 +636,46 @@ fn containsWhitespace(value: []const u8) bool {
     return false;
 }
 
-fn expectNetworkRuleParseError(
+fn validatePendingExamples(
+    rules: []const PrefixRule,
+    host_executables: []const HostExecutable,
+    validations: []const PendingExampleValidation,
+) !void {
+    for (validations) |validation| {
+        if (validation.match_examples) |examples| {
+            for (examples) |example| {
+                if (!anyRuleMatches(rules, host_executables, example)) return error.ExecPolicyExampleDidNotMatch;
+            }
+        }
+        if (validation.not_match_examples) |examples| {
+            for (examples) |example| {
+                if (anyRuleMatches(rules, host_executables, example)) return error.ExecPolicyExampleDidMatch;
+            }
+        }
+    }
+}
+
+fn anyRuleMatches(
+    rules: []const PrefixRule,
+    host_executables: []const HostExecutable,
+    command: []const []const u8,
+) bool {
+    for (rules) |rule| {
+        if (ruleMatches(rule, command, null)) return true;
+    }
+    if (command.len == 0) return false;
+    const program = command[0];
+    if (!std.fs.path.isAbsolute(program)) return false;
+    const basename = std.fs.path.basename(program);
+    if (basename.len == 0) return false;
+    if (!hostExecutableAllows(host_executables, basename, program)) return false;
+    for (rules) |rule| {
+        if (ruleMatches(rule, command, basename)) return true;
+    }
+    return false;
+}
+
+fn expectPolicyParseError(
     allocator: std.mem.Allocator,
     expected_error: anyerror,
     contents: []const u8,
@@ -702,8 +797,10 @@ fn parsePattern(allocator: std.mem.Allocator, value: []const u8) ![]PatternToken
         parser.skipTrivia();
         if (parser.consume(']')) break;
         const token = try parser.parsePatternToken();
-        errdefer token.deinit(allocator);
+        var token_appended = false;
+        errdefer if (!token_appended) token.deinit(allocator);
         try tokens.append(allocator, token);
+        token_appended = true;
         parser.skipTrivia();
         if (parser.consume(',')) continue;
         if (parser.consume(']')) break;
@@ -782,8 +879,10 @@ const ValueParser = struct {
             self.skipTrivia();
             if (self.consume(']')) break;
             const string = try self.parseString();
-            errdefer self.allocator.free(string);
+            var string_appended = false;
+            errdefer if (!string_appended) self.allocator.free(string);
             try values.append(self.allocator, string);
+            string_appended = true;
             self.skipTrivia();
             if (self.consume(',')) continue;
             if (self.consume(']')) break;
@@ -791,6 +890,43 @@ const ValueParser = struct {
         }
         if (!allow_empty and values.items.len == 0) return error.EmptyExecPolicyAlternative;
         return values.toOwnedSlice(self.allocator);
+    }
+
+    fn parseExamples(self: *ValueParser) !?Examples {
+        try self.expect('[');
+        var examples = std.ArrayList([]const []const u8).empty;
+        errdefer {
+            for (examples.items) |example| freeStringList(self.allocator, example);
+            examples.deinit(self.allocator);
+        }
+        while (true) {
+            self.skipTrivia();
+            if (self.consume(']')) break;
+            const example = try self.parseExample();
+            var example_appended = false;
+            errdefer if (!example_appended) freeStringList(self.allocator, example);
+            try examples.append(self.allocator, example);
+            example_appended = true;
+            self.skipTrivia();
+            if (self.consume(',')) continue;
+            if (self.consume(']')) break;
+            return error.ExpectedExecPolicyExampleSeparator;
+        }
+        if (examples.items.len == 0) {
+            examples.deinit(self.allocator);
+            return null;
+        }
+        return try examples.toOwnedSlice(self.allocator);
+    }
+
+    fn parseExample(self: *ValueParser) ![]const []const u8 {
+        self.skipTrivia();
+        if (self.pos >= self.input.len) return error.ExpectedExecPolicyExample;
+        if (self.input[self.pos] == '[') return self.parseStringList(false);
+
+        const raw = try self.parseString();
+        defer self.allocator.free(raw);
+        return parseShellWords(self.allocator, raw);
     }
 
     fn parseString(self: *ValueParser) ![]const u8 {
@@ -846,6 +982,78 @@ fn parseStringListValue(allocator: std.mem.Allocator, value: []const u8, allow_e
     parser.skipTrivia();
     if (!parser.isEof()) return error.UnexpectedExecPolicyStringInput;
     return strings;
+}
+
+fn parseExamplesValue(allocator: std.mem.Allocator, value: []const u8) !?Examples {
+    var parser = ValueParser{ .allocator = allocator, .input = value };
+    const examples = try parser.parseExamples();
+    errdefer if (examples) |owned| freeExamples(allocator, owned);
+    parser.skipTrivia();
+    if (!parser.isEof()) return error.UnexpectedExecPolicyExampleInput;
+    return examples;
+}
+
+fn parseShellWords(allocator: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
+    var words = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (words.items) |word| allocator.free(word);
+        words.deinit(allocator);
+    }
+    var current = std.ArrayList(u8).empty;
+    defer current.deinit(allocator);
+    var quote: ?u8 = null;
+    var escaped = false;
+    var has_token = false;
+
+    for (raw) |byte| {
+        if (escaped) {
+            try current.append(allocator, byte);
+            has_token = true;
+            escaped = false;
+            continue;
+        }
+        if (byte == '\\') {
+            escaped = true;
+            has_token = true;
+            continue;
+        }
+        if (quote) |active_quote| {
+            if (byte == active_quote) {
+                quote = null;
+            } else {
+                try current.append(allocator, byte);
+            }
+            has_token = true;
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+            has_token = true;
+            continue;
+        }
+        if (std.ascii.isWhitespace(byte)) {
+            if (has_token) {
+                try appendShellWord(allocator, &words, current.items);
+                current.clearRetainingCapacity();
+                has_token = false;
+            }
+            continue;
+        }
+        try current.append(allocator, byte);
+        has_token = true;
+    }
+
+    if (escaped) return error.InvalidExecPolicyExample;
+    if (quote != null) return error.InvalidExecPolicyExample;
+    if (has_token) try appendShellWord(allocator, &words, current.items);
+    if (words.items.len == 0) return error.EmptyExecPolicyExample;
+    return words.toOwnedSlice(allocator);
+}
+
+fn appendShellWord(allocator: std.mem.Allocator, words: *std.ArrayList([]const u8), word: []const u8) !void {
+    const owned = try allocator.dupe(u8, word);
+    errdefer allocator.free(owned);
+    try words.append(allocator, owned);
 }
 
 fn parseDecision(label: []const u8) !Decision {
@@ -1103,6 +1311,11 @@ fn freeStringList(allocator: std.mem.Allocator, values: []const []const u8) void
     allocator.free(values);
 }
 
+fn freeExamples(allocator: std.mem.Allocator, examples: Examples) void {
+    for (examples) |example| freeStringList(allocator, example);
+    allocator.free(examples);
+}
+
 fn skipWhitespace(contents: []const u8, pos: *usize) void {
     while (pos.* < contents.len and std.ascii.isWhitespace(contents[pos.*])) : (pos.* += 1) {}
 }
@@ -1229,6 +1442,88 @@ test "execpolicy check supports pattern alternatives and strictest decision" {
     );
 }
 
+test "execpolicy parser validates match and not match examples" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(
+        \\    pattern = ["git", "status"],
+        \\    match = [["git", "status"], "git 'status'"],
+        \\    not_match = [["git", "commit"], "git commit"],
+        \\)
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    try parseRules(allocator, rules_bytes, &rules);
+
+    const status = [_][]const u8{ "git", "status" };
+    const status_rendered = try evaluateRules(allocator, rules.items, &.{}, status[0..], .{});
+    defer allocator.free(status_rendered);
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"allow\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"git\",\"status\"],\"decision\":\"allow\"}}]}",
+        status_rendered,
+    );
+
+    const commit = [_][]const u8{ "git", "commit" };
+    const commit_rendered = try evaluateRules(allocator, rules.items, &.{}, commit[0..], .{});
+    defer allocator.free(commit_rendered);
+    try std.testing.expectEqualStrings("{\"matchedRules\":[]}", commit_rendered);
+}
+
+test "execpolicy parser rejects failing match examples" {
+    const allocator = std.testing.allocator;
+    try expectPolicyParseError(
+        allocator,
+        error.ExecPolicyExampleDidNotMatch,
+        \\prefix_rule(pattern = ["git", "status"], match = [["git", "commit"]])
+        ,
+    );
+}
+
+test "execpolicy parser rejects matching not match examples" {
+    const allocator = std.testing.allocator;
+    try expectPolicyParseError(
+        allocator,
+        error.ExecPolicyExampleDidMatch,
+        \\prefix_rule(pattern = ["git"], not_match = ["git status"])
+        ,
+    );
+}
+
+test "execpolicy parser validates examples with host executable resolution" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(
+        \\    pattern = ["git", "status"],
+        \\    match = [["/usr/bin/git", "status"]],
+        \\    not_match = [["/opt/homebrew/bin/git", "status"]],
+        \\)
+        \\host_executable(name = "git", paths = ["/usr/bin/git"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"allow\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"git\",\"status\"],\"decision\":\"allow\",\"resolvedProgram\":\"/usr/bin/git\"}}]}",
+        rendered,
+    );
+}
+
 test "execpolicy parser ignores comments and quoted prefix rule text" {
     const allocator = std.testing.allocator;
     const rules_bytes =
@@ -1293,21 +1588,21 @@ test "execpolicy parser accepts and normalizes network rules" {
 test "execpolicy parser rejects invalid network rules" {
     const allocator = std.testing.allocator;
 
-    try expectNetworkRuleParseError(
+    try expectPolicyParseError(
         allocator,
         error.WildcardNetworkRuleHost,
         \\network_rule(host = "*", protocol = "http", decision = "allow")
         ,
     );
 
-    try expectNetworkRuleParseError(
+    try expectPolicyParseError(
         allocator,
         error.InvalidNetworkRuleHost,
         \\network_rule(host = "https://api.github.com", protocol = "https", decision = "allow")
         ,
     );
 
-    try expectNetworkRuleParseError(
+    try expectPolicyParseError(
         allocator,
         error.InvalidNetworkRuleProtocol,
         \\network_rule(host = "api.github.com", protocol = "ftp", decision = "allow")
