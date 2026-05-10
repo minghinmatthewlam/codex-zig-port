@@ -1007,6 +1007,14 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_merge["id"] == "config-write-invalid-merge"
         assert invalid_merge["error"]["code"] == -32602
+
+        invalid_path = rpc(
+            "config-write-invalid-path",
+            "config/value/write",
+            {"filePath": "relative.toml", "keyPath": "model", "value": "gpt-test", "mergeStrategy": "replace"},
+        )
+        assert invalid_path["id"] == "config-write-invalid-path"
+        assert invalid_path["error"]["code"] == -32602
     finally:
         if proc.stdin is not None:
             proc.stdin.close()

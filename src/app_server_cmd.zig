@@ -1454,6 +1454,7 @@ fn resolveConfigWritePath(allocator: std.mem.Allocator, file_path_value: ?std.js
     if (file_path_value) |value| {
         if (value == .null) return resolveDefaultConfigWritePath(allocator);
         if (value != .string or value.string.len == 0) return error.InvalidConfigWritePath;
+        if (!std.fs.path.isAbsolute(value.string)) return error.InvalidConfigWritePath;
         return allocator.dupe(u8, value.string);
     }
     return resolveDefaultConfigWritePath(allocator);
