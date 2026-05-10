@@ -985,18 +985,26 @@ def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
             env=env,
         )
         try:
-            write_json_line(
-                proc,
-                {
-                    "jsonrpc": "2.0",
-                    "id": "cancel-missing",
-                    "method": "account/login/cancel",
-                    "params": {"loginId": "00000000-0000-0000-0000-000000000000"},
-                },
-            )
-            cancel = read_json_line(proc, 5)
-            assert cancel["id"] == "cancel-missing"
-            assert cancel["result"] == {"status": "notFound"}
+            valid_login_ids = [
+                "00000000-0000-0000-0000-000000000000",
+                "00000000000000000000000000000000",
+                "{00000000-0000-0000-0000-000000000000}",
+                "urn:uuid:00000000-0000-0000-0000-000000000000",
+            ]
+            for index, login_id in enumerate(valid_login_ids):
+                request_id = f"cancel-missing-{index}"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "account/login/cancel",
+                        "params": {"loginId": login_id},
+                    },
+                )
+                cancel = read_json_line(proc, 5)
+                assert cancel["id"] == request_id
+                assert cancel["result"] == {"status": "notFound"}
 
             write_json_line(
                 proc,

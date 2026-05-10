@@ -1420,6 +1420,24 @@ fn handleAccountLoginCancel(allocator: std.mem.Allocator, id_value: std.json.Val
 }
 
 fn isUuidString(value: []const u8) bool {
+    return switch (value.len) {
+        32 => isSimpleUuidString(value),
+        36 => isHyphenatedUuidString(value),
+        38 => value[0] == '{' and value[37] == '}' and isHyphenatedUuidString(value[1..37]),
+        45 => std.mem.startsWith(u8, value, "urn:uuid:") and isHyphenatedUuidString(value[9..]),
+        else => false,
+    };
+}
+
+fn isSimpleUuidString(value: []const u8) bool {
+    if (value.len != 32) return false;
+    for (value) |byte| {
+        if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
+}
+
+fn isHyphenatedUuidString(value: []const u8) bool {
     if (value.len != 36) return false;
     for (value, 0..) |byte, index| {
         switch (index) {
