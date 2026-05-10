@@ -318,7 +318,7 @@ dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
 exec Git-repository guard, `exec resume` option placement, yolo
 approval-policy conflicts, and removed
 `--full-auto` compatibility, plus rejection of the removed top-level
-`marketplace` namespace and sandbox permission-profile parser validation.
+`marketplace` namespace and sandbox built-in permission-profile execution.
 App-server smokes cover profile-scoped feature enablement writes and reads. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
@@ -395,6 +395,7 @@ printf 'extra context' | codex-zig exec "summarize"
 codex-zig exec resume --all last "continue"
 codex-zig exec --image screenshot.png "describe this"
 codex-zig sandbox macos -- /bin/echo ok
+codex-zig sandbox macos --permissions-profile :workspace --cd . -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals
 codex-zig features disable goals
