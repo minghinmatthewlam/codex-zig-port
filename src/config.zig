@@ -677,6 +677,10 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
     const path = try configTomlPath(allocator, codex_home);
     defer allocator.free(path);
 
+    return readConfigTomlFile(allocator, path);
+}
+
+pub fn readConfigTomlFile(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
@@ -720,10 +724,16 @@ fn persistTuiStringArray(allocator: std.mem.Allocator, codex_home: []const u8, k
 }
 
 fn writeConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, bytes: []const u8) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    try std.Io.Dir.cwd().createDirPath(io, codex_home);
     const path = try configTomlPath(allocator, codex_home);
     defer allocator.free(path);
+    try writeConfigTomlFile(path, bytes);
+}
+
+pub fn writeConfigTomlFile(path: []const u8, bytes: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
+    }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
 }
 
@@ -757,6 +767,35 @@ fn updateTomlStringArrayValue(
     defer rendered.deinit(allocator);
     try appendTomlStringArrayLiteral(allocator, &rendered, values);
     return updateTomlRawValue(allocator, bytes, section, key, rendered.items);
+}
+
+pub fn updateTomlRawValueForKeyPath(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    key_path: []const u8,
+    raw_value: []const u8,
+) ![]const u8 {
+    const target = try parseTomlKeyPath(key_path);
+    return updateTomlRawValue(allocator, bytes, target.section, target.key, raw_value);
+}
+
+const ParsedTomlKeyPath = struct {
+    section: TomlEditSection,
+    key: []const u8,
+};
+
+fn parseTomlKeyPath(key_path: []const u8) !ParsedTomlKeyPath {
+    if (key_path.len == 0) return error.InvalidConfigKeyPath;
+    if (std.mem.indexOf(u8, key_path, "..") != null) return error.InvalidConfigKeyPath;
+    if (key_path[0] == '.' or key_path[key_path.len - 1] == '.') return error.InvalidConfigKeyPath;
+
+    if (std.mem.lastIndexOfScalar(u8, key_path, '.')) |index| {
+        return .{
+            .section = .{ .section = key_path[0..index] },
+            .key = key_path[index + 1 ..],
+        };
+    }
+    return .{ .section = .top_level, .key = key_path };
 }
 
 fn updateTomlRawValue(

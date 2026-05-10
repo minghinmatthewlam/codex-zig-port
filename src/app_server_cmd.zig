@@ -1296,6 +1296,7 @@ fn timespecToUnixMs(value: std.c.timespec) i64 {
 
 fn isConfigMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/read") or
+        std.mem.eql(u8, method, "config/value/write") or
         std.mem.eql(u8, method, "configRequirements/read");
 }
 
@@ -1308,6 +1309,9 @@ fn handleConfigMethod(
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "config/read")) {
         return handleConfigRead(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "config/value/write")) {
+        return handleConfigValueWrite(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "configRequirements/read")) {
         return handleConfigRequirementsRead(allocator, id_value, params_value);
@@ -1322,6 +1326,71 @@ fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json
         }
     }
     return renderJsonRpcResult(allocator, id_value, "{\"requirements\":null}");
+}
+
+fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
+
+    const key_path_value = params.object.get("keyPath") orelse return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string");
+    if (key_path_value != .string or key_path_value.string.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string");
+    }
+
+    const value = params.object.get("value") orelse return renderJsonRpcError(allocator, id_value, -32602, "value is required");
+
+    const merge_strategy_value = params.object.get("mergeStrategy") orelse return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
+    if (merge_strategy_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
+    if (!std.mem.eql(u8, merge_strategy_value.string, "replace") and !std.mem.eql(u8, merge_strategy_value.string, "upsert")) {
+        return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
+    }
+
+    const expected_version = switch (optionalStringOrNull(params.object, "expectedVersion")) {
+        .value => |string| string,
+        .missing => null,
+        .invalid => return renderJsonRpcError(allocator, id_value, -32602, "expectedVersion must be a string or null"),
+    };
+
+    const config_path = resolveConfigWritePath(allocator, params.object.get("filePath")) catch |err| switch (err) {
+        error.InvalidConfigWritePath => return renderJsonRpcError(allocator, id_value, -32602, "filePath must be a non-empty string or null"),
+        else => return err,
+    };
+    defer allocator.free(config_path);
+
+    const current_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/value/write failed to read config", err);
+    };
+    defer if (current_bytes) |bytes| allocator.free(bytes);
+
+    if (expected_version) |expected| {
+        const current_version = try configVersionAlloc(allocator, current_bytes orelse "");
+        defer allocator.free(current_version);
+        if (!std.mem.eql(u8, current_version, expected)) {
+            return renderJsonRpcError(allocator, id_value, -32602, "config version conflict");
+        }
+    }
+
+    const raw_value = renderTomlValue(allocator, value) catch |err| switch (err) {
+        error.UnsupportedConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "value must be a TOML-compatible scalar or array"),
+        else => return err,
+    };
+    defer allocator.free(raw_value);
+
+    const updated = config.updateTomlRawValueForKeyPath(allocator, current_bytes orelse "", key_path_value.string, raw_value) catch |err| switch (err) {
+        error.InvalidConfigKeyPath => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a supported TOML key path"),
+        else => return err,
+    };
+    defer allocator.free(updated);
+
+    config.writeConfigTomlFile(config_path, updated) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/value/write failed to write config", err);
+    };
+
+    const version = try configVersionAlloc(allocator, updated);
+    defer allocator.free(version);
+    const result = try renderConfigWriteResponse(allocator, config_path, version);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn handleConfigRead(
@@ -1366,6 +1435,104 @@ fn optionalConfigReadParams(params_value: ?std.json.Value) OptionalObjectParams 
     if (params == .null) return .empty;
     if (params != .object) return .{ .message = "config/read params must be an object" };
     return .{ .object = params.object };
+}
+
+const OptionalStringField = union(enum) {
+    value: ?[]const u8,
+    missing,
+    invalid,
+};
+
+fn optionalStringOrNull(object: std.json.ObjectMap, field: []const u8) OptionalStringField {
+    const value = object.get(field) orelse return .missing;
+    if (value == .null) return .{ .value = null };
+    if (value != .string) return .invalid;
+    return .{ .value = value.string };
+}
+
+fn resolveConfigWritePath(allocator: std.mem.Allocator, file_path_value: ?std.json.Value) ![]const u8 {
+    if (file_path_value) |value| {
+        if (value == .null) return resolveDefaultConfigWritePath(allocator);
+        if (value != .string or value.string.len == 0) return error.InvalidConfigWritePath;
+        return allocator.dupe(u8, value.string);
+    }
+    return resolveDefaultConfigWritePath(allocator);
+}
+
+fn resolveDefaultConfigWritePath(allocator: std.mem.Allocator) ![]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    return config.configTomlPath(allocator, codex_home);
+}
+
+fn renderTomlValue(allocator: std.mem.Allocator, value: std.json.Value) anyerror![]const u8 {
+    return switch (value) {
+        .string => |string| renderTomlString(allocator, string),
+        .bool => |boolean| allocator.dupe(u8, if (boolean) "true" else "false"),
+        .integer => |integer| std.fmt.allocPrint(allocator, "{}", .{integer}),
+        .float => |float| std.fmt.allocPrint(allocator, "{d}", .{float}),
+        .number_string => |number| allocator.dupe(u8, number),
+        .array => |array| renderTomlArray(allocator, array.items),
+        else => error.UnsupportedConfigWriteValue,
+    };
+}
+
+fn renderTomlArray(allocator: std.mem.Allocator, values: []std.json.Value) anyerror![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    errdefer rendered.deinit(allocator);
+    try rendered.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index > 0) try rendered.appendSlice(allocator, ", ");
+        const item = try renderTomlValue(allocator, value);
+        defer allocator.free(item);
+        try rendered.appendSlice(allocator, item);
+    }
+    try rendered.append(allocator, ']');
+    return rendered.toOwnedSlice(allocator);
+}
+
+fn renderTomlString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    errdefer rendered.deinit(allocator);
+    try rendered.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try rendered.appendSlice(allocator, "\\\""),
+            '\\' => try rendered.appendSlice(allocator, "\\\\"),
+            '\n' => try rendered.appendSlice(allocator, "\\n"),
+            '\r' => try rendered.appendSlice(allocator, "\\r"),
+            '\t' => try rendered.appendSlice(allocator, "\\t"),
+            else => try rendered.append(allocator, byte),
+        }
+    }
+    try rendered.append(allocator, '"');
+    return rendered.toOwnedSlice(allocator);
+}
+
+fn configVersionAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    const prefix = "sha256:";
+    var out = try allocator.alloc(u8, prefix.len + digest.len * 2);
+    @memcpy(out[0..prefix.len], prefix);
+    const hex = "0123456789abcdef";
+    for (digest, 0..) |byte, index| {
+        out[prefix.len + index * 2] = hex[byte >> 4];
+        out[prefix.len + index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return out;
+}
+
+fn renderConfigWriteResponse(allocator: std.mem.Allocator, file_path: []const u8, version: []const u8) ![]const u8 {
+    const path_json = try std.json.Stringify.valueAlloc(allocator, file_path, .{});
+    defer allocator.free(path_json);
+    const version_json = try std.json.Stringify.valueAlloc(allocator, version, .{});
+    defer allocator.free(version_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"status\":\"ok\",\"version\":{s},\"filePath\":{s},\"overriddenMetadata\":null}}",
+        .{ version_json, path_json },
+    );
 }
 
 fn renderConfigReadResponse(
