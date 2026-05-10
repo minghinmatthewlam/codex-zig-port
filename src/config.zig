@@ -13,6 +13,7 @@ pub const Config = struct {
     approval_policy: ApprovalPolicy,
     sandbox_mode: SandboxMode,
     web_search_mode: ?WebSearchMode,
+    model_reasoning_effort: ?ReasoningEffort,
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
@@ -301,6 +302,36 @@ pub const WebSearchMode = enum {
     }
 };
 
+pub const ReasoningEffort = enum {
+    none,
+    minimal,
+    low,
+    medium,
+    high,
+    xhigh,
+
+    pub fn label(self: ReasoningEffort) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .minimal => "minimal",
+            .low => "low",
+            .medium => "medium",
+            .high => "high",
+            .xhigh => "xhigh",
+        };
+    }
+
+    pub fn parse(value: []const u8) !ReasoningEffort {
+        if (std.mem.eql(u8, value, "none")) return .none;
+        if (std.mem.eql(u8, value, "minimal")) return .minimal;
+        if (std.mem.eql(u8, value, "low")) return .low;
+        if (std.mem.eql(u8, value, "medium")) return .medium;
+        if (std.mem.eql(u8, value, "high")) return .high;
+        if (std.mem.eql(u8, value, "xhigh")) return .xhigh;
+        return error.InvalidReasoningEffort;
+    }
+};
+
 pub const Personality = enum {
     none,
     friendly,
@@ -447,6 +478,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
     const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
+    const model_reasoning_effort = try resolveModelReasoningEffort(allocator, config_view, active_profile);
     const service_tier = try resolveServiceTier(allocator, config_view, active_profile);
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
@@ -469,6 +501,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
+        .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
@@ -609,6 +642,20 @@ fn resolveWebSearchMode(allocator: std.mem.Allocator, config_view: ConfigView, a
     return null;
 }
 
+fn resolveModelReasoningEffort(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?ReasoningEffort {
+    if (try env.getOwned(allocator, "CODEX_ZIG_MODEL_REASONING_EFFORT")) |value| {
+        defer allocator.free(value);
+        return try ReasoningEffort.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "model_reasoning_effort")) |value| {
+        defer allocator.free(value);
+        return try ReasoningEffort.parse(value);
+    }
+
+    return null;
+}
+
 fn resolveServiceTier(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
     if (try env.getOwned(allocator, "CODEX_ZIG_SERVICE_TIER")) |value| {
         defer allocator.free(value);
@@ -690,6 +737,16 @@ pub fn readConfigTomlFile(allocator: std.mem.Allocator, path: []const u8) !?[]co
 
 pub fn topLevelStringValue(allocator: std.mem.Allocator, bytes: []const u8, key: []const u8) !?[]const u8 {
     return (ConfigView{ .bytes = bytes }).getTopLevelString(allocator, key);
+}
+
+pub fn namedSectionStringValue(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    section_prefix: []const u8,
+    section_name: []const u8,
+    key: []const u8,
+) !?[]const u8 {
+    return (ConfigView{ .bytes = bytes }).getNamedSectionString(allocator, section_prefix, section_name, key);
 }
 
 pub fn persistTuiTheme(allocator: std.mem.Allocator, codex_home: []const u8, name: []const u8) !void {
@@ -1132,13 +1189,23 @@ const ConfigView = struct {
         provider: []const u8,
         key: []const u8,
     ) !?[]const u8 {
+        return self.getNamedSectionString(allocator, "model_providers.", provider, key);
+    }
+
+    fn getNamedSectionString(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        section_prefix: []const u8,
+        section_name: []const u8,
+        key: []const u8,
+    ) !?[]const u8 {
         var in_provider = false;
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
-                in_provider = isNamedSection(line, "model_providers.", provider);
+                in_provider = isNamedSection(line, section_prefix, section_name);
                 continue;
             }
             if (!in_provider) continue;
@@ -1386,6 +1453,7 @@ test "profile values override top-level config values" {
         \\approval_policy = "on-request"
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
+        \\model_reasoning_effort = "low"
         \\service_tier = "flex"
         \\syntax_theme = "github"
         \\personality = "friendly"
@@ -1397,6 +1465,7 @@ test "profile values override top-level config values" {
         \\approval_policy = "never"
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
+        \\model_reasoning_effort = "high"
         \\service_tier = "fast"
         \\syntax_theme = "dracula"
         \\personality = "pragmatic"
@@ -1426,6 +1495,7 @@ test "profile values override top-level config values" {
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
     try std.testing.expectEqual(WebSearchMode.live, (try resolveWebSearchMode(allocator, view, active_profile.?)).?);
+    try std.testing.expectEqual(ReasoningEffort.high, (try resolveModelReasoningEffort(allocator, view, active_profile.?)).?);
     const service_tier = try resolveServiceTier(allocator, view, active_profile.?);
     defer allocator.free(service_tier.?);
     try std.testing.expectEqualStrings("priority", service_tier.?);
@@ -1720,6 +1790,7 @@ test "oss mode applies local provider defaults" {
         .approval_policy = .never,
         .sandbox_mode = .read_only,
         .web_search_mode = null,
+        .model_reasoning_effort = null,
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,

@@ -3510,6 +3510,7 @@ fn handleConfigRead(
     };
 
     var include_layers = false;
+    var cwd: ?[]const u8 = null;
     if (params) |object| {
         if (object.get("includeLayers")) |value| {
             if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeLayers must be a boolean");
@@ -3517,6 +3518,12 @@ fn handleConfigRead(
         }
         if (object.get("cwd")) |value| {
             if (value != .null and value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null");
+            if (value == .string) {
+                if (!std.fs.path.isAbsolute(value.string)) {
+                    return renderJsonRpcError(allocator, id_value, -32602, "cwd must be an absolute path or null");
+                }
+                cwd = value.string;
+            }
         }
     }
 
@@ -3551,7 +3558,12 @@ fn handleConfigRead(
         };
     }
 
-    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, user_layer);
+    var project_layer = loadConfigReadProjectLayer(allocator, cwd, config_bytes) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read project config", err);
+    };
+    defer if (project_layer) |*layer| layer.deinit(allocator);
+
+    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, project_layer, user_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -3692,6 +3704,7 @@ fn renderConfigReadResponse(
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
     include_layers: bool,
+    project_layer: ?ConfigReadProjectLayer,
     user_layer: ?ConfigReadUserLayer,
 ) ![]const u8 {
     var result = std.ArrayList(u8).empty;
@@ -3704,19 +3717,35 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "approval_policy", cfg.approval_policy.label());
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", cfg.sandbox_mode.label());
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (cfg.web_search_mode) |mode| mode.label() else null);
+    const model_reasoning_effort = if (project_layer) |layer| layer.model_reasoning_effort else cfg.model_reasoning_effort;
+    try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
     try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", cfg.service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
     try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
     try result.appendSlice(allocator, "},\"origins\":");
-    try appendConfigReadOrigins(allocator, &result, user_layer);
+    try appendConfigReadOrigins(allocator, &result, project_layer, user_layer);
     try result.appendSlice(allocator, ",\"layers\":");
-    try appendConfigReadLayers(allocator, &result, cfg, include_layers, user_layer);
+    try appendConfigReadLayers(allocator, &result, cfg, include_layers, project_layer, user_layer);
     try result.appendSlice(allocator, "}");
 
     return result.toOwnedSlice(allocator);
 }
+
+const ConfigReadProjectLayer = struct {
+    dot_codex_folder: []const u8,
+    version: []const u8,
+    origin_keys: []const []const u8,
+    model_reasoning_effort: config.ReasoningEffort,
+
+    fn deinit(self: *ConfigReadProjectLayer, allocator: std.mem.Allocator) void {
+        allocator.free(self.dot_codex_folder);
+        allocator.free(self.version);
+        for (self.origin_keys) |key| allocator.free(key);
+        allocator.free(self.origin_keys);
+    }
+};
 
 const ConfigReadUserLayer = struct {
     file_path: []const u8,
@@ -3773,6 +3802,53 @@ fn collectConfigReadUserOriginKeys(
     return keys.toOwnedSlice(allocator);
 }
 
+fn loadConfigReadProjectLayer(
+    allocator: std.mem.Allocator,
+    cwd: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+) !?ConfigReadProjectLayer {
+    const project_cwd = cwd orelse return null;
+    const user_bytes = user_config_bytes orelse return null;
+    if (!try configReadProjectTrusted(allocator, user_bytes, project_cwd)) return null;
+
+    const dot_codex_folder = try std.fs.path.join(allocator, &.{ project_cwd, ".codex" });
+    errdefer allocator.free(dot_codex_folder);
+    const project_config_path = try std.fs.path.join(allocator, &.{ dot_codex_folder, "config.toml" });
+    defer allocator.free(project_config_path);
+
+    const project_config_bytes = try config.readConfigTomlFile(allocator, project_config_path);
+    defer if (project_config_bytes) |bytes| allocator.free(bytes);
+    const bytes = project_config_bytes orelse {
+        allocator.free(dot_codex_folder);
+        return null;
+    };
+
+    const effort_value = try config.topLevelStringValue(allocator, bytes, "model_reasoning_effort");
+    defer if (effort_value) |value| allocator.free(value);
+    const model_reasoning_effort = try config.ReasoningEffort.parse(effort_value orelse {
+        allocator.free(dot_codex_folder);
+        return null;
+    });
+
+    const origin_keys = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(origin_keys);
+    origin_keys[0] = try allocator.dupe(u8, "model_reasoning_effort");
+    errdefer allocator.free(origin_keys[0]);
+
+    return .{
+        .dot_codex_folder = dot_codex_folder,
+        .version = try configVersionAlloc(allocator, bytes),
+        .origin_keys = origin_keys,
+        .model_reasoning_effort = model_reasoning_effort,
+    };
+}
+
+fn configReadProjectTrusted(allocator: std.mem.Allocator, user_config_bytes: []const u8, cwd: []const u8) !bool {
+    const trust_level = try config.namedSectionStringValue(allocator, user_config_bytes, "projects.", cwd, "trust_level");
+    defer if (trust_level) |value| allocator.free(value);
+    return if (trust_level) |value| std.mem.eql(u8, value, "trusted") else false;
+}
+
 fn configReadSectionForLine(line: []const u8, active_profile: ?[]const u8) ConfigReadSection {
     if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return .other;
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
@@ -3800,6 +3876,7 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "approval_policy") or
         std.mem.eql(u8, key, "sandbox_mode") or
         std.mem.eql(u8, key, "web_search") or
+        std.mem.eql(u8, key, "model_reasoning_effort") or
         std.mem.eql(u8, key, "service_tier") or
         std.mem.eql(u8, key, "oss_provider") or
         std.mem.eql(u8, key, "openai_base_url") or
@@ -3820,31 +3897,83 @@ fn appendUniqueOriginKey(
 fn appendConfigReadOrigins(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
+    project_layer: ?ConfigReadProjectLayer,
     user_layer: ?ConfigReadUserLayer,
 ) !void {
-    const layer = user_layer orelse {
-        try result.appendSlice(allocator, "{}");
-        return;
-    };
-    if (layer.origin_keys.len == 0) {
-        try result.appendSlice(allocator, "{}");
-        return;
-    }
-
     try result.append(allocator, '{');
-    for (layer.origin_keys, 0..) |key, index| {
-        if (index > 0) try result.append(allocator, ',');
-        const key_json = try std.json.Stringify.valueAlloc(allocator, key, .{});
-        defer allocator.free(key_json);
-        try result.appendSlice(allocator, key_json);
-        try result.appendSlice(allocator, ":{\"name\":");
-        try appendConfigReadUserSource(allocator, result, layer.file_path);
-        try result.appendSlice(allocator, ",\"version\":");
-        const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
-        defer allocator.free(version_json);
-        try result.appendSlice(allocator, version_json);
-        try result.append(allocator, '}');
+    var first = true;
+    if (project_layer) |layer| {
+        for (layer.origin_keys) |key| {
+            try appendConfigReadProjectOrigin(allocator, result, &first, layer, key);
+        }
     }
+    if (user_layer) |layer| {
+        for (layer.origin_keys) |key| {
+            if (configReadProjectHasOriginKey(project_layer, key)) continue;
+            try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
+        }
+    }
+    try result.append(allocator, '}');
+}
+
+fn configReadProjectHasOriginKey(project_layer: ?ConfigReadProjectLayer, key: []const u8) bool {
+    const layer = project_layer orelse return false;
+    for (layer.origin_keys) |project_key| {
+        if (std.mem.eql(u8, project_key, key)) return true;
+    }
+    return false;
+}
+
+fn appendConfigReadProjectOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadProjectLayer,
+    key: []const u8,
+) !void {
+    try appendConfigReadOriginName(allocator, result, first, key);
+    try appendConfigReadProjectSource(allocator, result, layer.dot_codex_folder);
+    try appendConfigReadOriginVersion(allocator, result, layer.version);
+}
+
+fn appendConfigReadUserOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+    key: []const u8,
+) !void {
+    try appendConfigReadOriginName(allocator, result, first, key);
+    try appendConfigReadUserSource(allocator, result, layer.file_path);
+    try appendConfigReadOriginVersion(allocator, result, layer.version);
+}
+
+fn appendConfigReadOriginName(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    key: []const u8,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try result.append(allocator, ',');
+    }
+    const key_json = try std.json.Stringify.valueAlloc(allocator, key, .{});
+    defer allocator.free(key_json);
+    try result.appendSlice(allocator, key_json);
+    try result.appendSlice(allocator, ":{\"name\":");
+}
+
+fn appendConfigReadOriginVersion(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    version: []const u8,
+) !void {
+    try result.appendSlice(allocator, ",\"version\":");
+    const version_json = try std.json.Stringify.valueAlloc(allocator, version, .{});
+    defer allocator.free(version_json);
+    try result.appendSlice(allocator, version_json);
     try result.append(allocator, '}');
 }
 
@@ -3853,26 +3982,83 @@ fn appendConfigReadLayers(
     result: *std.ArrayList(u8),
     cfg: config.Config,
     include_layers: bool,
+    project_layer: ?ConfigReadProjectLayer,
     user_layer: ?ConfigReadUserLayer,
 ) !void {
     if (!include_layers) {
         try result.appendSlice(allocator, "null");
         return;
     }
-    const layer = user_layer orelse {
-        try result.appendSlice(allocator, "[]");
-        return;
-    };
 
-    try result.appendSlice(allocator, "[{\"name\":");
+    try result.append(allocator, '[');
+    var first = true;
+    if (project_layer) |layer| {
+        try appendConfigReadProjectLayer(allocator, result, &first, layer);
+    }
+    if (user_layer) |layer| {
+        try appendConfigReadUserLayer(allocator, result, &first, cfg, layer);
+    }
+    try result.append(allocator, ']');
+}
+
+fn appendConfigReadProjectLayer(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadProjectLayer,
+) !void {
+    try appendConfigReadLayerStart(allocator, result, first);
+    try appendConfigReadProjectSource(allocator, result, layer.dot_codex_folder);
+    try result.appendSlice(allocator, ",\"version\":");
+    const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
+    defer allocator.free(version_json);
+    try result.appendSlice(allocator, version_json);
+    try result.appendSlice(allocator, ",\"config\":");
+    try appendConfigReadProjectLayerConfig(allocator, result, layer);
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadUserLayer(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    cfg: config.Config,
+    layer: ConfigReadUserLayer,
+) !void {
+    try appendConfigReadLayerStart(allocator, result, first);
     try appendConfigReadUserSource(allocator, result, layer.file_path);
     try result.appendSlice(allocator, ",\"version\":");
     const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
     defer allocator.free(version_json);
     try result.appendSlice(allocator, version_json);
     try result.appendSlice(allocator, ",\"config\":");
-    try appendConfigReadLayerConfig(allocator, result, cfg, layer.origin_keys);
-    try result.appendSlice(allocator, "}]");
+    try appendConfigReadUserLayerConfig(allocator, result, cfg, layer.origin_keys);
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadLayerStart(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try result.append(allocator, ',');
+    }
+    try result.appendSlice(allocator, "{\"name\":");
+}
+
+fn appendConfigReadProjectSource(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    dot_codex_folder: []const u8,
+) !void {
+    const folder_json = try std.json.Stringify.valueAlloc(allocator, dot_codex_folder, .{});
+    defer allocator.free(folder_json);
+    try result.appendSlice(allocator, "{\"type\":\"project\",\"dotCodexFolder\":");
+    try result.appendSlice(allocator, folder_json);
+    try result.append(allocator, '}');
 }
 
 fn appendConfigReadUserSource(
@@ -3887,7 +4073,22 @@ fn appendConfigReadUserSource(
     try result.append(allocator, '}');
 }
 
-fn appendConfigReadLayerConfig(
+fn appendConfigReadProjectLayerConfig(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    layer: ConfigReadProjectLayer,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    for (layer.origin_keys) |key| {
+        if (std.mem.eql(u8, key, "model_reasoning_effort")) {
+            try appendJsonStringField(allocator, result, &first, key, layer.model_reasoning_effort.label());
+        }
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadUserLayerConfig(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     cfg: config.Config,
@@ -3906,6 +4107,8 @@ fn appendConfigReadLayerConfig(
             try appendJsonStringField(allocator, result, &first, key, cfg.sandbox_mode.label());
         } else if (std.mem.eql(u8, key, "web_search")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.web_search_mode) |mode| mode.label() else null);
+        } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.model_reasoning_effort) |effort| effort.label() else null);
         } else if (std.mem.eql(u8, key, "service_tier")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.service_tier);
         } else if (std.mem.eql(u8, key, "oss_provider")) {
