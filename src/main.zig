@@ -421,110 +421,58 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "resume")) {
             var remaining = try collectRemainingArgs(allocator, &args);
             defer remaining.deinit(allocator);
-            const parsed = try parseSessionCommandArgs(remaining.items, true);
+            var parsed = try parseSessionCommandArgs(allocator, remaining.items, true);
+            defer parsed.deinit(allocator);
             if (parsed.help) {
                 printResumeHelp();
                 return;
             }
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            defer launch.deinit(allocator);
             if (parsed.last) {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .resume_target = "last",
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.resume_target = "last";
+                try runTuiWithImages(allocator, launch.image_files, options);
                 return;
             }
             if (parsed.target) |target| {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .resume_target = target,
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.resume_target = target;
+                try runTuiWithImages(allocator, launch.image_files, options);
             } else {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .resume_picker = true,
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.resume_picker = true;
+                options.resume_show_all = parsed.show_all;
+                try runTuiWithImages(allocator, launch.image_files, options);
             }
             return;
         }
         if (std.mem.eql(u8, cmd, "fork")) {
             var remaining = try collectRemainingArgs(allocator, &args);
             defer remaining.deinit(allocator);
-            const parsed = try parseSessionCommandArgs(remaining.items, false);
+            var parsed = try parseSessionCommandArgs(allocator, remaining.items, false);
+            defer parsed.deinit(allocator);
             if (parsed.help) {
                 printForkHelp();
                 return;
             }
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            defer launch.deinit(allocator);
             if (parsed.last) {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .fork_target = "last",
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.fork_target = "last";
+                try runTuiWithImages(allocator, launch.image_files, options);
                 return;
             }
             if (parsed.target) |target| {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .fork_target = target,
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.fork_target = target;
+                try runTuiWithImages(allocator, launch.image_files, options);
             } else {
-                try runTuiWithImages(allocator, initial_image_files.items, .{
-                    .fork_picker = true,
-                    .profile = overrides.profile,
-                    .runtime_overrides = overrides.runtime,
-                    .oss = overrides.oss,
-                    .oss_provider = overrides.oss_provider,
-                    .additional_writable_roots = overrides.additional_writable_roots,
-                    .no_alt_screen = overrides.no_alt_screen,
-                    .remote = parsed.remote orelse overrides.remote,
-                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
-                    .local_remote_control = overrides.local_remote_control,
-                    .remote_control_bind = overrides.remote_control_bind,
-                });
+                var options = launch.tui_options;
+                options.fork_picker = true;
+                options.fork_show_all = parsed.show_all;
+                try runTuiWithImages(allocator, launch.image_files, options);
             }
             return;
         }
@@ -800,9 +748,35 @@ const SessionCommandArgs = struct {
     last: bool = false,
     show_all: bool = false,
     include_non_interactive: bool = false,
+    profile: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
+    oss: bool = false,
+    oss_provider: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
+    additional_writable_roots: std.ArrayList([]const u8) = .empty,
+    image_files: std.ArrayList([]const u8) = .empty,
+    no_alt_screen: bool = false,
     remote: ?[]const u8 = null,
     remote_auth_token_env: ?[]const u8 = null,
+    local_remote_control: bool = false,
+    remote_control_bind: ?[]const u8 = null,
     help: bool = false,
+
+    fn deinit(self: *SessionCommandArgs, allocator: std.mem.Allocator) void {
+        self.additional_writable_roots.deinit(allocator);
+        for (self.image_files.items) |path| allocator.free(path);
+        self.image_files.deinit(allocator);
+    }
+};
+
+const SessionLaunchOptions = struct {
+    image_files: []const []const u8,
+    tui_options: tui.Options,
+
+    fn deinit(self: *SessionLaunchOptions, allocator: std.mem.Allocator) void {
+        allocator.free(self.image_files);
+        allocator.free(self.tui_options.additional_writable_roots);
+    }
 };
 
 fn collectRemainingArgs(
@@ -817,8 +791,47 @@ fn collectRemainingArgs(
     return remaining;
 }
 
-fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interactive: bool) !SessionCommandArgs {
+fn prepareSessionLaunchOptions(
+    allocator: std.mem.Allocator,
+    overrides: CliOverrides,
+    initial_image_files: []const []const u8,
+    parsed: SessionCommandArgs,
+) !SessionLaunchOptions {
+    if (parsed.cwd) |cwd| try workdir.change(cwd);
+
+    const image_files = try cli_utils.mergeStringSlices(allocator, initial_image_files, parsed.image_files.items);
+    errdefer allocator.free(image_files);
+
+    const additional_writable_roots = try cli_utils.mergeStringSlices(
+        allocator,
+        overrides.additional_writable_roots,
+        parsed.additional_writable_roots.items,
+    );
+    errdefer allocator.free(additional_writable_roots);
+
+    return .{
+        .image_files = image_files,
+        .tui_options = .{
+            .profile = parsed.profile orelse overrides.profile,
+            .runtime_overrides = mergeRuntimeOverrides(overrides.runtime, parsed.runtime_overrides),
+            .oss = overrides.oss or parsed.oss,
+            .oss_provider = parsed.oss_provider orelse overrides.oss_provider,
+            .additional_writable_roots = additional_writable_roots,
+            .no_alt_screen = overrides.no_alt_screen or parsed.no_alt_screen,
+            .remote = parsed.remote orelse overrides.remote,
+            .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+            .local_remote_control = overrides.local_remote_control or parsed.local_remote_control,
+            .remote_control_bind = parsed.remote_control_bind orelse overrides.remote_control_bind,
+        },
+    };
+}
+
+fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u8, allow_include_non_interactive: bool) !SessionCommandArgs {
     var parsed = SessionCommandArgs{};
+    errdefer parsed.deinit(allocator);
+
+    var approval_policy_requested = false;
+    var dangerous_bypass_requested = false;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -837,6 +850,133 @@ fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interacti
         if (std.mem.eql(u8, arg, "--include-non-interactive")) {
             if (!allow_include_non_interactive) return error.UnknownSessionCommandOption;
             parsed.include_non_interactive = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+            if (index + 1 >= args.len) return error.MissingProfileOptionValue;
+            index += 1;
+            parsed.profile = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            parsed.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            if (index + 1 >= args.len) return error.MissingConfigOptionValue;
+            index += 1;
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) {
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, arg["--config=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
+            if (index + 1 >= args.len) return error.MissingModelOptionValue;
+            index += 1;
+            parsed.runtime_overrides.model = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--model=")) {
+            parsed.runtime_overrides.model = arg["--model=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            if (index + 1 >= args.len) return error.MissingImageOptionValue;
+            index += 1;
+            try input_images.appendFiles(allocator, &parsed.image_files, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            try input_images.appendFiles(allocator, &parsed.image_files, arg["--image=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
+            if (index + 1 >= args.len) return error.MissingCdOptionValue;
+            index += 1;
+            parsed.cwd = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--cd=")) {
+            parsed.cwd = arg["--cd=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--add-dir")) {
+            if (index + 1 >= args.len) return error.MissingAddDirOptionValue;
+            index += 1;
+            try parsed.additional_writable_roots.append(allocator, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--add-dir=")) {
+            try parsed.additional_writable_roots.append(allocator, arg["--add-dir=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--oss")) {
+            parsed.oss = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--local-provider")) {
+            if (index + 1 >= args.len) return error.MissingLocalProviderOptionValue;
+            index += 1;
+            parsed.oss_provider = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--local-provider=")) {
+            parsed.oss_provider = arg["--local-provider=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (index + 1 >= args.len) return error.MissingApprovalOptionValue;
+            approval_policy_requested = true;
+            index += 1;
+            parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
+            parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--approval-policy")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (index + 1 >= args.len) return error.MissingApprovalOptionValue;
+            approval_policy_requested = true;
+            index += 1;
+            parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
+            parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
+            if (index + 1 >= args.len) return error.MissingSandboxOptionValue;
+            index += 1;
+            parsed.runtime_overrides.sandbox_mode = try config.SandboxMode.parse(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sandbox=")) {
+            parsed.runtime_overrides.sandbox_mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
+            if (approval_policy_requested) return error.ConflictingCliOptions;
+            dangerous_bypass_requested = true;
+            parsed.runtime_overrides.approval_policy = .never;
+            parsed.runtime_overrides.sandbox_mode = .danger_full_access;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--search")) {
+            parsed.runtime_overrides.web_search_mode = .live;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-alt-screen")) {
+            parsed.no_alt_screen = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--remote")) {
@@ -859,6 +999,20 @@ fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interacti
             parsed.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            parsed.local_remote_control = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control-bind")) {
+            if (index + 1 >= args.len) return error.MissingRemoteControlBindOptionValue;
+            index += 1;
+            parsed.remote_control_bind = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
+            parsed.remote_control_bind = arg["--remote-control-bind=".len..];
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownSessionCommandOption;
         }
@@ -866,6 +1020,22 @@ fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interacti
         parsed.target = arg;
     }
     return parsed;
+}
+
+fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: config.RuntimeOverrides) config.RuntimeOverrides {
+    var merged = base;
+    if (session_overrides.model) |value| merged.model = value;
+    if (session_overrides.openai_base_url) |value| merged.openai_base_url = value;
+    if (session_overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
+    if (session_overrides.oss_provider) |value| merged.oss_provider = value;
+    if (session_overrides.approval_policy) |value| merged.approval_policy = value;
+    if (session_overrides.sandbox_mode) |value| merged.sandbox_mode = value;
+    if (session_overrides.web_search_mode) |value| merged.web_search_mode = value;
+    if (session_overrides.service_tier) |value| merged.service_tier = value;
+    if (session_overrides.syntax_theme) |value| merged.syntax_theme = value;
+    if (session_overrides.personality) |value| merged.personality = value;
+    if (session_overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
+    return merged;
 }
 
 fn printHelp() !void {
@@ -1280,8 +1450,10 @@ test "exec command alias matches exec" {
 }
 
 test "session command flags parse resume compatibility options" {
+    const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last" };
-    const parsed = try parseSessionCommandArgs(argv[0..], true);
+    var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
+    defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.show_all);
     try std.testing.expect(parsed.include_non_interactive);
@@ -1290,31 +1462,77 @@ test "session command flags parse resume compatibility options" {
 }
 
 test "session command flags parse remote compatibility options" {
+    const allocator = std.testing.allocator;
     const argv = [_][]const u8{
         "--remote",
         "ws://127.0.0.1:4500",
         "--remote-auth-token-env=CODEX_REMOTE_AUTH_TOKEN",
         "--last",
     };
-    const parsed = try parseSessionCommandArgs(argv[0..], true);
+    var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
+    defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.last);
     try std.testing.expectEqualStrings("ws://127.0.0.1:4500", parsed.remote.?);
     try std.testing.expectEqualStrings("CODEX_REMOTE_AUTH_TOKEN", parsed.remote_auth_token_env.?);
 }
 
+test "session command flags merge interactive overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{
+        "sid",
+        "--oss",
+        "--local-provider=ollama",
+        "--search",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "on-request",
+        "-m",
+        "gpt-5.1-test",
+        "-p",
+        "work",
+        "-C",
+        "/tmp/workspace",
+        "--add-dir",
+        "/tmp/extra",
+        "-i",
+        "/tmp/a.png,/tmp/b.png",
+        "--no-alt-screen",
+    };
+    var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("sid", parsed.target.?);
+    try std.testing.expect(parsed.oss);
+    try std.testing.expectEqualStrings("ollama", parsed.oss_provider.?);
+    try std.testing.expectEqual(config.WebSearchMode.live, parsed.runtime_overrides.web_search_mode.?);
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.runtime_overrides.sandbox_mode.?);
+    try std.testing.expectEqual(config.ApprovalPolicy.on_request, parsed.runtime_overrides.approval_policy.?);
+    try std.testing.expectEqualStrings("gpt-5.1-test", parsed.runtime_overrides.model.?);
+    try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expectEqualStrings("/tmp/workspace", parsed.cwd.?);
+    try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqualStrings("/tmp/a.png", parsed.image_files.items[0]);
+    try std.testing.expectEqualStrings("/tmp/b.png", parsed.image_files.items[1]);
+    try std.testing.expect(parsed.no_alt_screen);
+}
+
 test "session command flags parse target and reject extra target" {
+    const allocator = std.testing.allocator;
     const target_argv = [_][]const u8{"session-id"};
-    const target = try parseSessionCommandArgs(target_argv[0..], false);
+    var target = try parseSessionCommandArgs(allocator, target_argv[0..], false);
+    defer target.deinit(allocator);
     try std.testing.expectEqualStrings("session-id", target.target.?);
 
     const extra_argv = [_][]const u8{ "one", "two" };
-    try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseSessionCommandArgs(extra_argv[0..], true));
+    try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseSessionCommandArgs(allocator, extra_argv[0..], true));
 }
 
 test "fork session command rejects include non interactive" {
+    const allocator = std.testing.allocator;
     const argv = [_][]const u8{"--include-non-interactive"};
-    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionCommandArgs(argv[0..], false));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionCommandArgs(allocator, argv[0..], false));
 }
 
 test "root remote is only accepted for interactive commands" {

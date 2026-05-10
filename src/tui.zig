@@ -35,8 +35,10 @@ const compact_prompt =
 pub const Options = struct {
     resume_target: ?[]const u8 = null,
     resume_picker: bool = false,
+    resume_show_all: bool = false,
     fork_target: ?[]const u8 = null,
     fork_picker: bool = false,
+    fork_show_all: bool = false,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     oss: bool = false,
@@ -208,7 +210,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     defer if (forked_from_path) |path| allocator.free(path);
 
     const source_fork_path = if (options.fork_picker) blk: {
-        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "fork");
+        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "fork", options.fork_show_all);
         if (picked_path == null) {
             std.debug.print("fork canceled\n", .{});
             return;
@@ -230,7 +232,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         transcript = loaded;
         break :blk next_path;
     } else if (options.resume_picker) blk: {
-        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "resume");
+        const picked_path = try promptSessionPicker(allocator, cfg.codex_home, "resume", options.resume_show_all);
         if (picked_path == null) {
             std.debug.print("resume canceled\n", .{});
             return;
@@ -518,8 +520,9 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
     });
 }
 
-fn promptSessionPicker(allocator: std.mem.Allocator, codex_home: []const u8, action: []const u8) !?[]const u8 {
-    const sessions = try session_store.listSessions(allocator, codex_home, 10);
+fn promptSessionPicker(allocator: std.mem.Allocator, codex_home: []const u8, action: []const u8, show_all: bool) !?[]const u8 {
+    const limit: usize = if (show_all) 0 else 10;
+    const sessions = try session_store.listSessions(allocator, codex_home, limit);
     defer session_store.freeSessionSummaries(allocator, sessions);
 
     if (sessions.len == 0) {
