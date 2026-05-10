@@ -532,15 +532,20 @@ def run_model_rpc_smoke(binary: Path) -> None:
 
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
 
     def rpc(request_id: str, method: str, params: dict) -> dict:
-        env = os.environ.copy()
-        env["CODEX_HOME"] = str(codex_home)
-        return request_stdio_app_server(
-            binary,
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
-            env,
-        )
+        write_json_line(proc, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        return read_json_line(proc, 5)
 
     try:
         first_page = rpc(
@@ -595,13 +600,28 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         set_enablement = rpc(
             "feature-enable-set",
             "experimentalFeature/enablement/set",
-            {"enablement": {"apps": True}},
+            {"enablement": {"apps": True, "memories": True, "tool_call_mcp_elicitation": False}},
         )
         assert set_enablement["id"] == "feature-enable-set"
-        assert set_enablement["error"]["code"] == -32603
-        assert "experimentalFeature/enablement/set is parsed but not implemented yet" in set_enablement[
-            "error"
-        ]["message"]
+        assert set_enablement["result"]["enablement"] == {
+            "apps": True,
+            "memories": True,
+            "tool_call_mcp_elicitation": False,
+        }
+
+        after_enablement = rpc("feature-list-after-enable", "experimentalFeature/list", {})
+        after_by_name = {item["name"]: item for item in after_enablement["result"]["data"]}
+        assert after_by_name["apps"]["enabled"] is False
+        assert after_by_name["memories"]["enabled"] is True
+        assert after_by_name["tool_call_mcp_elicitation"]["enabled"] is False
+
+        empty_enablement = rpc(
+            "feature-enable-empty",
+            "experimentalFeature/enablement/set",
+            {"enablement": {}},
+        )
+        assert empty_enablement["id"] == "feature-enable-empty"
+        assert empty_enablement["result"]["enablement"] == {}
 
         invalid_enablement = rpc(
             "feature-enable-invalid",
@@ -610,7 +630,34 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_enablement["id"] == "feature-enable-invalid"
         assert invalid_enablement["error"]["code"] == -32602
+
+        unsupported_enablement = rpc(
+            "feature-enable-unsupported",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"personality": False}},
+        )
+        assert unsupported_enablement["id"] == "feature-enable-unsupported"
+        assert unsupported_enablement["error"]["code"] == -32600
+        assert "unsupported feature enablement `personality`" in unsupported_enablement["error"]["message"]
+
+        unknown_enablement = rpc(
+            "feature-enable-unknown",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"not_real": True}},
+        )
+        assert unknown_enablement["id"] == "feature-enable-unknown"
+        assert unknown_enablement["error"]["code"] == -32600
+        assert unknown_enablement["error"]["message"] == "invalid feature enablement `not_real`"
     finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
