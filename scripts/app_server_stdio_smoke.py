@@ -4066,6 +4066,84 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
 
+        managed_config_path.write_text(
+            "\n".join(
+                [
+                    'model = "gpt-managed"',
+                    'approval_policy = "on-request"',
+                    "",
+                    "[sandbox_workspace_write]",
+                    'writable_roots = ["/tmp/codex-zig-managed-root"]',
+                    "exclude_tmpdir_env_var = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        managed_config_read = rpc(
+            "config-read-managed",
+            "config/read",
+            {"includeLayers": True, "cwd": str(codex_home)},
+        )
+        assert managed_config_read["id"] == "config-read-managed"
+        managed_config_body = managed_config_read["result"]["config"]
+        assert managed_config_body["model"] == "gpt-managed"
+        assert managed_config_body["approval_policy"] == "on-request"
+        assert managed_config_body["sandbox_mode"] == "danger-full-access"
+        assert managed_config_body["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-managed-root"],
+            "network_access": True,
+            "exclude_tmpdir_env_var": True,
+            "exclude_slash_tmp": True,
+        }
+        managed_source = {
+            "type": "legacyManagedConfigTomlFromFile",
+            "file": str(managed_config_path),
+        }
+        managed_origins = managed_config_read["result"]["origins"]
+        for key in [
+            "model",
+            "approval_policy",
+            "sandbox_workspace_write.writable_roots.0",
+            "sandbox_workspace_write.exclude_tmpdir_env_var",
+        ]:
+            assert managed_origins[key]["name"] == managed_source
+            assert managed_origins[key]["version"].startswith("sha256:")
+        for key in [
+            "profile",
+            "sandbox_mode",
+            "sandbox_workspace_write.network_access",
+            "sandbox_workspace_write.exclude_slash_tmp",
+            "web_search",
+            "service_tier",
+        ]:
+            assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
+            assert managed_origins[key]["version"].startswith("sha256:")
+        managed_layers = managed_config_read["result"]["layers"]
+        assert len(managed_layers) == 2
+        assert managed_layers[0]["name"] == managed_source
+        assert managed_layers[0]["version"] == managed_origins["model"]["version"]
+        assert managed_layers[0]["config"] == {
+            "model": "gpt-managed",
+            "approval_policy": "on-request",
+            "sandbox_workspace_write": {
+                "writable_roots": ["/tmp/codex-zig-managed-root"],
+                "network_access": False,
+                "exclude_tmpdir_env_var": True,
+                "exclude_slash_tmp": False,
+            },
+        }
+        assert managed_layers[1]["name"] == {"type": "user", "file": config_path}
+        assert managed_layers[1]["config"]["model"] == "gpt-config"
+        assert managed_layers[1]["config"]["approval_policy"] == "never"
+        assert managed_layers[1]["config"]["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-user-root"],
+            "network_access": True,
+            "exclude_tmpdir_env_var": False,
+            "exclude_slash_tmp": True,
+        }
+        managed_config_path.unlink()
+
         config_requirements = rpc_without_params(
             "config-requirements-read",
             "configRequirements/read",
