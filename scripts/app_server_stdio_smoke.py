@@ -566,6 +566,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         return read_json_line(proc, 5)
 
+    def rpc_without_params(request_id: str, method: str) -> dict:
+        write_json_line(proc, {"jsonrpc": "2.0", "id": request_id, "method": method})
+        return read_json_line(proc, 5)
+
     try:
         config_read = rpc("config-read", "config/read", {"includeLayers": True, "cwd": str(codex_home)})
         assert config_read["id"] == "config-read"
@@ -579,6 +583,21 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["features"]["memories"] is False
         assert config_read["result"]["origins"] == {}
         assert config_read["result"]["layers"] == []
+
+        config_requirements = rpc_without_params(
+            "config-requirements-read",
+            "configRequirements/read",
+        )
+        assert config_requirements["id"] == "config-requirements-read"
+        assert config_requirements["result"] == {"requirements": None}
+
+        config_requirements_null = rpc(
+            "config-requirements-read-null",
+            "configRequirements/read",
+            None,
+        )
+        assert config_requirements_null["id"] == "config-requirements-read-null"
+        assert config_requirements_null["result"] == {"requirements": None}
 
         feature_enablement = rpc(
             "config-feature-enable",
@@ -597,6 +616,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         invalid_params = rpc("config-read-invalid", "config/read", {"includeLayers": "yes"})
         assert invalid_params["id"] == "config-read-invalid"
         assert invalid_params["error"]["code"] == -32602
+
+        invalid_requirements_params = rpc(
+            "config-requirements-invalid",
+            "configRequirements/read",
+            {"includeLayers": True},
+        )
+        assert invalid_requirements_params["id"] == "config-requirements-invalid"
+        assert invalid_requirements_params["error"]["code"] == -32602
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
