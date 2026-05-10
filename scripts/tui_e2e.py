@@ -918,6 +918,52 @@ def run_plugin_marketplace_smoke(
             f"expected git marketplace already-added output:\n{git_repeated.stderr}"
         )
 
+    git_source.joinpath("plugins", "git-sample", "VERSION").write_text("v2\n")
+    git(git_source, "add", ".")
+    git(git_source, "commit", "-m", "upgrade")
+    upgraded_sha = git_output(git_source, "rev-parse", "release")
+
+    git_upgrade = subprocess.run(
+        [str(binary), "plugin", "marketplace", "upgrade", "git-debug"],
+        cwd=workspace,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Upgraded marketplace `git-debug` to the latest configured revision." not in git_upgrade.stderr:
+        raise AssertionError(f"expected git marketplace upgrade output:\n{git_upgrade.stderr}")
+    if f"Installed marketplace root: {git_root}" not in git_upgrade.stderr:
+        raise AssertionError(f"expected upgraded root output:\n{git_upgrade.stderr}")
+    if git_root.joinpath("plugins", "git-sample", "VERSION").read_text() != "v2\n":
+        raise AssertionError(f"expected upgraded git marketplace contents at {git_root}")
+    config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
+    if f'last_revision = "{upgraded_sha}"' not in config_text:
+        raise AssertionError(f"expected last_revision in config:\n{config_text}")
+    metadata = json.loads(git_root.joinpath(".codex-marketplace-install.json").read_text())
+    expected_metadata = {
+        "source_type": "git",
+        "source": git_url,
+        "ref_name": "release",
+        "sparse_paths": [".agents", "plugins/git-sample"],
+        "revision": upgraded_sha,
+    }
+    if metadata != expected_metadata:
+        raise AssertionError(f"unexpected marketplace install metadata: {metadata!r}")
+
+    git_upgrade_repeat = subprocess.run(
+        [str(binary), "plugin", "marketplace", "upgrade", "git-debug"],
+        cwd=workspace,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Marketplace `git-debug` is already up to date." not in git_upgrade_repeat.stderr:
+        raise AssertionError(
+            f"expected git marketplace already-up-to-date output:\n{git_upgrade_repeat.stderr}"
+        )
+
     git_remove = subprocess.run(
         [str(binary), "plugin", "marketplace", "remove", "git-debug"],
         cwd=workspace,
@@ -930,25 +976,6 @@ def run_plugin_marketplace_smoke(
         raise AssertionError(f"expected git marketplace remove output:\n{git_remove.stderr}")
     if git_root.exists():
         raise AssertionError(f"expected git marketplace root to be removed: {git_root}")
-
-    unsupported_cases = [
-        (["upgrade", "debug"], "parsed but not implemented yet"),
-    ]
-    for args, expected in unsupported_cases:
-        result = subprocess.run(
-            [str(binary), "plugin", "marketplace", *args],
-            cwd=workspace,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            raise AssertionError(f"plugin marketplace {args[0]} unexpectedly succeeded")
-        if expected not in result.stderr:
-            raise AssertionError(
-                f"expected plugin marketplace fallback output:\n{result.stderr}"
-            )
 
 
 def assert_empty_dir(path: Path) -> None:
@@ -1227,6 +1254,21 @@ def git(repo: Path, *args: str) -> None:
         capture_output=True,
         check=True,
     )
+
+
+def git_output(repo: Path, *args: str) -> str:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def run_apply_command_smoke(

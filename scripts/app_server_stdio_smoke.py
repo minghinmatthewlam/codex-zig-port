@@ -1197,6 +1197,67 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
         assert len(git_marketplaces) == 1
         assert git_marketplaces[0]["plugins"][0]["id"] == "git-sample@git-debug"
 
+        git_source.joinpath("plugins", "git-sample", "VERSION").write_text(
+            "v2\n", encoding="utf-8"
+        )
+        git(git_source, "add", ".")
+        git(git_source, "commit", "-m", "upgrade")
+        upgraded_sha = git_output(git_source, "rev-parse", "release")
+
+        upgraded = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-upgrade-git",
+                "method": "marketplace/upgrade",
+                "params": {"marketplaceName": "git-debug"},
+            },
+            env,
+        )
+        assert upgraded["id"] == "marketplace-upgrade-git"
+        assert upgraded["result"] == {
+            "selectedMarketplaces": ["git-debug"],
+            "upgradedRoots": [str(expected_git_root)],
+            "errors": [],
+        }
+        assert (
+            expected_git_root.joinpath("plugins", "git-sample", "VERSION").read_text(
+                encoding="utf-8"
+            )
+            == "v2\n"
+        )
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert f'last_revision = "{upgraded_sha}"' in config_text
+        metadata = json.loads(
+            expected_git_root.joinpath(".codex-marketplace-install.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert metadata == {
+            "source_type": "git",
+            "source": git_url,
+            "ref_name": "release",
+            "sparse_paths": [".agents", "plugins/git-sample"],
+            "revision": upgraded_sha,
+        }
+
+        repeated_upgrade = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-upgrade-git-repeat",
+                "method": "marketplace/upgrade",
+                "params": {"marketplaceName": "git-debug"},
+            },
+            env,
+        )
+        assert repeated_upgrade["id"] == "marketplace-upgrade-git-repeat"
+        assert repeated_upgrade["result"] == {
+            "selectedMarketplaces": ["git-debug"],
+            "upgradedRoots": [],
+            "errors": [],
+        }
+
         git_removed = request_stdio_app_server(
             binary,
             {
@@ -1213,20 +1274,6 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
             "installedRoot": str(expected_git_root),
         }
         assert not expected_git_root.exists()
-
-        upgrade = request_stdio_app_server(
-            binary,
-            {
-                "jsonrpc": "2.0",
-                "id": "marketplace-upgrade",
-                "method": "marketplace/upgrade",
-                "params": {"marketplaceName": None},
-            },
-            env,
-        )
-        assert upgrade["id"] == "marketplace-upgrade"
-        assert upgrade["error"]["code"] == -32603
-        assert "marketplace/upgrade is parsed but not implemented yet" in upgrade["error"]["message"]
 
         invalid = request_stdio_app_server(
             binary,
