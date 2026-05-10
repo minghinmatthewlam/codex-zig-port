@@ -4223,7 +4223,10 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
                     current_tool_app_index = apps.items.len - 1;
                     owned_app_name = null;
                 }
-                if (owned_app_name) |value| allocator.free(value);
+                if (owned_app_name) |value| {
+                    allocator.free(value);
+                    owned_app_name = null;
+                }
 
                 const app_index = current_tool_app_index.?;
                 current_tool_index = findConfigReadAppToolIndex(apps.items[app_index].tools.items, section.tool_name);
@@ -4232,7 +4235,10 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
                     current_tool_index = apps.items[app_index].tools.items.len - 1;
                     owned_tool_name = null;
                 }
-                if (owned_tool_name) |value| allocator.free(value);
+                if (owned_tool_name) |value| {
+                    allocator.free(value);
+                    owned_tool_name = null;
+                }
                 continue;
             }
             if (try parseConfigReadAppSectionName(allocator, line)) |name| {
