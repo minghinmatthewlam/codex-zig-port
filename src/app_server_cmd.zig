@@ -456,6 +456,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isFsMethod(method)) {
         return try handleFsMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (isConfigMethod(method)) {
+        return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
     if (isModelMethod(method)) {
         return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
     }
@@ -1154,6 +1157,163 @@ fn statCreatedAtMs(stat: std.c.Stat) i64 {
 
 fn timespecToUnixMs(value: std.c.timespec) i64 {
     return @as(i64, @intCast(value.sec)) * 1000 + @divTrunc(@as(i64, @intCast(value.nsec)), 1_000_000);
+}
+
+fn isConfigMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "config/read");
+}
+
+fn handleConfigMethod(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "config/read")) {
+        return handleConfigRead(allocator, state, id_value, params_value);
+    }
+    return try renderJsonRpcError(allocator, id_value, -32601, "unknown config method");
+}
+
+fn handleConfigRead(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = switch (optionalConfigReadParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var include_layers = false;
+    if (params) |object| {
+        if (object.get("includeLayers")) |value| {
+            if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeLayers must be a boolean");
+            include_layers = value.bool;
+        }
+        if (object.get("cwd")) |value| {
+            if (value != .null and value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null");
+        }
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+    var feature_overrides = features_cmd.loadFeatureOverrides(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load feature config", err);
+    };
+    defer feature_overrides.deinit(allocator);
+
+    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn optionalConfigReadParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "config/read params must be an object" };
+    return .{ .object = params.object };
+}
+
+fn renderConfigReadResponse(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    config_feature_overrides: features_cmd.FeatureOverrides,
+    runtime_feature_enablement: features_cmd.FeatureOverrides,
+    include_layers: bool,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "{\"config\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &result, &first, "model", cfg.model);
+    try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
+    try appendJsonStringField(allocator, &result, &first, "approval_policy", cfg.approval_policy.label());
+    try appendJsonStringField(allocator, &result, &first, "sandbox_mode", cfg.sandbox_mode.label());
+    try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (cfg.web_search_mode) |mode| mode.label() else null);
+    try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", cfg.service_tier);
+    try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
+    try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
+    try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
+    try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
+    try result.appendSlice(allocator, "},\"origins\":{},\"layers\":");
+    try result.appendSlice(allocator, if (include_layers) "[]" else "null");
+    try result.appendSlice(allocator, "}");
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendJsonStringField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    try appendJsonFieldName(allocator, result, first, name);
+    const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(value_json);
+    try result.appendSlice(allocator, value_json);
+}
+
+fn appendJsonMaybeStringField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?[]const u8,
+) !void {
+    if (value) |string| {
+        try appendJsonStringField(allocator, result, first, name, string);
+    } else {
+        try appendJsonFieldName(allocator, result, first, name);
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendConfigReadFeaturesField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    config_feature_overrides: features_cmd.FeatureOverrides,
+    runtime_feature_enablement: features_cmd.FeatureOverrides,
+) !void {
+    try appendJsonFieldName(allocator, result, first, "features");
+    try result.appendSlice(allocator, "{");
+    for (features_cmd.FeatureSpec.all, 0..) |feature, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        const key_json = try std.json.Stringify.valueAlloc(allocator, feature.key, .{});
+        defer allocator.free(key_json);
+        const enabled = config_feature_overrides.get(feature.key) orelse
+            runtime_feature_enablement.get(feature.key) orelse
+            feature.default_enabled;
+        try result.appendSlice(allocator, key_json);
+        try result.appendSlice(allocator, if (enabled) ":true" else ":false");
+    }
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendJsonFieldName(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try result.appendSlice(allocator, ",");
+    }
+    const name_json = try std.json.Stringify.valueAlloc(allocator, name, .{});
+    defer allocator.free(name_json);
+    try result.appendSlice(allocator, name_json);
+    try result.appendSlice(allocator, ":");
 }
 
 fn isModelMethod(method: []const u8) bool {
