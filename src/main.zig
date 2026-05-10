@@ -1244,7 +1244,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = overrides.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, overrides.runtime);
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = try auth.loadForConfig(allocator, cfg);
     defer credentials.deinit(allocator);
 
     std.debug.print("codex_home: {s}\n", .{cfg.codex_home});

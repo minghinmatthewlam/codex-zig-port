@@ -8,6 +8,8 @@ pub const Config = struct {
     model: []const u8,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
+    model_provider_env_key: ?[]const u8 = null,
+    model_provider_bearer_token: ?[]const u8 = null,
     oss_provider: ?[]const u8,
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
@@ -27,6 +29,8 @@ pub const Config = struct {
         allocator.free(self.model);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
+        if (self.model_provider_env_key) |value| allocator.free(value);
+        if (self.model_provider_bearer_token) |value| allocator.free(value);
         if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
@@ -469,6 +473,9 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer allocator.free(base_urls.openai);
     errdefer allocator.free(base_urls.chatgpt);
 
+    const model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
+    errdefer model_provider_auth.deinit(allocator);
+
     const oss_provider = try resolveOssProvider(allocator, config_view, active_profile);
     errdefer if (oss_provider) |provider| allocator.free(provider);
 
@@ -496,6 +503,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model = model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
+        .model_provider_env_key = model_provider_auth.env_key,
+        .model_provider_bearer_token = model_provider_auth.bearer_token,
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = approval_policy,
@@ -594,6 +603,32 @@ fn resolveModelProviderRequiresOpenAiAuth(config_view: ConfigView, model_provide
     }
     if (std.mem.eql(u8, provider, "openai")) return true;
     return false;
+}
+
+const ModelProviderAuth = struct {
+    env_key: ?[]const u8 = null,
+    bearer_token: ?[]const u8 = null,
+
+    fn deinit(self: ModelProviderAuth, allocator: std.mem.Allocator) void {
+        if (self.env_key) |value| allocator.free(value);
+        if (self.bearer_token) |value| allocator.free(value);
+    }
+};
+
+fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderAuth {
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    const provider = model_provider orelse return .{};
+
+    const env_key = try config_view.getModelProviderString(allocator, provider, "env_key");
+    errdefer if (env_key) |value| allocator.free(value);
+    const bearer_token = try config_view.getModelProviderString(allocator, provider, "experimental_bearer_token");
+    errdefer if (bearer_token) |value| allocator.free(value);
+
+    return .{
+        .env_key = env_key,
+        .bearer_token = bearer_token,
+    };
 }
 
 fn resolveOssProvider(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
@@ -1741,6 +1776,27 @@ test "model provider auth requirement follows provider config" {
     try std.testing.expect(!resolveModelProviderRequiresOpenAiAuth(view, "amazon-bedrock"));
     try std.testing.expect(!resolveModelProviderRequiresOpenAiAuth(view, "openai-custom"));
     try std.testing.expect(resolveModelProviderRequiresOpenAiAuth(view, "openai-required"));
+}
+
+test "model provider auth fields resolve from active provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "env-provider"
+        \\
+        \\[model_providers.env-provider]
+        \\base_url = "https://proxy.example/v1"
+        \\env_key = "CORP_API_KEY"
+        \\experimental_bearer_token = "configured-token"
+        \\
+        ,
+    };
+
+    const provider_auth = try resolveModelProviderAuth(allocator, view, null);
+    defer provider_auth.deinit(allocator);
+
+    try std.testing.expectEqualStrings("CORP_API_KEY", provider_auth.env_key.?);
+    try std.testing.expectEqualStrings("configured-token", provider_auth.bearer_token.?);
 }
 
 test "profile model provider overrides top-level provider" {

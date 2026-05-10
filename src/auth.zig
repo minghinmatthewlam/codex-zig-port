@@ -1,5 +1,6 @@
 const std = @import("std");
 const env = @import("env.zig");
+const config = @import("config.zig");
 
 pub const chatgpt_client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
 const refresh_token_url = "https://auth.openai.com/oauth/token";
@@ -100,25 +101,44 @@ const HttpResponse = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    if (try loadStoredWithOptions(allocator, codex_home, .{ .refresh_chatgpt = true })) |credentials| {
-        return credentials;
-    }
+    return loadWithProviderAuth(allocator, codex_home, null, null, true);
+}
 
-    const env_access_token = try env.getOwned(allocator, "CODEX_ACCESS_TOKEN");
-    if (env_access_token) |access_token| {
-        return try agentIdentityCredentialsFromOwnedToken(allocator, access_token);
-    }
-
-    const env_api_key = try env.getOwned(allocator, "OPENAI_API_KEY");
-    if (env_api_key) |api_key| {
-        return .{ .mode = .api_key, .token = api_key };
-    }
-
-    return error.NoUsableAuth;
+pub fn loadForConfig(allocator: std.mem.Allocator, cfg: config.Config) !Credentials {
+    return loadWithProviderAuth(
+        allocator,
+        cfg.codex_home,
+        cfg.model_provider_env_key,
+        cfg.model_provider_bearer_token,
+        true,
+    );
 }
 
 pub fn loadNoRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    if (try loadStoredWithOptions(allocator, codex_home, .{})) |credentials| {
+    return loadWithProviderAuth(allocator, codex_home, null, null, false);
+}
+
+fn loadWithProviderAuth(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    provider_env_key: ?[]const u8,
+    provider_bearer_token: ?[]const u8,
+    refresh_chatgpt: bool,
+) !Credentials {
+    if (provider_env_key) |key| {
+        if (try env.getOwnedDynamic(allocator, key)) |token| {
+            if (std.mem.trim(u8, token, " \t\r\n").len > 0) {
+                return .{ .mode = .api_key, .token = token };
+            }
+            allocator.free(token);
+        }
+        return error.ModelProviderEnvKeyMissing;
+    }
+    if (provider_bearer_token) |token| {
+        return .{ .mode = .api_key, .token = try allocator.dupe(u8, token) };
+    }
+
+    if (try loadStoredWithOptions(allocator, codex_home, .{ .refresh_chatgpt = refresh_chatgpt })) |credentials| {
         return credentials;
     }
 

@@ -66,7 +66,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
     else
-        try auth.load(allocator, cfg.codex_home);
+        try auth.loadForConfig(allocator, cfg);
     defer credentials.deinit(allocator);
 
     const prompt = if (parsed.read_stdin) prompt: {
