@@ -3872,6 +3872,40 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert slash_tmp_target.read_text(encoding="utf-8") == "cfg-slash"
         slash_tmp_target.unlink()
 
+        sandbox_policy_external_bad_network = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-external-bad-network",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "sandboxPolicy": {"type": "externalSandbox", "networkAccess": "invalid"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_external_bad_network["id"] == "command-exec-sandbox-policy-external-bad-network"
+        assert sandbox_policy_external_bad_network["error"]["code"] == -32602
+        assert "networkAccess" in sandbox_policy_external_bad_network["error"]["message"]
+
+        sandbox_policy_external = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-external",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "sandboxPolicy": {"type": "externalSandbox", "networkAccess": "enabled"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_external["id"] == "command-exec-sandbox-policy-external"
+        assert sandbox_policy_external["error"]["code"] == -32603
+        assert "external sandboxPolicy" in sandbox_policy_external["error"]["message"]
+
         sandbox_policy_network_enabled = request_stdio_app_server(
             binary,
             {
