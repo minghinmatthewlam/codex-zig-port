@@ -2,6 +2,7 @@ const std = @import("std");
 
 const modules = .{
     @import("agents_md.zig"),
+    @import("apply_command.zig"),
     @import("app_server_cmd.zig"),
     @import("api.zig"),
     @import("auth.zig"),

@@ -19,6 +19,27 @@ ALT_SCREEN_ENTER = b"\x1b[?1049h"
 ALT_SCREEN_LEAVE = b"\x1b[?1049l"
 
 
+APPLY_TASK_DIFF = """diff --git a/scripts/fibonacci.js b/scripts/fibonacci.js
+new file mode 100644
+index 0000000..1d92452
+--- /dev/null
++++ b/scripts/fibonacci.js
+@@ -0,0 +1,12 @@
++#!/usr/bin/env node
++
++function fibonacci(n) {
++  if (n < 0) throw new Error("n must be non-negative");
++  if (n <= 1) return n;
++  let prev = 0;
++  let curr = 1;
++  for (let i = 2; i <= n; i++) {
++    [prev, curr] = [curr, prev + curr];
++  }
++  return curr;
++}
+"""
+
+
 def free_port() -> int:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -83,6 +104,40 @@ def has_tool_output(items: list[object], call_id: str) -> bool:
 
 
 class MockResponsesHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_count += 1
+        self.server.get_paths.append(self.path)
+        self.server.get_headers.append(dict(self.headers.items()))
+
+        if self.path == "/wham/tasks/task-apply":
+            payload = json.dumps(
+                {
+                    "current_diff_task_turn": {
+                        "output_items": [
+                            {"type": "message", "content": []},
+                            {
+                                "type": "pr",
+                                "output_diff": {"diff": APPLY_TASK_DIFF},
+                            },
+                        ]
+                    }
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        payload = b'{"error":"not found"}'
+        self.send_response(404)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length)
@@ -256,12 +311,16 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
 class MockResponsesServer(ThreadingHTTPServer):
     request_count: int
     request_bodies: list[dict]
+    get_paths: list[str]
+    get_headers: list[dict[str, str]]
 
 
 def start_mock_server(port: int) -> MockResponsesServer:
     server = MockResponsesServer(("127.0.0.1", port), MockResponsesHandler)
     server.request_count = 0
     server.request_bodies = []
+    server.get_paths = []
+    server.get_headers = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -575,6 +634,107 @@ def run_help_command_smoke(
     if "codex-zig exec [OPTIONS] [PROMPT]" not in exec_result.stderr:
         raise AssertionError(f"expected exec help output:\n{exec_result.stderr}")
 
+    apply_result = subprocess.run(
+        [str(binary), "help", "apply"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig apply TASK_ID" not in apply_result.stderr:
+        raise AssertionError(f"expected apply help output:\n{apply_result.stderr}")
+
+    alias_result = subprocess.run(
+        [str(binary), "help", "a"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig a TASK_ID" not in alias_result.stderr:
+        raise AssertionError(f"expected apply alias help output:\n{alias_result.stderr}")
+
+    completion_result = subprocess.run(
+        [str(binary), "completion", "bash"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "a app-server apply" not in completion_result.stdout:
+        raise AssertionError(
+            f"expected apply commands in bash completion:\n{completion_result.stdout}"
+        )
+
+
+def git(repo: Path, *args: str) -> None:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def run_apply_command_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    repo = workspace / "apply-repo"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("# Apply Smoke\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "Initial commit")
+
+    result = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+            "apply",
+            "task-apply",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    combined = result.stdout + result.stderr
+    if "Successfully applied diff" not in combined:
+        raise AssertionError(f"expected apply success output:\n{combined}")
+
+    created = repo / "scripts" / "fibonacci.js"
+    if not created.exists():
+        raise AssertionError(f"expected apply command to create {created}")
+    contents = created.read_text()
+    if "function fibonacci(n)" not in contents or not contents.startswith(
+        "#!/usr/bin/env node"
+    ):
+        raise AssertionError(f"unexpected applied file contents:\n{contents}")
+
+    if "/wham/tasks/task-apply" not in server.get_paths:
+        raise AssertionError(f"expected task fetch, saw {server.get_paths!r}")
+    headers = server.get_headers[-1] if server.get_headers else {}
+    if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
+        raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
+    if headers.get("Authorization") != "Bearer tui-e2e-token":
+        raise AssertionError(f"expected bearer auth header, saw {headers!r}")
+
 
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
@@ -648,6 +808,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
+            run_apply_command_smoke(binary, env, workspace, port, server)
 
             master_fd, slave_fd = pty.openpty()
             proc = subprocess.Popen(

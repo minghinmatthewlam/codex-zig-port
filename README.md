@@ -52,6 +52,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake
+- apply the latest PR diff from a Codex agent task with `apply` / `a`
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
@@ -85,7 +86,9 @@ zig build e2e
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
 `-i/--image` initial-prompt attachment on the interactive path, verifies
-runtime feature toggles through `features list`, checks `help [COMMAND]`, drives
+runtime feature toggles through `features list`, checks `help [COMMAND]`, runs
+the top-level `apply` command against a mock ChatGPT task backend and temporary
+git repository, then drives
 `/help`, `/status`,
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks

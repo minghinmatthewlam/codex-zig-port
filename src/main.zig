@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const apply_command = @import("apply_command.zig");
 const app_server_cmd = @import("app_server_cmd.zig");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
@@ -307,6 +308,13 @@ fn mainInner(init: std.process.Init) !void {
             try app_server_cmd.run(allocator, &args);
             return;
         }
+        if (isApplyCommand(cmd)) {
+            try apply_command.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+            });
+            return;
+        }
         if (std.mem.eql(u8, cmd, "help")) {
             try runHelpCommand(&args);
             return;
@@ -494,6 +502,10 @@ fn isExecCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "exec") or std.mem.eql(u8, cmd, "e");
 }
 
+fn isApplyCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "apply") or std.mem.eql(u8, cmd, "a");
+}
+
 fn runHelpCommand(args: *std.process.Args.Iterator) !void {
     const target = args.next() orelse {
         try printHelp();
@@ -504,6 +516,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         try printHelp();
     } else if (isExecCommand(target)) {
         exec.printHelp();
+    } else if (isApplyCommand(target)) {
+        apply_command.printHelp();
     } else if (std.mem.eql(u8, target, "review")) {
         review.printHelp();
     } else if (std.mem.eql(u8, target, "login")) {
@@ -619,6 +633,9 @@ fn printHelp() !void {
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig e PROMPT     Alias for exec
+        \\  codex-zig apply TASK_ID
+        \\                          Apply the latest diff from a Codex agent task
+        \\  codex-zig a TASK_ID    Alias for apply
         \\  codex-zig login        Sign in with ChatGPT browser auth
         \\  codex-zig login status Show login status
         \\  codex-zig logout       Remove local Codex auth
