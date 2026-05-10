@@ -75,6 +75,34 @@ class RateLimitBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+    status_code: int = 200
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length).decode("utf-8")
+        AddCreditsNudgeBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+                "content_type": self.headers.get("Content-Type"),
+                "body": json.loads(body),
+            }
+        )
+        if self.path != "/api/codex/accounts/send_add_credits_nudge_email":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        self.send_response(AddCreditsNudgeBackendHandler.status_code)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
     try:
         assert proc.stdout is not None
@@ -720,6 +748,14 @@ def start_rate_limit_backend() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHTTPServer, str]:
+    AddCreditsNudgeBackendHandler.requests = []
+    AddCreditsNudgeBackendHandler.status_code = status_code
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AddCreditsNudgeBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
 def run_account_read_rpc_smoke(binary: Path) -> None:
     def request(codex_home: Path, request_id: str, params_marker: object, extra_env: dict[str, str] | None = None) -> dict:
         env = os.environ.copy()
@@ -1141,6 +1177,127 @@ def run_account_rate_limits_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(api_key_home, ignore_errors=True)
 
 
+def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
+    def request(codex_home: Path, request_id: str, params_marker: object) -> dict:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "account/sendAddCreditsNudgeEmail"}
+        if params_marker is not _OMIT:
+            payload["params"] = params_marker
+        return request_stdio_app_server(binary, payload, env)
+
+    def write_chatgpt_home(codex_home: Path, base_url: str) -> str:
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        (codex_home / "config.toml").write_text(f'chatgpt_base_url = "{base_url}"\n', encoding="utf-8")
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return access_token
+
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-chatgpt-", dir="/tmp"))
+    cooldown_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-cooldown-", dir="/tmp"))
+    failure_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-failure-", dir="/tmp"))
+    no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-none-", dir="/tmp"))
+    api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-add-credits-api-", dir="/tmp"))
+    server: ThreadingHTTPServer | None = None
+    cooldown_server: ThreadingHTTPServer | None = None
+    failure_server: ThreadingHTTPServer | None = None
+    try:
+        server, base_url = start_add_credits_nudge_backend()
+        access_token = write_chatgpt_home(chatgpt_home, base_url)
+        sent = request(chatgpt_home, "add-credits-sent", {"creditType": "usage_limit"})
+        assert sent["id"] == "add-credits-sent"
+        assert sent["result"] == {"status": "sent"}
+        assert AddCreditsNudgeBackendHandler.requests == [
+            {
+                "path": "/api/codex/accounts/send_add_credits_nudge_email",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+                "content_type": "application/json",
+                "body": {"credit_type": "usage_limit"},
+            }
+        ]
+        server.shutdown()
+        server.server_close()
+        server = None
+
+        cooldown_server, cooldown_base_url = start_add_credits_nudge_backend(429)
+        write_chatgpt_home(cooldown_home, cooldown_base_url)
+        cooldown = request(cooldown_home, "add-credits-cooldown", {"creditType": "credits"})
+        assert cooldown["id"] == "add-credits-cooldown"
+        assert cooldown["result"] == {"status": "cooldown_active"}
+        cooldown_server.shutdown()
+        cooldown_server.server_close()
+        cooldown_server = None
+
+        failure_server, failure_base_url = start_add_credits_nudge_backend(500)
+        write_chatgpt_home(failure_home, failure_base_url)
+        failure = request(failure_home, "add-credits-failure", {"creditType": "credits"})
+        assert failure["id"] == "add-credits-failure"
+        assert failure["error"]["code"] == -32603
+        assert "failed to notify workspace owner" in failure["error"]["message"]
+        failure_server.shutdown()
+        failure_server.server_close()
+        failure_server = None
+
+        no_auth = request(no_auth_home, "add-credits-no-auth", {"creditType": "credits"})
+        assert no_auth["id"] == "add-credits-no-auth"
+        assert no_auth["error"]["code"] == -32602
+        assert "codex account authentication required" in no_auth["error"]["message"]
+
+        (api_key_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}),
+            encoding="utf-8",
+        )
+        api_key = request(api_key_home, "add-credits-api-key", {"creditType": "usage_limit"})
+        assert api_key["id"] == "add-credits-api-key"
+        assert api_key["error"]["code"] == -32602
+        assert "chatgpt authentication required" in api_key["error"]["message"]
+
+        invalid_type = request(no_auth_home, "add-credits-invalid-type", {"creditType": "tokens"})
+        assert invalid_type["id"] == "add-credits-invalid-type"
+        assert invalid_type["error"]["code"] == -32602
+
+        invalid_params = request(no_auth_home, "add-credits-invalid-params", None)
+        assert invalid_params["id"] == "add-credits-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if cooldown_server is not None:
+            cooldown_server.shutdown()
+            cooldown_server.server_close()
+        if failure_server is not None:
+            failure_server.shutdown()
+            failure_server.server_close()
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(cooldown_home, ignore_errors=True)
+        shutil.rmtree(failure_home, ignore_errors=True)
+        shutil.rmtree(no_auth_home, ignore_errors=True)
+        shutil.rmtree(api_key_home, ignore_errors=True)
+
+
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
     env = os.environ.copy()
@@ -1530,6 +1687,8 @@ def main() -> None:
     print("app-server-account-login-cancel-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
     print("app-server-account-rate-limits-rpc-e2e: ok")
+    run_account_add_credits_nudge_rpc_smoke(binary)
+    print("app-server-account-add-credits-nudge-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
