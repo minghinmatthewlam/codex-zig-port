@@ -237,7 +237,7 @@ pub fn buildCustomPrompt(allocator: std.mem.Allocator, prompt: []const u8) ![]co
     , .{trimmed});
 }
 
-fn printHelp() void {
+pub fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig review --uncommitted

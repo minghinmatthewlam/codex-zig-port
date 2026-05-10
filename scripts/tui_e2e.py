@@ -546,6 +546,36 @@ def run_feature_toggle_smoke(
         )
 
 
+def run_help_command_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    root_result = subprocess.run(
+        [str(binary), "help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig help [COMMAND]" not in root_result.stderr:
+        raise AssertionError(
+            f"expected root help command in output:\n{root_result.stderr}"
+        )
+
+    exec_result = subprocess.run(
+        [str(binary), "help", "exec"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig exec [OPTIONS] [PROMPT]" not in exec_result.stderr:
+        raise AssertionError(f"expected exec help output:\n{exec_result.stderr}")
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -616,6 +646,7 @@ def run_e2e(binary: Path) -> str:
             env.pop("ZELLIJ_SESSION_NAME", None)
 
             run_feature_toggle_smoke(binary, env, workspace)
+            run_help_command_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
 
             master_fd, slave_fd = pty.openpty()

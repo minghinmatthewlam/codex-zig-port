@@ -190,7 +190,7 @@ fn stringifyModels(allocator: std.mem.Allocator, models: []const ModelEntry) ![]
     return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{ .whitespace = .indent_2 });
 }
 
-fn printHelp() void {
+pub fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig debug prompt-input [OPTIONS] [PROMPT]

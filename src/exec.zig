@@ -530,7 +530,7 @@ fn loadOutputSchema(allocator: std.mem.Allocator, path_opt: ?[]const u8) !Loaded
     return .{ .parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) };
 }
 
-fn printHelp() void {
+pub fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig exec [OPTIONS] [PROMPT]

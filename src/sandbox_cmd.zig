@@ -181,7 +181,7 @@ fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
-fn printHelp() void {
+pub fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig sandbox macos [OPTIONS] -- COMMAND [ARGS...]

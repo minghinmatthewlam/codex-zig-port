@@ -838,7 +838,7 @@ fn printDeviceCodePrompt(verification_url: []const u8, code: []const u8) void {
     , .{ verification_url, code });
 }
 
-fn printLoginHelp() void {
+pub fn printLoginHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig login

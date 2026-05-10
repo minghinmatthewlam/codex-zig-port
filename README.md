@@ -59,6 +59,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - inspect known feature flags with `features list`
 - enable or disable known feature flags for one invocation with root
   `--enable/--disable`
+- print general or command-specific help with `help [COMMAND]`
 
 Long-term exact parity is tracked in `docs/parity.md`.
 
@@ -84,7 +85,8 @@ zig build e2e
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
 `-i/--image` initial-prompt attachment on the interactive path, verifies
-runtime feature toggles through `features list`, drives `/help`, `/status`,
+runtime feature toggles through `features list`, checks `help [COMMAND]`, drives
+`/help`, `/status`,
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
@@ -159,6 +161,7 @@ codex-zig --oss --local-provider lmstudio
 codex-zig --search
 codex-zig --enable goals features list
 codex-zig --disable shell_tool features list
+codex-zig help exec
 codex-zig --no-alt-screen
 codex-zig --version
 codex-zig exec --profile work "say hello"

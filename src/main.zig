@@ -307,6 +307,10 @@ fn mainInner(init: std.process.Init) !void {
             try app_server_cmd.run(allocator, &args);
             return;
         }
+        if (std.mem.eql(u8, cmd, "help")) {
+            try runHelpCommand(&args);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "mcp-server")) {
             try mcp_server_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -490,6 +494,49 @@ fn isExecCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "exec") or std.mem.eql(u8, cmd, "e");
 }
 
+fn runHelpCommand(args: *std.process.Args.Iterator) !void {
+    const target = args.next() orelse {
+        try printHelp();
+        return;
+    };
+    if (args.next() != null) return error.UnexpectedHelpArgument;
+    if (isHelpFlag(target) or std.mem.eql(u8, target, "help")) {
+        try printHelp();
+    } else if (isExecCommand(target)) {
+        exec.printHelp();
+    } else if (std.mem.eql(u8, target, "review")) {
+        review.printHelp();
+    } else if (std.mem.eql(u8, target, "login")) {
+        login.printLoginHelp();
+    } else if (std.mem.eql(u8, target, "logout")) {
+        printLogoutHelp();
+    } else if (std.mem.eql(u8, target, "mcp")) {
+        mcp_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "mcp-server")) {
+        mcp_server_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "app-server")) {
+        app_server_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "completion")) {
+        completion_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "sandbox")) {
+        sandbox_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "debug")) {
+        debug_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "features")) {
+        features_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "auth-status")) {
+        printAuthStatusHelp();
+    } else if (std.mem.eql(u8, target, "resume")) {
+        printResumeHelp();
+    } else if (std.mem.eql(u8, target, "fork")) {
+        printForkHelp();
+    } else if (std.mem.eql(u8, target, "sessions")) {
+        printSessionsHelp();
+    } else {
+        return error.UnknownHelpCommand;
+    }
+}
+
 fn joinInitialPrompt(
     allocator: std.mem.Allocator,
     first: []const u8,
@@ -592,6 +639,8 @@ fn printHelp() !void {
         \\  codex-zig app-server
         \\                          Run the app-server JSON-RPC stdio transport
         \\  codex-zig auth-status  Check local Codex auth reuse
+        \\  codex-zig help [COMMAND]
+        \\                          Print general or command-specific help
         \\  codex-zig --profile NAME ...
         \\                          Select a config profile for the command
         \\  codex-zig --cd DIR ...
