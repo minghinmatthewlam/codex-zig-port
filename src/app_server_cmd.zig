@@ -40,9 +40,25 @@ const AppServerOptions = struct {
 
 const AppServerState = struct {
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
+    fs_watches: std.ArrayList(FsWatchEntry) = .empty,
+    pending_notifications: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         self.runtime_feature_enablement.deinit(allocator);
+        for (self.fs_watches.items) |*watch| watch.deinit(allocator);
+        self.fs_watches.deinit(allocator);
+        for (self.pending_notifications.items) |payload| allocator.free(payload);
+        self.pending_notifications.deinit(allocator);
+    }
+};
+
+const FsWatchEntry = struct {
+    watch_id: []const u8,
+    path: []const u8,
+
+    fn deinit(self: *FsWatchEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.watch_id);
+        allocator.free(self.path);
     }
 };
 
@@ -374,6 +390,7 @@ const StdioServer = struct {
                 defer self.allocator.free(payload);
                 try writeStdoutLine(payload);
             }
+            try writePendingNotificationsStdout(self.allocator, &state);
         }
     }
 };
@@ -421,6 +438,7 @@ const UnixServer = struct {
                 defer self.allocator.free(payload);
                 try writeStreamLine(&writer.interface, payload);
             }
+            try writePendingNotificationsStream(self.allocator, &state, &writer.interface);
         }
     }
 };
@@ -470,7 +488,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleSkillsList(allocator, id_value.?, object.get("params"));
     }
     if (isFsMethod(method)) {
-        return try handleFsMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleFsMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isConfigMethod(method)) {
         return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -1084,19 +1102,20 @@ fn isFsMethod(method: []const u8) bool {
 
 fn handleFsMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "fs/readFile")) return handleFsReadFile(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/writeFile")) return handleFsWriteFile(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/createDirectory")) return handleFsCreateDirectory(allocator, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/writeFile")) return handleFsWriteFile(allocator, state, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/createDirectory")) return handleFsCreateDirectory(allocator, state, id_value, params_value);
     if (std.mem.eql(u8, method, "fs/getMetadata")) return handleFsGetMetadata(allocator, id_value, params_value);
     if (std.mem.eql(u8, method, "fs/readDirectory")) return handleFsReadDirectory(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/remove")) return handleFsRemove(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/copy")) return handleFsCopy(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/watch")) return handleFsWatch(allocator, id_value, params_value);
-    if (std.mem.eql(u8, method, "fs/unwatch")) return handleFsUnwatch(allocator, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/remove")) return handleFsRemove(allocator, state, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/copy")) return handleFsCopy(allocator, state, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/watch")) return handleFsWatch(allocator, state, id_value, params_value);
+    if (std.mem.eql(u8, method, "fs/unwatch")) return handleFsUnwatch(allocator, state, id_value, params_value);
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown filesystem method");
 }
 
@@ -1128,7 +1147,7 @@ fn handleFsReadFile(allocator: std.mem.Allocator, id_value: std.json.Value, para
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
-fn handleFsWriteFile(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsWriteFile(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/writeFile")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -1155,10 +1174,11 @@ fn handleFsWriteFile(allocator: std.mem.Allocator, id_value: std.json.Value, par
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = decoded }) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "fs/writeFile failed", err);
     };
+    try queueFsChangedNotifications(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
-fn handleFsCreateDirectory(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsCreateDirectory(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/createDirectory")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -1182,6 +1202,7 @@ fn handleFsCreateDirectory(allocator: std.mem.Allocator, id_value: std.json.Valu
             return renderJsonRpcErrorForFailure(allocator, id_value, "fs/createDirectory failed", err);
         };
     }
+    try queueFsChangedNotifications(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
@@ -1267,7 +1288,7 @@ fn handleFsReadDirectory(allocator: std.mem.Allocator, id_value: std.json.Value,
     return renderJsonRpcResult(allocator, id_value, result.items);
 }
 
-fn handleFsRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsRemove(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/remove")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -1309,10 +1330,11 @@ fn handleFsRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params
             return renderJsonRpcErrorForFailure(allocator, id_value, "fs/remove failed", err);
         };
     }
+    try queueFsChangedNotifications(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
-fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsCopy(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/copy")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -1334,35 +1356,97 @@ fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_v
     copyPath(allocator, io, source_path, destination_path, recursive) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "fs/copy failed", err);
     };
+    try queueFsChangedNotifications(allocator, state, destination_path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
-fn handleFsWatch(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsWatch(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/watch")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    _ = switch (requiredStringFieldValue(object, "watchId", "fs/watch requires string watchId")) {
+    const watch_id = switch (requiredStringFieldValue(object, "watchId", "fs/watch requires string watchId")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    _ = switch (requiredAbsolutePathField(object, "path")) {
+    const path = switch (requiredAbsolutePathField(object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    return renderParsedButNotImplemented(allocator, id_value, "fs/watch");
+    if (findFsWatchIndex(state, watch_id) != null) {
+        const message = try std.fmt.allocPrint(allocator, "watchId already exists: {s}", .{watch_id});
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    const path_json = try std.json.Stringify.valueAlloc(allocator, path, .{});
+    defer allocator.free(path_json);
+    const result = try std.fmt.allocPrint(allocator, "{{\"path\":{s}}}", .{path_json});
+    defer allocator.free(result);
+    const response = try renderJsonRpcResult(allocator, id_value, result);
+    errdefer allocator.free(response);
+
+    const watch_id_owned = try allocator.dupe(u8, watch_id);
+    errdefer allocator.free(watch_id_owned);
+    const path_owned = try allocator.dupe(u8, path);
+    errdefer allocator.free(path_owned);
+    try state.fs_watches.append(allocator, .{
+        .watch_id = watch_id_owned,
+        .path = path_owned,
+    });
+    return response;
 }
 
-fn handleFsUnwatch(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleFsUnwatch(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (fsObjectParams(params_value, "fs/unwatch")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    _ = switch (requiredStringFieldValue(object, "watchId", "fs/unwatch requires string watchId")) {
+    const watch_id = switch (requiredStringFieldValue(object, "watchId", "fs/unwatch requires string watchId")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    return renderParsedButNotImplemented(allocator, id_value, "fs/unwatch");
+    if (findFsWatchIndex(state, watch_id)) |index| {
+        var removed = state.fs_watches.orderedRemove(index);
+        removed.deinit(allocator);
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn findFsWatchIndex(state: *const AppServerState, watch_id: []const u8) ?usize {
+    for (state.fs_watches.items, 0..) |watch, index| {
+        if (std.mem.eql(u8, watch.watch_id, watch_id)) return index;
+    }
+    return null;
+}
+
+fn queueFsChangedNotifications(allocator: std.mem.Allocator, state: *AppServerState, changed_path: []const u8) !void {
+    for (state.fs_watches.items) |watch| {
+        if (!fsWatchMatches(allocator, watch.path, changed_path)) continue;
+        const notification = try renderFsChangedNotification(allocator, watch.watch_id, changed_path);
+        errdefer allocator.free(notification);
+        try state.pending_notifications.append(allocator, notification);
+    }
+}
+
+fn fsWatchMatches(allocator: std.mem.Allocator, watch_path: []const u8, changed_path: []const u8) bool {
+    if (std.mem.eql(u8, watch_path, changed_path)) return true;
+    const metadata = statPathFollow(allocator, watch_path) catch return false;
+    const stat = metadata orelse return false;
+    const mode: u32 = @intCast(stat.mode);
+    return std.c.S.ISDIR(mode) and pathIsSameOrDescendant(watch_path, changed_path);
+}
+
+fn renderFsChangedNotification(allocator: std.mem.Allocator, watch_id: []const u8, changed_path: []const u8) ![]const u8 {
+    const watch_id_json = try std.json.Stringify.valueAlloc(allocator, watch_id, .{});
+    defer allocator.free(watch_id_json);
+    const changed_path_json = try std.json.Stringify.valueAlloc(allocator, changed_path, .{});
+    defer allocator.free(changed_path_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"fs/changed\",\"params\":{{\"watchId\":{s},\"changedPaths\":[{s}]}}}}",
+        .{ watch_id_json, changed_path_json },
+    );
 }
 
 fn fsObjectParams(params_value: ?std.json.Value, method: []const u8) FsObjectParams {
@@ -2933,6 +3017,29 @@ fn writeStreamLine(writer: *std.Io.Writer, payload: []const u8) !void {
     try writer.writeAll(payload);
     try writer.writeAll("\n");
     try writer.flush();
+}
+
+fn writePendingNotificationsStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    var notifications = state.pending_notifications;
+    state.pending_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeStdoutLine(payload);
+    }
+}
+
+fn writePendingNotificationsStream(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    var notifications = state.pending_notifications;
+    state.pending_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeStreamLine(writer, payload);
+    }
+}
+
+fn freePendingNotifications(allocator: std.mem.Allocator, notifications: *std.ArrayList([]const u8)) void {
+    for (notifications.items) |payload| allocator.free(payload);
+    notifications.deinit(allocator);
 }
 
 fn defaultUnixSocketPath(allocator: std.mem.Allocator) ![]const u8 {
