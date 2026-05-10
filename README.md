@@ -120,6 +120,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - inspect known feature flags with `features list`
 - enable or disable known feature flags for one invocation with root
   `--enable/--disable`
+- persist feature flags globally or per profile with `features enable|disable`
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - add local and git-backed marketplace sources, upgrade configured Git
@@ -216,7 +217,9 @@ account-add-credits-nudge, config-read, config-value-write, config-batch-write,
 and config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
-compatibility for analytics defaults plus websocket auth parsing. Run
+compatibility for analytics defaults plus websocket auth parsing. It also runs
+CLI and app-server smokes for profile-scoped feature enablement writes and
+reads. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
@@ -291,6 +294,7 @@ codex-zig sandbox macos -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals
 codex-zig features disable goals
+codex-zig --profile work features enable goals
 codex-zig mcp list
 codex-zig mcp add docs -- node ./server.js
 codex-zig mcp add remote --url https://example.com/mcp
