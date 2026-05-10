@@ -26,7 +26,9 @@ Current app-server `config/read` coverage also includes first-level user
 `[apps.NAME]` config for `enabled`, `destructive_enabled`, and
 `default_tools_approval_mode`, plus user `[apps._default]` `enabled`,
 `destructive_enabled`, and `open_world_enabled` defaults, including user
-origins/layers. Per-app tool subconfigs and non-user app layers remain planned.
+origins/layers. Per-app `[apps.NAME.tools.TOOL]` `enabled` and `approval_mode`
+overrides are also returned with user origins/layers. Non-user app layers remain
+planned.
 
 Current app-server `config/read` coverage also includes user
 `sandbox_workspace_write` settings for table and inline-object TOML shapes:
