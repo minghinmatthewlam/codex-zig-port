@@ -10,6 +10,7 @@ const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const memory_reset = @import("memory_reset.zig");
+const mcp_cmd = @import("mcp_cmd.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -482,6 +483,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (isExperimentalFeatureMethod(method)) {
         return try handleExperimentalFeatureMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
+    if (isMcpServerMethod(method)) {
+        return try handleMcpServerMethod(allocator, id_value.?, method, object.get("params"));
     }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
@@ -2713,6 +2717,168 @@ fn renderExperimentalFeatureEnablementResponse(allocator: std.mem.Allocator, ena
     }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
+}
+
+const McpStatusParams = struct {
+    cursor: ?usize = null,
+    limit: ?usize = null,
+};
+
+fn isMcpServerMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "config/mcpServer/reload") or
+        std.mem.eql(u8, method, "mcpServerStatus/list");
+}
+
+fn handleMcpServerMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "config/mcpServer/reload")) {
+        if (params_value) |params| {
+            if (params != .null and params != .object) {
+                return renderJsonRpcError(allocator, id_value, -32602, "config/mcpServer/reload params must be an object, null, or omitted");
+            }
+        }
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
+    if (std.mem.eql(u8, method, "mcpServerStatus/list")) {
+        return handleMcpServerStatusList(allocator, id_value, params_value);
+    }
+    return renderJsonRpcError(allocator, id_value, -32601, "unknown MCP server method");
+}
+
+fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parseMcpStatusParams(params_value) catch |err| switch (err) {
+        error.InvalidMcpStatusParams => return renderJsonRpcError(allocator, id_value, -32602, "mcpServerStatus/list params must be an object"),
+        error.InvalidMcpStatusCursor => return renderJsonRpcError(allocator, id_value, -32602, "invalid cursor"),
+        error.InvalidMcpStatusLimit => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+        error.InvalidMcpStatusDetail => return renderJsonRpcError(allocator, id_value, -32602, "detail must be full, toolsAndAuthOnly, or null"),
+    };
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServerStatus/list failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    var servers = mcp_cmd.loadServers(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServerStatus/list failed to load MCP servers", err);
+    };
+    defer servers.deinit(allocator);
+    std.mem.sort(mcp_cmd.McpServer, servers.items.items, {}, mcpServerNameLessThan);
+
+    const result = renderMcpServerStatusListResponse(allocator, servers, params) catch |err| switch (err) {
+        error.McpStatusCursorOutOfRange => return renderJsonRpcError(allocator, id_value, -32602, "cursor exceeds total MCP servers"),
+        else => return err,
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn parseMcpStatusParams(params_value: ?std.json.Value) !McpStatusParams {
+    const params = params_value orelse return .{};
+    if (params == .null) return .{};
+    if (params != .object) return error.InvalidMcpStatusParams;
+
+    var parsed = McpStatusParams{};
+    if (params.object.get("cursor")) |cursor| {
+        if (cursor == .null) {
+            parsed.cursor = null;
+        } else if (cursor == .string) {
+            parsed.cursor = std.fmt.parseUnsigned(usize, cursor.string, 10) catch return error.InvalidMcpStatusCursor;
+        } else {
+            return error.InvalidMcpStatusCursor;
+        }
+    }
+    if (params.object.get("limit")) |limit| {
+        if (limit == .null) {
+            parsed.limit = null;
+        } else if (limit == .integer and limit.integer >= 0) {
+            parsed.limit = @intCast(limit.integer);
+        } else {
+            return error.InvalidMcpStatusLimit;
+        }
+    }
+    if (params.object.get("detail")) |detail| {
+        if (detail == .null) {
+            return parsed;
+        }
+        if (detail != .string) return error.InvalidMcpStatusDetail;
+        if (!std.mem.eql(u8, detail.string, "full") and !std.mem.eql(u8, detail.string, "toolsAndAuthOnly")) {
+            return error.InvalidMcpStatusDetail;
+        }
+    }
+    return parsed;
+}
+
+fn renderMcpServerStatusListResponse(
+    allocator: std.mem.Allocator,
+    servers: mcp_cmd.McpServers,
+    params: McpStatusParams,
+) ![]const u8 {
+    const total = servers.items.items.len;
+    const start = params.cursor orelse 0;
+    if (start > total) return error.McpStatusCursorOutOfRange;
+    const limit = @max(params.limit orelse total, 1);
+    const effective_limit = @min(limit, total);
+    const remaining = total - start;
+    const end = start + @min(effective_limit, remaining);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"data\":[");
+    for (servers.items.items[start..end], 0..) |server, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendMcpServerStatusJson(allocator, &out, server);
+    }
+    try out.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        const next_cursor_json = try std.json.Stringify.valueAlloc(allocator, next_cursor, .{});
+        defer allocator.free(next_cursor_json);
+        try out.appendSlice(allocator, next_cursor_json);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendMcpServerStatusJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), server: mcp_cmd.McpServer) !void {
+    const name_json = try std.json.Stringify.valueAlloc(allocator, server.name, .{});
+    defer allocator.free(name_json);
+    const auth_status = try mcpAuthStatus(allocator, server);
+    defer allocator.free(auth_status);
+    const auth_status_json = try std.json.Stringify.valueAlloc(allocator, auth_status, .{});
+    defer allocator.free(auth_status_json);
+
+    try out.appendSlice(allocator, "{\"name\":");
+    try out.appendSlice(allocator, name_json);
+    try out.appendSlice(allocator, ",\"tools\":{},\"resources\":[],\"resourceTemplates\":[],\"authStatus\":");
+    try out.appendSlice(allocator, auth_status_json);
+    try out.appendSlice(allocator, "}");
+}
+
+fn mcpAuthStatus(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) ![]const u8 {
+    if (server.kind == .streamable_http and server.bearer_token_env_var != null) {
+        if (try envVarIsSet(allocator, server.bearer_token_env_var.?)) {
+            return allocator.dupe(u8, "bearerToken");
+        }
+        return allocator.dupe(u8, "notLoggedIn");
+    }
+    return allocator.dupe(u8, "unsupported");
+}
+
+fn envVarIsSet(allocator: std.mem.Allocator, name: []const u8) !bool {
+    const name_z = try allocator.dupeZ(u8, name);
+    defer allocator.free(name_z);
+    return std.c.getenv(name_z.ptr) != null;
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
