@@ -28,6 +28,30 @@ pub const ReadError = error{
     PluginsDisabled,
 };
 
+pub const InstallError = error{
+    InvalidMarketplaceFile,
+    PluginNotFound,
+    MissingPluginManifest,
+    PluginsDisabled,
+    UnsupportedInstallSource,
+    PluginNotAvailable,
+    InvalidPluginId,
+    PluginNameMismatch,
+    InvalidPluginVersion,
+};
+
+pub const InstallResult = struct {
+    response_json: []const u8,
+    updated_config: []const u8,
+    installed_path: []const u8,
+
+    pub fn deinit(self: InstallResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.response_json);
+        allocator.free(self.updated_config);
+        allocator.free(self.installed_path);
+    }
+};
+
 pub fn renderResponse(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -185,6 +209,73 @@ pub fn renderReadResponse(
     }
 
     return ReadError.PluginNotFound;
+}
+
+pub fn installLocalPlugin(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    requested_plugin_name: []const u8,
+) !InstallResult {
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return InstallError.PluginsDisabled;
+
+    const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return InstallError.InvalidMarketplaceFile;
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return InstallError.InvalidMarketplaceFile;
+    defer parsed.deinit();
+    if (parsed.value != .object) return InstallError.InvalidMarketplaceFile;
+    const object = parsed.value.object;
+    const marketplace_name = stringField(object, "name") orelse return InstallError.InvalidMarketplaceFile;
+    const plugins_value = object.get("plugins") orelse return InstallError.InvalidMarketplaceFile;
+    if (plugins_value != .array) return InstallError.InvalidMarketplaceFile;
+
+    for (plugins_value.array.items) |plugin_value| {
+        if (plugin_value != .object) continue;
+        const plugin_name = stringField(plugin_value.object, "name") orelse continue;
+        if (!std.mem.eql(u8, plugin_name, requested_plugin_name)) continue;
+        if (!plugin_config.isValidPluginSegment(plugin_name) or !plugin_config.isValidPluginSegment(marketplace_name)) {
+            return InstallError.InvalidPluginId;
+        }
+        if (std.mem.eql(u8, installPolicy(plugin_value.object.get("policy")), "NOT_AVAILABLE")) {
+            return InstallError.PluginNotAvailable;
+        }
+
+        const source_value = plugin_value.object.get("source") orelse return InstallError.UnsupportedInstallSource;
+        const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return InstallError.UnsupportedInstallSource;
+        defer source.deinit(allocator);
+        const plugin_root = source.plugin_root orelse return InstallError.UnsupportedInstallSource;
+
+        const manifest_bytes = try readPluginManifestBytes(allocator, plugin_root) orelse return InstallError.MissingPluginManifest;
+        defer allocator.free(manifest_bytes);
+        var manifest_parse = std.json.parseFromSlice(std.json.Value, allocator, manifest_bytes, .{}) catch return InstallError.MissingPluginManifest;
+        defer manifest_parse.deinit();
+        if (manifest_parse.value != .object) return InstallError.MissingPluginManifest;
+        const manifest_name = stringField(manifest_parse.value.object, "name") orelse return InstallError.MissingPluginManifest;
+        if (!std.mem.eql(u8, manifest_name, plugin_name)) return InstallError.PluginNameMismatch;
+        const plugin_version = try pluginVersionForManifest(manifest_parse.value.object);
+
+        const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name, marketplace_name });
+        defer allocator.free(plugin_id);
+        const installed_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name, plugin_name, plugin_version });
+        errdefer allocator.free(installed_path);
+        const plugin_base_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name, plugin_name });
+        defer allocator.free(plugin_base_root);
+
+        try replaceLocalPluginCache(allocator, plugin_root, plugin_base_root, installed_path);
+        const updated_config = try plugin_config.upsertEnabledPluginConfig(allocator, config_bytes, plugin_id);
+        errdefer allocator.free(updated_config);
+        const response_json = try renderInstallResponseJson(allocator, authPolicy(plugin_value.object.get("policy")));
+        errdefer allocator.free(response_json);
+        return .{
+            .response_json = response_json,
+            .updated_config = updated_config,
+            .installed_path = installed_path,
+        };
+    }
+
+    return InstallError.PluginNotFound;
 }
 
 fn appendMarketplacesForRoot(
@@ -904,6 +995,99 @@ fn authPolicy(policy_value: ?std.json.Value) []const u8 {
     return "ON_INSTALL";
 }
 
+fn renderInstallResponseJson(allocator: std.mem.Allocator, auth_policy: []const u8) ![]const u8 {
+    const auth_policy_json = try jsonString(allocator, auth_policy);
+    defer allocator.free(auth_policy_json);
+    return std.fmt.allocPrint(allocator, "{{\"authPolicy\":{s},\"appsNeedingAuth\":[]}}", .{auth_policy_json});
+}
+
+fn pluginVersionForManifest(object: std.json.ObjectMap) ![]const u8 {
+    const value = object.get("version") orelse return "local";
+    if (value == .null) return "local";
+    if (value != .string) return InstallError.InvalidPluginVersion;
+    const version = std.mem.trim(u8, value.string, " \t\r\n");
+    if (!isValidPluginVersion(version)) return InstallError.InvalidPluginVersion;
+    return version;
+}
+
+fn isValidPluginVersion(value: []const u8) bool {
+    if (value.len == 0 or std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '+') continue;
+        return false;
+    }
+    return true;
+}
+
+fn replaceLocalPluginCache(allocator: std.mem.Allocator, source_root: []const u8, plugin_base_root: []const u8, installed_path: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const plugin_version = std.fs.path.basename(installed_path);
+    const staged_base_root = try std.fmt.allocPrint(allocator, "{s}.installing", .{plugin_base_root});
+    defer allocator.free(staged_base_root);
+    const backup_base_root = try std.fmt.allocPrint(allocator, "{s}.previous", .{plugin_base_root});
+    defer allocator.free(backup_base_root);
+    const staged_installed_path = try std.fs.path.join(allocator, &.{ staged_base_root, plugin_version });
+    defer allocator.free(staged_installed_path);
+
+    try deletePathIfPresent(staged_base_root);
+    try deletePathIfPresent(backup_base_root);
+    errdefer deletePathIfPresent(staged_base_root) catch {};
+
+    try copyDirRecursive(allocator, source_root, staged_installed_path);
+    const had_existing = try renamePathIfPresent(plugin_base_root, backup_base_root);
+    std.Io.Dir.renameAbsolute(staged_base_root, plugin_base_root, io) catch |err| {
+        if (had_existing) {
+            std.Io.Dir.renameAbsolute(backup_base_root, plugin_base_root, io) catch {};
+        }
+        return err;
+    };
+    if (had_existing) deletePathIfPresent(backup_base_root) catch {};
+}
+
+fn copyDirRecursive(allocator: std.mem.Allocator, source_root: []const u8, target_root: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, target_root);
+
+    var source_dir = try std.Io.Dir.openDirAbsolute(io, source_root, .{ .iterate = true });
+    defer source_dir.close(io);
+
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const source_path = try std.fs.path.join(allocator, &.{ source_root, entry.name });
+        defer allocator.free(source_path);
+        const target_path = try std.fs.path.join(allocator, &.{ target_root, entry.name });
+        defer allocator.free(target_path);
+
+        if (entry.kind == .directory) {
+            try copyDirRecursive(allocator, source_path, target_path);
+        } else if (entry.kind == .file) {
+            try std.Io.Dir.copyFileAbsolute(source_path, target_path, io, .{});
+        }
+    }
+}
+
+fn renamePathIfPresent(old_path: []const u8, new_path: []const u8) !bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.renameAbsolute(old_path, new_path, io) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
+fn deletePathIfPresent(path: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    if (stat.kind == .directory) {
+        try std.Io.Dir.cwd().deleteTree(io, path);
+    } else {
+        try std.Io.Dir.deleteFileAbsolute(io, path);
+    }
+}
+
 fn policyObject(policy_value: ?std.json.Value) ?std.json.ObjectMap {
     const value = policy_value orelse return null;
     if (value != .object) return null;
@@ -1213,4 +1397,93 @@ test "plugin list reports invalid marketplace files and honors plugins feature f
     const disabled = try renderResponse(allocator, codex_home, "[features]\nplugins = false\n", &.{repo}, true);
     defer allocator.free(disabled);
     try std.testing.expectEqualStrings("{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}", disabled);
+}
+
+test "plugin install copies local source and enables config" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home");
+    try dir.dir.createDirPath(io, "repo/.agents/plugins");
+    try dir.dir.createDirPath(io, "repo/plugins/sample-plugin/.codex-plugin");
+    try dir.dir.createDirPath(io, "repo/plugins/sample-plugin/skills/example");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/.agents/plugins/marketplace.json",
+        .data =
+        \\{
+        \\  "name": "debug",
+        \\  "plugins": [
+        \\    {
+        \\      "name": "sample-plugin",
+        \\      "source": {"source": "local", "path": "./plugins/sample-plugin"},
+        \\      "policy": {"authentication": "ON_USE"}
+        \\    }
+        \\  ]
+        \\}
+        ,
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/plugins/sample-plugin/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"sample-plugin\",\"version\":\"1.2.3\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/plugins/sample-plugin/skills/example/SKILL.md",
+        .data = "# Example\n",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const marketplace_path = try std.fs.path.join(allocator, &.{ root, "repo", ".agents", "plugins", "marketplace.json" });
+    defer allocator.free(marketplace_path);
+
+    const installed = try installLocalPlugin(allocator, codex_home, "[features]\nplugins = true\n", marketplace_path, "sample-plugin");
+    defer installed.deinit(allocator);
+    try std.testing.expectEqualStrings("{\"authPolicy\":\"ON_USE\",\"appsNeedingAuth\":[]}", installed.response_json);
+    try std.testing.expect(std.mem.indexOf(u8, installed.updated_config, "[plugins.\"sample-plugin@debug\"]\nenabled = true") != null);
+    try std.testing.expect(std.mem.endsWith(u8, installed.installed_path, "plugins/cache/debug/sample-plugin/1.2.3"));
+
+    const copied_manifest = try std.fs.path.join(allocator, &.{ installed.installed_path, ".codex-plugin", "plugin.json" });
+    defer allocator.free(copied_manifest);
+    const copied_skill = try std.fs.path.join(allocator, &.{ installed.installed_path, "skills", "example", "SKILL.md" });
+    defer allocator.free(copied_skill);
+    _ = try std.Io.Dir.cwd().statFile(io, copied_manifest, .{});
+    _ = try std.Io.Dir.cwd().statFile(io, copied_skill, .{});
+}
+
+test "plugin install cache replacement keeps existing cache when staging fails" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home/plugins/cache/debug/sample-plugin/local");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "codex-home/plugins/cache/debug/sample-plugin/local/old.txt",
+        .data = "old",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const missing_source = try std.fs.path.join(allocator, &.{ root, "missing-source" });
+    defer allocator.free(missing_source);
+    const plugin_base_root = try std.fs.path.join(allocator, &.{ root, "codex-home", "plugins", "cache", "debug", "sample-plugin" });
+    defer allocator.free(plugin_base_root);
+    const installed_path = try std.fs.path.join(allocator, &.{ plugin_base_root, "1.2.3" });
+    defer allocator.free(installed_path);
+
+    var failed = false;
+    replaceLocalPluginCache(allocator, missing_source, plugin_base_root, installed_path) catch {
+        failed = true;
+    };
+    try std.testing.expect(failed);
+
+    const old_path = try std.fs.path.join(allocator, &.{ plugin_base_root, "local", "old.txt" });
+    defer allocator.free(old_path);
+    const old = try std.Io.Dir.cwd().readFileAlloc(io, old_path, allocator, .limited(16));
+    defer allocator.free(old);
+    try std.testing.expectEqualStrings("old", old);
 }
