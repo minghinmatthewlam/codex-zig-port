@@ -377,11 +377,12 @@ those same fields, reads `[tui].theme`, `[tui].status_line`,
 `experimental_bearer_token`, `query_params`, `http_headers`, and
 `env_http_headers` for custom providers. It also supports section-form
 `[model_providers.<name>.auth]` and inline `auth = { ... }` `command`, `args`,
-`cwd`, and `timeout_ms` for command-backed bearer tokens.
+`cwd`, `timeout_ms`, and `refresh_interval_ms` for command-backed bearer tokens.
 The current port supports Responses wire API providers, rejects the removed
 `wire_api = "chat"` setting, and rejects command-auth combinations that Rust
-marks invalid. If a command-backed provider token receives a 401 response, the
-command is rerun once and the request is retried with the refreshed token.
+marks invalid. Command-backed provider tokens are cached while fresh, rerun
+after `refresh_interval_ms` before a later request, and force-refreshed once on
+401 before retrying the request.
 
 ```sh
 codex-zig --profile work auth-status
