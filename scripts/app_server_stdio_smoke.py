@@ -3773,14 +3773,32 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
     project_dot_codex = workspace / ".codex"
     project_dot_codex.mkdir(parents=True)
     (project_dot_codex / "config.toml").write_text(
-        'model_reasoning_effort = "high"\n',
+        "\n".join(
+            [
+                'model = "gpt-project"',
+                'approval_policy = "on-request"',
+                'sandbox_mode = "workspace-write"',
+                'web_search = "cached"',
+                'model_reasoning_effort = "high"',
+                'service_tier = "fast"',
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     child_workspace = workspace / "child"
     child_dot_codex = child_workspace / ".codex"
     child_dot_codex.mkdir(parents=True)
     (child_dot_codex / "config.toml").write_text(
-        'model_reasoning_effort = "low"\n',
+        "\n".join(
+            [
+                'model = "gpt-child"',
+                'approval_policy = "on-failure"',
+                'model_reasoning_effort = "low"',
+                'service_tier = "flex"',
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     (codex_home / "config.toml").write_text(
@@ -3875,21 +3893,41 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         assert project_config_read["id"] == "config-read-project"
         project_config_body = project_config_read["result"]["config"]
-        assert project_config_body["model"] == "gpt-config"
+        assert project_config_body["model"] == "gpt-project"
+        assert project_config_body["approval_policy"] == "on-request"
+        assert project_config_body["sandbox_mode"] == "workspace-write"
+        assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
+        assert project_config_body["service_tier"] == "priority"
+        assert project_config_body["profile"] == "work"
         project_source = {
             "type": "project",
             "dotCodexFolder": str(project_dot_codex),
         }
         project_origins = project_config_read["result"]["origins"]
-        assert project_origins["model_reasoning_effort"]["name"] == project_source
-        assert project_origins["model_reasoning_effort"]["version"].startswith("sha256:")
-        assert project_origins["model"]["name"] == {"type": "user", "file": config_path}
+        for key in [
+            "model",
+            "approval_policy",
+            "sandbox_mode",
+            "web_search",
+            "model_reasoning_effort",
+            "service_tier",
+        ]:
+            assert project_origins[key]["name"] == project_source
+            assert project_origins[key]["version"].startswith("sha256:")
+        assert project_origins["profile"]["name"] == {"type": "user", "file": config_path}
         project_layers = project_config_read["result"]["layers"]
         assert len(project_layers) == 2
         assert project_layers[0]["name"] == project_source
         assert project_layers[0]["version"] == project_origins["model_reasoning_effort"]["version"]
-        assert project_layers[0]["config"] == {"model_reasoning_effort": "high"}
+        assert project_layers[0]["config"] == {
+            "model": "gpt-project",
+            "approval_policy": "on-request",
+            "sandbox_mode": "workspace-write",
+            "web_search": "cached",
+            "model_reasoning_effort": "high",
+            "service_tier": "priority",
+        }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
 
         nested_project_config_read = rpc(
@@ -3899,20 +3937,43 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         assert nested_project_config_read["id"] == "config-read-nested-project"
         nested_config_body = nested_project_config_read["result"]["config"]
-        assert nested_config_body["model"] == "gpt-config"
+        assert nested_config_body["model"] == "gpt-child"
+        assert nested_config_body["approval_policy"] == "on-failure"
+        assert nested_config_body["sandbox_mode"] == "workspace-write"
+        assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
+        assert nested_config_body["service_tier"] == "flex"
+        assert nested_config_body["profile"] == "work"
         child_project_source = {
             "type": "project",
             "dotCodexFolder": str(child_dot_codex),
         }
         nested_origins = nested_project_config_read["result"]["origins"]
+        assert nested_origins["model"]["name"] == child_project_source
+        assert nested_origins["approval_policy"]["name"] == child_project_source
+        assert nested_origins["sandbox_mode"]["name"] == project_source
+        assert nested_origins["web_search"]["name"] == project_source
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
+        assert nested_origins["service_tier"]["name"] == child_project_source
+        assert nested_origins["profile"]["name"] == {"type": "user", "file": config_path}
         nested_layers = nested_project_config_read["result"]["layers"]
         assert len(nested_layers) == 3
         assert nested_layers[0]["name"] == child_project_source
-        assert nested_layers[0]["config"] == {"model_reasoning_effort": "low"}
+        assert nested_layers[0]["config"] == {
+            "model": "gpt-child",
+            "approval_policy": "on-failure",
+            "model_reasoning_effort": "low",
+            "service_tier": "flex",
+        }
         assert nested_layers[1]["name"] == project_source
-        assert nested_layers[1]["config"] == {"model_reasoning_effort": "high"}
+        assert nested_layers[1]["config"] == {
+            "model": "gpt-project",
+            "approval_policy": "on-request",
+            "sandbox_mode": "workspace-write",
+            "web_search": "cached",
+            "model_reasoning_effort": "high",
+            "service_tier": "priority",
+        }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
 
         config_requirements = rpc_without_params(
