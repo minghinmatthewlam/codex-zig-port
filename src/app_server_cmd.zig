@@ -8,6 +8,26 @@ const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
 const net = std.Io.net;
 
+const WebsocketAuthMode = enum {
+    capability_token,
+    signed_bearer_token,
+};
+
+const WebsocketAuthArgs = struct {
+    ws_auth: ?WebsocketAuthMode = null,
+    ws_token_file: ?[]const u8 = null,
+    ws_token_sha256: ?[]const u8 = null,
+    ws_shared_secret_file: ?[]const u8 = null,
+    ws_issuer: ?[]const u8 = null,
+    ws_audience: ?[]const u8 = null,
+    ws_max_clock_skew_seconds: ?u64 = null,
+};
+
+const AppServerOptions = struct {
+    listen_url: []const u8 = DEFAULT_LISTEN_URL,
+    websocket_auth: WebsocketAuthArgs = .{},
+};
+
 const WebSocketListen = struct {
     host: []const u8,
     port: u16,
@@ -22,7 +42,7 @@ const Transport = union(enum) {
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    var listen_url: []const u8 = DEFAULT_LISTEN_URL;
+    var options = AppServerOptions{};
     var subcommand: ?[]const u8 = null;
     var subcommand_args = std.ArrayList([]const u8).empty;
     defer subcommand_args.deinit(allocator);
@@ -37,11 +57,70 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             return;
         }
         if (std.mem.eql(u8, arg, "--listen")) {
-            listen_url = args.next() orelse return error.MissingAppServerListenValue;
+            options.listen_url = args.next() orelse return error.MissingAppServerListenValue;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--listen=")) {
-            listen_url = arg["--listen=".len..];
+            options.listen_url = arg["--listen=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--analytics-default-enabled")) {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-auth")) {
+            options.websocket_auth.ws_auth = try parseWebsocketAuthMode(args.next() orelse return error.MissingAppServerWebsocketAuthMode);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-auth=")) {
+            options.websocket_auth.ws_auth = try parseWebsocketAuthMode(arg["--ws-auth=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-token-file")) {
+            options.websocket_auth.ws_token_file = args.next() orelse return error.MissingAppServerWebsocketTokenFile;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-token-file=")) {
+            options.websocket_auth.ws_token_file = arg["--ws-token-file=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-token-sha256")) {
+            options.websocket_auth.ws_token_sha256 = args.next() orelse return error.MissingAppServerWebsocketTokenSha256;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-token-sha256=")) {
+            options.websocket_auth.ws_token_sha256 = arg["--ws-token-sha256=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-shared-secret-file")) {
+            options.websocket_auth.ws_shared_secret_file = args.next() orelse return error.MissingAppServerWebsocketSharedSecretFile;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-shared-secret-file=")) {
+            options.websocket_auth.ws_shared_secret_file = arg["--ws-shared-secret-file=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-issuer")) {
+            options.websocket_auth.ws_issuer = args.next() orelse return error.MissingAppServerWebsocketIssuer;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-issuer=")) {
+            options.websocket_auth.ws_issuer = arg["--ws-issuer=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-audience")) {
+            options.websocket_auth.ws_audience = args.next() orelse return error.MissingAppServerWebsocketAudience;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-audience=")) {
+            options.websocket_auth.ws_audience = arg["--ws-audience=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds")) {
+            options.websocket_auth.ws_max_clock_skew_seconds = try parseWebsocketClockSkew(args.next() orelse return error.MissingAppServerWebsocketClockSkew);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=")) {
+            options.websocket_auth.ws_max_clock_skew_seconds = try parseWebsocketClockSkew(arg["--ws-max-clock-skew-seconds=".len..]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) {
@@ -58,14 +137,17 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         }
         if (std.mem.eql(u8, name, "generate-ts")) return error.AppServerGenerateTsNotImplemented;
         if (std.mem.eql(u8, name, "generate-json-schema")) return error.AppServerGenerateJsonSchemaNotImplemented;
+        if (std.mem.eql(u8, name, "generate-internal-json-schema")) return error.AppServerGenerateInternalJsonSchemaNotImplemented;
         return error.UnknownAppServerSubcommand;
     }
 
-    const transport = parseTransport(listen_url) catch |err| {
+    try validateWebsocketAuthArgs(options.websocket_auth);
+
+    const transport = parseTransport(options.listen_url) catch |err| {
         const message = try std.fmt.allocPrint(
             allocator,
             "unsupported --listen URL '{s}', expected `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, or `off`\n",
-            .{listen_url},
+            .{options.listen_url},
         );
         defer allocator.free(message);
         try cli_utils.writeStderr(message);
@@ -100,6 +182,62 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             try cli_utils.writeStderr(message);
             return error.AppServerListenTransportNotImplemented;
         },
+    }
+}
+
+fn parseWebsocketAuthMode(value: []const u8) !WebsocketAuthMode {
+    if (std.mem.eql(u8, value, "capability-token")) return .capability_token;
+    if (std.mem.eql(u8, value, "signed-bearer-token")) return .signed_bearer_token;
+    return error.UnsupportedAppServerWebsocketAuthMode;
+}
+
+fn parseWebsocketClockSkew(value: []const u8) !u64 {
+    return std.fmt.parseUnsigned(u64, value, 10) catch error.InvalidAppServerWebsocketClockSkew;
+}
+
+fn validateWebsocketAuthArgs(auth: WebsocketAuthArgs) !void {
+    switch (auth.ws_auth orelse {
+        if (hasAnyWebsocketAuthModeSpecificFlag(auth)) return error.AppServerWebsocketAuthModeRequired;
+        return;
+    }) {
+        .capability_token => {
+            if (auth.ws_shared_secret_file != null or auth.ws_issuer != null or auth.ws_audience != null or auth.ws_max_clock_skew_seconds != null) {
+                return error.AppServerWebsocketCapabilityTokenRejectedSignedBearerFlag;
+            }
+            if (auth.ws_token_file != null and auth.ws_token_sha256 != null) return error.AppServerWebsocketTokenSourcesMutuallyExclusive;
+            if (auth.ws_token_file == null and auth.ws_token_sha256 == null) return error.AppServerWebsocketTokenSourceRequired;
+            if (auth.ws_token_file) |path| try validateAbsolutePathArg(path);
+            if (auth.ws_token_sha256) |digest| try validateSha256DigestArg(digest);
+        },
+        .signed_bearer_token => {
+            if (auth.ws_token_file != null or auth.ws_token_sha256 != null) return error.AppServerWebsocketSignedBearerRejectedCapabilityTokenFlag;
+            const shared_secret_file = auth.ws_shared_secret_file orelse return error.AppServerWebsocketSharedSecretFileRequired;
+            try validateAbsolutePathArg(shared_secret_file);
+        },
+    }
+}
+
+fn hasAnyWebsocketAuthModeSpecificFlag(auth: WebsocketAuthArgs) bool {
+    return auth.ws_token_file != null or
+        auth.ws_token_sha256 != null or
+        auth.ws_shared_secret_file != null or
+        auth.ws_issuer != null or
+        auth.ws_audience != null or
+        auth.ws_max_clock_skew_seconds != null;
+}
+
+fn validateAbsolutePathArg(path: []const u8) !void {
+    if (!std.fs.path.isAbsolute(path)) return error.AppServerWebsocketAuthPathMustBeAbsolute;
+}
+
+fn validateSha256DigestArg(value: []const u8) !void {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len != 64) return error.AppServerWebsocketAuthSha256DigestInvalid;
+    for (trimmed) |byte| {
+        switch (byte) {
+            '0'...'9', 'a'...'f', 'A'...'F' => {},
+            else => return error.AppServerWebsocketAuthSha256DigestInvalid,
+        }
     }
 }
 
@@ -421,6 +559,17 @@ pub fn printHelp() void {
         \\
         \\Options:
         \\  --listen URL           Transport URL. Defaults to stdio://.
+        \\  --analytics-default-enabled
+        \\                          Accept Rust-compatible app-server analytics default flag.
+        \\  --ws-auth MODE         Websocket auth mode: capability-token or signed-bearer-token.
+        \\  --ws-token-file PATH   Capability-token file. Requires --ws-auth capability-token.
+        \\  --ws-token-sha256 HEX  Capability-token SHA-256. Requires --ws-auth capability-token.
+        \\  --ws-shared-secret-file PATH
+        \\                          Signed JWT bearer secret file. Requires --ws-auth signed-bearer-token.
+        \\  --ws-issuer ISSUER     Expected signed JWT issuer.
+        \\  --ws-audience AUDIENCE Expected signed JWT audience.
+        \\  --ws-max-clock-skew-seconds SECONDS
+        \\                          Signed JWT max clock skew. Defaults to 30.
         \\
         \\Supported URL forms:
         \\  stdio://               Read and write newline-delimited JSON-RPC on stdio
@@ -457,6 +606,68 @@ test "app-server transport parser accepts Rust listen URL forms" {
     const websocket = try parseTransport("ws://127.0.0.1:3456");
     try std.testing.expectEqualStrings("127.0.0.1", websocket.websocket.host);
     try std.testing.expectEqual(@as(u16, 3456), websocket.websocket.port);
+}
+
+test "app-server websocket auth parser accepts Rust mode names" {
+    try std.testing.expectEqual(.capability_token, try parseWebsocketAuthMode("capability-token"));
+    try std.testing.expectEqual(.signed_bearer_token, try parseWebsocketAuthMode("signed-bearer-token"));
+    try std.testing.expectError(error.UnsupportedAppServerWebsocketAuthMode, parseWebsocketAuthMode("none"));
+}
+
+test "app-server websocket auth validates capability token source" {
+    try validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+        .ws_token_sha256 = "abababababababababababababababababababababababababababababababab",
+    });
+    try validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+        .ws_token_file = "/tmp/codex-token",
+    });
+    try std.testing.expectError(error.AppServerWebsocketTokenSourceRequired, validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+    }));
+    try std.testing.expectError(error.AppServerWebsocketTokenSourcesMutuallyExclusive, validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+        .ws_token_file = "/tmp/codex-token",
+        .ws_token_sha256 = "abababababababababababababababababababababababababababababababab",
+    }));
+    try std.testing.expectError(error.AppServerWebsocketAuthSha256DigestInvalid, validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+        .ws_token_sha256 = "not-a-sha256",
+    }));
+    try std.testing.expectError(error.AppServerWebsocketAuthPathMustBeAbsolute, validateWebsocketAuthArgs(.{
+        .ws_auth = .capability_token,
+        .ws_token_file = "relative-token",
+    }));
+}
+
+test "app-server websocket auth validates signed bearer source" {
+    try validateWebsocketAuthArgs(.{
+        .ws_auth = .signed_bearer_token,
+        .ws_shared_secret_file = "/tmp/codex-secret",
+        .ws_issuer = "issuer",
+        .ws_audience = "audience",
+        .ws_max_clock_skew_seconds = 9,
+    });
+    try validateWebsocketAuthArgs(.{
+        .ws_auth = .signed_bearer_token,
+        .ws_shared_secret_file = "/tmp/codex-secret",
+    });
+    try std.testing.expectError(error.AppServerWebsocketSharedSecretFileRequired, validateWebsocketAuthArgs(.{
+        .ws_auth = .signed_bearer_token,
+    }));
+    try std.testing.expectError(error.AppServerWebsocketSignedBearerRejectedCapabilityTokenFlag, validateWebsocketAuthArgs(.{
+        .ws_auth = .signed_bearer_token,
+        .ws_shared_secret_file = "/tmp/codex-secret",
+        .ws_token_sha256 = "abababababababababababababababababababababababababababababababab",
+    }));
+}
+
+test "app-server websocket auth rejects mode-specific flags without mode" {
+    try validateWebsocketAuthArgs(.{});
+    try std.testing.expectError(error.AppServerWebsocketAuthModeRequired, validateWebsocketAuthArgs(.{
+        .ws_shared_secret_file = "/tmp/codex-secret",
+    }));
 }
 
 test "app-server transport parser rejects unsupported listen URLs" {

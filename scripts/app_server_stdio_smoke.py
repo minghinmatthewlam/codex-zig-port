@@ -239,6 +239,83 @@ def run_unix_refuses_regular_file_smoke(binary: Path) -> None:
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 
+def run_flag_compat_smoke(binary: Path) -> None:
+    analytics = subprocess.run(
+        [str(binary), "app-server", "--analytics-default-enabled", "--listen", "off"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert analytics.returncode == 0
+    assert analytics.stdout == "app-server transport: off\n"
+
+    digest = "ab" * 32
+    capability = subprocess.run(
+        [
+            str(binary),
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:4500",
+            "--ws-auth",
+            "capability-token",
+            "--ws-token-sha256",
+            digest,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert capability.returncode != 0
+    assert "AppServerListenTransportNotImplemented" in capability.stderr
+    assert "UnknownAppServerOption" not in capability.stderr
+
+    signed_bearer = subprocess.run(
+        [
+            str(binary),
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:4500",
+            "--ws-auth",
+            "signed-bearer-token",
+            "--ws-shared-secret-file",
+            "/tmp/codex-app-server-secret",
+            "--ws-issuer",
+            "issuer",
+            "--ws-audience",
+            "audience",
+            "--ws-max-clock-skew-seconds",
+            "9",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert signed_bearer.returncode != 0
+    assert "AppServerListenTransportNotImplemented" in signed_bearer.stderr
+    assert "UnknownAppServerOption" not in signed_bearer.stderr
+
+    missing_mode = subprocess.run(
+        [str(binary), "app-server", "--listen", "off", "--ws-token-sha256", digest],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert missing_mode.returncode != 0
+    assert "AppServerWebsocketAuthModeRequired" in missing_mode.stderr
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_stdio_smoke(binary)
@@ -253,6 +330,8 @@ def main() -> None:
     print("stdio-to-uds-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
+    run_flag_compat_smoke(binary)
+    print("app-server-flag-compat-e2e: ok")
 
 
 if __name__ == "__main__":

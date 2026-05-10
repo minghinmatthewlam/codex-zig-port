@@ -54,6 +54,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   an `initialize` handshake
 - proxy stdio JSON-RPC to the app-server Unix control socket with
   `app-server proxy`
+- accept Rust-compatible app-server `--analytics-default-enabled` and websocket
+  auth flags while websocket transport remains unimplemented
 - apply the latest PR diff from a Codex agent task with `apply` / `a`
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
@@ -102,8 +104,9 @@ inline, then launches `codex-zig app-server` as a subprocess and verifies
 newline-delimited JSON-RPC initialize requests and unsupported-method errors
 over stdio, an explicit Unix socket, and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
-script also proxies JSON-RPC over `app-server proxy --sock` and verifies the
-hidden `stdio-to-uds` relay command. Run
+script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
+hidden `stdio-to-uds` relay command, and checks app-server flag compatibility
+for analytics defaults plus websocket auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
