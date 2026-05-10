@@ -692,6 +692,83 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert invalid_thread_unsubscribe["error"]["code"] == -32600
     assert "invalid thread id: not-a-uuid" in invalid_thread_unsubscribe["error"]["message"]
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-compact-missing",
+            "method": "thread/compact/start",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000002"},
+        }
+    )
+    thread_compact_missing = read_line()
+    assert thread_compact_missing["id"] == "thread-compact-missing"
+    assert thread_compact_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000002"
+        in thread_compact_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-compact-invalid",
+            "method": "thread/compact/start",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_compact_invalid = read_line()
+    assert thread_compact_invalid["id"] == "thread-compact-invalid"
+    assert thread_compact_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_compact_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-shell-empty",
+            "method": "thread/shellCommand",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000003",
+                "command": "   ",
+            },
+        }
+    )
+    thread_shell_empty = read_line()
+    assert thread_shell_empty["id"] == "thread-shell-empty"
+    assert thread_shell_empty["error"]["code"] == -32600
+    assert "command must not be empty" in thread_shell_empty["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-shell-invalid",
+            "method": "thread/shellCommand",
+            "params": {"threadId": "not-a-uuid", "command": "echo hello"},
+        }
+    )
+    thread_shell_invalid = read_line()
+    assert thread_shell_invalid["id"] == "thread-shell-invalid"
+    assert thread_shell_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_shell_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-shell-missing",
+            "method": "thread/shellCommand",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000003",
+                "command": "echo hello",
+            },
+        }
+    )
+    thread_shell_missing = read_line()
+    assert thread_shell_missing["id"] == "thread-shell-missing"
+    assert thread_shell_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000003"
+        in thread_shell_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
