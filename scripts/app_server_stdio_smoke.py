@@ -4798,6 +4798,16 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "apps = false",
                     "goals = true",
                     "",
+                    "[experimental_network]",
+                    "enabled = true",
+                    "http_port = 19080",
+                    "socks_port = 19081",
+                    "allow_upstream_proxy = false",
+                    "dangerously_allow_non_loopback_proxy = true",
+                    "dangerously_allow_all_unix_sockets = false",
+                    "managed_allowed_domains_only = true",
+                    "allow_local_binding = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -4826,6 +4836,16 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedWebSearchModes": ["cached", "disabled"],
                 "featureRequirements": {"apps": False, "goals": True},
                 "enforceResidency": "us",
+                "network": {
+                    "enabled": True,
+                    "httpPort": 19080,
+                    "socksPort": 19081,
+                    "allowUpstreamProxy": False,
+                    "dangerouslyAllowNonLoopbackProxy": True,
+                    "dangerouslyAllowAllUnixSockets": False,
+                    "managedAllowedDomainsOnly": True,
+                    "allowLocalBinding": True,
+                },
             }
         }
 
