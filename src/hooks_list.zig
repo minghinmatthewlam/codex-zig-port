@@ -93,6 +93,17 @@ pub const HookEvent = enum {
     }
 };
 
+const HOOK_EVENT_ORDER = [_]HookEvent{
+    .pre_tool_use,
+    .permission_request,
+    .post_tool_use,
+    .pre_compact,
+    .post_compact,
+    .session_start,
+    .user_prompt_submit,
+    .stop,
+};
+
 pub const Hook = struct {
     key: []const u8,
     event_name: HookEvent,
@@ -298,8 +309,16 @@ fn appendHooksFromLayer(
     display_order: *i64,
 ) !void {
     if (!try hooksFeatureEnabledFromConfigFile(allocator, config_path, errors)) return;
-    try appendHooksFromJsonFile(allocator, hooks_json_path, source, hook_states, hooks, warnings, display_order);
-    try appendHooksFromConfig(allocator, config_path, source, hook_states, hooks, warnings, errors, display_order);
+    const has_json_hooks = try appendHooksFromJsonFile(allocator, hooks_json_path, source, hook_states, hooks, warnings, display_order);
+    const has_toml_hooks = try appendHooksFromConfig(allocator, config_path, source, hook_states, hooks, warnings, errors, display_order);
+    if (has_json_hooks and has_toml_hooks) {
+        const json_source_path = try canonicalPathOrCopy(allocator, hooks_json_path);
+        defer allocator.free(json_source_path);
+        const toml_source_path = try canonicalPathOrCopy(allocator, config_path);
+        defer allocator.free(toml_source_path);
+        const warning = try std.fmt.allocPrint(allocator, "loading hooks from both {s} and {s}; prefer a single representation for this layer", .{ json_source_path, toml_source_path });
+        try warnings.append(allocator, warning);
+    }
 }
 
 fn hooksFeatureEnabledFromConfigFile(
@@ -325,18 +344,20 @@ fn appendHooksFromConfig(
     warnings: *std.ArrayList([]const u8),
     errors: *std.ArrayList(HookError),
     display_order: *i64,
-) !void {
+) !bool {
     const bytes = config.readConfigTomlFile(allocator, path) catch |err| {
         try appendError(allocator, errors, path, @errorName(err));
-        return;
+        return false;
     };
     defer if (bytes) |value| allocator.free(value);
-    const contents = bytes orelse return;
-    if (!hooksFeatureEnabled(contents)) return;
+    const contents = bytes orelse return false;
+    if (!hooksFeatureEnabled(contents)) return false;
+    const has_hooks = configContainsHooks(contents);
 
     const source_path = try canonicalPathOrCopy(allocator, path);
     defer allocator.free(source_path);
     try parseConfigHooks(allocator, contents, source_path, source, hook_states, hooks, warnings, display_order);
+    return has_hooks;
 }
 
 fn appendHooksFromJsonFile(
@@ -347,13 +368,13 @@ fn appendHooksFromJsonFile(
     hooks: *std.ArrayList(Hook),
     warnings: *std.ArrayList([]const u8),
     display_order: *i64,
-) !void {
+) !bool {
     const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
-        error.FileNotFound => return,
+        error.FileNotFound => return false,
         else => {
             const warning = try std.fmt.allocPrint(allocator, "failed to read hooks config {s}: {s}", .{ path, @errorName(err) });
             try warnings.append(allocator, warning);
-            return;
+            return false;
         },
     };
     defer allocator.free(bytes);
@@ -361,25 +382,27 @@ fn appendHooksFromJsonFile(
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch |err| {
         const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s}", .{ path, @errorName(err) });
         try warnings.append(allocator, warning);
-        return;
+        return false;
     };
     defer parsed.deinit();
 
     if (parsed.value != .object) {
         const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: expected object", .{path});
         try warnings.append(allocator, warning);
-        return;
+        return false;
     }
-    const events_value = parsed.value.object.get("hooks") orelse return;
+    const events_value = parsed.value.object.get("hooks") orelse return false;
     if (events_value != .object) {
         const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: expected hooks object", .{path});
         try warnings.append(allocator, warning);
-        return;
+        return false;
     }
+    const has_hooks = jsonEventsContainHooks(events_value.object);
 
     const source_path = try canonicalPathOrCopy(allocator, path);
     defer allocator.free(source_path);
     try appendJsonHookEvents(allocator, events_value.object, source_path, source, hook_states, hooks, warnings, display_order);
+    return has_hooks;
 }
 
 fn appendJsonHookEvents(
@@ -392,17 +415,7 @@ fn appendJsonHookEvents(
     warnings: *std.ArrayList([]const u8),
     display_order: *i64,
 ) !void {
-    const event_order = [_]HookEvent{
-        .pre_tool_use,
-        .permission_request,
-        .post_tool_use,
-        .pre_compact,
-        .post_compact,
-        .session_start,
-        .user_prompt_submit,
-        .stop,
-    };
-    for (event_order) |event_name| {
+    for (HOOK_EVENT_ORDER) |event_name| {
         const groups_value = events.get(event_name.configLabel()) orelse continue;
         if (groups_value != .array) {
             const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s} must be an array", .{ source_path, event_name.configLabel() });
@@ -973,6 +986,24 @@ fn hooksFeatureEnabled(bytes: []const u8) bool {
         if (tomlBoolValueForKey(line, "hooks")) |value| return value;
     }
     return true;
+}
+
+fn configContainsHooks(bytes: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (parseHookHeader(line) != null) return true;
+    }
+    return false;
+}
+
+fn jsonEventsContainHooks(events: std.json.ObjectMap) bool {
+    for (HOOK_EVENT_ORDER) |event_name| {
+        const groups_value = events.get(event_name.configLabel()) orelse continue;
+        if (groups_value == .array and groups_value.array.items.len > 0) return true;
+    }
+    return false;
 }
 
 fn isTomlHeader(line: []const u8) bool {
