@@ -434,6 +434,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
     if (isMarketplaceMethod(method)) {
         return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (isPluginMethod(method)) {
+        return try handlePluginMethod(allocator, id_value.?, method, object.get("params"));
+    }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
     defer allocator.free(message);
@@ -548,6 +551,170 @@ fn validateOptionalStringArrayField(object: std.json.ObjectMap, field: []const u
         if (item != .string) return "optional field must be an array of strings or null";
     }
     return null;
+}
+
+fn isPluginMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "plugin/list") or
+        std.mem.eql(u8, method, "plugin/read") or
+        std.mem.eql(u8, method, "plugin/skill/read") or
+        std.mem.eql(u8, method, "plugin/share/save") or
+        std.mem.eql(u8, method, "plugin/share/updateTargets") or
+        std.mem.eql(u8, method, "plugin/share/list") or
+        std.mem.eql(u8, method, "plugin/share/delete") or
+        std.mem.eql(u8, method, "plugin/install") or
+        std.mem.eql(u8, method, "plugin/uninstall");
+}
+
+fn handlePluginMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (validatePluginParams(method, params_value)) |message| {
+        return try renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "app-server method {s} is parsed but not implemented yet",
+        .{method},
+    );
+    defer allocator.free(message);
+    return try renderJsonRpcError(allocator, id_value, -32603, message);
+}
+
+fn validatePluginParams(method: []const u8, params_value: ?std.json.Value) ?[]const u8 {
+    if (std.mem.eql(u8, method, "plugin/list")) return validatePluginListParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/read")) return validatePluginReadLikeParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/skill/read")) return validatePluginSkillReadParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/share/save")) return validatePluginShareSaveParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/share/updateTargets")) return validatePluginShareUpdateTargetsParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/share/list")) return validateOptionalObjectParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/share/delete")) return validatePluginShareDeleteParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/install")) return validatePluginReadLikeParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/uninstall")) return validatePluginUninstallParams(params_value);
+    return "unknown plugin method";
+}
+
+fn validatePluginListParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return "plugin/list params must be an object";
+    const object = params.object;
+    if (validateOptionalStringArrayField(object, "cwds")) |message| return message;
+    const kinds = object.get("marketplaceKinds") orelse return null;
+    if (kinds == .null) return null;
+    if (kinds != .array) return "marketplaceKinds must be an array of strings or null";
+    for (kinds.array.items) |item| {
+        if (item != .string) return "marketplaceKinds must be an array of strings or null";
+        if (!isPluginMarketplaceKind(item.string)) return "unknown marketplace kind";
+    }
+    return null;
+}
+
+fn validatePluginReadLikeParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin params must be an object";
+    if (params != .object) return "plugin params must be an object";
+    const object = params.object;
+    if (requireStringField(object, "pluginName")) |message| return message;
+    if (validateOptionalStringField(object, "marketplacePath")) |message| return message;
+    if (validateOptionalStringField(object, "remoteMarketplaceName")) |message| return message;
+    return null;
+}
+
+fn validatePluginSkillReadParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/skill/read params must be an object";
+    if (params != .object) return "plugin/skill/read params must be an object";
+    const object = params.object;
+    if (requireStringField(object, "remoteMarketplaceName")) |message| return message;
+    if (requireStringField(object, "remotePluginId")) |message| return message;
+    if (requireStringField(object, "skillName")) |message| return message;
+    return null;
+}
+
+fn validatePluginShareSaveParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/share/save params must be an object";
+    if (params != .object) return "plugin/share/save params must be an object";
+    const object = params.object;
+    if (requireStringField(object, "pluginPath")) |message| return message;
+    if (validateOptionalStringField(object, "remotePluginId")) |message| return message;
+    if (validateOptionalDiscoverabilityField(object, "discoverability")) |message| return message;
+    return validateOptionalShareTargetsField(object, "shareTargets");
+}
+
+fn validatePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/share/updateTargets params must be an object";
+    if (params != .object) return "plugin/share/updateTargets params must be an object";
+    const object = params.object;
+    if (requireStringField(object, "remotePluginId")) |message| return message;
+    return validateRequiredShareTargetsField(object, "shareTargets");
+}
+
+fn validatePluginShareDeleteParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/share/delete params must be an object";
+    if (params != .object) return "plugin/share/delete params must be an object";
+    return requireStringField(params.object, "remotePluginId");
+}
+
+fn validatePluginUninstallParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/uninstall params must be an object";
+    if (params != .object) return "plugin/uninstall params must be an object";
+    return requireStringField(params.object, "pluginId");
+}
+
+fn validateOptionalObjectParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return "params must be an object";
+    return null;
+}
+
+fn validateOptionalDiscoverabilityField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return "discoverability must be LISTED, UNLISTED, PRIVATE, or null";
+    if (std.mem.eql(u8, value.string, "LISTED") or
+        std.mem.eql(u8, value.string, "UNLISTED") or
+        std.mem.eql(u8, value.string, "PRIVATE")) return null;
+    return "discoverability must be LISTED, UNLISTED, PRIVATE, or null";
+}
+
+fn validateRequiredShareTargetsField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return "shareTargets must be an array";
+    return validateShareTargetsValue(value);
+}
+
+fn validateOptionalShareTargetsField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    return validateShareTargetsValue(value);
+}
+
+fn validateShareTargetsValue(value: std.json.Value) ?[]const u8 {
+    if (value != .array) return "shareTargets must be an array";
+    for (value.array.items) |item| {
+        if (item != .object) return "shareTargets entries must be objects";
+        const object = item.object;
+        if (validatePrincipalTypeField(object, "principalType")) |message| return message;
+        if (requireStringField(object, "principalId")) |message| return message;
+    }
+    return null;
+}
+
+fn validatePrincipalTypeField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return "principalType is missing";
+    if (value != .string) return "principalType must be user, group, or workspace";
+    if (std.mem.eql(u8, value.string, "user") or
+        std.mem.eql(u8, value.string, "group") or
+        std.mem.eql(u8, value.string, "workspace")) return null;
+    return "principalType must be user, group, or workspace";
+}
+
+fn isPluginMarketplaceKind(value: []const u8) bool {
+    return std.mem.eql(u8, value, "local") or
+        std.mem.eql(u8, value, "workspace-directory") or
+        std.mem.eql(u8, value, "shared-with-me");
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
@@ -843,6 +1010,42 @@ test "app-server marketplace methods validate params and return not implemented"
     );
     defer allocator.free(invalid_add.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_add.?, "\"code\":-32602") != null);
+}
+
+test "app-server plugin methods validate params and return not implemented" {
+    const allocator = std.testing.allocator;
+    const cases = [_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-list\",\"method\":\"plugin/list\",\"params\":{\"cwds\":[\"/tmp/repo\"],\"marketplaceKinds\":[\"local\",\"workspace-directory\",\"shared-with-me\"]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\",\"remoteMarketplaceName\":null,\"pluginName\":\"gmail\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-skill-read\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"skillName\":\"plan-work\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-update\",\"method\":\"plugin/share/updateTargets\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"shareTargets\":[{\"principalType\":\"workspace\",\"principalId\":\"workspace-1\"}]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-list\",\"method\":\"plugin/share/list\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-delete\",\"method\":\"plugin/share/delete\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"gmail\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-uninstall\",\"method\":\"plugin/uninstall\",\"params\":{\"pluginId\":\"gmail@openai-curated\"}}",
+    };
+
+    for (cases) |line| {
+        const response = try handleJsonRpcLine(allocator, line);
+        defer allocator.free(response.?);
+        try std.testing.expect(std.mem.indexOf(u8, response.?, "\"code\":-32603") != null);
+        try std.testing.expect(std.mem.indexOf(u8, response.?, "is parsed but not implemented yet") != null);
+    }
+
+    const invalid_read = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\"}}",
+    );
+    defer allocator.free(invalid_read.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_read.?, "\"code\":-32602") != null);
+
+    const invalid_kind = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-list\",\"method\":\"plugin/list\",\"params\":{\"marketplaceKinds\":[\"unexpected\"]}}",
+    );
+    defer allocator.free(invalid_kind.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_kind.?, "\"code\":-32602") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
