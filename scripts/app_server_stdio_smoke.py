@@ -1491,17 +1491,37 @@ def run_model_rpc_smoke(binary: Path) -> None:
         )
 
     try:
-        default_models = rpc("model-list-default", "model/list", {"limit": 1})
+        default_models = rpc("model-list-default", "model/list", {"limit": 2})
         assert default_models["id"] == "model-list-default"
-        assert default_models["result"]["nextCursor"] is None
-        assert len(default_models["result"]["data"]) == 1
+        assert default_models["result"]["nextCursor"] == "2"
+        assert len(default_models["result"]["data"]) == 2
         default_model = default_models["result"]["data"][0]
-        assert default_model["id"] == "gpt-5.2-codex"
-        assert default_model["model"] == "gpt-5.2-codex"
+        assert default_model["id"] == "gpt-5.5"
+        assert default_model["model"] == "gpt-5.5"
         assert default_model["isDefault"] is True
         assert default_model["hidden"] is False
         assert default_model["defaultReasoningEffort"] == "medium"
         assert default_model["inputModalities"] == ["text", "image"]
+        assert default_model["additionalSpeedTiers"] == ["fast"]
+        assert "GPT-5.5 is now available" in default_model["availabilityNux"]["message"]
+        assert default_models["result"]["data"][1]["id"] == "gpt-5.4"
+        assert default_models["result"]["data"][1]["isDefault"] is False
+
+        hidden_models = rpc(
+            "model-list-hidden",
+            "model/list",
+            {"limit": 10, "includeHidden": True},
+        )
+        assert hidden_models["id"] == "model-list-hidden"
+        assert hidden_models["result"]["nextCursor"] is None
+        assert any(item["id"] == "codex-auto-review" and item["hidden"] for item in hidden_models["result"]["data"])
+
+        second_page = rpc("model-list-second-page", "model/list", {"limit": 2, "cursor": "2"})
+        assert second_page["id"] == "model-list-second-page"
+        assert second_page["result"]["nextCursor"] == "4"
+        assert [item["id"] for item in second_page["result"]["data"]] == ["gpt-5.4-mini", "gpt-5.3-codex"]
+        assert second_page["result"]["data"][1]["upgrade"] == "gpt-5.4"
+        assert second_page["result"]["data"][1]["upgradeInfo"]["model"] == "gpt-5.4"
 
         default_capabilities = rpc(
             "model-capabilities-default",
@@ -1518,9 +1538,10 @@ def run_model_rpc_smoke(binary: Path) -> None:
         (codex_home / "config.toml").write_text('model = "gpt-test"\n', encoding="utf-8")
         configured_models = rpc("model-list-configured", "model/list", {})
         assert configured_models["id"] == "model-list-configured"
-        assert configured_models["result"]["data"][0]["model"] == "gpt-test"
+        assert configured_models["result"]["data"][0]["model"] == "gpt-5.5"
+        assert "gpt-test" not in [item["model"] for item in configured_models["result"]["data"]]
 
-        cursor_end = rpc("model-list-cursor-end", "model/list", {"cursor": "1"})
+        cursor_end = rpc("model-list-cursor-end", "model/list", {"cursor": "5"})
         assert cursor_end["id"] == "model-list-cursor-end"
         assert cursor_end["result"]["data"] == []
         assert cursor_end["result"]["nextCursor"] is None
