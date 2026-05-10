@@ -6,6 +6,7 @@ import os
 import queue
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -16,6 +17,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 _OMIT = object()
+
+
+def seed_memory_state_db(codex_home: Path) -> Path:
+    db_path = codex_home / "state_5.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript(
+            """
+            CREATE TABLE stage1_outputs (thread_id TEXT PRIMARY KEY, raw_memory TEXT);
+            CREATE TABLE jobs (kind TEXT, job_key TEXT, status TEXT);
+            INSERT INTO stage1_outputs (thread_id, raw_memory)
+            VALUES ('thread-1', 'raw memory');
+            INSERT INTO jobs (kind, job_key, status)
+            VALUES
+                ('memory_stage1', 'thread-1', 'completed'),
+                ('memory_consolidate_global', 'global', 'completed'),
+                ('unrelated', 'keep', 'completed');
+            """
+        )
+    return db_path
+
+
+def sqlite_count(db_path: Path, query: str) -> int:
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(query).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def remote_plugin_bundle_bytes() -> bytes:
@@ -737,8 +764,8 @@ def run_memory_reset_smoke(binary: Path) -> None:
         memories = state_home / "memories"
         memories.mkdir()
         memory_file = memories / "MEMORY.md"
-        memory_file.write_text("keep until full reset is implemented\n")
-        (state_home / "state_5.sqlite").write_text("placeholder\n")
+        memory_file.write_text("stale state-backed memory\n")
+        state_db = seed_memory_state_db(state_home)
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(state_home)
@@ -748,9 +775,17 @@ def run_memory_reset_smoke(binary: Path) -> None:
             env,
         )
         assert response["id"] == "state-db"
-        assert response["error"]["code"] == -32603
-        assert "memory-state clearing is not implemented yet" in response["error"]["message"]
-        assert memory_file.read_text() == "keep until full reset is implemented\n"
+        assert response["result"] == {}
+        assert_empty_dir(memories)
+        assert sqlite_count(state_db, "SELECT COUNT(*) FROM stage1_outputs") == 0
+        assert (
+            sqlite_count(
+                state_db,
+                "SELECT COUNT(*) FROM jobs WHERE kind = 'memory_stage1' OR kind = 'memory_consolidate_global'",
+            )
+            == 0
+        )
+        assert sqlite_count(state_db, "SELECT COUNT(*) FROM jobs WHERE kind = 'unrelated'") == 1
     finally:
         shutil.rmtree(state_home, ignore_errors=True)
 

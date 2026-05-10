@@ -6,6 +6,7 @@ import os
 import pty
 import select
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,32 @@ index 0000000..1d92452
 +  return curr;
 +}
 """
+
+
+def seed_memory_state_db(codex_home: Path) -> Path:
+    db_path = codex_home / "state_5.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript(
+            """
+            CREATE TABLE stage1_outputs (thread_id TEXT PRIMARY KEY, raw_memory TEXT);
+            CREATE TABLE jobs (kind TEXT, job_key TEXT, status TEXT);
+            INSERT INTO stage1_outputs (thread_id, raw_memory)
+            VALUES ('thread-1', 'raw memory');
+            INSERT INTO jobs (kind, job_key, status)
+            VALUES
+                ('memory_stage1', 'thread-1', 'completed'),
+                ('memory_consolidate_global', 'global', 'completed'),
+                ('unrelated', 'keep', 'completed');
+            """
+        )
+    return db_path
+
+
+def sqlite_count(db_path: Path, query: str) -> int:
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(query).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def free_port() -> int:
@@ -1037,8 +1064,8 @@ def run_debug_clear_memories_smoke(
         state_memories = Path(state_home) / "memories"
         state_memories.mkdir()
         state_memory_file = state_memories / "MEMORY.md"
-        state_memory_file.write_text("keep until full reset is implemented\n")
-        (Path(state_home) / "state_5.sqlite").write_text("placeholder\n")
+        state_memory_file.write_text("stale state-backed memory\n")
+        state_db = seed_memory_state_db(Path(state_home))
 
         state_result = subprocess.run(
             [str(binary), "debug", "clear-memories"],
@@ -1046,16 +1073,25 @@ def run_debug_clear_memories_smoke(
             env=state_env,
             text=True,
             capture_output=True,
-            check=False,
+            check=True,
         )
-        if state_result.returncode == 0:
-            raise AssertionError("debug clear-memories accepted an existing state db")
-        if "MemoryStateDbClearNotImplemented" not in state_result.stderr:
+        if "Cleared memory state from" not in state_result.stdout:
             raise AssertionError(
-                f"expected state-db refusal:\n{state_result.stderr}"
+                f"expected state-db clear output:\n{state_result.stdout}"
             )
-        if state_memory_file.read_text() != "keep until full reset is implemented\n":
-            raise AssertionError("state-db refusal should not clear memory directories")
+        assert_empty_dir(state_memories)
+        if sqlite_count(state_db, "SELECT COUNT(*) FROM stage1_outputs") != 0:
+            raise AssertionError("debug clear-memories left stage1 output rows")
+        if (
+            sqlite_count(
+                state_db,
+                "SELECT COUNT(*) FROM jobs WHERE kind = 'memory_stage1' OR kind = 'memory_consolidate_global'",
+            )
+            != 0
+        ):
+            raise AssertionError("debug clear-memories left memory job rows")
+        if sqlite_count(state_db, "SELECT COUNT(*) FROM jobs WHERE kind = 'unrelated'") != 1:
+            raise AssertionError("debug clear-memories removed unrelated jobs")
 
     with tempfile.TemporaryDirectory(prefix="codex-zig-memory-symlink.") as linked_home:
         linked_env = env.copy()
