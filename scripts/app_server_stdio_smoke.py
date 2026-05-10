@@ -178,6 +178,37 @@ def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -
             proc.wait(timeout=5)
 
 
+def git(repo: Path, *args: str) -> None:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=git_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+
+
+def git_output(repo: Path, *args: str) -> str:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=git_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def assert_empty_dir(path: Path) -> None:
     if not path.is_dir():
         raise AssertionError(f"expected directory to exist: {path}")
@@ -283,6 +314,74 @@ def run_memory_reset_smoke(binary: Path) -> None:
         assert target_file.read_text() == "keep\n"
     finally:
         shutil.rmtree(symlink_home, ignore_errors=True)
+
+
+def run_git_diff_to_remote_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-git-diff-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    remote = root / "remote.git"
+    repo = root / "repo"
+    try:
+        codex_home.mkdir()
+        repo.mkdir()
+        git(root, "init", "--bare", str(remote))
+        git(repo, "init")
+        git(repo, "config", "user.email", "test@example.com")
+        git(repo, "config", "user.name", "Test User")
+        (repo / "test.txt").write_text("base\n", encoding="utf-8")
+        git(repo, "add", "test.txt")
+        git(repo, "commit", "-m", "initial")
+        git(repo, "branch", "-M", "main")
+        git(repo, "remote", "add", "origin", str(remote))
+        git(repo, "push", "-u", "origin", "main")
+        remote_sha = git_output(repo, "rev-parse", "origin/main")
+
+        (repo / "test.txt").write_text("modified\n", encoding="utf-8")
+        (repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+
+        diff_response = request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": "git-diff", "method": "gitDiffToRemote", "params": {"cwd": str(repo)}},
+            env,
+        )
+        assert diff_response["id"] == "git-diff"
+        assert diff_response["result"]["sha"] == remote_sha
+        diff = diff_response["result"]["diff"]
+        assert "diff --git a/test.txt b/test.txt" in diff
+        assert "+modified" in diff
+        assert "diff --git a/untracked.txt b/untracked.txt" in diff
+        assert "+new" in diff
+
+        invalid_params = request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": "git-diff-invalid-params", "method": "gitDiffToRemote", "params": {}},
+            env,
+        )
+        assert invalid_params["id"] == "git-diff-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+
+        missing_repo = root / "missing-repo"
+        missing_repo.mkdir()
+        missing = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "git-diff-missing",
+                "method": "gitDiffToRemote",
+                "params": {"cwd": str(missing_repo)},
+            },
+            env,
+        )
+        assert missing["id"] == "git-diff-missing"
+        assert missing["error"]["code"] == -32602
+        assert "failed to compute git diff to remote" in missing["error"]["message"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def run_marketplace_rpc_smoke(binary: Path) -> None:
@@ -1829,6 +1928,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_memory_reset_smoke(binary)
     print("app-server-memory-reset-e2e: ok")
+    run_git_diff_to_remote_rpc_smoke(binary)
+    print("app-server-git-diff-to-remote-rpc-e2e: ok")
     run_marketplace_rpc_smoke(binary)
     print("app-server-marketplace-rpc-e2e: ok")
     run_plugin_rpc_smoke(binary)
