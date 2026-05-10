@@ -130,7 +130,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply multiple app-server config edits in one file write with
   `config/batchWrite`, including table-object merge/replace behavior
 - report absent, system `requirements.toml`, and legacy managed config
-  requirements with `configRequirements/read`
+  requirements with `configRequirements/read`, including system feature and
+  residency requirements
 - clear memory directories and SQLite memory-state rows with `memory/reset`
 - list app-server collaboration mode presets with `collaborationMode/list`
 - list app-server experimental feature metadata and patch process-local runtime
