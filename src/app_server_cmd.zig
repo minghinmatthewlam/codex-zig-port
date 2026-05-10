@@ -4641,6 +4641,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
         parseCommandExecSandboxPolicy(allocator, sandbox_policy_value, cfg.sandbox_mode) catch |err| switch (err) {
             error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
             error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, or workspaceWrite"),
+            error.InvalidCommandExecSandboxPolicyNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be a boolean"),
             error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
             error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external sandboxPolicy is parsed but not implemented yet"),
             else => return err,
@@ -5061,7 +5062,8 @@ fn parseCommandExecSandboxPolicy(
         return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
     }
     if (std.mem.eql(u8, type_value.string, "readOnly")) {
-        return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0) };
+        const network_enabled = try parseCommandExecSandboxPolicyNetworkAccess(policy.object);
+        return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     if (std.mem.eql(u8, type_value.string, "externalSandbox")) {
         return error.CommandExecExternalSandboxNotImplemented;
@@ -5069,7 +5071,15 @@ fn parseCommandExecSandboxPolicy(
     if (!std.mem.eql(u8, type_value.string, "workspaceWrite")) return error.InvalidCommandExecSandboxPolicyType;
 
     const writable_roots = try parseCommandExecWritableRoots(allocator, policy.object);
-    return .{ .mode = .workspace_write, .writable_roots = writable_roots };
+    const network_enabled = try parseCommandExecSandboxPolicyNetworkAccess(policy.object);
+    return .{ .mode = .workspace_write, .writable_roots = writable_roots, .network_enabled = network_enabled };
+}
+
+fn parseCommandExecSandboxPolicyNetworkAccess(object: std.json.ObjectMap) !bool {
+    const value = object.get("networkAccess") orelse return false;
+    if (value == .null) return false;
+    if (value != .bool) return error.InvalidCommandExecSandboxPolicyNetworkAccess;
+    return value.bool;
 }
 
 fn parseCommandExecWritableRoots(allocator: std.mem.Allocator, object: std.json.ObjectMap) ![]const []const u8 {
