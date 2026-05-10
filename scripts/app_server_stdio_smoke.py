@@ -103,35 +103,107 @@ class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
         return
 
 
-class PluginSkillBackendHandler(BaseHTTPRequestHandler):
+class PluginBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
 
     def do_GET(self) -> None:
-        PluginSkillBackendHandler.requests.append(
+        PluginBackendHandler.requests.append(
             {
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "account_id": self.headers.get("ChatGPT-Account-Id"),
             }
         )
-        expected_path = (
+        detail_path = (
+            "/backend-api/ps/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+        )
+        installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
+        skill_path = (
             "/backend-api/ps/plugins/"
             "plugins~Plugin_00000000000000000000000000000000"
             "/skills/plan-work"
         )
-        if self.path != expected_path:
+        if self.path == detail_path:
+            body = json.dumps(
+                {
+                    "id": "plugins~Plugin_00000000000000000000000000000000",
+                    "name": "linear",
+                    "scope": "GLOBAL",
+                    "installation_policy": "AVAILABLE",
+                    "authentication_policy": "ON_USE",
+                    "status": "ENABLED",
+                    "release": {
+                        "display_name": "Linear",
+                        "description": "Track work in Linear",
+                        "app_ids": ["gmail"],
+                        "keywords": ["issue-tracking", "project management"],
+                        "interface": {
+                            "short_description": "Plan and track work",
+                            "capabilities": ["Read", "Write"],
+                            "logo_url": "https://example.com/linear.png",
+                            "screenshot_urls": ["https://example.com/linear-shot.png"],
+                        },
+                        "skills": [
+                            {
+                                "name": "plan-work",
+                                "description": "Plan work from Linear issues",
+                                "plugin_release_skill_id": "skill-1",
+                                "interface": {
+                                    "display_name": "Plan Work",
+                                    "short_description": "Create a plan from issues",
+                                },
+                            }
+                        ],
+                    },
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == installed_path:
+            body = json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "id": "plugins~Plugin_00000000000000000000000000000000",
+                            "name": "linear",
+                            "scope": "GLOBAL",
+                            "installation_policy": "AVAILABLE",
+                            "authentication_policy": "ON_USE",
+                            "release": {
+                                "display_name": "Linear",
+                                "description": "Track work in Linear",
+                                "app_ids": ["gmail"],
+                                "keywords": ["issue-tracking", "project management"],
+                                "interface": {
+                                    "short_description": "Plan and track work",
+                                    "capabilities": ["Read", "Write"],
+                                    "logo_url": "https://example.com/linear.png",
+                                    "screenshot_urls": ["https://example.com/linear-shot.png"],
+                                },
+                                "skills": [],
+                            },
+                            "enabled": False,
+                            "disabled_skill_names": ["plan-work"],
+                        }
+                    ],
+                    "pagination": {"limit": 50, "next_page_token": None},
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == skill_path:
+            body = json.dumps(
+                {
+                    "plugin_id": "plugins~Plugin_00000000000000000000000000000000",
+                    "name": "plan-work",
+                    "skill_md_contents": "# Plan Work\n\nUse Linear issues to create a plan.",
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        else:
             self.send_response(404)
             self.end_headers()
             return
 
-        body = json.dumps(
-            {
-                "plugin_id": "plugins~Plugin_00000000000000000000000000000000",
-                "name": "plan-work",
-                "skill_md_contents": "# Plan Work\n\nUse Linear issues to create a plan.",
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -866,8 +938,8 @@ description: Summarize plugin smoke threads
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-    server, base_url = start_plugin_skill_backend()
-    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-skill-", dir="/tmp"))
+    server, base_url = start_plugin_backend()
+    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-remote-", dir="/tmp"))
     try:
         remote_home.joinpath("config.toml").write_text(
             f"""chatgpt_base_url = "{base_url}/backend-api"
@@ -903,6 +975,71 @@ plugins = true
         remote_env.pop("OPENAI_API_KEY", None)
         remote_env.pop("CODEX_ACCESS_TOKEN", None)
         remote_env["CODEX_HOME"] = str(remote_home)
+        remote_plugin_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-plugin-read",
+                "method": "plugin/read",
+                "params": {
+                    "remoteMarketplaceName": "chatgpt-global",
+                    "pluginName": "plugins~Plugin_00000000000000000000000000000000",
+                },
+            },
+            remote_env,
+        )
+        assert remote_plugin_read["id"] == "remote-plugin-read"
+        remote_detail = remote_plugin_read["result"]["plugin"]
+        assert remote_detail["marketplaceName"] == "chatgpt-global"
+        assert remote_detail["marketplacePath"] is None
+        assert remote_detail["description"] == "Track work in Linear"
+        remote_summary = remote_detail["summary"]
+        assert remote_summary["id"] == "plugins~Plugin_00000000000000000000000000000000"
+        assert remote_summary["name"] == "linear"
+        assert remote_summary["shareContext"] is None
+        assert remote_summary["source"] == {"type": "remote"}
+        assert remote_summary["installed"] is True
+        assert remote_summary["enabled"] is False
+        assert remote_summary["installPolicy"] == "AVAILABLE"
+        assert remote_summary["authPolicy"] == "ON_USE"
+        assert remote_summary["availability"] == "AVAILABLE"
+        assert remote_summary["interface"]["displayName"] == "Linear"
+        assert remote_summary["interface"]["shortDescription"] == "Plan and track work"
+        assert remote_summary["interface"]["capabilities"] == ["Read", "Write"]
+        assert remote_summary["interface"]["logoUrl"] == "https://example.com/linear.png"
+        assert remote_summary["interface"]["screenshotUrls"] == [
+            "https://example.com/linear-shot.png"
+        ]
+        assert remote_summary["keywords"] == ["issue-tracking", "project management"]
+        assert remote_detail["skills"] == [
+            {
+                "name": "plan-work",
+                "description": "Plan work from Linear issues",
+                "shortDescription": "Create a plan from issues",
+                "interface": {
+                    "displayName": "Plan Work",
+                    "shortDescription": "Create a plan from issues",
+                    "iconSmall": None,
+                    "iconLarge": None,
+                    "brandColor": None,
+                    "defaultPrompt": None,
+                },
+                "path": None,
+                "enabled": False,
+            }
+        ]
+        assert remote_detail["hooks"] == []
+        assert remote_detail["apps"] == [
+            {
+                "id": "gmail",
+                "name": "gmail",
+                "description": None,
+                "installUrl": "https://chatgpt.com/apps/gmail/gmail",
+                "needsAuth": True,
+            }
+        ]
+        assert remote_detail["mcpServers"] == []
+
         plugin_skill_read = request_stdio_app_server(
             binary,
             {
@@ -921,7 +1058,20 @@ plugins = true
         assert plugin_skill_read["result"] == {
             "contents": "# Plan Work\n\nUse Linear issues to create a plan."
         }
-        assert PluginSkillBackendHandler.requests == [
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": "/backend-api/ps/plugins/installed?scope=GLOBAL",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
             {
                 "path": (
                     "/backend-api/ps/plugins/"
@@ -2836,9 +2986,9 @@ def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHT
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
-def start_plugin_skill_backend() -> tuple[ThreadingHTTPServer, str]:
-    PluginSkillBackendHandler.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), PluginSkillBackendHandler)
+def start_plugin_backend() -> tuple[ThreadingHTTPServer, str]:
+    PluginBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PluginBackendHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
