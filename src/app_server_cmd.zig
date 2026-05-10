@@ -9,6 +9,7 @@ const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
+const hooks_list = @import("hooks_list.zig");
 const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
@@ -501,6 +502,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isPluginMethod(method)) {
         return try handlePluginMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (std.mem.eql(u8, method, "hooks/list")) {
+        return try handleHooksList(allocator, id_value.?, object.get("params"));
+    }
     if (std.mem.eql(u8, method, "skills/list")) {
         return try handleSkillsList(allocator, state, id_value.?, object.get("params"));
     }
@@ -934,6 +938,14 @@ const ParsedSkillsListParams = struct {
     }
 };
 
+const ParsedHooksListParams = struct {
+    cwds: []const []const u8,
+
+    fn deinit(self: ParsedHooksListParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwds);
+    }
+};
+
 const SkillsListRequestCwds = struct {
     values: []const []const u8,
     owned: bool = false,
@@ -944,6 +956,38 @@ const SkillsListRequestCwds = struct {
         allocator.free(self.values);
     }
 };
+
+fn handleHooksList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parseHooksListParams(allocator, params_value) catch |err| switch (err) {
+        error.InvalidHooksListParams => return renderJsonRpcError(allocator, id_value, -32602, "hooks/list params must be an object"),
+        error.InvalidHooksListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
+        else => return err,
+    };
+    defer params.deinit(allocator);
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "hooks/list failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    var result = hooks_list.list(allocator, codex_home, params.cwds) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "hooks/list failed", err);
+    };
+    defer result.deinit(allocator);
+
+    const rendered = try hooks_list.renderResponse(allocator, result);
+    defer allocator.free(rendered);
+    return renderJsonRpcResult(allocator, id_value, rendered);
+}
+
+fn parseHooksListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedHooksListParams {
+    const empty = ParsedHooksListParams{ .cwds = &.{} };
+    const params = params_value orelse return empty;
+    if (params == .null) return empty;
+    if (params != .object) return error.InvalidHooksListParams;
+    const cwds = try parseOptionalStringArray(allocator, params.object.get("cwds"), error.InvalidHooksListCwds);
+    return .{ .cwds = cwds };
+}
 
 fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = parseSkillsListParams(allocator, params_value) catch |err| switch (err) {
@@ -3783,6 +3827,21 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_kind.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_kind.?, "\"code\":-32602") != null);
+}
+
+test "app-server hooks list validates params" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const invalid = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-hooks-list\",\"method\":\"hooks/list\",\"params\":[]}",
+    );
+    defer allocator.free(invalid.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.?, "\"code\":-32602") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.?, "hooks/list params must be an object") != null);
 }
 
 test "app-server collaboration mode list returns built-in presets" {
