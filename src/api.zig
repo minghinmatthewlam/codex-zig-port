@@ -165,6 +165,55 @@ pub fn createTurnWithOptions(
     const url = try buildProviderUrl(allocator, base_url, wire_path, cfg.model_provider_query_params);
     defer allocator.free(url);
 
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response = try fetchTurn(allocator, &client, url, body, cfg, credentials, options.stream_callback);
+    defer response.deinit(allocator);
+
+    if (response.status == .unauthorized) {
+        if (cfg.model_provider_auth_command) |command| {
+            var refreshed_credentials = try auth.loadProviderCommandCredentials(allocator, command);
+            defer refreshed_credentials.deinit(allocator);
+            var retry_response = try fetchTurn(allocator, &client, url, body, cfg, refreshed_credentials, options.stream_callback);
+            defer retry_response.deinit(allocator);
+            if (@intFromEnum(retry_response.status) < 200 or @intFromEnum(retry_response.status) >= 300) {
+                std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
+                return error.ApiRequestFailed;
+            }
+            return parseSseResponse(allocator, retry_response.body);
+        }
+    }
+
+    if (@intFromEnum(response.status) < 200 or @intFromEnum(response.status) >= 300) {
+        std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(response.status), response.body });
+        return error.ApiRequestFailed;
+    }
+
+    return parseSseResponse(allocator, response.body);
+}
+
+const ApiFetchResponse = struct {
+    status: std.http.Status,
+    body: []u8,
+
+    fn deinit(self: ApiFetchResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+    }
+};
+
+fn fetchTurn(
+    allocator: std.mem.Allocator,
+    client: *std.http.Client,
+    url: []const u8,
+    body: []const u8,
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    stream_callback: ?StreamCallback,
+) !ApiFetchResponse {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
     var auth_header: ?[]const u8 = null;
@@ -189,13 +238,7 @@ pub fn createTurnWithOptions(
         try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
     }
 
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
-    defer client.deinit();
-
-    var response_body = try StreamingResponseWriter.init(allocator, options.stream_callback);
+    var response_body = try StreamingResponseWriter.init(allocator, stream_callback);
     defer response_body.deinit();
 
     const result = try client.fetch(.{
@@ -209,15 +252,10 @@ pub fn createTurnWithOptions(
     if (response_body.failure) |err| return err;
     try response_body.finish();
 
-    const bytes = try response_body.toOwnedSlice();
-    defer allocator.free(bytes);
-
-    if (@intFromEnum(result.status) < 200 or @intFromEnum(result.status) >= 300) {
-        std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(result.status), bytes });
-        return error.ApiRequestFailed;
-    }
-
-    return parseSseResponse(allocator, bytes);
+    return .{
+        .status = result.status,
+        .body = try response_body.toOwnedSlice(),
+    };
 }
 
 fn buildProviderUrl(

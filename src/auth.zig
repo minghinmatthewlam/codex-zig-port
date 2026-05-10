@@ -160,7 +160,7 @@ fn loadWithProviderAuth(
     return error.NoUsableAuth;
 }
 
-fn loadProviderCommandCredentials(
+pub fn loadProviderCommandCredentials(
     allocator: std.mem.Allocator,
     provider_auth_command: config.ProviderAuthCommand,
 ) !Credentials {
