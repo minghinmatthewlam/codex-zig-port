@@ -28,7 +28,34 @@ pub fn wrapArgv(
     argv: []const []const u8,
     additional_writable_roots: []const []const u8,
 ) !SandboxedArgv {
-    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    return wrapArgvWithCwd(allocator, mode, argv, additional_writable_roots, null);
+}
+
+pub fn wrapArgvWithCwd(
+    allocator: std.mem.Allocator,
+    mode: config.SandboxMode,
+    argv: []const []const u8,
+    additional_writable_roots: []const []const u8,
+    cwd_override: ?[]const u8,
+) !SandboxedArgv {
+    return wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, cwd_override, true);
+}
+
+pub fn wrapArgvWithCwdOptions(
+    allocator: std.mem.Allocator,
+    mode: config.SandboxMode,
+    argv: []const []const u8,
+    additional_writable_roots: []const []const u8,
+    cwd_override: ?[]const u8,
+    include_cwd_write_root: bool,
+) !SandboxedArgv {
+    const cwd = if (cwd_override) |cwd|
+        try allocator.dupe(u8, cwd)
+    else blk: {
+        const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+        defer allocator.free(real_path);
+        break :blk try allocator.dupe(u8, real_path);
+    };
     defer allocator.free(cwd);
 
     const resolved_roots = if (mode == .workspace_write)
@@ -37,7 +64,7 @@ pub fn wrapArgv(
         try allocator.alloc([]const u8, 0);
     defer freeResolvedRoots(allocator, resolved_roots);
 
-    const profile = try buildProfile(allocator, mode, cwd, resolved_roots);
+    const profile = try buildProfileWithOptions(allocator, mode, cwd, resolved_roots, include_cwd_write_root);
     errdefer allocator.free(profile);
 
     var wrapped = try allocator.alloc([]const u8, argv.len + 4);
@@ -57,6 +84,16 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true);
+}
+
+fn buildProfileWithOptions(
+    allocator: std.mem.Allocator,
+    mode: config.SandboxMode,
+    cwd: []const u8,
+    additional_writable_roots: []const []const u8,
+    include_cwd_write_root: bool,
+) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
         .read_only => allocator.dupe(u8, baseProfile ++ readOnlyWritePolicy),
@@ -69,7 +106,9 @@ fn buildProfile(
                 \\(allow file-write* (literal "/dev/null"))
                 \\
             );
-            try appendWritableSubpath(allocator, &profile, cwd);
+            if (include_cwd_write_root) {
+                try appendWritableSubpath(allocator, &profile, cwd);
+            }
             for (additional_writable_roots) |root| {
                 try appendWritableSubpath(allocator, &profile, root);
             }
@@ -284,4 +323,52 @@ test "workspace-write sandbox allows additional writable roots" {
     });
     try extra_dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "extra.txt", .{});
     try std.testing.expectError(error.FileNotFound, blocked_dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "blocked.txt", .{}));
+}
+
+test "workspace-write sandbox can omit cwd write root" {
+    if (builtin.os.tag != .macos) return;
+
+    const allocator = std.testing.allocator;
+    var cwd_dir = std.testing.tmpDir(.{});
+    defer cwd_dir.cleanup();
+    var extra_dir = std.testing.tmpDir(.{});
+    defer extra_dir.cleanup();
+
+    const cwd_root = try cwd_dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd_root);
+    const extra_root = try extra_dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(extra_root);
+
+    const cwd_target = try std.fs.path.join(allocator, &.{ cwd_root, "cwd.txt" });
+    defer allocator.free(cwd_target);
+    const extra_target = try std.fs.path.join(allocator, &.{ extra_root, "extra.txt" });
+    defer allocator.free(extra_target);
+
+    const additional_roots = [_][]const u8{extra_root};
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false);
+    defer allocator.free(profile);
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "printf ok > {s}; printf nope > {s}",
+        .{ extra_target, cwd_target },
+    );
+    defer allocator.free(script);
+    const argv = [_][]const u8{ sandbox_exec_path, "-p", profile, "--", "/bin/sh", "-c", script };
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv[0..],
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expect(!switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    });
+    try extra_dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "extra.txt", .{});
+    try std.testing.expectError(error.FileNotFound, cwd_dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "cwd.txt", .{}));
 }

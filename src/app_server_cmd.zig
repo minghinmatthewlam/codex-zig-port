@@ -600,9 +600,87 @@ const SANDBOX_POLICY_TS =
     \\
     ;
 
+const FILE_SYSTEM_ACCESS_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FileSystemAccessMode = "read" | "write" | "none";
+    \\
+    ;
+
+const FILE_SYSTEM_SPECIAL_PATH_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FileSystemSpecialPath =
+    \\  | { kind: "root" }
+    \\  | { kind: "minimal" }
+    \\  | { kind: "project_roots"; subpath?: string }
+    \\  | { kind: "tmpdir" }
+    \\  | { kind: "slash_tmp" }
+    \\  | { kind: "unknown"; path: string; subpath?: string };
+    \\
+    ;
+
+const FILE_SYSTEM_PATH_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
+    \\
+    \\export type FileSystemPath =
+    \\  | { type: "path"; path: string }
+    \\  | { type: "glob_pattern"; pattern: string }
+    \\  | { type: "special"; value: FileSystemSpecialPath };
+    \\
+    ;
+
+const FILE_SYSTEM_SANDBOX_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FileSystemAccessMode } from "./FileSystemAccessMode";
+    \\import type { FileSystemPath } from "./FileSystemPath";
+    \\
+    \\export interface FileSystemSandboxEntry {
+    \\  path: FileSystemPath;
+    \\  access: FileSystemAccessMode;
+    \\}
+    \\
+    ;
+
+const PERMISSION_PROFILE_NETWORK_PERMISSIONS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PermissionProfileNetworkPermissions = "restricted" | "enabled";
+    \\
+    ;
+
+const PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
+    \\
+    \\export type PermissionProfileFileSystemPermissions =
+    \\  | {
+    \\      type: "restricted";
+    \\      entries: FileSystemSandboxEntry[];
+    \\      glob_scan_max_depth?: number;
+    \\    }
+    \\  | { type: "unrestricted" };
+    \\
+    ;
+
+const PERMISSION_PROFILE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
+    \\import type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
+    \\
+    \\export type PermissionProfile =
+    \\  | {
+    \\      type: "managed";
+    \\      file_system: PermissionProfileFileSystemPermissions;
+    \\      network: PermissionProfileNetworkPermissions;
+    \\    }
+    \\  | { type: "disabled" }
+    \\  | { type: "external"; network: PermissionProfileNetworkPermissions };
+    \\
+    ;
+
 const COMMAND_EXEC_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+    \\import type { PermissionProfile } from "./PermissionProfile";
     \\import type { SandboxPolicy } from "./SandboxPolicy";
     \\
     \\export interface CommandExecParams {
@@ -619,6 +697,7 @@ const COMMAND_EXEC_PARAMS_TS =
     \\  env?: Record<string, string | null> | null;
     \\  size?: CommandExecTerminalSize | null;
     \\  sandboxPolicy?: SandboxPolicy | null;
+    \\  permissionProfile?: PermissionProfile | null;
     \\}
     \\
     ;
@@ -806,7 +885,14 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
+    \\export type { FileSystemPath } from "./FileSystemPath";
+    \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
+    \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
     \\export type { NetworkAccess } from "./NetworkAccess";
+    \\export type { PermissionProfile } from "./PermissionProfile";
+    \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
+    \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
     \\
     ;
@@ -1036,6 +1122,71 @@ const SANDBOX_POLICY_JSON_SCHEMA =
     \\
 ;
 
+const PERMISSION_PROFILE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfile",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "file_system", "network"],
+    \\      "properties": {
+    \\        "type": { "const": "managed" },
+    \\        "file_system": {
+    \\          "oneOf": [
+    \\            {
+    \\              "type": "object",
+    \\              "required": ["type", "entries"],
+    \\              "properties": {
+    \\                "type": { "const": "restricted" },
+    \\                "entries": {
+    \\                  "type": "array",
+    \\                  "items": {
+    \\                    "type": "object",
+    \\                    "required": ["path", "access"],
+    \\                    "properties": {
+    \\                      "path": { "type": "object" },
+    \\                      "access": { "enum": ["read", "write", "none"] }
+    \\                    },
+    \\                    "additionalProperties": true
+    \\                  }
+    \\                },
+    \\                "glob_scan_max_depth": { "type": "integer", "minimum": 1 }
+    \\              },
+    \\              "additionalProperties": true
+    \\            },
+    \\            {
+    \\              "type": "object",
+    \\              "required": ["type"],
+    \\              "properties": { "type": { "const": "unrestricted" } },
+    \\              "additionalProperties": true
+    \\            }
+    \\          ]
+    \\        },
+    \\        "network": { "enum": ["restricted", "enabled"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "const": "disabled" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "network"],
+    \\      "properties": {
+    \\        "type": { "const": "external" },
+    \\        "network": { "enum": ["restricted", "enabled"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
 const COMMAND_EXEC_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1069,6 +1220,12 @@ const COMMAND_EXEC_PARAMS_JSON_SCHEMA =
     \\    "sandboxPolicy": {
     \\      "oneOf": [
     \\        { "$ref": "SandboxPolicy.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "permissionProfile": {
+    \\      "oneOf": [
+    \\        { "$ref": "PermissionProfile.json" },
     \\        { "type": "null" }
     \\      ]
     \\    }
@@ -1280,7 +1437,8 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "streamStdin": { "type": "boolean" },
     \\        "streamStdoutStderr": { "type": "boolean" },
     \\        "tty": { "type": "boolean" },
-    \\        "sandboxPolicy": true
+    \\        "sandboxPolicy": true,
+    \\        "permissionProfile": true
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -1343,6 +1501,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "SandboxPolicy.json", .contents = SANDBOX_POLICY_JSON_SCHEMA },
+    .{ .name = "PermissionProfile.json", .contents = PERMISSION_PROFILE_JSON_SCHEMA },
     .{ .name = "CommandExecParams.json", .contents = COMMAND_EXEC_PARAMS_JSON_SCHEMA },
     .{ .name = "CommandExecResponse.json", .contents = COMMAND_EXEC_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecWriteParams.json", .contents = COMMAND_EXEC_WRITE_PARAMS_JSON_SCHEMA },
@@ -1375,6 +1534,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
     .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
+    .{ .name = "v2/FileSystemAccessMode.ts", .contents = FILE_SYSTEM_ACCESS_MODE_TS },
+    .{ .name = "v2/FileSystemSpecialPath.ts", .contents = FILE_SYSTEM_SPECIAL_PATH_TS },
+    .{ .name = "v2/FileSystemPath.ts", .contents = FILE_SYSTEM_PATH_TS },
+    .{ .name = "v2/FileSystemSandboxEntry.ts", .contents = FILE_SYSTEM_SANDBOX_ENTRY_TS },
+    .{ .name = "v2/PermissionProfileNetworkPermissions.ts", .contents = PERMISSION_PROFILE_NETWORK_PERMISSIONS_TS },
+    .{ .name = "v2/PermissionProfileFileSystemPermissions.ts", .contents = PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_TS },
+    .{ .name = "v2/PermissionProfile.ts", .contents = PERMISSION_PROFILE_TS },
     .{ .name = "v2/CommandExecParams.ts", .contents = COMMAND_EXEC_PARAMS_TS },
     .{ .name = "v2/CommandExecResponse.ts", .contents = COMMAND_EXEC_RESPONSE_TS },
     .{ .name = "v2/CommandExecWriteParams.ts", .contents = COMMAND_EXEC_WRITE_PARAMS_TS },
@@ -4358,10 +4524,24 @@ const COMMAND_EXEC_DEFAULT_TIMEOUT_MS: i64 = 30_000;
 const CommandExecSandbox = struct {
     mode: config.SandboxMode,
     writable_roots: []const []const u8 = &.{},
+    include_cwd_write_root: bool = true,
 
     fn deinit(self: *CommandExecSandbox, allocator: std.mem.Allocator) void {
         allocator.free(self.writable_roots);
         self.* = .{ .mode = .workspace_write };
+    }
+};
+
+const CommandExecPermissionProfileSummary = struct {
+    root_read: bool = false,
+    root_write: bool = false,
+    non_root_read: bool = false,
+    project_roots_write: bool = false,
+    path_writable_roots: std.ArrayList([]const u8) = .empty,
+    unsupported: bool = false,
+
+    fn deinit(self: *CommandExecPermissionProfileSummary, allocator: std.mem.Allocator) void {
+        self.path_writable_roots.deinit(allocator);
     }
 };
 
@@ -4437,23 +4617,47 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     if (has_permission_profile and sandbox_policy_value != null and sandbox_policy_value.? != .null) {
         return renderJsonRpcError(allocator, id_value, -32600, "`permissionProfile` cannot be combined with `sandboxPolicy`");
     }
-    if (has_permission_profile) {
-        return renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile is parsed but not implemented yet");
-    }
 
     var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
-    var command_sandbox = parseCommandExecSandboxPolicy(allocator, sandbox_policy_value, cfg.sandbox_mode) catch |err| switch (err) {
-        error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
-        error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, or workspaceWrite"),
-        error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
-        error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external sandboxPolicy is parsed but not implemented yet"),
-        else => return err,
-    };
+    var command_sandbox = if (has_permission_profile)
+        parseCommandExecPermissionProfile(allocator, object.get("permissionProfile").?, cfg.sandbox_mode) catch |err| switch (err) {
+            error.InvalidCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile must be an object or null"),
+            error.InvalidCommandExecPermissionProfileType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.type must be disabled, managed, or external"),
+            error.InvalidCommandExecPermissionProfileNetwork => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.network must be restricted or enabled"),
+            error.InvalidCommandExecPermissionProfileFileSystem => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system must be an object"),
+            error.InvalidCommandExecPermissionProfileFileSystemType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system.type must be restricted or unrestricted"),
+            error.InvalidCommandExecPermissionProfileEntries => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system.entries must be an array"),
+            error.InvalidCommandExecPermissionProfileEntry => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
+            error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external permissionProfile is parsed but not implemented yet"),
+            error.UnsupportedCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
+            else => return err,
+        }
+    else
+        parseCommandExecSandboxPolicy(allocator, sandbox_policy_value, cfg.sandbox_mode) catch |err| switch (err) {
+            error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
+            error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, or workspaceWrite"),
+            error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
+            error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external sandboxPolicy is parsed but not implemented yet"),
+            else => return err,
+        };
     defer command_sandbox.deinit(allocator);
+
+    const sandbox_cwd = if (cwd) |path|
+        try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator)
+    else
+        null;
+    defer if (sandbox_cwd) |path| allocator.free(path);
+
+    var sandboxed_argv: ?sandbox_mod.SandboxedArgv = null;
+    defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
+    const effective_argv = if (sandbox_mod.shouldSandbox(command_sandbox.mode)) blk: {
+        sandboxed_argv = try sandbox_mod.wrapArgvWithCwdOptions(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, sandbox_cwd, command_sandbox.include_cwd_write_root);
+        break :blk sandboxed_argv.?.argv;
+    } else command;
 
     var child_env: ?std.process.Environ.Map = null;
     defer if (child_env) |*map| map.deinit();
@@ -4467,13 +4671,6 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
             };
         }
     }
-
-    var sandboxed_argv: ?sandbox_mod.SandboxedArgv = null;
-    defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
-    const effective_argv = if (sandbox_mod.shouldSandbox(command_sandbox.mode)) blk: {
-        sandboxed_argv = try sandbox_mod.wrapArgv(allocator, command_sandbox.mode, command, command_sandbox.writable_roots);
-        break :blk sandboxed_argv.?.argv;
-    } else command;
 
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -4690,6 +4887,162 @@ fn commandExecNumberError(allocator: std.mem.Allocator, id_value: std.json.Value
         error.InvalidCommandExecNumber => renderJsonRpcError(allocator, id_value, -32602, message),
         else => err,
     };
+}
+
+fn parseCommandExecPermissionProfile(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+    default_mode: config.SandboxMode,
+) !CommandExecSandbox {
+    if (value == .null) return .{ .mode = default_mode, .writable_roots = try allocator.alloc([]const u8, 0) };
+    if (value != .object) return error.InvalidCommandExecPermissionProfile;
+
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileType;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileType;
+
+    if (std.mem.eql(u8, type_value.string, "disabled")) {
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+    }
+    if (std.mem.eql(u8, type_value.string, "external")) {
+        try validateCommandExecPermissionNetwork(value.object.get("network"));
+        return error.CommandExecExternalSandboxNotImplemented;
+    }
+    if (!std.mem.eql(u8, type_value.string, "managed")) {
+        return error.InvalidCommandExecPermissionProfileType;
+    }
+
+    try validateCommandExecPermissionNetwork(value.object.get("network"));
+    const file_system_value = value.object.get("file_system") orelse return error.InvalidCommandExecPermissionProfileFileSystem;
+    if (file_system_value != .object) return error.InvalidCommandExecPermissionProfileFileSystem;
+    const file_system_type = file_system_value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileFileSystemType;
+    if (file_system_type != .string) return error.InvalidCommandExecPermissionProfileFileSystemType;
+
+    if (std.mem.eql(u8, file_system_type.string, "unrestricted")) {
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+    }
+    if (!std.mem.eql(u8, file_system_type.string, "restricted")) {
+        return error.InvalidCommandExecPermissionProfileFileSystemType;
+    }
+
+    const entries_value = file_system_value.object.get("entries") orelse return error.InvalidCommandExecPermissionProfileEntries;
+    if (entries_value != .array) return error.InvalidCommandExecPermissionProfileEntries;
+
+    var summary = CommandExecPermissionProfileSummary{};
+    defer summary.deinit(allocator);
+    for (entries_value.array.items) |entry| {
+        try addCommandExecPermissionProfileEntry(allocator, &summary, entry);
+    }
+
+    if (summary.unsupported or (summary.non_root_read and !summary.root_read)) return error.UnsupportedCommandExecPermissionProfile;
+    if (summary.root_write) {
+        if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+    }
+    if (summary.project_roots_write or summary.path_writable_roots.items.len > 0) {
+        if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
+        const roots = try summary.path_writable_roots.toOwnedSlice(allocator);
+        summary.path_writable_roots = .empty;
+        return .{ .mode = .workspace_write, .writable_roots = roots, .include_cwd_write_root = summary.project_roots_write };
+    }
+    if (summary.root_read) {
+        return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0) };
+    }
+    return error.UnsupportedCommandExecPermissionProfile;
+}
+
+fn validateCommandExecPermissionNetwork(value: ?std.json.Value) !void {
+    const network = value orelse return error.InvalidCommandExecPermissionProfileNetwork;
+    if (network != .string) return error.InvalidCommandExecPermissionProfileNetwork;
+    if (std.mem.eql(u8, network.string, "restricted")) return;
+    if (std.mem.eql(u8, network.string, "enabled")) return;
+    return error.InvalidCommandExecPermissionProfileNetwork;
+}
+
+fn addCommandExecPermissionProfileEntry(
+    allocator: std.mem.Allocator,
+    summary: *CommandExecPermissionProfileSummary,
+    value: std.json.Value,
+) !void {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const path = value.object.get("path") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    const access_value = value.object.get("access") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (access_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+
+    if (std.mem.eql(u8, access_value.string, "none")) {
+        summary.unsupported = true;
+        return;
+    }
+    if (std.mem.eql(u8, access_value.string, "read")) {
+        if (commandExecPermissionPathIsRoot(path) catch |err| switch (err) {
+            error.InvalidCommandExecPermissionProfileEntry => return err,
+        }) {
+            summary.root_read = true;
+        } else {
+            summary.non_root_read = true;
+        }
+        return;
+    }
+    if (!std.mem.eql(u8, access_value.string, "write")) {
+        return error.InvalidCommandExecPermissionProfileEntry;
+    }
+
+    if (try commandExecPermissionPathIsRoot(path)) {
+        summary.root_write = true;
+        return;
+    }
+    if (try commandExecPermissionPathIsProjectRoots(path)) {
+        summary.project_roots_write = true;
+        return;
+    }
+    if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
+        try summary.path_writable_roots.append(allocator, absolute_path);
+        return;
+    }
+    summary.unsupported = true;
+}
+
+fn commandExecPermissionPathIsRoot(value: std.json.Value) !bool {
+    const special = try commandExecPermissionSpecialPathKind(value);
+    return if (special) |kind| std.mem.eql(u8, kind, "root") else false;
+}
+
+fn commandExecPermissionPathIsProjectRoots(value: std.json.Value) !bool {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "special")) return false;
+    const special_value = value.object.get("value") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (special_value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const kind_value = special_value.object.get("kind") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (kind_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, kind_value.string, "project_roots") and !std.mem.eql(u8, kind_value.string, "current_working_directory")) return false;
+    if (special_value.object.get("subpath")) |subpath| {
+        if (subpath != .null) return false;
+    }
+    return true;
+}
+
+fn commandExecPermissionSpecialPathKind(value: std.json.Value) !?[]const u8 {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "special")) return null;
+    const special_value = value.object.get("value") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (special_value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const kind_value = special_value.object.get("kind") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (kind_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    return kind_value.string;
+}
+
+fn commandExecPermissionPathAbsolute(value: std.json.Value) !?[]const u8 {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "path")) return null;
+    const path_value = value.object.get("path") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (path_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.fs.path.isAbsolute(path_value.string)) return error.InvalidCommandExecPermissionProfileEntry;
+    return path_value.string;
 }
 
 fn parseCommandExecSandboxPolicy(
