@@ -709,6 +709,89 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         assert any("missing description" in error["message"] for error in entry["errors"])
         assert any(error["path"] == str(invalid_skill / "SKILL.md") for error in entry["errors"])
 
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+
+            def rpc(request_id: str, method: str, params: dict) -> dict:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": params,
+                    },
+                )
+                response = read_json_line(proc, 5)
+                assert response["id"] == request_id
+                return response
+
+            watched_list = rpc(
+                "skills-list-watch-roots",
+                "skills/list",
+                {
+                    "cwds": [str(cwd)],
+                    "forceReload": True,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(extra_root)]}
+                    ],
+                },
+            )
+            assert watched_list["result"]["data"][0]["cwd"] == str(cwd)
+
+            updated_skill = "\n".join(
+                [
+                    "---",
+                    "name: repo-skill",
+                    "description: Repo skill description updated",
+                    "---",
+                    "Updated by app-server fs/writeFile.",
+                ]
+            ).encode("utf-8")
+            write_response = rpc(
+                "skills-changed-write",
+                "fs/writeFile",
+                {
+                    "path": str(repo_skill / "SKILL.md"),
+                    "dataBase64": base64.b64encode(updated_skill).decode("ascii"),
+                },
+            )
+            assert write_response["result"] == {}
+            changed = read_json_line(proc, 5)
+            assert changed == {
+                "jsonrpc": "2.0",
+                "method": "skills/changed",
+                "params": {},
+            }
+
+            config_notify = rpc(
+                "skills-config-notify",
+                "skills/config/write",
+                {"name": "notify-only-skill", "enabled": False},
+            )
+            assert config_notify["result"]["effectiveEnabled"] is False
+            config_changed = read_json_line(proc, 5)
+            assert config_changed == {
+                "jsonrpc": "2.0",
+                "method": "skills/changed",
+                "params": {},
+            }
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
         disable_repo_skill = request_stdio_app_server(
             binary,
             {
