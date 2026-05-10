@@ -123,8 +123,8 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
-stubs, and checks app-server flag compatibility for analytics defaults plus
-websocket auth parsing. Run
+and plugin RPC stubs, and checks app-server flag compatibility for analytics
+defaults plus websocket auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
