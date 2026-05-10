@@ -857,11 +857,11 @@ pub fn printLoginHelp() void {
 
 test "safe api key formatting matches codex cli shape" {
     const allocator = std.testing.allocator;
-    const formatted = try safeFormatKey(allocator, "sk-proj-1234567890ABCDE");
+    const formatted = try safeFormatKey(allocator, "test-api-key-12345ABCDE");
     defer allocator.free(formatted);
-    try std.testing.expectEqualStrings("sk-proj-***ABCDE", formatted);
+    try std.testing.expectEqualStrings("test-api***ABCDE", formatted);
 
-    const short = try safeFormatKey(allocator, "sk-proj-12345");
+    const short = try safeFormatKey(allocator, "test-key-123");
     defer allocator.free(short);
     try std.testing.expectEqualStrings("***", short);
 }
