@@ -2,12 +2,13 @@
 import base64
 import json
 import os
-import selectors
+import queue
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -15,16 +16,19 @@ _OMIT = object()
 
 
 def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
-    selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
     try:
-        events = selector.select(timeout)
-    finally:
-        selector.close()
-    if not events:
+        assert proc.stdout is not None
+        line_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+
+        def read_line() -> None:
+            line_queue.put(proc.stdout.readline())
+
+        threading.Thread(target=read_line, daemon=True).start()
+        line = line_queue.get(timeout=timeout)
+    except queue.Empty:
         stderr = proc.stderr.read() if proc.poll() is not None else ""
         raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
-    line = proc.stdout.readline()
+
     if not line:
         stderr = proc.stderr.read()
         raise AssertionError(f"app-server closed stdout before response\n{stderr}")
@@ -749,6 +753,67 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(oss_home, ignore_errors=True)
 
 
+def run_account_logout_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-", dir="/tmp"))
+    try:
+        (codex_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test-key"}),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "before", "method": "account/read"})
+            before = read_json_line(proc, 5)
+            assert before["id"] == "before"
+            assert before["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "logout", "method": "account/logout"})
+            logout = read_json_line(proc, 5)
+            assert logout["id"] == "logout"
+            assert logout["result"] == {}
+
+            notification = read_json_line(proc, 5)
+            assert notification == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+            assert not (codex_home / "auth.json").exists()
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "after", "method": "account/read"})
+            after = read_json_line(proc, 5)
+            assert after["id"] == "after"
+            assert after["result"] == {"account": None, "requiresOpenaiAuth": True}
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "invalid-logout", "method": "account/logout", "params": {}})
+            invalid = read_json_line(proc, 5)
+            assert invalid["id"] == "invalid-logout"
+            assert invalid["error"]["code"] == -32602
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
     env = os.environ.copy()
@@ -1130,6 +1195,8 @@ def main() -> None:
     print("app-server-config-read-rpc-e2e: ok")
     run_account_read_rpc_smoke(binary)
     print("app-server-account-read-rpc-e2e: ok")
+    run_account_logout_rpc_smoke(binary)
+    print("app-server-account-logout-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
