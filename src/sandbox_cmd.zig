@@ -15,16 +15,23 @@ const SandboxKind = enum {
 const SandboxArgs = struct {
     help: bool = false,
     mode: ?config.SandboxMode = null,
+    permissions_profile: ?[]const u8 = null,
+    include_managed_config: bool = false,
     cwd: ?[]const u8 = null,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
     command: []const []const u8 = &.{},
 
     fn deinit(self: SandboxArgs, allocator: std.mem.Allocator) void {
+        if (self.permissions_profile) |profile| allocator.free(profile);
         if (self.cwd) |cwd| allocator.free(cwd);
         for (self.additional_writable_roots.items) |root| allocator.free(root);
         var roots = self.additional_writable_roots;
         roots.deinit(allocator);
         if (self.command.len > 0) allocator.free(self.command);
+    }
+
+    fn usesPermissionProfileOptions(self: SandboxArgs) bool {
+        return self.permissions_profile != null or self.include_managed_config;
     }
 };
 
@@ -62,6 +69,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (parsed.command.len == 0) return error.MissingSandboxCommand;
+    if (parsed.usesPermissionProfileOptions()) return error.SandboxPermissionProfileUnsupported;
     switch (kind) {
         .macos => if (builtin.os.tag != .macos) return error.SeatbeltUnsupported,
         .linux => return error.LinuxSandboxUnsupported,
@@ -109,6 +117,22 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
             parsed.help = true;
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--permissions-profile")) {
+            index += 1;
+            if (index >= args.len) return error.MissingSandboxOptionValue;
+            if (parsed.permissions_profile) |existing| allocator.free(existing);
+            parsed.permissions_profile = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--permissions-profile=")) {
+            if (parsed.permissions_profile) |existing| allocator.free(existing);
+            parsed.permissions_profile = try allocator.dupe(u8, arg["--permissions-profile=".len..]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--include-managed-config")) {
+            parsed.include_managed_config = true;
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s"))) {
             index += 1;
             if (index >= args.len) return error.MissingSandboxOptionValue;
@@ -146,7 +170,14 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
         }
 
         parsed.command = try dupeRemaining(allocator, args[index..]);
-        return parsed;
+        break;
+    }
+
+    if (!parsed.help and parsed.cwd != null and parsed.permissions_profile == null) {
+        return error.MissingSandboxPermissionsProfile;
+    }
+    if (!parsed.help and parsed.include_managed_config and parsed.permissions_profile == null) {
+        return error.MissingSandboxPermissionsProfile;
     }
 
     return parsed;
@@ -216,8 +247,12 @@ fn printMacosHelp() void {
         \\  codex-zig sandbox macos [OPTIONS] -- COMMAND [ARGS...]
         \\
         \\Options:
+        \\  --permissions-profile NAME
+        \\                      Recognize Rust permission-profile sandbox syntax
+        \\  --include-managed-config
+        \\                      Recognize managed config with --permissions-profile
         \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
-        \\  -C, --cd DIR        Use DIR as the working root
+        \\  -C, --cd DIR        Profile working root; requires --permissions-profile
         \\  --add-dir DIR       Allow workspace-write command to write DIR
         \\
     , .{});
@@ -233,6 +268,28 @@ test "sandbox macos args parse command and options" {
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
     try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
     try std.testing.expectEqualStrings("ok", parsed.command[1]);
+}
+
+test "sandbox args parse Rust permission profile controls" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--permissions-profile", ":workspace", "--include-managed-config", "--cd", "/tmp/profile-root", "--", "/bin/echo", "ok" };
+    const parsed = try parseSandboxArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings(":workspace", parsed.permissions_profile.?);
+    try std.testing.expect(parsed.include_managed_config);
+    try std.testing.expectEqualStrings("/tmp/profile-root", parsed.cwd.?);
+    try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
+    try std.testing.expectEqualStrings("ok", parsed.command[1]);
+}
+
+test "sandbox args require permission profile for profile controls" {
+    const allocator = std.testing.allocator;
+    const cwd_only = [_][]const u8{ "--cd", "/tmp", "--", "/bin/echo" };
+    try std.testing.expectError(error.MissingSandboxPermissionsProfile, parseSandboxArgs(allocator, cwd_only[0..]));
+
+    const managed_only = [_][]const u8{ "--include-managed-config", "--", "/bin/echo" };
+    try std.testing.expectError(error.MissingSandboxPermissionsProfile, parseSandboxArgs(allocator, managed_only[0..]));
 }
 
 test "sandbox macos args parse help" {
