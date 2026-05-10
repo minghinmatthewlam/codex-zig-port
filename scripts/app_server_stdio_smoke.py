@@ -861,6 +861,33 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert modified_user_hook["key"] == user_hook["key"]
         assert modified_user_hook["trustStatus"] == "modified"
 
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[hooks]",
+                    "",
+                    f'[hooks.state."{user_hook["key"]}"]',
+                    "enabled = false",
+                    f'trusted_hash = "{user_hook["currentHash"]}"',
+                    "",
+                    "[[hooks.PreToolUse]]",
+                    'matcher = "Bash"',
+                    "",
+                    "[[hooks.PreToolUse.hooks]]",
+                    'type = "command"',
+                    'command = "python3 /tmp/listed-hook.py"',
+                    "timeout = 5",
+                    'statusMessage = "running listed hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        table_state_user_hook = list_user_hook("hooks-list-table-state")
+        assert table_state_user_hook["key"] == user_hook["key"]
+        assert table_state_user_hook["enabled"] is False
+        assert table_state_user_hook["trustStatus"] == "trusted"
+
         project_hooks_json.write_text("{ not-json", encoding="utf-8")
         json_warning = request_stdio_app_server(
             binary,
