@@ -130,7 +130,7 @@ def make_exec_provider_wire_api_env(temp_root: Path, base_url: str, wire_api: st
     return env
 
 
-def make_exec_provider_command_auth_env(temp_root: Path, base_url: str) -> dict[str, str]:
+def make_exec_provider_command_auth_env(temp_root: Path, base_url: str, inline_auth: bool = False) -> dict[str, str]:
     codex_home = temp_root / "codex-home"
     codex_home.mkdir()
     auth_dir = temp_root / "provider-auth"
@@ -138,6 +138,25 @@ def make_exec_provider_command_auth_env(temp_root: Path, base_url: str) -> dict[
     token_script = auth_dir / "print-token.sh"
     token_script.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\"\n", encoding="utf-8")
     token_script.chmod(0o755)
+    auth_config = (
+        [
+            (
+                'auth = { command = "./print-token.sh", args = ["command-token"], '
+                f'cwd = "{auth_dir}", timeout_ms = 5000 }}'
+            ),
+            "",
+        ]
+        if inline_auth
+        else [
+            "",
+            "[model_providers.corp.auth]",
+            'command = "./print-token.sh"',
+            'args = ["command-token"]',
+            f'cwd = "{auth_dir}"',
+            "timeout_ms = 5000",
+            "",
+        ]
+    )
     (codex_home / "config.toml").write_text(
         "\n".join(
             [
@@ -148,14 +167,8 @@ def make_exec_provider_command_auth_env(temp_root: Path, base_url: str) -> dict[
                 f'base_url = "{base_url}"',
                 'wire_api = "responses"',
                 'requires_openai_auth = false',
-                "",
-                "[model_providers.corp.auth]",
-                'command = "./print-token.sh"',
-                'args = ["command-token"]',
-                f'cwd = "{auth_dir}"',
-                "timeout_ms = 5000",
-                "",
             ]
+            + auth_config
         ),
         encoding="utf-8",
     )
@@ -885,6 +898,26 @@ def run_exec_provider_command_auth_smoke(binary: Path) -> None:
         assert server.request_bodies[0]["model"] == "gpt-provider-command"
         assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use command auth"
         assert server.request_headers[0]["Authorization"] == "Bearer command-token"
+
+        inline_root = temp_root / "inline-auth"
+        inline_root.mkdir()
+        inline_env = make_exec_provider_command_auth_env(inline_root, base_url, inline_auth=True)
+        inline_result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "inline", "command", "auth"],
+            cwd=temp_root,
+            env=inline_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert inline_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_paths == ["/responses", "/responses"]
+        assert server.request_bodies[1]["model"] == "gpt-provider-command"
+        assert server.request_bodies[1]["input"][-1]["content"][0]["text"] == "use inline command auth"
+        assert server.request_headers[1]["Authorization"] == "Bearer command-token"
     finally:
         server.shutdown()
         server.server_close()
