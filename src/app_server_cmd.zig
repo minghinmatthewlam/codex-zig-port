@@ -43,6 +43,7 @@ const AppServerOptions = struct {
 const AppServerState = struct {
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
+    fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
     skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
@@ -51,6 +52,8 @@ const AppServerState = struct {
         self.runtime_feature_enablement.deinit(allocator);
         for (self.fs_watches.items) |*watch| watch.deinit(allocator);
         self.fs_watches.deinit(allocator);
+        for (self.fuzzy_search_sessions.items) |*session| session.deinit(allocator);
+        self.fuzzy_search_sessions.deinit(allocator);
         for (self.skill_watch_roots.items) |root| allocator.free(root);
         self.skill_watch_roots.deinit(allocator);
         clearSkillsListCache(allocator, self);
@@ -67,6 +70,17 @@ const FsWatchEntry = struct {
     fn deinit(self: *FsWatchEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.watch_id);
         allocator.free(self.path);
+    }
+};
+
+const FuzzySearchSessionEntry = struct {
+    session_id: []const u8,
+    roots: []const []const u8,
+
+    fn deinit(self: *FuzzySearchSessionEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        for (self.roots) |root| allocator.free(root);
+        allocator.free(self.roots);
     }
 };
 
@@ -496,6 +510,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "fuzzyFileSearch")) {
         return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
     }
+    if (isFuzzyFileSearchSessionMethod(method)) {
+        return try handleFuzzyFileSearchSessionMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
     if (isMarketplaceMethod(method)) {
         return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
     }
@@ -646,6 +663,195 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
     }
     try out.appendSlice(allocator, "]}");
     return out.toOwnedSlice(allocator);
+}
+
+fn isFuzzyFileSearchSessionMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "fuzzyFileSearch/sessionStart") or
+        std.mem.eql(u8, method, "fuzzyFileSearch/sessionUpdate") or
+        std.mem.eql(u8, method, "fuzzyFileSearch/sessionStop");
+}
+
+fn handleFuzzyFileSearchSessionMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "fuzzyFileSearch/sessionStart")) {
+        return handleFuzzyFileSearchSessionStart(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "fuzzyFileSearch/sessionUpdate")) {
+        return handleFuzzyFileSearchSessionUpdate(allocator, state, id_value, params_value);
+    }
+    return handleFuzzyFileSearchSessionStop(allocator, state, id_value, params_value);
+}
+
+fn handleFuzzyFileSearchSessionStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStart params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStart params must be an object");
+
+    const session_id = parseSessionIdParam(params.object) catch |err| switch (err) {
+        error.MissingFuzzySessionId => return renderJsonRpcError(allocator, id_value, -32602, "sessionId must be a string"),
+        error.EmptyFuzzySessionId => return renderJsonRpcError(allocator, id_value, -32600, "sessionId must not be empty"),
+    };
+    const roots = parseFuzzyFileSearchRootsOwned(allocator, params.object.get("roots")) catch |err| switch (err) {
+        error.InvalidFuzzyFileSearchRoots => return renderJsonRpcError(allocator, id_value, -32602, "roots must be an array of strings"),
+        else => return err,
+    };
+    var roots_moved = false;
+    errdefer if (!roots_moved) freeStringSliceList(allocator, roots);
+
+    const owned_session_id = try allocator.dupe(u8, session_id);
+    var session_id_moved = false;
+    errdefer if (!session_id_moved) allocator.free(owned_session_id);
+    const entry = FuzzySearchSessionEntry{
+        .session_id = owned_session_id,
+        .roots = roots,
+    };
+    if (findFuzzySearchSessionIndex(state, session_id)) |index| {
+        var existing = state.fuzzy_search_sessions.items[index];
+        state.fuzzy_search_sessions.items[index] = entry;
+        session_id_moved = true;
+        roots_moved = true;
+        existing.deinit(allocator);
+    } else {
+        try state.fuzzy_search_sessions.append(allocator, entry);
+        session_id_moved = true;
+        roots_moved = true;
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleFuzzyFileSearchSessionUpdate(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionUpdate params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionUpdate params must be an object");
+
+    const session_id = parseSessionIdParam(params.object) catch return renderJsonRpcError(allocator, id_value, -32602, "sessionId must be a string");
+    const query_value = params.object.get("query") orelse return renderJsonRpcError(allocator, id_value, -32602, "query must be a string");
+    if (query_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "query must be a string");
+
+    const index = findFuzzySearchSessionIndex(state, session_id) orelse {
+        const message = try std.fmt.allocPrint(allocator, "fuzzy file search session not found: {s}", .{session_id});
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    };
+    const session = state.fuzzy_search_sessions.items[index];
+
+    var results = try fuzzy_file_search.search(allocator, query_value.string, session.roots);
+    defer results.deinit(allocator);
+
+    const updated = try renderFuzzyFileSearchSessionUpdatedNotification(allocator, session.session_id, query_value.string, results);
+    var updated_moved = false;
+    errdefer if (!updated_moved) allocator.free(updated);
+    try state.pending_notifications.append(allocator, updated);
+    updated_moved = true;
+
+    const completed = try renderFuzzyFileSearchSessionCompletedNotification(allocator, session.session_id);
+    var completed_moved = false;
+    errdefer if (!completed_moved) allocator.free(completed);
+    try state.pending_notifications.append(allocator, completed);
+    completed_moved = true;
+
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleFuzzyFileSearchSessionStop(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStop params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStop params must be an object");
+
+    const session_id = parseSessionIdParam(params.object) catch return renderJsonRpcError(allocator, id_value, -32602, "sessionId must be a string");
+    if (findFuzzySearchSessionIndex(state, session_id)) |index| {
+        var removed = state.fuzzy_search_sessions.orderedRemove(index);
+        removed.deinit(allocator);
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn parseSessionIdParam(object: std.json.ObjectMap) ![]const u8 {
+    const session_id = object.get("sessionId") orelse return error.MissingFuzzySessionId;
+    if (session_id != .string) return error.MissingFuzzySessionId;
+    if (session_id.string.len == 0) return error.EmptyFuzzySessionId;
+    return session_id.string;
+}
+
+fn parseFuzzyFileSearchRootsOwned(allocator: std.mem.Allocator, roots_value: ?std.json.Value) ![]const []const u8 {
+    const borrowed = try parseFuzzyFileSearchRoots(allocator, roots_value);
+    defer allocator.free(borrowed);
+    const roots = try allocator.alloc([]const u8, borrowed.len);
+    var filled: usize = 0;
+    errdefer {
+        for (roots[0..filled]) |root| allocator.free(root);
+        allocator.free(roots);
+    }
+    for (borrowed, 0..) |root, index| {
+        roots[index] = try allocator.dupe(u8, root);
+        filled = index + 1;
+    }
+    return roots;
+}
+
+fn freeStringSliceList(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
+}
+
+fn findFuzzySearchSessionIndex(state: *const AppServerState, session_id: []const u8) ?usize {
+    for (state.fuzzy_search_sessions.items, 0..) |session, index| {
+        if (std.mem.eql(u8, session.session_id, session_id)) return index;
+    }
+    return null;
+}
+
+fn renderFuzzyFileSearchSessionUpdatedNotification(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    query: []const u8,
+    results: fuzzy_file_search.Results,
+) ![]const u8 {
+    const session_id_json = try std.json.Stringify.valueAlloc(allocator, session_id, .{});
+    defer allocator.free(session_id_json);
+    const query_json = try std.json.Stringify.valueAlloc(allocator, query, .{});
+    defer allocator.free(query_json);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"fuzzyFileSearch/sessionUpdated\",\"params\":{\"sessionId\":");
+    try out.appendSlice(allocator, session_id_json);
+    try out.appendSlice(allocator, ",\"query\":");
+    try out.appendSlice(allocator, query_json);
+    try out.appendSlice(allocator, ",\"files\":[");
+    for (results.files, 0..) |file, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendFuzzyFileSearchMatch(allocator, &out, file);
+    }
+    try out.appendSlice(allocator, "]}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderFuzzyFileSearchSessionCompletedNotification(allocator: std.mem.Allocator, session_id: []const u8) ![]const u8 {
+    const session_id_json = try std.json.Stringify.valueAlloc(allocator, session_id, .{});
+    defer allocator.free(session_id_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"fuzzyFileSearch/sessionCompleted\",\"params\":{{\"sessionId\":{s}}}}}",
+        .{session_id_json},
+    );
 }
 
 fn appendFuzzyFileSearchMatch(allocator: std.mem.Allocator, out: *std.ArrayList(u8), file: fuzzy_file_search.Match) !void {
@@ -3827,6 +4033,64 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_kind.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_kind.?, "\"code\":-32602") != null);
+}
+
+test "app-server fuzzy file search sessions emit update and complete notifications" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "alpha.txt",
+        .data = "contents",
+    });
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const root_json = try std.json.Stringify.valueAlloc(allocator, root, .{});
+    defer allocator.free(root_json);
+
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const start_line = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"session-start\",\"method\":\"fuzzyFileSearch/sessionStart\",\"params\":{{\"sessionId\":\"session-1\",\"roots\":[{s}]}}}}",
+        .{root_json},
+    );
+    defer allocator.free(start_line);
+    const start = try handleJsonRpcLine(allocator, &state, start_line);
+    defer allocator.free(start.?);
+    try std.testing.expect(std.mem.indexOf(u8, start.?, "\"result\":{}") != null);
+
+    const update = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"session-update\",\"method\":\"fuzzyFileSearch/sessionUpdate\",\"params\":{\"sessionId\":\"session-1\",\"query\":\"ALP\"}}",
+    );
+    defer allocator.free(update.?);
+    try std.testing.expect(std.mem.indexOf(u8, update.?, "\"result\":{}") != null);
+    try std.testing.expectEqual(@as(usize, 2), state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"fuzzyFileSearch/sessionUpdated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"sessionId\":\"session-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"query\":\"ALP\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"path\":\"alpha.txt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[1], "\"method\":\"fuzzyFileSearch/sessionCompleted\"") != null);
+
+    const stop = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"session-stop\",\"method\":\"fuzzyFileSearch/sessionStop\",\"params\":{\"sessionId\":\"session-1\"}}",
+    );
+    defer allocator.free(stop.?);
+    try std.testing.expect(std.mem.indexOf(u8, stop.?, "\"result\":{}") != null);
+
+    const missing_update = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"session-missing\",\"method\":\"fuzzyFileSearch/sessionUpdate\",\"params\":{\"sessionId\":\"session-1\",\"query\":\"alp\"}}",
+    );
+    defer allocator.free(missing_update.?);
+    try std.testing.expect(std.mem.indexOf(u8, missing_update.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_update.?, "fuzzy file search session not found: session-1") != null);
 }
 
 test "app-server hooks list validates params" {
