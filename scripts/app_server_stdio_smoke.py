@@ -623,6 +623,116 @@ def run_plugin_rpc_smoke(binary: Path) -> None:
     assert invalid_read["error"]["code"] == -32602
 
 
+def run_hooks_list_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hooks-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    config_path = codex_home / "config.toml"
+    cwd = root / "repo"
+    project_config = cwd / ".codex" / "config.toml"
+    try:
+        codex_home.mkdir()
+        project_config.parent.mkdir(parents=True)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[hooks]",
+                    "",
+                    "[[hooks.PreToolUse]]",
+                    'matcher = "Bash"',
+                    "",
+                    "[[hooks.PreToolUse.hooks]]",
+                    'type = "command"',
+                    'command = "python3 /tmp/listed-hook.py"',
+                    "timeout = 5",
+                    'statusMessage = "running listed hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        project_config.write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[hooks]",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    'command = "echo project hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        hooks = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "hooks-list",
+                "method": "hooks/list",
+                "params": {"cwds": [str(cwd)]},
+            },
+            env,
+        )
+        assert hooks["id"] == "hooks-list"
+        assert len(hooks["result"]["data"]) == 1
+        entry = hooks["result"]["data"][0]
+        assert entry["cwd"] == str(cwd)
+        assert entry["warnings"] == []
+        assert entry["errors"] == []
+        assert len(entry["hooks"]) == 2
+
+        user_hook = entry["hooks"][0]
+        assert user_hook["eventName"] == "preToolUse"
+        assert user_hook["handlerType"] == "command"
+        assert user_hook["matcher"] == "Bash"
+        assert user_hook["command"] == "python3 /tmp/listed-hook.py"
+        assert user_hook["timeoutSec"] == 5
+        assert user_hook["statusMessage"] == "running listed hook"
+        assert user_hook["sourcePath"] == str(config_path.resolve())
+        assert user_hook["source"] == "user"
+        assert user_hook["pluginId"] is None
+        assert user_hook["displayOrder"] == 0
+        assert user_hook["enabled"] is True
+        assert user_hook["isManaged"] is False
+        assert user_hook["trustStatus"] == "untrusted"
+        assert user_hook["currentHash"].startswith("sha256:")
+        assert len(user_hook["currentHash"]) == len("sha256:") + 64
+
+        project_hook = entry["hooks"][1]
+        assert project_hook["eventName"] == "userPromptSubmit"
+        assert project_hook["matcher"] is None
+        assert project_hook["command"] == "echo project hook"
+        assert project_hook["timeoutSec"] == 600
+        assert project_hook["statusMessage"] is None
+        assert project_hook["sourcePath"] == str(project_config.resolve())
+        assert project_hook["source"] == "project"
+        assert project_hook["displayOrder"] == 1
+
+        invalid = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "hooks-invalid",
+                "method": "hooks/list",
+                "params": [],
+            },
+            env,
+        )
+        assert invalid["id"] == "hooks-invalid"
+        assert invalid["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_skills_list_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-skills-", dir="/tmp"))
     codex_home = root / "codex-home"
@@ -3083,6 +3193,8 @@ def main() -> None:
     print("app-server-marketplace-rpc-e2e: ok")
     run_plugin_rpc_smoke(binary)
     print("app-server-plugin-rpc-e2e: ok")
+    run_hooks_list_rpc_smoke(binary)
+    print("app-server-hooks-list-rpc-e2e: ok")
     run_skills_list_rpc_smoke(binary)
     print("app-server-skills-list-rpc-e2e: ok")
     run_mcp_server_status_rpc_smoke(binary)

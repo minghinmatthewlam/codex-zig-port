@@ -6,6 +6,12 @@ Status values:
 - `partial`: implemented enough for a demo or narrow flow
 - `covered`: implemented and verified against the affected product surface
 
+Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml` and
+per-cwd `.codex/config.toml` command hooks, Rust-shaped `cwds` params and JSON
+fields, default command timeouts, source/trust metadata, and `[features].hooks`
+gating. Plugin hooks, hooks.json, managed hooks, hook state enable/trust writes,
+and full config-layer parity remain planned.
+
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop, accepts an optional initial prompt, rejects unknown top-level flags, supports `--` before prompt text, exposes `help [COMMAND]`, includes top-level `apply` / `a`, recognizes planned Rust top-level commands (`remote-control`, `app`, `update`, `cloud` / `cloud-tasks`, hidden `responses-api-proxy`, and `exec-server`) with explicit not-implemented errors, and supports global `-m/--model`, `-i/--image`, `--enable`, `--disable`, `--oss`, `--local-provider`, `-p/--profile`, `-c/--config`, `-a/--ask-for-approval`, `-s/--sandbox`, `-C/--cd`, `--add-dir`, `--search`, `--remote`, `--remote-auth-token-env`, `--no-alt-screen`, `--version`, and `--yolo` overrides. Remote app-server flags are parsed and rejected for non-interactive subcommands, but remote TUI transport is not implemented yet. Full command behavior parity is planned. |
