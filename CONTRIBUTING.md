@@ -10,6 +10,7 @@ Install Zig `0.16.0`, then run:
 
 ```sh
 zig build
+zig fmt --check build.zig build.zig.zon src/*.zig
 zig build test
 zig build e2e
 ```

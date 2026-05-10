@@ -28,7 +28,7 @@ jobs:
           version: 0.16.0
 
       - name: Check formatting
-        run: zig fmt --check build.zig src/*.zig
+        run: zig fmt --check build.zig build.zig.zon src/*.zig
 
       - name: Check Python smoke scripts
         run: python3 -m py_compile scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/tui_e2e.py
