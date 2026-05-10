@@ -1,0 +1,33 @@
+# bash completion for codex-zig
+_codex_zig() {
+    local cur prev
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local commands="a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update"
+    local global_options="--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen"
+    case "$prev" in
+        completion)
+            COMPREPLY=( $(compgen -W "bash elvish fish powershell zsh" -- "$cur") )
+            return
+            ;;
+        --ask-for-approval|-a|--approval-policy)
+            COMPREPLY=( $(compgen -W "untrusted on-failure on-request never" -- "$cur") )
+            return
+            ;;
+        --sandbox|-s)
+            COMPREPLY=( $(compgen -W "read-only workspace-write danger-full-access" -- "$cur") )
+            return
+            ;;
+        --local-provider)
+            COMPREPLY=( $(compgen -W "lmstudio ollama" -- "$cur") )
+            return
+            ;;
+    esac
+    if [[ $COMP_CWORD == 1 ]]; then
+        COMPREPLY=( $(compgen -W "$commands $global_options" -- "$cur") )
+        return
+    fi
+    COMPREPLY=( $(compgen -W "$global_options" -- "$cur") )
+}
+complete -F _codex_zig codex-zig

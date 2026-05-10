@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import difflib
 import json
 import os
 import shutil
@@ -8,6 +9,21 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+COMPLETION_SHELLS = ("bash", "elvish", "fish", "powershell", "zsh")
+COMPLETION_REQUIRED_VALUES = (
+    "app-server",
+    "completion",
+    "execpolicy",
+    "remote-control",
+    "--remote-auth-token-env",
+    "--remote-control-bind",
+    "bash elvish fish powershell zsh",
+    "untrusted on-failure on-request never",
+    "read-only workspace-write danger-full-access",
+    "lmstudio ollama",
+)
 
 
 class ExecResponsesHandler(BaseHTTPRequestHandler):
@@ -59,6 +75,40 @@ def clean_git_env() -> dict[str, str]:
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
+
+
+def run_completion_snapshot_smoke(binary: Path) -> None:
+    snapshot_dir = REPO_ROOT / "tests" / "snapshots" / "completion"
+    combined_output = []
+    for shell in COMPLETION_SHELLS:
+        result = subprocess.run(
+            [str(binary), "completion", shell],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stderr == ""
+
+        snapshot_path = snapshot_dir / f"{shell}.snap"
+        expected = snapshot_path.read_text(encoding="utf-8")
+        if result.stdout != expected:
+            diff = "".join(
+                difflib.unified_diff(
+                    expected.splitlines(keepends=True),
+                    result.stdout.splitlines(keepends=True),
+                    fromfile=str(snapshot_path),
+                    tofile=f"generated:{shell}",
+                )
+            )
+            raise AssertionError(f"completion snapshot mismatch for {shell}:\n{diff}")
+
+        combined_output.append(result.stdout)
+
+    all_completion_text = "\n".join(combined_output)
+    for value in COMPLETION_REQUIRED_VALUES:
+        assert value in all_completion_text, f"expected {value!r} in completion snapshots"
 
 
 def git(repo: Path, *args: str) -> None:
@@ -1119,6 +1169,7 @@ def run_debug_trace_reduce_smoke(binary: Path) -> None:
 
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
+    run_completion_snapshot_smoke(binary)
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
@@ -1132,6 +1183,7 @@ def main() -> None:
     run_removed_top_level_command_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
     run_debug_trace_reduce_smoke(binary)
+    print("cli-completion-snapshot-e2e: ok")
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")

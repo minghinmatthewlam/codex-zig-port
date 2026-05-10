@@ -1,0 +1,38 @@
+#compdef codex-zig
+# zsh completion for codex-zig
+_codex_zig() {
+    local -a commands global_options shells
+    commands=(a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update)
+    global_options=(--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
+    shells=(bash elvish fish powershell zsh)
+    if [[ $words[2] == completion ]]; then
+        _describe 'shell' shells
+        return
+    fi
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Print help]' \
+        '(-V --version)'{-V,--version}'[Print version]' \
+        '(-p --profile)'{-p,--profile}'[Select config profile]:profile:' \
+        '(-C --cd)'{-C,--cd}'[Use working root]:directory:_files -/' \
+        '--add-dir[Add writable root]:directory:_files -/' \
+        '(-c --config)'{-c,--config}'[Override config key]:key=value:' \
+        '(-m --model)'{-m,--model}'[Override model]:model:' \
+        '(-i --image)'{-i,--image}'[Attach image to first interactive prompt]:file:_files' \
+        '--enable[Enable feature for this invocation]:feature:' \
+        '--disable[Disable feature for this invocation]:feature:' \
+        '--oss[Use local OSS provider]' \
+        '--local-provider[Select local provider]:(lmstudio ollama)' \
+        '(-a --ask-for-approval)'{-a,--ask-for-approval}'[Approval policy]:(untrusted on-failure on-request never)' \
+        '--approval-policy[Approval policy]:(untrusted on-failure on-request never)' \
+        '(-s --sandbox)'{-s,--sandbox}'[Sandbox mode]:(read-only workspace-write danger-full-access)' \
+        '--yolo[Disable approvals and sandbox]' \
+        '--search[Enable live web search]' \
+        '--remote[Connect interactive TUI to remote app-server]:addr:' \
+        '--remote-auth-token-env[Read remote app-server token from env]:env:' \
+        '--remote-control[Start local remote-control server]' \
+        '--remote-control-bind[Bind local remote-control server]:addr:' \
+        '--no-alt-screen[Disable alternate-screen TUI mode]' \
+        '1:command:($commands)' \
+        '*::arg:_files'
+}
+_codex_zig "$@"
