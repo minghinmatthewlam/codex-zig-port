@@ -3675,10 +3675,15 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
 def run_command_exec_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-", dir="/tmp"))
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-home-", dir="/tmp"))
+    workspace_codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-workspace-home-", dir="/tmp"))
     network_server: ThreadingHTTPServer | None = None
     try:
         codex_home.joinpath("config.toml").write_text(
             'sandbox_mode = "danger-full-access"\n',
+            encoding="utf-8",
+        )
+        workspace_codex_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "workspace-write"\n',
             encoding="utf-8",
         )
         cwd = root / "cwd"
@@ -3836,6 +3841,36 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert sandbox_policy_slash_tmp_excluded["result"]["exitCode"] != 0
         assert sandbox_policy_slash_tmp_excluded["result"]["stdout"] == ""
         assert not slash_tmp_target.exists()
+
+        workspace_env = env.copy()
+        workspace_env["CODEX_HOME"] = str(workspace_codex_home)
+        implicit_workspace_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-implicit-workspace-write-temp-roots",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f'printf cfg-tmp > "$TMPDIR/config-tmpdir.txt" && printf cfg-slash > {slash_tmp_target} && printf implicit-workspace',
+                    ],
+                    "cwd": str(cwd),
+                    "env": {},
+                },
+            },
+            workspace_env,
+        )
+        assert implicit_workspace_write["id"] == "command-exec-implicit-workspace-write-temp-roots"
+        assert implicit_workspace_write["result"] == {
+            "exitCode": 0,
+            "stdout": "implicit-workspace",
+            "stderr": "",
+        }
+        assert command_tmpdir.joinpath("config-tmpdir.txt").read_text(encoding="utf-8") == "cfg-tmp"
+        assert slash_tmp_target.read_text(encoding="utf-8") == "cfg-slash"
+        slash_tmp_target.unlink()
 
         sandbox_policy_network_enabled = request_stdio_app_server(
             binary,
@@ -4321,6 +4356,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             slash_tmp_target.unlink()
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace_codex_home, ignore_errors=True)
 
 
 def run_model_rpc_smoke(binary: Path) -> None:
