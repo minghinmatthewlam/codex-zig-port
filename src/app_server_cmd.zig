@@ -2656,7 +2656,8 @@ fn isThreadMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "thread/loaded/list") or
         std.mem.eql(u8, method, "thread/unsubscribe") or
         std.mem.eql(u8, method, "thread/compact/start") or
-        std.mem.eql(u8, method, "thread/shellCommand");
+        std.mem.eql(u8, method, "thread/shellCommand") or
+        std.mem.eql(u8, method, "thread/backgroundTerminals/clean");
 }
 
 fn handleThreadMethod(
@@ -2707,6 +2708,18 @@ fn handleThreadMethod(
         if (std.mem.trim(u8, command_value.string, " \t\r\n").len == 0) {
             return renderJsonRpcError(allocator, id_value, -32600, "command must not be empty");
         }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
