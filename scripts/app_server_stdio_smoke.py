@@ -3834,6 +3834,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "destructive_enabled = false",
                 'default_tools_approval_mode = "prompt"',
                 "",
+                "[apps.app1.tools.search]",
+                "enabled = true",
+                'approval_mode = "approve"',
+                "",
                 "[features]",
                 "apps = false",
                 "",
@@ -3912,7 +3916,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "open_world_enabled": None,
                 "default_tools_approval_mode": "prompt",
                 "default_tools_enabled": None,
-                "tools": None,
+                "tools": {
+                    "search": {
+                        "enabled": True,
+                        "approval_mode": "approve",
+                    },
+                },
             },
         }
         assert config_body["features"]["apps"] is False
@@ -3942,6 +3951,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app1.enabled",
             "apps.app1.destructive_enabled",
             "apps.app1.default_tools_approval_mode",
+            "apps.app1.tools.search.enabled",
+            "apps.app1.tools.search.approval_mode",
         ]:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
@@ -3987,7 +3998,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "open_world_enabled": None,
                     "default_tools_approval_mode": "prompt",
                     "default_tools_enabled": None,
-                    "tools": None,
+                    "tools": {
+                        "search": {
+                            "enabled": True,
+                            "approval_mode": "approve",
+                        },
+                    },
                 },
             },
         }
