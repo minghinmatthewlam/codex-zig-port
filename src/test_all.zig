@@ -15,6 +15,7 @@ const modules = .{
     @import("exec.zig"),
     @import("features_cmd.zig"),
     @import("git_diff.zig"),
+    @import("git_remote_diff.zig"),
     @import("input_images.zig"),
     @import("login.zig"),
     @import("memory_reset.zig"),

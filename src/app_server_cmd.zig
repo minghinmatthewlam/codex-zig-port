@@ -7,6 +7,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
+const git_remote_diff = @import("git_remote_diff.zig");
 const memory_reset = @import("memory_reset.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -450,6 +451,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, id_value.?);
     }
+    if (std.mem.eql(u8, method, "gitDiffToRemote")) {
+        return try handleGitDiffToRemote(allocator, id_value.?, object.get("params"));
+    }
     if (isMarketplaceMethod(method)) {
         return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
     }
@@ -505,6 +509,34 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
     };
     return try renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleGitDiffToRemote(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "gitDiffToRemote params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "gitDiffToRemote params must be an object");
+
+    const cwd_value = params.object.get("cwd") orelse return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string");
+    if (cwd_value != .string or cwd_value.string.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string");
+    }
+
+    var diff = git_remote_diff.compute(allocator, cwd_value.string) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            const message = try std.fmt.allocPrint(allocator, "failed to compute git diff to remote for cwd: {s}", .{cwd_value.string});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        },
+    };
+    defer diff.deinit(allocator);
+
+    const sha_json = try std.json.Stringify.valueAlloc(allocator, diff.sha, .{});
+    defer allocator.free(sha_json);
+    const diff_json = try std.json.Stringify.valueAlloc(allocator, diff.diff, .{});
+    defer allocator.free(diff_json);
+    const result = try std.fmt.allocPrint(allocator, "{{\"sha\":{s},\"diff\":{s}}}", .{ sha_json, diff_json });
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn isMarketplaceMethod(method: []const u8) bool {
