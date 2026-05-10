@@ -7918,6 +7918,27 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert command_exec_write_response["title"] == "CommandExecWriteResponse"
         assert command_exec_write_response["additionalProperties"] is False
+        thread_loaded_list = json.loads(
+            (out_dir / "ThreadLoadedListParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_loaded_list["title"] == "ThreadLoadedListParams"
+        assert thread_loaded_list["properties"]["limit"]["maximum"] == 4294967295
+        thread_loaded_list_response = json.loads(
+            (out_dir / "ThreadLoadedListResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_loaded_list_response["required"] == ["data", "nextCursor"]
+        thread_unsubscribe = json.loads(
+            (out_dir / "ThreadUnsubscribeParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_unsubscribe["required"] == ["threadId"]
+        thread_unsubscribe_status = json.loads(
+            (out_dir / "ThreadUnsubscribeStatus.json").read_text(encoding="utf-8")
+        )
+        assert thread_unsubscribe_status["enum"] == [
+            "notLoaded",
+            "notSubscribed",
+            "unsubscribed",
+        ]
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -7927,6 +7948,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "InitializeResponse" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
+        assert "ThreadLoadedListParams" in bundle["$defs"]
+        assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -7949,6 +7972,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert v2_bundle["$defs"]["JSONRPCMessage"] == bundle["$defs"]["JSONRPCMessage"]
         assert v2_bundle["$defs"]["CommandExecResponse"] == bundle["$defs"]["CommandExecResponse"]
+        assert (
+            v2_bundle["$defs"]["ThreadUnsubscribeResponse"]
+            == bundle["$defs"]["ThreadUnsubscribeResponse"]
+        )
 
         missing_out = subprocess.run(
             [str(binary), "app-server", "generate-json-schema"],
@@ -8004,6 +8031,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
         assert "params: CommandExecWriteParams;" in client_request
+        assert 'method: "thread/loaded/list";' in client_request
+        assert "params?: ThreadLoadedListParams | null;" in client_request
+        assert 'method: "thread/unsubscribe";' in client_request
+        assert "params: ThreadUnsubscribeParams;" in client_request
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8055,6 +8086,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert (
             out_dir / "v2" / "CommandExecWriteResponse.ts"
         ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
+        thread_loaded_list = (
+            out_dir / "v2" / "ThreadLoadedListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadLoadedListResponse" in thread_loaded_list
+        assert "nextCursor: string | null;" in thread_loaded_list
+        thread_unsubscribe = (
+            out_dir / "v2" / "ThreadUnsubscribeResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "status: ThreadUnsubscribeStatus;" in thread_unsubscribe
+        thread_unsubscribe_status = (
+            out_dir / "v2" / "ThreadUnsubscribeStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert '"notLoaded" | "notSubscribed" | "unsubscribed"' in thread_unsubscribe_status
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8065,6 +8109,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
+        assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
+        assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
