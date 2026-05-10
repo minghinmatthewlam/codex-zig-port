@@ -25,8 +25,10 @@ const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
 const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
+const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH";
 const UNIX_MANAGED_CONFIG_SYSTEM_PATH = "/etc/codex/managed_config.toml";
 const UNIX_SYSTEM_CONFIG_PATH = "/etc/codex/config.toml";
+const UNIX_SYSTEM_REQUIREMENTS_PATH = "/etc/codex/requirements.toml";
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -3155,23 +3157,53 @@ fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json
             return renderJsonRpcError(allocator, id_value, -32602, "configRequirements/read params must be null or omitted");
         }
     }
-    const requirements = loadLegacyManagedConfigRequirements(allocator) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "configRequirements/read failed to load managed config requirements", err);
+    var requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "configRequirements/read failed to load config requirements", err);
     };
+    defer requirements.deinit(allocator);
     const result = try renderConfigRequirementsReadResponse(allocator, requirements);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
-const LegacyManagedConfigRequirements = struct {
-    approval_policy: ?config.ApprovalPolicy = null,
-    approvals_reviewer: ?ApprovalsReviewer = null,
-    sandbox_mode: ?config.SandboxMode = null,
+const ConfigRequirementsReadRequirements = struct {
+    allowed_approval_policies: ?config.StringList = null,
+    allowed_approvals_reviewers: ?config.StringList = null,
+    allowed_sandbox_modes: ?config.StringList = null,
+    allowed_web_search_modes: ?config.StringList = null,
 
-    fn isEmpty(self: LegacyManagedConfigRequirements) bool {
-        return self.approval_policy == null and
-            self.approvals_reviewer == null and
-            self.sandbox_mode == null;
+    fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
+        if (self.allowed_approval_policies) |*value| value.deinit(allocator);
+        if (self.allowed_approvals_reviewers) |*value| value.deinit(allocator);
+        if (self.allowed_sandbox_modes) |*value| value.deinit(allocator);
+        if (self.allowed_web_search_modes) |*value| value.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn isEmpty(self: ConfigRequirementsReadRequirements) bool {
+        return self.allowed_approval_policies == null and
+            self.allowed_approvals_reviewers == null and
+            self.allowed_sandbox_modes == null and
+            self.allowed_web_search_modes == null;
+    }
+
+    fn mergeUnset(self: *ConfigRequirementsReadRequirements, other: *ConfigRequirementsReadRequirements) void {
+        if (self.allowed_approval_policies == null) {
+            self.allowed_approval_policies = other.allowed_approval_policies;
+            other.allowed_approval_policies = null;
+        }
+        if (self.allowed_approvals_reviewers == null) {
+            self.allowed_approvals_reviewers = other.allowed_approvals_reviewers;
+            other.allowed_approvals_reviewers = null;
+        }
+        if (self.allowed_sandbox_modes == null) {
+            self.allowed_sandbox_modes = other.allowed_sandbox_modes;
+            other.allowed_sandbox_modes = null;
+        }
+        if (self.allowed_web_search_modes == null) {
+            self.allowed_web_search_modes = other.allowed_web_search_modes;
+            other.allowed_web_search_modes = null;
+        }
     }
 };
 
@@ -3184,9 +3216,46 @@ const ApprovalsReviewer = enum {
         if (std.mem.eql(u8, value, "auto_review") or std.mem.eql(u8, value, "guardian_subagent")) return .auto_review;
         return error.InvalidApprovalsReviewer;
     }
+
+    fn label(self: ApprovalsReviewer) []const u8 {
+        return switch (self) {
+            .user => "user",
+            .auto_review => "guardian_subagent",
+        };
+    }
 };
 
-fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !LegacyManagedConfigRequirements {
+fn loadConfigRequirementsReadRequirements(allocator: std.mem.Allocator) !ConfigRequirementsReadRequirements {
+    var requirements = try loadSystemConfigRequirements(allocator);
+    errdefer requirements.deinit(allocator);
+
+    var legacy_requirements = try loadLegacyManagedConfigRequirements(allocator);
+    defer legacy_requirements.deinit(allocator);
+    requirements.mergeUnset(&legacy_requirements);
+
+    return requirements;
+}
+
+fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirementsReadRequirements {
+    const path = try systemRequirementsPath(allocator);
+    defer allocator.free(path);
+
+    const bytes = try config.readConfigTomlFile(allocator, path);
+    defer if (bytes) |payload| allocator.free(payload);
+    const payload = bytes orelse return .{};
+
+    var requirements = ConfigRequirementsReadRequirements{};
+    errdefer requirements.deinit(allocator);
+
+    requirements.allowed_approval_policies = try parseAllowedApprovalPolicies(allocator, payload);
+    requirements.allowed_approvals_reviewers = try parseAllowedApprovalsReviewers(allocator, payload);
+    requirements.allowed_sandbox_modes = try parseAllowedSandboxModes(allocator, payload);
+    requirements.allowed_web_search_modes = try parseAllowedWebSearchModes(allocator, payload);
+
+    return requirements;
+}
+
+fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirementsReadRequirements {
     const path = try managedConfigPath(allocator);
     defer allocator.free(path);
 
@@ -3194,20 +3263,133 @@ fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !LegacyMana
     defer if (bytes) |payload| allocator.free(payload);
     const payload = bytes orelse return .{};
 
-    var requirements = LegacyManagedConfigRequirements{};
+    var requirements = ConfigRequirementsReadRequirements{};
+    errdefer requirements.deinit(allocator);
+
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
-        requirements.approval_policy = try config.ApprovalPolicy.parse(value);
+        const approval_policy = try config.ApprovalPolicy.parse(value);
+        requirements.allowed_approval_policies = try stringListFromLabels(allocator, &.{approval_policy.label()});
     }
     if (try config.topLevelStringValue(allocator, payload, "approvals_reviewer")) |value| {
         defer allocator.free(value);
-        requirements.approvals_reviewer = try ApprovalsReviewer.parse(value);
+        const approvals_reviewer = try ApprovalsReviewer.parse(value);
+        requirements.allowed_approvals_reviewers = switch (approvals_reviewer) {
+            .user => try stringListFromLabels(allocator, &.{"user"}),
+            .auto_review => try stringListFromLabels(allocator, &.{ "guardian_subagent", "user" }),
+        };
     }
     if (try config.topLevelStringValue(allocator, payload, "sandbox_mode")) |value| {
         defer allocator.free(value);
-        requirements.sandbox_mode = try config.SandboxMode.parse(value);
+        const sandbox_mode = try config.SandboxMode.parse(value);
+        requirements.allowed_sandbox_modes = switch (sandbox_mode) {
+            .read_only => try stringListFromLabels(allocator, &.{"read-only"}),
+            .workspace_write => try stringListFromLabels(allocator, &.{ "read-only", "workspace-write" }),
+            .danger_full_access => try stringListFromLabels(allocator, &.{ "read-only", "danger-full-access" }),
+        };
     }
     return requirements;
+}
+
+fn parseAllowedApprovalPolicies(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
+    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_approval_policies") orelse return null;
+    defer raw.deinit(allocator);
+
+    var labels = try allocator.alloc([]const u8, raw.items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (labels[0..copied]) |label| allocator.free(label);
+        allocator.free(labels);
+    }
+
+    for (raw.items, 0..) |value, index| {
+        const parsed = try config.ApprovalPolicy.parse(value);
+        labels[index] = try allocator.dupe(u8, parsed.label());
+        copied += 1;
+    }
+    return .{ .items = labels };
+}
+
+fn parseAllowedApprovalsReviewers(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
+    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_approvals_reviewers") orelse return null;
+    defer raw.deinit(allocator);
+
+    var labels = try allocator.alloc([]const u8, raw.items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (labels[0..copied]) |label| allocator.free(label);
+        allocator.free(labels);
+    }
+
+    for (raw.items, 0..) |value, index| {
+        const parsed = try ApprovalsReviewer.parse(value);
+        labels[index] = try allocator.dupe(u8, parsed.label());
+        copied += 1;
+    }
+    return .{ .items = labels };
+}
+
+fn parseAllowedSandboxModes(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
+    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_sandbox_modes") orelse return null;
+    defer raw.deinit(allocator);
+
+    var labels = try allocator.alloc([]const u8, raw.items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (labels[0..copied]) |label| allocator.free(label);
+        allocator.free(labels);
+    }
+
+    for (raw.items, 0..) |value, index| {
+        const parsed = try config.SandboxMode.parse(value);
+        labels[index] = try allocator.dupe(u8, parsed.label());
+        copied += 1;
+    }
+    return .{ .items = labels };
+}
+
+fn parseAllowedWebSearchModes(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
+    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_web_search_modes") orelse return null;
+    defer raw.deinit(allocator);
+
+    var disabled_present = false;
+    for (raw.items) |value| {
+        const parsed = try config.WebSearchMode.parse(value);
+        if (parsed == .disabled) disabled_present = true;
+    }
+
+    const extra_disabled: usize = if (disabled_present) 0 else 1;
+    var labels = try allocator.alloc([]const u8, raw.items.len + extra_disabled);
+    var copied: usize = 0;
+    errdefer {
+        for (labels[0..copied]) |label| allocator.free(label);
+        allocator.free(labels);
+    }
+
+    for (raw.items, 0..) |value, index| {
+        const parsed = try config.WebSearchMode.parse(value);
+        labels[index] = try allocator.dupe(u8, parsed.label());
+        copied += 1;
+    }
+    if (!disabled_present) {
+        labels[raw.items.len] = try allocator.dupe(u8, config.WebSearchMode.disabled.label());
+        copied += 1;
+    }
+    return .{ .items = labels };
+}
+
+fn stringListFromLabels(allocator: std.mem.Allocator, labels: []const []const u8) !config.StringList {
+    const items = try allocator.alloc([]const u8, labels.len);
+    var copied: usize = 0;
+    errdefer {
+        for (items[0..copied]) |item| allocator.free(item);
+        allocator.free(items);
+    }
+    for (labels, 0..) |label, index| {
+        items[index] = try allocator.dupe(u8, label);
+        copied += 1;
+    }
+    return .{ .items = items };
 }
 
 fn managedConfigPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -3223,6 +3405,19 @@ fn managedConfigPath(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, UNIX_MANAGED_CONFIG_SYSTEM_PATH);
 }
 
+fn systemRequirementsPath(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, SYSTEM_REQUIREMENTS_PATH_ENV_VAR)) |path| {
+        if (path.len > 0) return path;
+        allocator.free(path);
+    }
+    if (builtin.os.tag == .windows) {
+        const codex_home = try resolveCodexHome(allocator);
+        defer allocator.free(codex_home);
+        return std.fs.path.join(allocator, &.{ codex_home, "requirements.toml" });
+    }
+    return allocator.dupe(u8, UNIX_SYSTEM_REQUIREMENTS_PATH);
+}
+
 fn systemConfigPath(allocator: std.mem.Allocator) ![]const u8 {
     if (try env.getOwned(allocator, SYSTEM_CONFIG_PATH_ENV_VAR)) |path| {
         if (path.len > 0) return path;
@@ -3236,31 +3431,28 @@ fn systemConfigPath(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, UNIX_SYSTEM_CONFIG_PATH);
 }
 
-fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requirements: LegacyManagedConfigRequirements) ![]const u8 {
+fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requirements: ConfigRequirementsReadRequirements) ![]const u8 {
     if (requirements.isEmpty()) return allocator.dupe(u8, "{\"requirements\":null}");
 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"requirements\":{");
     var first = true;
-    if (requirements.approval_policy) |approval_policy| {
+    if (requirements.allowed_approval_policies) |approval_policies| {
         try appendJsonFieldName(allocator, &result, &first, "allowedApprovalPolicies");
-        try appendJsonStringArray(allocator, &result, &.{approval_policy.label()});
+        try appendJsonStringArray(allocator, &result, approval_policies.items);
     }
-    if (requirements.approvals_reviewer) |approvals_reviewer| {
+    if (requirements.allowed_approvals_reviewers) |approvals_reviewers| {
         try appendJsonFieldName(allocator, &result, &first, "allowedApprovalsReviewers");
-        switch (approvals_reviewer) {
-            .user => try appendJsonStringArray(allocator, &result, &.{"user"}),
-            .auto_review => try appendJsonStringArray(allocator, &result, &.{ "guardian_subagent", "user" }),
-        }
+        try appendJsonStringArray(allocator, &result, approvals_reviewers.items);
     }
-    if (requirements.sandbox_mode) |sandbox_mode| {
+    if (requirements.allowed_sandbox_modes) |sandbox_modes| {
         try appendJsonFieldName(allocator, &result, &first, "allowedSandboxModes");
-        switch (sandbox_mode) {
-            .read_only => try appendJsonStringArray(allocator, &result, &.{"read-only"}),
-            .workspace_write => try appendJsonStringArray(allocator, &result, &.{ "read-only", "workspace-write" }),
-            .danger_full_access => try appendJsonStringArray(allocator, &result, &.{ "read-only", "danger-full-access" }),
-        }
+        try appendJsonStringArray(allocator, &result, sandbox_modes.items);
+    }
+    if (requirements.allowed_web_search_modes) |web_search_modes| {
+        try appendJsonFieldName(allocator, &result, &first, "allowedWebSearchModes");
+        try appendJsonStringArray(allocator, &result, web_search_modes.items);
     }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
