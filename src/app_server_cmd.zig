@@ -13,7 +13,9 @@ const hooks_list = @import("hooks_list.zig");
 const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
+const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
+const remote_plugin = @import("remote_plugin.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -993,6 +995,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/read")) {
         return handlePluginRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/skill/read")) {
+        return handlePluginSkillRead(allocator, id_value, params_value);
+    }
 
     if (validatePluginParams(method, params_value)) |message| {
         return try renderJsonRpcError(allocator, id_value, -32602, message);
@@ -1054,6 +1059,87 @@ fn validatePluginSkillReadParams(params_value: ?std.json.Value) ?[]const u8 {
     if (requireStringField(object, "remotePluginId")) |message| return message;
     if (requireStringField(object, "skillName")) |message| return message;
     return null;
+}
+
+fn handlePluginSkillRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginSkillReadParams(params_value) catch |err| switch (err) {
+        error.InvalidPluginSkillReadParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/skill/read params must be an object"),
+        error.InvalidPluginSkillReadRemoteMarketplaceName => return renderJsonRpcError(allocator, id_value, -32602, "remoteMarketplaceName must be a string"),
+        error.InvalidPluginSkillReadRemotePluginId => return renderJsonRpcError(allocator, id_value, -32602, "remotePluginId must be a string"),
+        error.InvalidPluginSkillReadSkillName => return renderJsonRpcError(allocator, id_value, -32602, "skillName must be a string"),
+    };
+    if (!remote_plugin.isKnownRemoteMarketplace(params.remote_marketplace_name)) {
+        const message = try std.fmt.allocPrint(allocator, "unknown remote plugin marketplace: {s}", .{params.remote_marketplace_name});
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+    if (!remote_plugin.isValidRemotePluginId(params.remote_plugin_id)) {
+        const message = try std.fmt.allocPrint(allocator, "invalid remote plugin id: {s}", .{params.remote_plugin_id});
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+    if (params.skill_name.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin skill name: cannot be empty");
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const config_path = config.configTomlPath(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to load config", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to load config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "remote plugin skill read is not enabled for marketplace {s}",
+            .{params.remote_marketplace_name},
+        );
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+    switch (credentials.mode) {
+        .chatgpt, .agent_identity => {},
+        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
+    }
+
+    const result = remote_plugin.fetchSkillReadJson(allocator, cfg.chatgpt_base_url, credentials, params.remote_plugin_id, params.skill_name) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to fetch remote plugin skill details", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+const ParsedPluginSkillReadParams = struct {
+    remote_marketplace_name: []const u8,
+    remote_plugin_id: []const u8,
+    skill_name: []const u8,
+};
+
+fn parsePluginSkillReadParams(params_value: ?std.json.Value) !ParsedPluginSkillReadParams {
+    const params = params_value orelse return error.InvalidPluginSkillReadParams;
+    if (params != .object) return error.InvalidPluginSkillReadParams;
+    const object = params.object;
+    const remote_marketplace_name = stringFieldForPluginParams(object, "remoteMarketplaceName") orelse return error.InvalidPluginSkillReadRemoteMarketplaceName;
+    const remote_plugin_id = stringFieldForPluginParams(object, "remotePluginId") orelse return error.InvalidPluginSkillReadRemotePluginId;
+    const skill_name = stringFieldForPluginParams(object, "skillName") orelse return error.InvalidPluginSkillReadSkillName;
+    return .{
+        .remote_marketplace_name = remote_marketplace_name,
+        .remote_plugin_id = remote_plugin_id,
+        .skill_name = skill_name,
+    };
 }
 
 fn validatePluginShareSaveParams(params_value: ?std.json.Value) ?[]const u8 {
@@ -4168,7 +4254,6 @@ test "app-server plugin methods validate params and return not implemented" {
     defer state.deinit(allocator);
 
     const cases = [_][]const u8{
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-skill-read\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"skillName\":\"plan-work\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-update\",\"method\":\"plugin/share/updateTargets\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"shareTargets\":[{\"principalType\":\"workspace\",\"principalId\":\"workspace-1\"}]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-list\",\"method\":\"plugin/share/list\",\"params\":{}}",
@@ -4199,6 +4284,22 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_read_sources.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_read_sources.?, "\"code\":-32600") != null);
+
+    const invalid_skill_id = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-skill-id\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins/Plugin_123\",\"skillName\":\"plan-work\"}}",
+    );
+    defer allocator.free(invalid_skill_id.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_skill_id.?, "\"code\":-32600") != null);
+
+    const invalid_skill_name = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-skill-name\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins~Plugin_123\",\"skillName\":\"\"}}",
+    );
+    defer allocator.free(invalid_skill_name.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_skill_name.?, "\"code\":-32600") != null);
 
     const invalid_kind = try handleJsonRpcLine(
         allocator,
