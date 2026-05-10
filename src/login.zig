@@ -138,7 +138,7 @@ pub fn runLogout(allocator: std.mem.Allocator) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
-    if (try deleteAuthFile(allocator, cfg.codex_home)) {
+    if (try auth.deleteAuthJson(allocator, cfg.codex_home)) {
         std.debug.print("Successfully logged out\n", .{});
     } else {
         std.debug.print("Not logged in\n", .{});
@@ -734,16 +734,6 @@ fn saveAgentIdentity(allocator: std.mem.Allocator, codex_home: []const u8, acces
     }, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
     try auth.writeAuthJson(allocator, codex_home, json);
-}
-
-fn deleteAuthFile(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
-    defer allocator.free(path);
-    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch |err| switch (err) {
-        error.FileNotFound => return false,
-        else => return err,
-    };
-    return true;
 }
 
 fn apiAccountsBase(allocator: std.mem.Allocator, issuer: []const u8) ![]const u8 {

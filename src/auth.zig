@@ -431,6 +431,16 @@ pub fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json:
     });
 }
 
+pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
+    defer allocator.free(path);
+    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
 fn parseJwtExpiration(allocator: std.mem.Allocator, jwt: []const u8) !?u64 {
     var parsed = try parseJwtPayload(allocator, jwt);
     defer parsed.deinit();

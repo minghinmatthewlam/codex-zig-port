@@ -1334,7 +1334,8 @@ fn appendJsonFieldName(
 }
 
 fn isAccountMethod(method: []const u8) bool {
-    return std.mem.eql(u8, method, "account/read");
+    return std.mem.eql(u8, method, "account/read") or
+        std.mem.eql(u8, method, "account/logout");
 }
 
 fn handleAccountMethod(
@@ -1346,7 +1347,29 @@ fn handleAccountMethod(
     if (std.mem.eql(u8, method, "account/read")) {
         return handleAccountRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "account/logout")) {
+        return handleAccountLogout(allocator, id_value, params_value);
+    }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown account method");
+}
+
+fn handleAccountLogout(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null) return renderJsonRpcError(allocator, id_value, -32602, "account/logout params must be null or omitted");
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/logout failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    _ = auth_mod.deleteAuthJson(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/logout failed to delete auth", err);
+    };
+
+    const response = try renderJsonRpcResult(allocator, id_value, "{}");
+    defer allocator.free(response);
+    return renderResultWithAccountUpdatedNotification(allocator, response);
 }
 
 fn handleAccountRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -1438,6 +1461,14 @@ fn renderChatGptAccountJson(allocator: std.mem.Allocator, info: auth_mod.ChatGpt
         allocator,
         "{{\"type\":\"chatgpt\",\"email\":{s},\"planType\":{s}}}",
         .{ email_json, plan_type_json },
+    );
+}
+
+fn renderResultWithAccountUpdatedNotification(allocator: std.mem.Allocator, response: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n{{\"method\":\"account/updated\",\"params\":{{\"authMode\":null,\"planType\":null}}}}",
+        .{response},
     );
 }
 
