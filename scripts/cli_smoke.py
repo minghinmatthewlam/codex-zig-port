@@ -463,6 +463,64 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_resume_option_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-resume-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        initial = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "seed",
+                "session",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert initial.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+
+        resumed = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "resume",
+                "--last",
+                "--skip-git-repo-check",
+                "--model",
+                "gpt-exec-resume",
+                "-o",
+                "resume-output.md",
+                "continue",
+                "please",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert resumed.stdout == "stored reply\n"
+        assert (temp_root / "resume-output.md").read_text(encoding="utf-8") == "stored reply"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[1]["model"] == "gpt-exec-resume"
+        assert server.request_bodies[1]["input"][-1]["content"][0]["text"] == "continue please"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_stdin_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-stdin-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -790,6 +848,7 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
+    run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -801,6 +860,7 @@ def main() -> None:
     print("cli-exec-review-e2e: ok")
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
+    print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
