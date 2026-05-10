@@ -1,0 +1,799 @@
+const std = @import("std");
+
+const plugin_config = @import("plugin_config.zig");
+
+const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
+};
+
+const AGENTS_MARKETPLACE_SUFFIX = "/.agents/plugins/marketplace.json";
+const CLAUDE_MARKETPLACE_SUFFIX = "/.claude-plugin/marketplace.json";
+
+const SourceRender = struct {
+    plugin_root: ?[]const u8 = null,
+    source_json: []const u8,
+
+    fn deinit(self: SourceRender, allocator: std.mem.Allocator) void {
+        if (self.plugin_root) |path| allocator.free(path);
+        allocator.free(self.source_json);
+    }
+};
+
+pub fn renderResponse(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    cwds: []const []const u8,
+    include_local: bool,
+) ![]const u8 {
+    if (!include_local or !plugin_config.pluginsFeatureEnabled(config_bytes)) {
+        return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
+    }
+
+    const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
+    defer plugin_config.freeStringList(allocator, enabled_ids);
+
+    var seen_plugin_ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (seen_plugin_ids.items) |plugin_id| allocator.free(plugin_id);
+        seen_plugin_ids.deinit(allocator);
+    }
+
+    var marketplaces = std.ArrayList(u8).empty;
+    defer marketplaces.deinit(allocator);
+    var marketplace_count: usize = 0;
+
+    var load_errors = std.ArrayList(u8).empty;
+    defer load_errors.deinit(allocator);
+    var load_error_count: usize = 0;
+
+    try appendMarketplacesForRoot(allocator, codex_home, codex_home, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+    for (cwds) |cwd| {
+        try appendMarketplacesForRoot(allocator, codex_home, cwd, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"marketplaces\":[");
+    try out.appendSlice(allocator, marketplaces.items);
+    try out.appendSlice(allocator, "],\"marketplaceLoadErrors\":[");
+    try out.appendSlice(allocator, load_errors.items);
+    try out.appendSlice(allocator, "],\"featuredPluginIds\":[]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendMarketplacesForRoot(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    root: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    load_errors: *std.ArrayList(u8),
+    load_error_count: *usize,
+) !void {
+    for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
+        const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(marketplace_path);
+        try appendMarketplaceFromFile(
+            allocator,
+            codex_home,
+            marketplace_path,
+            enabled_ids,
+            seen_plugin_ids,
+            marketplaces,
+            marketplace_count,
+            load_errors,
+            load_error_count,
+        );
+    }
+}
+
+fn appendMarketplaceFromFile(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_path: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    load_errors: *std.ArrayList(u8),
+    load_error_count: *usize,
+) !void {
+    const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return;
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file");
+        return;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file: root must be an object");
+        return;
+    }
+    const object = parsed.value.object;
+    const marketplace_name = stringField(object, "name") orelse {
+        try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file: name must be a string");
+        return;
+    };
+    const plugins_value = object.get("plugins") orelse {
+        try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file: plugins must be an array");
+        return;
+    };
+    if (plugins_value != .array) {
+        try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file: plugins must be an array");
+        return;
+    }
+
+    var plugins = std.ArrayList(u8).empty;
+    defer plugins.deinit(allocator);
+    var plugin_count: usize = 0;
+    for (plugins_value.array.items) |plugin_value| {
+        try appendPluginFromMarketplaceEntry(
+            allocator,
+            codex_home,
+            marketplace_path,
+            marketplace_name,
+            plugin_value,
+            enabled_ids,
+            seen_plugin_ids,
+            &plugins,
+            &plugin_count,
+        );
+    }
+    if (plugin_count == 0) return;
+
+    try appendCommaIfNeeded(allocator, marketplaces, marketplace_count);
+    const name_json = try jsonString(allocator, marketplace_name);
+    defer allocator.free(name_json);
+    const path_json = try jsonString(allocator, marketplace_path);
+    defer allocator.free(path_json);
+
+    try marketplaces.appendSlice(allocator, "{\"name\":");
+    try marketplaces.appendSlice(allocator, name_json);
+    try marketplaces.appendSlice(allocator, ",\"path\":");
+    try marketplaces.appendSlice(allocator, path_json);
+    try marketplaces.appendSlice(allocator, ",\"interface\":");
+    try appendMarketplaceInterfaceJson(allocator, marketplaces, object.get("interface"));
+    try marketplaces.appendSlice(allocator, ",\"plugins\":[");
+    try marketplaces.appendSlice(allocator, plugins.items);
+    try marketplaces.appendSlice(allocator, "]}");
+}
+
+fn appendPluginFromMarketplaceEntry(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_path: []const u8,
+    marketplace_name: []const u8,
+    plugin_value: std.json.Value,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    plugins: *std.ArrayList(u8),
+    plugin_count: *usize,
+) !void {
+    if (plugin_value != .object) return;
+    const object = plugin_value.object;
+    const plugin_name = stringField(object, "name") orelse return;
+    if (plugin_name.len == 0 or marketplace_name.len == 0) return;
+
+    const source_value = object.get("source") orelse return;
+    const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return;
+    defer source.deinit(allocator);
+
+    const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name, marketplace_name });
+    errdefer allocator.free(plugin_id);
+    if (containsString(seen_plugin_ids.items, plugin_id)) {
+        allocator.free(plugin_id);
+        return;
+    }
+    try seen_plugin_ids.append(allocator, plugin_id);
+
+    const installed = try installedPluginExists(allocator, codex_home, marketplace_name, plugin_name);
+    const enabled = containsString(enabled_ids, plugin_id);
+    const install_policy = installPolicy(object.get("policy"));
+    const auth_policy = authPolicy(object.get("policy"));
+    const category = stringField(object, "category");
+
+    var manifest_parse: ?std.json.Parsed(std.json.Value) = null;
+    defer if (manifest_parse) |*parsed| parsed.deinit();
+    var manifest_bytes: ?[]const u8 = null;
+    defer if (manifest_bytes) |bytes| allocator.free(bytes);
+    if (source.plugin_root) |plugin_root| {
+        manifest_bytes = try readPluginManifestBytes(allocator, plugin_root);
+        if (manifest_bytes) |bytes| {
+            manifest_parse = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch null;
+        }
+    }
+    const manifest_value = if (manifest_parse) |parsed| parsed.value else null;
+
+    try appendCommaIfNeeded(allocator, plugins, plugin_count);
+    const id_json = try jsonString(allocator, plugin_id);
+    defer allocator.free(id_json);
+    const name_json = try jsonString(allocator, plugin_name);
+    defer allocator.free(name_json);
+
+    try plugins.appendSlice(allocator, "{\"id\":");
+    try plugins.appendSlice(allocator, id_json);
+    try plugins.appendSlice(allocator, ",\"name\":");
+    try plugins.appendSlice(allocator, name_json);
+    try plugins.appendSlice(allocator, ",\"shareContext\":null,\"source\":");
+    try plugins.appendSlice(allocator, source.source_json);
+    try plugins.appendSlice(allocator, ",\"installed\":");
+    try appendBool(allocator, plugins, installed);
+    try plugins.appendSlice(allocator, ",\"enabled\":");
+    try appendBool(allocator, plugins, enabled);
+    try plugins.appendSlice(allocator, ",\"installPolicy\":\"");
+    try plugins.appendSlice(allocator, install_policy);
+    try plugins.appendSlice(allocator, "\",\"authPolicy\":\"");
+    try plugins.appendSlice(allocator, auth_policy);
+    try plugins.appendSlice(allocator, "\",\"availability\":\"AVAILABLE\",\"interface\":");
+    try appendPluginInterfaceJson(allocator, plugins, source.plugin_root, manifest_value, category);
+    try plugins.appendSlice(allocator, ",\"keywords\":");
+    try appendManifestKeywordsJson(allocator, plugins, manifest_value);
+    try plugins.appendSlice(allocator, "}");
+}
+
+fn renderPluginSource(allocator: std.mem.Allocator, marketplace_path: []const u8, source_value: std.json.Value) !?SourceRender {
+    if (source_value == .string) {
+        return try renderLocalPluginSource(allocator, marketplace_path, source_value.string);
+    }
+    if (source_value != .object) return null;
+
+    const kind = stringField(source_value.object, "source") orelse return null;
+    if (std.mem.eql(u8, kind, "local")) {
+        const path = stringField(source_value.object, "path") orelse return null;
+        return try renderLocalPluginSource(allocator, marketplace_path, path);
+    }
+    if (std.mem.eql(u8, kind, "url")) {
+        return try renderGitPluginSource(allocator, source_value.object, false);
+    }
+    if (std.mem.eql(u8, kind, "git-subdir")) {
+        return try renderGitPluginSource(allocator, source_value.object, true);
+    }
+    return null;
+}
+
+fn renderLocalPluginSource(allocator: std.mem.Allocator, marketplace_path: []const u8, raw_path: []const u8) !?SourceRender {
+    const plugin_root = (try resolveLocalPluginPath(allocator, marketplace_path, raw_path)) orelse return null;
+    errdefer allocator.free(plugin_root);
+    const path_json = try jsonString(allocator, plugin_root);
+    defer allocator.free(path_json);
+    const source_json = try std.fmt.allocPrint(allocator, "{{\"type\":\"local\",\"path\":{s}}}", .{path_json});
+    return .{ .plugin_root = plugin_root, .source_json = source_json };
+}
+
+fn renderGitPluginSource(allocator: std.mem.Allocator, object: std.json.ObjectMap, require_path: bool) !?SourceRender {
+    const url = stringField(object, "url") orelse return null;
+    const path = stringField(object, "path");
+    if (require_path and path == null) return null;
+    const url_json = try jsonString(allocator, url);
+    defer allocator.free(url_json);
+    const path_json = try optionalJsonString(allocator, path);
+    defer allocator.free(path_json);
+    const ref_json = try optionalJsonString(allocator, stringField(object, "ref"));
+    defer allocator.free(ref_json);
+    const sha_json = try optionalJsonString(allocator, stringField(object, "sha"));
+    defer allocator.free(sha_json);
+    const source_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"type\":\"git\",\"url\":{s},\"path\":{s},\"refName\":{s},\"sha\":{s}}}",
+        .{ url_json, path_json, ref_json, sha_json },
+    );
+    return .{ .source_json = source_json };
+}
+
+fn resolveLocalPluginPath(allocator: std.mem.Allocator, marketplace_path: []const u8, raw_path: []const u8) !?[]const u8 {
+    const stripped = std.mem.trim(u8, raw_path, " \t\r\n");
+    if (!std.mem.startsWith(u8, stripped, "./")) return null;
+    const relative = stripped[2..];
+    if (relative.len == 0 or !isSafeRelativePath(relative)) return null;
+    const root = try marketplaceRootDir(allocator, marketplace_path);
+    defer allocator.free(root);
+    const resolved = try std.fs.path.join(allocator, &.{ root, relative });
+    return resolved;
+}
+
+fn marketplaceRootDir(allocator: std.mem.Allocator, marketplace_path: []const u8) ![]const u8 {
+    if (std.mem.endsWith(u8, marketplace_path, AGENTS_MARKETPLACE_SUFFIX)) {
+        const end = marketplace_path.len - AGENTS_MARKETPLACE_SUFFIX.len;
+        if (end == 0) return allocator.dupe(u8, "/");
+        return allocator.dupe(u8, marketplace_path[0..end]);
+    }
+    if (std.mem.endsWith(u8, marketplace_path, CLAUDE_MARKETPLACE_SUFFIX)) {
+        const end = marketplace_path.len - CLAUDE_MARKETPLACE_SUFFIX.len;
+        if (end == 0) return allocator.dupe(u8, "/");
+        return allocator.dupe(u8, marketplace_path[0..end]);
+    }
+    return error.InvalidMarketplaceLayout;
+}
+
+fn isSafeRelativePath(path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) return false;
+    var segments = std.mem.splitScalar(u8, path, '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0) return false;
+        if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return false;
+    }
+    return true;
+}
+
+fn appendMarketplaceInterfaceJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value_opt: ?std.json.Value) !void {
+    const value = value_opt orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    if (value != .object) {
+        try out.appendSlice(allocator, "null");
+        return;
+    }
+    const display_name = stringField(value.object, "displayName") orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    const display_name_json = try jsonString(allocator, display_name);
+    defer allocator.free(display_name_json);
+    try out.appendSlice(allocator, "{\"displayName\":");
+    try out.appendSlice(allocator, display_name_json);
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendPluginInterfaceJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    plugin_root: ?[]const u8,
+    manifest_value: ?std.json.Value,
+    marketplace_category: ?[]const u8,
+) !void {
+    const interface_value = pluginManifestInterfaceValue(manifest_value);
+    if (!pluginInterfaceHasFields(interface_value, marketplace_category)) {
+        try out.appendSlice(allocator, "null");
+        return;
+    }
+    const interface_object = if (interface_value) |value| value.object else null;
+
+    try out.appendSlice(allocator, "{");
+    try appendNamedOptionalString(allocator, out, "displayName", stringFieldOpt(interface_object, "displayName"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "shortDescription", stringFieldOpt(interface_object, "shortDescription"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "longDescription", stringFieldOpt(interface_object, "longDescription"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "developerName", stringFieldOpt(interface_object, "developerName"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "category", marketplace_category orelse stringFieldOpt(interface_object, "category"));
+    try out.appendSlice(allocator, ",\"capabilities\":");
+    try appendStringArrayValue(allocator, out, valueFieldOpt(interface_object, "capabilities"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "websiteUrl", stringFieldAliasOpt(interface_object, "websiteUrl", "websiteURL"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "privacyPolicyUrl", stringFieldAliasOpt(interface_object, "privacyPolicyUrl", "privacyPolicyURL"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "termsOfServiceUrl", stringFieldAliasOpt(interface_object, "termsOfServiceUrl", "termsOfServiceURL"));
+    try out.appendSlice(allocator, ",\"defaultPrompt\":");
+    try appendDefaultPromptJson(allocator, out, valueFieldOpt(interface_object, "defaultPrompt"));
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "brandColor", stringFieldOpt(interface_object, "brandColor"));
+    try out.appendSlice(allocator, ",\"composerIcon\":");
+    try appendAssetPathJson(allocator, out, plugin_root, stringFieldOpt(interface_object, "composerIcon"));
+    try out.appendSlice(allocator, ",\"composerIconUrl\":null,\"logo\":");
+    try appendAssetPathJson(allocator, out, plugin_root, stringFieldOpt(interface_object, "logo"));
+    try out.appendSlice(allocator, ",\"logoUrl\":null,\"screenshots\":");
+    try appendAssetArrayJson(allocator, out, plugin_root, valueFieldOpt(interface_object, "screenshots"));
+    try out.appendSlice(allocator, ",\"screenshotUrls\":[]}");
+}
+
+fn pluginManifestInterfaceValue(manifest_value: ?std.json.Value) ?std.json.Value {
+    const manifest = manifest_value orelse return null;
+    if (manifest != .object) return null;
+    const value = manifest.object.get("interface") orelse return null;
+    if (value != .object) return null;
+    return value;
+}
+
+fn pluginInterfaceHasFields(interface_value: ?std.json.Value, marketplace_category: ?[]const u8) bool {
+    if (marketplace_category != null) return true;
+    const value = interface_value orelse return false;
+    const object = value.object;
+    if (stringField(object, "displayName") != null) return true;
+    if (stringField(object, "shortDescription") != null) return true;
+    if (stringField(object, "longDescription") != null) return true;
+    if (stringField(object, "developerName") != null) return true;
+    if (stringField(object, "category") != null) return true;
+    if (stringFieldAlias(object, "websiteUrl", "websiteURL") != null) return true;
+    if (stringFieldAlias(object, "privacyPolicyUrl", "privacyPolicyURL") != null) return true;
+    if (stringFieldAlias(object, "termsOfServiceUrl", "termsOfServiceURL") != null) return true;
+    if (stringField(object, "brandColor") != null) return true;
+    if (stringField(object, "composerIcon") != null) return true;
+    if (stringField(object, "logo") != null) return true;
+    if (stringArrayHasStrings(object.get("capabilities"))) return true;
+    if (stringArrayHasStrings(object.get("screenshots"))) return true;
+    if (defaultPromptHasStrings(object.get("defaultPrompt"))) return true;
+    return false;
+}
+
+fn appendManifestKeywordsJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), manifest_value: ?std.json.Value) !void {
+    const manifest = manifest_value orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    if (manifest != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    try appendStringArrayValue(allocator, out, manifest.object.get("keywords"));
+}
+
+fn readPluginManifestBytes(allocator: std.mem.Allocator, plugin_root: []const u8) !?[]const u8 {
+    const codex_path = try std.fs.path.join(allocator, &.{ plugin_root, ".codex-plugin", "plugin.json" });
+    defer allocator.free(codex_path);
+    if (try readFileOptional(allocator, codex_path, 1024 * 1024)) |bytes| return bytes;
+
+    const claude_path = try std.fs.path.join(allocator, &.{ plugin_root, ".claude-plugin", "plugin.json" });
+    defer allocator.free(claude_path);
+    return readFileOptional(allocator, claude_path, 1024 * 1024);
+}
+
+fn installedPluginExists(allocator: std.mem.Allocator, codex_home: []const u8, marketplace_name: []const u8, plugin_name: []const u8) !bool {
+    const manifest_path = try std.fs.path.join(allocator, &.{
+        codex_home,
+        "plugins",
+        "cache",
+        marketplace_name,
+        plugin_name,
+        "local",
+        ".codex-plugin",
+        "plugin.json",
+    });
+    defer allocator.free(manifest_path);
+    const bytes = try readFileOptional(allocator, manifest_path, 1024 * 64) orelse return false;
+    allocator.free(bytes);
+    return true;
+}
+
+fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize) !?[]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(limit)) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return null,
+        else => return err,
+    };
+}
+
+fn appendMarketplaceLoadError(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    count: *usize,
+    marketplace_path: []const u8,
+    message: []const u8,
+) !void {
+    try appendCommaIfNeeded(allocator, out, count);
+    const path_json = try jsonString(allocator, marketplace_path);
+    defer allocator.free(path_json);
+    const message_json = try jsonString(allocator, message);
+    defer allocator.free(message_json);
+    try out.appendSlice(allocator, "{\"marketplacePath\":");
+    try out.appendSlice(allocator, path_json);
+    try out.appendSlice(allocator, ",\"message\":");
+    try out.appendSlice(allocator, message_json);
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendCommaIfNeeded(allocator: std.mem.Allocator, out: *std.ArrayList(u8), count: *usize) !void {
+    if (count.* > 0) try out.appendSlice(allocator, ",");
+    count.* += 1;
+}
+
+fn installPolicy(policy_value: ?std.json.Value) []const u8 {
+    const policy_object = policyObject(policy_value) orelse return "AVAILABLE";
+    const value = stringField(policy_object, "installation") orelse return "AVAILABLE";
+    if (std.mem.eql(u8, value, "NOT_AVAILABLE")) return "NOT_AVAILABLE";
+    if (std.mem.eql(u8, value, "INSTALLED_BY_DEFAULT")) return "INSTALLED_BY_DEFAULT";
+    return "AVAILABLE";
+}
+
+fn authPolicy(policy_value: ?std.json.Value) []const u8 {
+    const policy_object = policyObject(policy_value) orelse return "ON_INSTALL";
+    const value = stringField(policy_object, "authentication") orelse return "ON_INSTALL";
+    if (std.mem.eql(u8, value, "ON_USE")) return "ON_USE";
+    return "ON_INSTALL";
+}
+
+fn policyObject(policy_value: ?std.json.Value) ?std.json.ObjectMap {
+    const value = policy_value orelse return null;
+    if (value != .object) return null;
+    return value.object;
+}
+
+fn appendNamedOptionalString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: ?[]const u8) !void {
+    const name_json = try jsonString(allocator, name);
+    defer allocator.free(name_json);
+    try out.appendSlice(allocator, name_json);
+    try out.appendSlice(allocator, ":");
+    if (value) |string| {
+        const value_json = try jsonString(allocator, string);
+        defer allocator.free(value_json);
+        try out.appendSlice(allocator, value_json);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+}
+
+fn appendStringArrayValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value_opt: ?std.json.Value) !void {
+    const value = value_opt orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    if (value != .array) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    try out.appendSlice(allocator, "[");
+    var count: usize = 0;
+    for (value.array.items) |item| {
+        if (item != .string) continue;
+        try appendCommaIfNeeded(allocator, out, &count);
+        const item_json = try jsonString(allocator, item.string);
+        defer allocator.free(item_json);
+        try out.appendSlice(allocator, item_json);
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendDefaultPromptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value_opt: ?std.json.Value) !void {
+    const value = value_opt orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    if (value == .string) {
+        try out.appendSlice(allocator, "[");
+        const prompt_json = try jsonString(allocator, value.string);
+        defer allocator.free(prompt_json);
+        try out.appendSlice(allocator, prompt_json);
+        try out.appendSlice(allocator, "]");
+        return;
+    }
+    if (value != .array) {
+        try out.appendSlice(allocator, "null");
+        return;
+    }
+    try out.appendSlice(allocator, "[");
+    var count: usize = 0;
+    for (value.array.items) |item| {
+        if (item == .string) {
+            try appendCommaIfNeeded(allocator, out, &count);
+            const prompt_json = try jsonString(allocator, item.string);
+            defer allocator.free(prompt_json);
+            try out.appendSlice(allocator, prompt_json);
+        } else if (item == .object) {
+            const prompt = stringField(item.object, "prompt") orelse stringField(item.object, "text") orelse continue;
+            try appendCommaIfNeeded(allocator, out, &count);
+            const prompt_json = try jsonString(allocator, prompt);
+            defer allocator.free(prompt_json);
+            try out.appendSlice(allocator, prompt_json);
+        }
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendAssetPathJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: ?[]const u8, value: ?[]const u8) !void {
+    const root = plugin_root orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    const raw = value orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    const path = (try resolveManifestAssetPath(allocator, root, raw)) orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    defer allocator.free(path);
+    const path_json = try jsonString(allocator, path);
+    defer allocator.free(path_json);
+    try out.appendSlice(allocator, path_json);
+}
+
+fn appendAssetArrayJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: ?[]const u8, value_opt: ?std.json.Value) !void {
+    const root = plugin_root orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    const value = value_opt orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    if (value != .array) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    try out.appendSlice(allocator, "[");
+    var count: usize = 0;
+    for (value.array.items) |item| {
+        if (item != .string) continue;
+        const path = (try resolveManifestAssetPath(allocator, root, item.string)) orelse continue;
+        defer allocator.free(path);
+        try appendCommaIfNeeded(allocator, out, &count);
+        const path_json = try jsonString(allocator, path);
+        defer allocator.free(path_json);
+        try out.appendSlice(allocator, path_json);
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn resolveManifestAssetPath(allocator: std.mem.Allocator, plugin_root: []const u8, raw_path: []const u8) !?[]const u8 {
+    const stripped = std.mem.trim(u8, raw_path, " \t\r\n");
+    if (!std.mem.startsWith(u8, stripped, "./")) return null;
+    const relative = stripped[2..];
+    if (relative.len == 0 or !isSafeRelativePath(relative)) return null;
+    const resolved = try std.fs.path.join(allocator, &.{ plugin_root, relative });
+    return resolved;
+}
+
+fn defaultPromptHasStrings(value_opt: ?std.json.Value) bool {
+    const value = value_opt orelse return false;
+    if (value == .string) return true;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (item == .string) return true;
+        if (item == .object and (stringField(item.object, "prompt") != null or stringField(item.object, "text") != null)) return true;
+    }
+    return false;
+}
+
+fn stringArrayHasStrings(value_opt: ?std.json.Value) bool {
+    const value = value_opt orelse return false;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (item == .string) return true;
+    }
+    return false;
+}
+
+fn valueFieldOpt(object_opt: ?std.json.ObjectMap, field: []const u8) ?std.json.Value {
+    const object = object_opt orelse return null;
+    return object.get(field);
+}
+
+fn stringFieldOpt(object_opt: ?std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const object = object_opt orelse return null;
+    return stringField(object, field);
+}
+
+fn stringFieldAliasOpt(object_opt: ?std.json.ObjectMap, field: []const u8, alias: []const u8) ?[]const u8 {
+    const object = object_opt orelse return null;
+    return stringFieldAlias(object, field, alias);
+}
+
+fn stringFieldAlias(object: std.json.ObjectMap, field: []const u8, alias: []const u8) ?[]const u8 {
+    return stringField(object, field) orelse stringField(object, alias);
+}
+
+fn stringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn containsString(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
+}
+
+fn appendBool(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: bool) !void {
+    try out.appendSlice(allocator, if (value) "true" else "false");
+}
+
+fn jsonString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    return std.json.Stringify.valueAlloc(allocator, value, .{});
+}
+
+fn optionalJsonString(allocator: std.mem.Allocator, value: ?[]const u8) ![]const u8 {
+    if (value) |string| return jsonString(allocator, string);
+    return allocator.dupe(u8, "null");
+}
+
+test "plugin list renders local marketplaces with installed state and manifest metadata" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home/plugins/cache/codex-curated/enabled-plugin/local/.codex-plugin");
+    try dir.dir.createDirPath(io, "repo/.agents/plugins");
+    try dir.dir.createDirPath(io, "repo/plugins/enabled-plugin/.codex-plugin");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "codex-home/plugins/cache/codex-curated/enabled-plugin/local/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"enabled-plugin\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/.agents/plugins/marketplace.json",
+        .data =
+        \\{
+        \\  "name": "codex-curated",
+        \\  "interface": {"displayName": "ChatGPT Official"},
+        \\  "plugins": [
+        \\    {
+        \\      "name": "enabled-plugin",
+        \\      "source": {"source": "local", "path": "./plugins/enabled-plugin"},
+        \\      "category": "Design"
+        \\    }
+        \\  ]
+        \\}
+        ,
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/plugins/enabled-plugin/.codex-plugin/plugin.json",
+        .data =
+        \\{
+        \\  "name": "enabled-plugin",
+        \\  "keywords": ["api-key", "developer tools"],
+        \\  "interface": {
+        \\    "displayName": "Enabled Plugin",
+        \\    "shortDescription": "Short plugin description",
+        \\    "capabilities": ["Write"],
+        \\    "defaultPrompt": "Try this plugin"
+        \\  }
+        \\}
+        ,
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const repo = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo);
+    const config_bytes =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."enabled-plugin@codex-curated"]
+        \\enabled = true
+    ;
+
+    const response = try renderResponse(allocator, codex_home, config_bytes, &.{repo}, true);
+    defer allocator.free(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"name\":\"codex-curated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"displayName\":\"ChatGPT Official\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"enabled-plugin@codex-curated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"installed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"enabled\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"category\":\"Design\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"keywords\":[\"api-key\",\"developer tools\"]") != null);
+}
+
+test "plugin list reports invalid marketplace files and honors plugins feature flag" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home");
+    try dir.dir.createDirPath(io, "repo/.agents/plugins");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/.agents/plugins/marketplace.json",
+        .data = "{not json",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const repo = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo);
+
+    const response = try renderResponse(allocator, codex_home, "[features]\nplugins = true\n", &.{repo}, true);
+    defer allocator.free(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"marketplaces\":[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"marketplaceLoadErrors\":[{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "invalid marketplace file") != null);
+
+    const disabled = try renderResponse(allocator, codex_home, "[features]\nplugins = false\n", &.{repo}, true);
+    defer allocator.free(disabled);
+    try std.testing.expectEqualStrings("{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}", disabled);
+}

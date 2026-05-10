@@ -13,6 +13,7 @@ const hooks_list = @import("hooks_list.zig");
 const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
+const plugin_list = @import("plugin_list.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -986,6 +987,10 @@ fn handlePluginMethod(
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
+    if (std.mem.eql(u8, method, "plugin/list")) {
+        return handlePluginList(allocator, id_value, params_value);
+    }
+
     if (validatePluginParams(method, params_value)) |message| {
         return try renderJsonRpcError(allocator, id_value, -32602, message);
     }
@@ -1131,6 +1136,85 @@ fn isPluginMarketplaceKind(value: []const u8) bool {
         std.mem.eql(u8, value, "workspace-directory") or
         std.mem.eql(u8, value, "shared-with-me");
 }
+
+fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginListParams(allocator, params_value) catch |err| switch (err) {
+        error.InvalidPluginListParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/list params must be an object"),
+        error.InvalidPluginListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
+        error.InvalidPluginListCwdPath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin/list cwds must be absolute paths"),
+        error.InvalidPluginListMarketplaceKinds => return renderJsonRpcError(allocator, id_value, -32602, "marketplaceKinds must be an array of strings or null"),
+        error.InvalidPluginListMarketplaceKind => return renderJsonRpcError(allocator, id_value, -32602, "unknown marketplace kind"),
+        else => return err,
+    };
+    defer params.deinit(allocator);
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const result = plugin_list.renderResponse(allocator, codex_home, config_bytes orelse "", params.cwds, params.include_local) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn parsePluginListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedPluginListParams {
+    const params = params_value orelse return .{ .cwds = try allocator.alloc([]const u8, 0), .include_local = true };
+    if (params == .null) return .{ .cwds = try allocator.alloc([]const u8, 0), .include_local = true };
+    if (params != .object) return error.InvalidPluginListParams;
+
+    const cwds = try parsePluginListCwds(allocator, params.object.get("cwds"));
+    errdefer allocator.free(cwds);
+    const include_local = try parsePluginListIncludeLocal(params.object.get("marketplaceKinds"));
+    return .{ .cwds = cwds, .include_local = include_local };
+}
+
+fn parsePluginListCwds(allocator: std.mem.Allocator, value_opt: ?std.json.Value) ![]const []const u8 {
+    const value = value_opt orelse return allocator.alloc([]const u8, 0);
+    if (value == .null) return allocator.alloc([]const u8, 0);
+    if (value != .array) return error.InvalidPluginListCwds;
+    const cwds = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(cwds);
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string) return error.InvalidPluginListCwds;
+        if (item.string.len == 0 or !std.fs.path.isAbsolute(item.string)) return error.InvalidPluginListCwdPath;
+        cwds[index] = item.string;
+    }
+    return cwds;
+}
+
+fn parsePluginListIncludeLocal(value_opt: ?std.json.Value) !bool {
+    const value = value_opt orelse return true;
+    if (value == .null) return true;
+    if (value != .array) return error.InvalidPluginListMarketplaceKinds;
+    var include_local = false;
+    for (value.array.items) |item| {
+        if (item != .string) return error.InvalidPluginListMarketplaceKinds;
+        if (!isPluginMarketplaceKind(item.string)) return error.InvalidPluginListMarketplaceKind;
+        if (std.mem.eql(u8, item.string, "local")) include_local = true;
+    }
+    return include_local;
+}
+
+const ParsedPluginListParams = struct {
+    cwds: []const []const u8,
+    include_local: bool,
+
+    fn deinit(self: ParsedPluginListParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwds);
+    }
+};
 
 const ParsedSkillsListParams = struct {
     cwds: []const []const u8,
@@ -4000,7 +4084,6 @@ test "app-server plugin methods validate params and return not implemented" {
     defer state.deinit(allocator);
 
     const cases = [_][]const u8{
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-list\",\"method\":\"plugin/list\",\"params\":{\"cwds\":[\"/tmp/repo\"],\"marketplaceKinds\":[\"local\",\"workspace-directory\",\"shared-with-me\"]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\",\"remoteMarketplaceName\":null,\"pluginName\":\"gmail\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-skill-read\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"skillName\":\"plan-work\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
@@ -4033,6 +4116,14 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_kind.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_kind.?, "\"code\":-32602") != null);
+
+    const relative_cwd = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-list-cwd\",\"method\":\"plugin/list\",\"params\":{\"cwds\":[\"relative-root\"]}}",
+    );
+    defer allocator.free(relative_cwd.?);
+    try std.testing.expect(std.mem.indexOf(u8, relative_cwd.?, "\"code\":-32600") != null);
 }
 
 test "app-server fuzzy file search sessions emit update and complete notifications" {
