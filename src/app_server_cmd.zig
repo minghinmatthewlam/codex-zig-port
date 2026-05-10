@@ -3156,6 +3156,12 @@ fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json
 const ConfigRawEdit = struct {
     key_path: []const u8,
     value: std.json.Value,
+    merge_strategy: ConfigMergeStrategy,
+};
+
+const ConfigMergeStrategy = enum {
+    replace,
+    upsert,
 };
 
 fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -3211,7 +3217,11 @@ fn parseConfigWriteEdit(object: std.json.ObjectMap) !ConfigRawEdit {
         return error.InvalidConfigMergeStrategy;
     }
 
-    return .{ .key_path = key_path_value.string, .value = value };
+    return .{
+        .key_path = key_path_value.string,
+        .value = value,
+        .merge_strategy = if (std.mem.eql(u8, merge_strategy_value.string, "replace")) .replace else .upsert,
+    };
 }
 
 fn handleConfigWriteEdits(
@@ -3279,6 +3289,10 @@ fn applyConfigWriteEdit(allocator: std.mem.Allocator, bytes: []const u8, edit: C
         return config.removeTomlValueForKeyPath(allocator, bytes, edit.key_path);
     }
 
+    if (edit.value == .object and try shouldApplyConfigTableObjectWrite(bytes, edit.key_path, edit.value.object)) {
+        return applyConfigTableObjectWrite(allocator, bytes, edit);
+    }
+
     const raw_value = renderTomlValue(allocator, edit.value) catch |err| switch (err) {
         error.UnsupportedConfigWriteValue => return error.UnsupportedConfigWriteValue,
         else => return err,
@@ -3286,6 +3300,103 @@ fn applyConfigWriteEdit(allocator: std.mem.Allocator, bytes: []const u8, edit: C
     defer allocator.free(raw_value);
 
     return config.updateTomlRawValueForKeyPath(allocator, bytes, edit.key_path, raw_value);
+}
+
+const ConfigObjectLeafWrite = struct {
+    key_path: []const u8,
+    raw_value: []const u8,
+
+    fn deinit(self: ConfigObjectLeafWrite, allocator: std.mem.Allocator) void {
+        allocator.free(self.key_path);
+        allocator.free(self.raw_value);
+    }
+};
+
+fn applyConfigTableObjectWrite(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    edit: ConfigRawEdit,
+) ![]const u8 {
+    var writes = std.ArrayList(ConfigObjectLeafWrite).empty;
+    defer {
+        for (writes.items) |item| item.deinit(allocator);
+        writes.deinit(allocator);
+    }
+    try collectConfigObjectLeafWrites(allocator, &writes, edit.key_path, edit.value.object);
+
+    var updated = if (edit.merge_strategy == .replace)
+        try config.removeTomlTableForKeyPath(allocator, bytes, edit.key_path)
+    else
+        try allocator.dupe(u8, bytes);
+    errdefer allocator.free(updated);
+
+    for (writes.items) |write| {
+        const next = try config.updateTomlRawValueForKeyPath(allocator, updated, write.key_path, write.raw_value);
+        allocator.free(updated);
+        updated = next;
+    }
+    return updated;
+}
+
+fn shouldApplyConfigTableObjectWrite(
+    bytes: []const u8,
+    key_path: []const u8,
+    object: std.json.ObjectMap,
+) !bool {
+    if (std.mem.eql(u8, key_path, "hooks.state")) return false;
+    if (!configObjectKeysAreBare(object)) return false;
+    return std.mem.startsWith(u8, key_path, "mcp_servers.") or
+        std.mem.startsWith(u8, key_path, "model_providers.") or
+        try config.tomlHasSectionForKeyPath(bytes, key_path);
+}
+
+fn configObjectKeysAreBare(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (!isBareTomlKeySegment(entry.key_ptr.*)) return false;
+        if (entry.value_ptr.* == .object and !configObjectKeysAreBare(entry.value_ptr.*.object)) return false;
+    }
+    return true;
+}
+
+fn isBareTomlKeySegment(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-') continue;
+        return false;
+    }
+    return true;
+}
+
+fn collectConfigObjectLeafWrites(
+    allocator: std.mem.Allocator,
+    writes: *std.ArrayList(ConfigObjectLeafWrite),
+    prefix: []const u8,
+    object: std.json.ObjectMap,
+) !void {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const child_key_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ prefix, entry.key_ptr.* });
+        errdefer allocator.free(child_key_path);
+
+        if (entry.value_ptr.* == .object and configObjectHasEntries(entry.value_ptr.*.object)) {
+            try collectConfigObjectLeafWrites(allocator, writes, child_key_path, entry.value_ptr.*.object);
+            allocator.free(child_key_path);
+            continue;
+        }
+
+        const raw_value = renderTomlValue(allocator, entry.value_ptr.*) catch |err| switch (err) {
+            error.UnsupportedConfigWriteValue => return error.UnsupportedConfigWriteValue,
+            else => return err,
+        };
+        errdefer allocator.free(raw_value);
+        try writes.append(allocator, .{ .key_path = child_key_path, .raw_value = raw_value });
+    }
+}
+
+fn configObjectHasEntries(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    return iterator.next() != null;
 }
 
 fn handleConfigRead(

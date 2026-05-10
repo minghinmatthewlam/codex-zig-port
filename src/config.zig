@@ -789,6 +789,32 @@ pub fn removeTomlValueForKeyPath(
     return removeTomlValue(allocator, bytes, target.section, target.key);
 }
 
+pub fn removeTomlTableForKeyPath(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    key_path: []const u8,
+) ![]const u8 {
+    _ = try parseTomlKeyPath(key_path);
+    const without_value = try removeTomlValueForKeyPath(allocator, bytes, key_path);
+    defer allocator.free(without_value);
+    return removeTomlSectionsForKeyPath(allocator, without_value, key_path);
+}
+
+pub fn tomlHasSectionForKeyPath(bytes: []const u8, key_path: []const u8) !bool {
+    _ = try parseTomlKeyPath(key_path);
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (tomlSectionMatchesKeyPath(trimmed, key_path)) return true;
+    }
+    return false;
+}
+
 const ParsedTomlKeyPath = struct {
     section: TomlEditSection,
     key: []const u8,
@@ -891,6 +917,35 @@ fn removeTomlValue(
     return output.toOwnedSlice(allocator);
 }
 
+fn removeTomlSectionsForKeyPath(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    key_path: []const u8,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var skip_section = false;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            skip_section = tomlSectionMatchesKeyPath(trimmed, key_path);
+        }
+        if (skip_section) continue;
+
+        try output.appendSlice(allocator, line_raw);
+        try output.append(allocator, '\n');
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
 fn tomlSectionMatches(line: []const u8, section: TomlEditSection) bool {
     return switch (section) {
         .top_level => false,
@@ -903,6 +958,16 @@ fn isExactSection(line: []const u8, name: []const u8) bool {
     if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
     return std.mem.eql(u8, section, name);
+}
+
+fn tomlSectionMatchesKeyPath(line: []const u8, key_path: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    if (line.len >= "[[]]".len and line[1] == '[') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    if (std.mem.eql(u8, section, key_path)) return true;
+    return section.len > key_path.len and
+        std.mem.startsWith(u8, section, key_path) and
+        section[key_path.len] == '.';
 }
 
 fn tomlKeyMatches(trimmed: []const u8, key: []const u8) bool {
@@ -1455,6 +1520,30 @@ test "toml string update writes top-level section and profile values" {
     );
     defer allocator.free(with_array);
     try std.testing.expect(std.mem.indexOf(u8, with_array, "status_line = [\"model-with-reasoning\", \"current-dir\"]") != null);
+}
+
+test "toml table removal clears target and nested sections" {
+    const allocator = std.testing.allocator;
+    const updated = try removeTomlTableForKeyPath(allocator,
+        \\model = "gpt-old"
+        \\
+        \\[mcp_servers.linear]
+        \\name = "linear"
+        \\
+        \\[mcp_servers.linear.env_http_headers]
+        \\existing = "keep"
+        \\
+        \\[mcp_servers.other]
+        \\name = "other"
+        \\
+    , "mcp_servers.linear");
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[mcp_servers.linear]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[mcp_servers.linear.env_http_headers]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[mcp_servers.other]") != null);
+    try std.testing.expect(try tomlHasSectionForKeyPath(updated, "mcp_servers.other"));
+    try std.testing.expect(!try tomlHasSectionForKeyPath(updated, "mcp_servers.linear"));
 }
 
 test "quoted profile section names are supported" {
