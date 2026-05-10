@@ -1297,6 +1297,7 @@ fn timespecToUnixMs(value: std.c.timespec) i64 {
 fn isConfigMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/read") or
         std.mem.eql(u8, method, "config/value/write") or
+        std.mem.eql(u8, method, "config/batchWrite") or
         std.mem.eql(u8, method, "configRequirements/read");
 }
 
@@ -1313,6 +1314,9 @@ fn handleConfigMethod(
     if (std.mem.eql(u8, method, "config/value/write")) {
         return handleConfigValueWrite(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "config/batchWrite")) {
+        return handleConfigBatchWrite(allocator, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "configRequirements/read")) {
         return handleConfigRequirementsRead(allocator, id_value, params_value);
     }
@@ -1328,37 +1332,90 @@ fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json
     return renderJsonRpcResult(allocator, id_value, "{\"requirements\":null}");
 }
 
+const ConfigRawEdit = struct {
+    key_path: []const u8,
+    value: std.json.Value,
+};
+
 fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
 
-    const key_path_value = params.object.get("keyPath") orelse return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string");
-    if (key_path_value != .string or key_path_value.string.len == 0) {
-        return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string");
+    const edit = parseConfigWriteEdit(params.object) catch |err| switch (err) {
+        error.InvalidConfigKeyPathParam => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string"),
+        error.MissingConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "value is required"),
+        error.InvalidConfigMergeStrategy => return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert"),
+    };
+
+    return handleConfigWriteEdits(allocator, id_value, params.object, &.{edit}, "config/value/write");
+}
+
+fn handleConfigBatchWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/batchWrite params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/batchWrite params must be an object");
+
+    const edits_value = params.object.get("edits") orelse return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
+    if (edits_value != .array) return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
+
+    if (params.object.get("reloadUserConfig")) |reload_user_config| {
+        if (reload_user_config != .null and reload_user_config != .bool) {
+            return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null");
+        }
     }
 
-    const value = params.object.get("value") orelse return renderJsonRpcError(allocator, id_value, -32602, "value is required");
+    const edits = try allocator.alloc(ConfigRawEdit, edits_value.array.items.len);
+    defer allocator.free(edits);
 
-    const merge_strategy_value = params.object.get("mergeStrategy") orelse return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
-    if (merge_strategy_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
+    for (edits_value.array.items, 0..) |edit_value, index| {
+        if (edit_value != .object) return renderJsonRpcError(allocator, id_value, -32602, "edits entries must be objects");
+        edits[index] = parseConfigWriteEdit(edit_value.object) catch |err| switch (err) {
+            error.InvalidConfigKeyPathParam => return renderJsonRpcError(allocator, id_value, -32602, "edits entries must include a non-empty keyPath string"),
+            error.MissingConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "edits entries must include value"),
+            error.InvalidConfigMergeStrategy => return renderJsonRpcError(allocator, id_value, -32602, "edits entries must use mergeStrategy replace or upsert"),
+        };
+    }
+
+    return handleConfigWriteEdits(allocator, id_value, params.object, edits, "config/batchWrite");
+}
+
+fn parseConfigWriteEdit(object: std.json.ObjectMap) !ConfigRawEdit {
+    const key_path_value = object.get("keyPath") orelse return error.InvalidConfigKeyPathParam;
+    if (key_path_value != .string or key_path_value.string.len == 0) return error.InvalidConfigKeyPathParam;
+
+    const value = object.get("value") orelse return error.MissingConfigWriteValue;
+
+    const merge_strategy_value = object.get("mergeStrategy") orelse return error.InvalidConfigMergeStrategy;
+    if (merge_strategy_value != .string) return error.InvalidConfigMergeStrategy;
     if (!std.mem.eql(u8, merge_strategy_value.string, "replace") and !std.mem.eql(u8, merge_strategy_value.string, "upsert")) {
-        return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert");
+        return error.InvalidConfigMergeStrategy;
     }
 
-    const expected_version = switch (optionalStringOrNull(params.object, "expectedVersion")) {
+    return .{ .key_path = key_path_value.string, .value = value };
+}
+
+fn handleConfigWriteEdits(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params: std.json.ObjectMap,
+    edits: []const ConfigRawEdit,
+    method_name: []const u8,
+) ![]const u8 {
+    const expected_version = switch (optionalStringOrNull(params, "expectedVersion")) {
         .value => |string| string,
         .missing => null,
         .invalid => return renderJsonRpcError(allocator, id_value, -32602, "expectedVersion must be a string or null"),
     };
 
-    const config_path = resolveConfigWritePath(allocator, params.object.get("filePath")) catch |err| switch (err) {
+    const config_path = resolveConfigWritePath(allocator, params.get("filePath")) catch |err| switch (err) {
         error.InvalidConfigWritePath => return renderJsonRpcError(allocator, id_value, -32602, "filePath must be a non-empty string or null"),
         else => return err,
     };
     defer allocator.free(config_path);
 
     const current_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "config/value/write failed to read config", err);
+        const message = try std.fmt.allocPrint(allocator, "{s} failed to read config", .{method_name});
+        defer allocator.free(message);
+        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
     };
     defer if (current_bytes) |bytes| allocator.free(bytes);
 
@@ -1370,20 +1427,23 @@ fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value
         }
     }
 
-    const raw_value = renderTomlValue(allocator, value) catch |err| switch (err) {
-        error.UnsupportedConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "value must be a TOML-compatible scalar or array"),
-        else => return err,
-    };
-    defer allocator.free(raw_value);
-
-    const updated = config.updateTomlRawValueForKeyPath(allocator, current_bytes orelse "", key_path_value.string, raw_value) catch |err| switch (err) {
-        error.InvalidConfigKeyPath => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a supported TOML key path"),
-        else => return err,
-    };
+    var updated: []const u8 = try allocator.dupe(u8, current_bytes orelse "");
     defer allocator.free(updated);
 
+    for (edits) |edit| {
+        const next = applyConfigWriteEdit(allocator, updated, edit) catch |err| switch (err) {
+            error.UnsupportedConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "value must be a TOML-compatible value"),
+            error.InvalidConfigKeyPath => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a supported TOML key path"),
+            else => return err,
+        };
+        allocator.free(updated);
+        updated = next;
+    }
+
     config.writeConfigTomlFile(config_path, updated) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "config/value/write failed to write config", err);
+        const message = try std.fmt.allocPrint(allocator, "{s} failed to write config", .{method_name});
+        defer allocator.free(message);
+        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
     };
 
     const version = try configVersionAlloc(allocator, updated);
@@ -1391,6 +1451,20 @@ fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value
     const result = try renderConfigWriteResponse(allocator, config_path, version);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn applyConfigWriteEdit(allocator: std.mem.Allocator, bytes: []const u8, edit: ConfigRawEdit) ![]const u8 {
+    if (edit.value == .null) {
+        return config.removeTomlValueForKeyPath(allocator, bytes, edit.key_path);
+    }
+
+    const raw_value = renderTomlValue(allocator, edit.value) catch |err| switch (err) {
+        error.UnsupportedConfigWriteValue => return error.UnsupportedConfigWriteValue,
+        else => return err,
+    };
+    defer allocator.free(raw_value);
+
+    return config.updateTomlRawValueForKeyPath(allocator, bytes, edit.key_path, raw_value);
 }
 
 fn handleConfigRead(
@@ -1474,6 +1548,7 @@ fn renderTomlValue(allocator: std.mem.Allocator, value: std.json.Value) anyerror
         .float => |float| std.fmt.allocPrint(allocator, "{d}", .{float}),
         .number_string => |number| allocator.dupe(u8, number),
         .array => |array| renderTomlArray(allocator, array.items),
+        .object => |object| renderTomlInlineTable(allocator, object),
         else => error.UnsupportedConfigWriteValue,
     };
 }
@@ -1489,6 +1564,29 @@ fn renderTomlArray(allocator: std.mem.Allocator, values: []std.json.Value) anyer
         try rendered.appendSlice(allocator, item);
     }
     try rendered.append(allocator, ']');
+    return rendered.toOwnedSlice(allocator);
+}
+
+fn renderTomlInlineTable(allocator: std.mem.Allocator, object: std.json.ObjectMap) anyerror![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    errdefer rendered.deinit(allocator);
+    try rendered.append(allocator, '{');
+
+    var iterator = object.iterator();
+    var index: usize = 0;
+    while (iterator.next()) |entry| {
+        if (index > 0) try rendered.appendSlice(allocator, ", ");
+        const key = try renderTomlString(allocator, entry.key_ptr.*);
+        defer allocator.free(key);
+        try rendered.appendSlice(allocator, key);
+        try rendered.appendSlice(allocator, " = ");
+        const value = try renderTomlValue(allocator, entry.value_ptr.*);
+        defer allocator.free(value);
+        try rendered.appendSlice(allocator, value);
+        index += 1;
+    }
+
+    try rendered.append(allocator, '}');
     return rendered.toOwnedSlice(allocator);
 }
 

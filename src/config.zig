@@ -779,6 +779,15 @@ pub fn updateTomlRawValueForKeyPath(
     return updateTomlRawValue(allocator, bytes, target.section, target.key, raw_value);
 }
 
+pub fn removeTomlValueForKeyPath(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    key_path: []const u8,
+) ![]const u8 {
+    const target = try parseTomlKeyPath(key_path);
+    return removeTomlValue(allocator, bytes, target.section, target.key);
+}
+
 const ParsedTomlKeyPath = struct {
     section: TomlEditSection,
     key: []const u8,
@@ -846,6 +855,36 @@ fn updateTomlRawValue(
     }
     if (saw_target and !wrote_key) {
         try appendTomlRawLine(allocator, &output, key, raw_value);
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn removeTomlValue(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    section: TomlEditSection,
+    key: []const u8,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var in_target = section == .top_level;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            in_target = tomlSectionMatches(trimmed, section);
+        }
+        if (in_target and tomlKeyMatches(trimmed, key)) continue;
+
+        try output.appendSlice(allocator, line_raw);
+        try output.append(allocator, '\n');
     }
 
     return output.toOwnedSlice(allocator);
