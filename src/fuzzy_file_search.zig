@@ -178,15 +178,17 @@ fn scanDir(
         }
 
         if (should_recurse) {
-            var child_dir = openIterableDir(io, full_path) catch {
-                if (owns_relative_path) {
-                    allocator.free(relative_path);
-                    owns_relative_path = false;
-                }
-                continue;
-            };
-            defer child_dir.close(io);
-            try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state);
+            {
+                var child_dir = openIterableDir(io, full_path) catch {
+                    if (owns_relative_path) {
+                        allocator.free(relative_path);
+                        owns_relative_path = false;
+                    }
+                    continue;
+                };
+                defer child_dir.close(io);
+                try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state);
+            }
             if (owns_relative_path) {
                 allocator.free(relative_path);
                 owns_relative_path = false;
@@ -223,11 +225,12 @@ fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const
     if (query.len > path.len) return null;
 
     const path_len = path.len;
+    const cell_count = std.math.mul(usize, query.len, path_len) catch return error.OutOfMemory;
     const bonuses = try allocator.alloc(u32, path_len);
     defer allocator.free(bonuses);
     fillPathBonuses(path, bonuses);
 
-    var parents = try allocator.alloc(usize, query.len * path_len);
+    var parents = try allocator.alloc(usize, cell_count);
     defer allocator.free(parents);
     @memset(parents, ParentIndexNone);
 
