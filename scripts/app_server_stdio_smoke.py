@@ -4524,6 +4524,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 [
                     'model = "gpt-managed"',
                     'approval_policy = "on-request"',
+                    'web_search = "disabled"',
+                    'model_reasoning_effort = "low"',
+                    'service_tier = "priority"',
                     "",
                     "[sandbox_workspace_write]",
                     'writable_roots = ["/tmp/codex-zig-managed-root"]',
@@ -4567,7 +4570,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["model"] == "gpt-managed"
         assert managed_config_body["approval_policy"] == "on-request"
         assert managed_config_body["sandbox_mode"] == "danger-full-access"
-        assert managed_config_body["model_reasoning_effort"] == "medium"
+        assert managed_config_body["web_search"] == "disabled"
+        assert managed_config_body["model_reasoning_effort"] == "low"
+        assert managed_config_body["service_tier"] == "priority"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
             "network_access": False,
@@ -4645,6 +4650,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         for key in [
             "model",
             "approval_policy",
+            "web_search",
+            "model_reasoning_effort",
+            "service_tier",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
             "sandbox_workspace_write.exclude_tmpdir_env_var",
@@ -4664,8 +4672,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "profile",
             "sandbox_mode",
             "sandbox_workspace_write.exclude_slash_tmp",
-            "web_search",
-            "service_tier",
             "tools.web_search.context_size",
             "tools.web_search.location.city",
             "tools.web_search.location.timezone",
@@ -4678,8 +4684,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         ]:
             assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
             assert managed_origins[key]["version"].startswith("sha256:")
-        assert managed_origins["model_reasoning_effort"]["name"] == system_source
-        assert managed_origins["model_reasoning_effort"]["version"].startswith("sha256:")
         assert managed_origins["tools.web_search.location.region"]["name"] == system_source
         assert managed_origins["tools.web_search.location.region"]["version"].startswith("sha256:")
         for key in [
@@ -4697,6 +4701,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_layers[0]["config"] == {
             "model": "gpt-managed",
             "approval_policy": "on-request",
+            "web_search": "disabled",
+            "model_reasoning_effort": "low",
+            "service_tier": "priority",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-managed-root"],
                 "network_access": False,
