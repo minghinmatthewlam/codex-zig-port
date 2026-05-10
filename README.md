@@ -143,9 +143,11 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `exec`, including for `exec review`
 - reject conflicting approval-policy flags when dangerous bypass mode is set
 - inspect known feature flags with `features list`
-- enable or disable known feature flags for one invocation with root
-  `--enable/--disable`
-- persist feature flags globally or per profile with `features enable|disable`
+- enable or disable known feature flags and Rust legacy aliases for one
+  invocation with root `--enable/--disable`
+- persist feature flags and Rust legacy aliases globally or per profile with
+  `features enable|disable`, including Rust-like root clearing for default-off
+  flags and under-development warnings for direct root enables
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
@@ -196,7 +198,9 @@ zig build e2e
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
 `-i/--image` initial-prompt attachment on the interactive path, verifies
-runtime feature toggles through `features list`, checks `help [COMMAND]`, verifies
+runtime feature toggles through `features list`, profile-scoped feature
+persistence, Rust legacy feature aliases, direct under-development enable
+warnings, and root default-off feature clearing, checks `help [COMMAND]`, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
 `network_rule` validation, and resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
