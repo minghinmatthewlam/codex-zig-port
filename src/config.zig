@@ -98,6 +98,20 @@ pub const AltScreenMode = enum {
     }
 };
 
+pub fn loadModelProviderId(allocator: std.mem.Allocator, profile: ?[]const u8) !?[]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+    const active_profile = try resolveActiveProfile(allocator, config_view, profile);
+    defer if (active_profile) |value| allocator.free(value);
+
+    return resolveModelProviderId(allocator, config_view, active_profile);
+}
+
 pub fn applyRuntimeOverrides(
     cfg: *Config,
     allocator: std.mem.Allocator,

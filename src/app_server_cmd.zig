@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const cli_utils = @import("cli_utils.zig");
+const config = @import("config.zig");
 const env = @import("env.zig");
 const memory_reset = @import("memory_reset.zig");
 
@@ -439,6 +440,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
     }
     if (isFsMethod(method)) {
         return try handleFsMethod(allocator, id_value.?, method, object.get("params"));
+    }
+    if (isModelMethod(method)) {
+        return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
     }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
@@ -1132,6 +1136,161 @@ fn statCreatedAtMs(stat: std.c.Stat) i64 {
 
 fn timespecToUnixMs(value: std.c.timespec) i64 {
     return @as(i64, @intCast(value.sec)) * 1000 + @divTrunc(@as(i64, @intCast(value.nsec)), 1_000_000);
+}
+
+fn isModelMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "model/list") or
+        std.mem.eql(u8, method, "modelProvider/capabilities/read");
+}
+
+fn handleModelMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "model/list")) return handleModelList(allocator, id_value, params_value);
+    if (std.mem.eql(u8, method, "modelProvider/capabilities/read")) {
+        return handleModelProviderCapabilitiesRead(allocator, id_value, params_value);
+    }
+    return try renderJsonRpcError(allocator, id_value, -32601, "unknown model method");
+}
+
+fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = switch (optionalModelListParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var cursor: ?[]const u8 = null;
+    var limit: ?usize = null;
+    if (params) |object| {
+        if (object.get("cursor")) |value| {
+            if (value != .null) {
+                if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cursor must be a string or null");
+                cursor = value.string;
+            }
+        }
+        if (object.get("limit")) |value| {
+            limit = switch (value) {
+                .null => null,
+                .integer => |integer| blk: {
+                    if (integer < 0) return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                    break :blk @intCast(integer);
+                },
+                .number_string => |number| std.fmt.parseUnsigned(usize, number, 10) catch {
+                    return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                },
+                else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+            };
+        }
+        _ = switch (optionalBoolFieldValue(object, "includeHidden", false, true)) {
+            .value => |value| value,
+            .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+        };
+    }
+
+    const start = if (cursor) |value|
+        std.fmt.parseUnsigned(usize, value, 10) catch {
+            const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    else
+        0;
+
+    const total: usize = 1;
+    if (start > total) {
+        const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total models {d}", .{ start, total });
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "model/list failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const effective_limit = @min(@max(limit orelse total, 1), total);
+    const end = @min(start + effective_limit, total);
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    if (start < end) {
+        try appendConfiguredModelJson(allocator, &result, cfg.model);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        const next_cursor_json = try std.json.Stringify.valueAlloc(allocator, next_cursor, .{});
+        defer allocator.free(next_cursor_json);
+        try result.appendSlice(allocator, next_cursor_json);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+const OptionalObjectParams = union(enum) {
+    object: std.json.ObjectMap,
+    empty,
+    message: []const u8,
+};
+
+fn optionalModelListParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "model/list params must be an object" };
+    return .{ .object = params.object };
+}
+
+fn appendConfiguredModelJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), model: []const u8) !void {
+    const model_json = try std.json.Stringify.valueAlloc(allocator, model, .{});
+    defer allocator.free(model_json);
+    const description_json = try std.json.Stringify.valueAlloc(allocator, "Configured Codex Zig model.", .{});
+    defer allocator.free(description_json);
+    try result.appendSlice(allocator, "{\"id\":");
+    try result.appendSlice(allocator, model_json);
+    try result.appendSlice(allocator, ",\"model\":");
+    try result.appendSlice(allocator, model_json);
+    try result.appendSlice(allocator, ",\"upgrade\":null,\"upgradeInfo\":null,\"availabilityNux\":null,\"displayName\":");
+    try result.appendSlice(allocator, model_json);
+    try result.appendSlice(allocator, ",\"description\":");
+    try result.appendSlice(allocator, description_json);
+    try result.appendSlice(allocator, ",\"hidden\":false,\"supportedReasoningEfforts\":[");
+    try result.appendSlice(allocator, "{\"reasoningEffort\":\"low\",\"description\":\"Fast responses with lighter reasoning\"}");
+    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"medium\",\"description\":\"Balanced reasoning depth\"}");
+    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"high\",\"description\":\"Greater reasoning depth\"}");
+    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"xhigh\",\"description\":\"Extra high reasoning depth\"}");
+    try result.appendSlice(allocator, "],\"defaultReasoningEffort\":\"medium\",\"inputModalities\":[\"text\",\"image\"],\"supportsPersonality\":false,\"additionalSpeedTiers\":[],\"serviceTiers\":[],\"isDefault\":true}");
+}
+
+fn handleModelProviderCapabilitiesRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validateOptionalObjectParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    const model_provider = config.loadModelProviderId(allocator, null) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "modelProvider/capabilities/read failed to load config", err);
+    };
+    defer if (model_provider) |value| allocator.free(value);
+
+    const supports_default_tools = if (model_provider) |provider|
+        !std.mem.eql(u8, provider, "amazon-bedrock")
+    else
+        true;
+    const result = try std.fmt.allocPrint(
+        allocator,
+        "{{\"namespaceTools\":{},\"imageGeneration\":{},\"webSearch\":{}}}",
+        .{ supports_default_tools, supports_default_tools, supports_default_tools },
+    );
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
