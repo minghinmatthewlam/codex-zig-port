@@ -373,8 +373,9 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 `$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
 those same fields, reads `[tui].theme`, `[tui].status_line`,
 `[tui].terminal_title`, and `[tui].alternate_screen` for TUI preferences, and reads
-`[model_providers.<name>].base_url`, `env_key`, and
-`experimental_bearer_token` for custom Responses-compatible providers.
+`[model_providers.<name>].base_url`, `wire_api`, `env_key`, and
+`experimental_bearer_token` for custom providers. The current port supports
+`wire_api = "responses"` and rejects the removed `wire_api = "chat"` setting.
 
 ```sh
 codex-zig --profile work auth-status
