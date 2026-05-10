@@ -131,10 +131,12 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
   `review --commit` flows, including Rust-compatible `exec review` dispatch
+  with exec-level `--cd` handling
 - run non-interactive `exec` prompts from argv, explicit `-`, or piped stdin,
   including prompt-plus-piped-context requests
 - enforce Rust-compatible non-interactive `exec` Git-repository checks, with
-  `--skip-git-repo-check` and dangerous bypass exceptions
+  `--skip-git-repo-check` and dangerous bypass exceptions, including for
+  `exec review`
 - inspect known feature flags with `features list`
 - enable or disable known feature flags for one invocation with root
   `--enable/--disable`
@@ -239,9 +241,9 @@ mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
 CLI smokes for profile-scoped feature enablement writes and reads, `exec review`
-dispatch, equals-form exec options, piped-stdin exec prompts, and the exec
-Git-repository guard. App-server smokes cover profile-scoped feature enablement
-writes and reads. Run
+dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, and
+the exec Git-repository guard. App-server smokes cover profile-scoped feature
+enablement writes and reads. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
