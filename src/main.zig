@@ -69,6 +69,8 @@ fn mainInner(init: std.process.Init) !void {
     var cmd_opt: ?[]const u8 = null;
     var forced_initial_prompt: ?[]const u8 = null;
     defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
+    var approval_policy_requested = false;
+    var dangerous_bypass_requested = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
             overrides.profile = args.next() orelse return error.MissingProfileOptionValue;
@@ -155,18 +157,26 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--approval-policy")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            approval_policy_requested = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
@@ -179,6 +189,8 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
+            if (approval_policy_requested) return error.ConflictingCliOptions;
+            dangerous_bypass_requested = true;
             overrides.runtime.approval_policy = .never;
             overrides.runtime.sandbox_mode = .danger_full_access;
             continue;

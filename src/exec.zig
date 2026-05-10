@@ -224,6 +224,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     var end_options = false;
     var resume_mode = false;
     var resume_target_set = false;
+    var approval_policy_requested = false;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (!end_options and std.mem.eql(u8, arg, "--")) {
@@ -236,6 +237,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo"))) {
             if (parsed.removed_full_auto) return error.ConflictingExecOptions;
+            if (approval_policy_requested) return error.ConflictingExecOptions;
             parsed.dangerously_bypass_approvals_and_sandbox = true;
             parsed.approval_policy = .never;
             parsed.sandbox_mode = .danger_full_access;
@@ -344,22 +346,30 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
+            if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
+            approval_policy_requested = true;
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
             parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
+            approval_policy_requested = true;
             parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
+            if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
+            approval_policy_requested = true;
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
             parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
+            approval_policy_requested = true;
             parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
@@ -857,6 +867,16 @@ test "exec args reject full auto with yolo" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "--full-auto", "--yolo", "say", "nope" };
     try std.testing.expectError(error.ConflictingExecOptions, parseArgs(allocator, argv[0..]));
+}
+
+test "exec args reject yolo with approval policy" {
+    const allocator = std.testing.allocator;
+
+    const yolo_first = [_][]const u8{ "--yolo", "--approval-policy=never", "say", "nope" };
+    try std.testing.expectError(error.ConflictingExecOptions, parseArgs(allocator, yolo_first[0..]));
+
+    const approval_first = [_][]const u8{ "--ask-for-approval", "never", "--yolo", "say", "nope" };
+    try std.testing.expectError(error.ConflictingExecOptions, parseArgs(allocator, approval_first[0..]));
 }
 
 test "exec args parse stdin sentinel with context prompt" {
