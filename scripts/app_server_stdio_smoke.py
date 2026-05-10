@@ -4375,6 +4375,61 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def run_config_read_empty_layers_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-empty-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(codex_home / "missing-managed.toml")
+    system_config_path = codex_home / "missing-system.toml"
+    env["CODEX_APP_SERVER_SYSTEM_CONFIG_PATH"] = str(system_config_path)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "config-read-empty-layers",
+                "method": "config/read",
+                "params": {"includeLayers": True},
+            },
+        )
+        config_read = read_json_line(proc, 5)
+        assert config_read["id"] == "config-read-empty-layers"
+        result = config_read["result"]
+        assert result["origins"] == {}
+        assert result["config"]["tools"] is None
+        assert result["config"]["apps"] is None
+        user_source = {"type": "user", "file": str(codex_home / "config.toml")}
+        system_source = {"type": "system", "file": str(system_config_path)}
+        layers = result["layers"]
+        assert len(layers) == 2
+        assert layers[0]["name"] == user_source
+        assert layers[0]["version"].startswith("sha256:")
+        assert layers[0]["config"] == {}
+        assert layers[1]["name"] == system_source
+        assert layers[1]["version"].startswith("sha256:")
+        assert layers[1]["config"] == {}
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_config_value_write_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-write-", dir="/tmp"))
     config_path = codex_home / "config.toml"
@@ -6041,6 +6096,7 @@ def main() -> None:
     run_collaboration_mode_rpc_smoke(binary)
     print("app-server-collaboration-mode-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
+    run_config_read_empty_layers_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
     print("app-server-config-value-write-rpc-e2e: ok")
