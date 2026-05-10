@@ -717,6 +717,79 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert project_hook["source"] == "project"
         assert project_hook["displayOrder"] == 1
 
+        def write_hook_state(request_id: str, state: dict[str, object]) -> None:
+            response = request_stdio_app_server(
+                binary,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": state,
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+                env,
+            )
+            assert response["id"] == request_id
+            assert response["result"]["status"] == "ok"
+
+        def list_user_hook(request_id: str) -> dict:
+            response = request_stdio_app_server(
+                binary,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+                env,
+            )
+            assert response["id"] == request_id
+            return response["result"]["data"][0]["hooks"][0]
+
+        write_hook_state("hooks-state-disable", {user_hook["key"]: {"enabled": False}})
+        disabled_user_hook = list_user_hook("hooks-list-disabled")
+        assert disabled_user_hook["key"] == user_hook["key"]
+        assert disabled_user_hook["enabled"] is False
+        assert disabled_user_hook["trustStatus"] == "untrusted"
+
+        write_hook_state(
+            "hooks-state-trust",
+            {
+                user_hook["key"]: {
+                    "enabled": True,
+                    "trusted_hash": user_hook["currentHash"],
+                }
+            },
+        )
+        trusted_user_hook = list_user_hook("hooks-list-trusted")
+        assert trusted_user_hook["key"] == user_hook["key"]
+        assert trusted_user_hook["enabled"] is True
+        assert trusted_user_hook["trustStatus"] == "trusted"
+
+        write_hook_state(
+            "hooks-state-modified",
+            {
+                user_hook["key"]: {
+                    "trusted_hash": (
+                        "sha256:"
+                        "0000000000000000000000000000000000000000000000000000000000000000"
+                    ),
+                }
+            },
+        )
+        modified_user_hook = list_user_hook("hooks-list-modified")
+        assert modified_user_hook["key"] == user_hook["key"]
+        assert modified_user_hook["trustStatus"] == "modified"
+
         invalid = request_stdio_app_server(
             binary,
             {

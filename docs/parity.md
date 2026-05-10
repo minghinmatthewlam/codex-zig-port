@@ -8,9 +8,9 @@ Status values:
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml` and
 per-cwd `.codex/config.toml` command hooks, Rust-shaped `cwds` params and JSON
-fields, default command timeouts, source/trust metadata, and `[features].hooks`
-gating. Plugin hooks, hooks.json, managed hooks, hook state enable/trust writes,
-and full config-layer parity remain planned.
+fields, default command timeouts, source metadata, user `hooks.state`
+enable/trust metadata, and `[features].hooks` gating. Plugin hooks, hooks.json,
+managed hooks, and full config-layer parity remain planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
