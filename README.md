@@ -186,6 +186,20 @@ Long-term exact parity is tracked in `docs/parity.md`.
 
 This project is licensed under the MIT License. See `LICENSE`.
 
+## Requirements
+
+The first milestone is developed and verified on macOS. Other Unix-like
+platforms may build, but they are not yet part of the supported verification
+matrix.
+
+- Zig `0.16.0`
+- Python 3 for smoke-test harnesses
+- SQLite development headers/library available to the system linker
+- Git for repository-aware exec, review, and plugin-marketplace smokes
+
+On macOS with Xcode Command Line Tools installed, the SQLite and Git
+requirements are normally already available.
+
 ## Build
 
 ```sh
