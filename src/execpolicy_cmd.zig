@@ -56,6 +56,25 @@ const HostExecutable = struct {
     }
 };
 
+const NetworkRuleProtocol = enum {
+    http,
+    https,
+    socks5_tcp,
+    socks5_udp,
+};
+
+const NetworkRule = struct {
+    host: []const u8,
+    protocol: NetworkRuleProtocol,
+    decision: Decision,
+    justification: ?[]const u8 = null,
+
+    fn deinit(self: NetworkRule, allocator: std.mem.Allocator) void {
+        allocator.free(self.host);
+        if (self.justification) |justification| allocator.free(justification);
+    }
+};
+
 const RuleMatch = struct {
     rule: *const PrefixRule,
     matched_prefix: []const []const u8,
@@ -104,11 +123,14 @@ fn runCheck(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !voi
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
 
     for (options.rule_paths.items) |path| {
         const contents = try readRulesFile(allocator, path);
         defer allocator.free(contents);
-        try parsePolicy(allocator, contents, &rules, &host_executables);
+        try parsePolicy(allocator, contents, &rules, &host_executables, &network_rules);
     }
 
     const rendered = try evaluateRules(
@@ -194,7 +216,10 @@ fn parseRules(
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, contents, rules, &host_executables);
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
+    try parsePolicy(allocator, contents, rules, &host_executables, &network_rules);
 }
 
 fn parsePolicy(
@@ -202,6 +227,7 @@ fn parsePolicy(
     contents: []const u8,
     rules: *std.ArrayList(PrefixRule),
     host_executables: *std.ArrayList(HostExecutable),
+    network_rules: *std.ArrayList(NetworkRule),
 ) !void {
     var pos: usize = 0;
     while (findPolicyCallOpen(contents, pos)) |call| {
@@ -218,14 +244,32 @@ fn parsePolicy(
                 errdefer host_executable.deinit(allocator);
                 try upsertHostExecutable(allocator, host_executables, host_executable);
             },
+            .network_rule => {
+                const network_rule = try parseNetworkRule(allocator, body);
+                errdefer network_rule.deinit(allocator);
+                try network_rules.append(allocator, network_rule);
+            },
         }
         pos = close_index + 1;
     }
 }
 
+fn parsePolicyWithHosts(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    rules: *std.ArrayList(PrefixRule),
+    host_executables: *std.ArrayList(HostExecutable),
+) !void {
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
+    try parsePolicy(allocator, contents, rules, host_executables, &network_rules);
+}
+
 const PolicyCallKind = enum {
     prefix_rule,
     host_executable,
+    network_rule,
 };
 
 const PolicyCall = struct {
@@ -264,6 +308,9 @@ fn findPolicyCallOpen(contents: []const u8, start: usize) ?PolicyCall {
         }
         if (matchPolicyCall(contents, pos, "host_executable")) |open_index| {
             return .{ .kind = .host_executable, .open_index = open_index };
+        }
+        if (matchPolicyCall(contents, pos, "network_rule")) |open_index| {
+            return .{ .kind = .network_rule, .open_index = open_index };
         }
         pos += 1;
     }
@@ -414,6 +461,144 @@ fn upsertHostExecutable(
         }
     }
     try host_executables.append(allocator, host_executable);
+}
+
+fn parseNetworkRule(allocator: std.mem.Allocator, body: []const u8) !NetworkRule {
+    var host: ?[]const u8 = null;
+    errdefer if (host) |owned| allocator.free(owned);
+    var protocol: ?NetworkRuleProtocol = null;
+    var decision: ?Decision = null;
+    var justification: ?[]const u8 = null;
+    errdefer if (justification) |owned| allocator.free(owned);
+
+    var pos: usize = 0;
+    while (try nextAssignment(body, &pos)) |assignment| {
+        if (std.mem.eql(u8, assignment.key, "host")) {
+            if (host != null) return error.DuplicateExecPolicyField;
+            const parsed = try parseOwnedString(allocator, assignment.value);
+            defer allocator.free(parsed);
+            host = try normalizeNetworkRuleHost(allocator, parsed);
+            continue;
+        }
+        if (std.mem.eql(u8, assignment.key, "protocol")) {
+            if (protocol != null) return error.DuplicateExecPolicyField;
+            const parsed = try parseOwnedString(allocator, assignment.value);
+            defer allocator.free(parsed);
+            protocol = try parseNetworkRuleProtocol(parsed);
+            continue;
+        }
+        if (std.mem.eql(u8, assignment.key, "decision")) {
+            if (decision != null) return error.DuplicateExecPolicyField;
+            const parsed = try parseOwnedString(allocator, assignment.value);
+            defer allocator.free(parsed);
+            decision = try parseNetworkRuleDecision(parsed);
+            continue;
+        }
+        if (std.mem.eql(u8, assignment.key, "justification")) {
+            if (justification != null) return error.DuplicateExecPolicyField;
+            const parsed = try parseOwnedString(allocator, assignment.value);
+            errdefer allocator.free(parsed);
+            if (std.mem.trim(u8, parsed, " \t\r\n").len == 0) return error.EmptyExecPolicyJustification;
+            justification = parsed;
+            continue;
+        }
+    }
+
+    return .{
+        .host = host orelse return error.MissingNetworkRuleHost,
+        .protocol = protocol orelse return error.MissingNetworkRuleProtocol,
+        .decision = decision orelse return error.MissingNetworkRuleDecision,
+        .justification = justification,
+    };
+}
+
+fn parseNetworkRuleProtocol(raw: []const u8) !NetworkRuleProtocol {
+    if (std.mem.eql(u8, raw, "http")) return .http;
+    if (std.mem.eql(u8, raw, "https")) return .https;
+    if (std.mem.eql(u8, raw, "https_connect")) return .https;
+    if (std.mem.eql(u8, raw, "http-connect")) return .https;
+    if (std.mem.eql(u8, raw, "socks5_tcp")) return .socks5_tcp;
+    if (std.mem.eql(u8, raw, "socks5_udp")) return .socks5_udp;
+    return error.InvalidNetworkRuleProtocol;
+}
+
+fn parseNetworkRuleDecision(raw: []const u8) !Decision {
+    if (std.mem.eql(u8, raw, "deny")) return .forbidden;
+    return parseDecision(raw);
+}
+
+fn normalizeNetworkRuleHost(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var host = std.mem.trim(u8, raw, " \t\r\n");
+    if (host.len == 0) return error.EmptyNetworkRuleHost;
+    if (std.mem.indexOf(u8, host, "://") != null) return error.InvalidNetworkRuleHost;
+    if (std.mem.indexOfScalar(u8, host, '/') != null) return error.InvalidNetworkRuleHost;
+    if (std.mem.indexOfScalar(u8, host, '?') != null) return error.InvalidNetworkRuleHost;
+    if (std.mem.indexOfScalar(u8, host, '#') != null) return error.InvalidNetworkRuleHost;
+
+    if (host[0] == '[') {
+        const close_index = std.mem.indexOfScalar(u8, host, ']') orelse return error.InvalidNetworkRuleHost;
+        const rest = host[close_index + 1 ..];
+        if (rest.len > 0) {
+            if (rest[0] != ':') return error.InvalidNetworkRuleHost;
+            const port = rest[1..];
+            if (port.len == 0 or !allAsciiDigits(port)) return error.InvalidNetworkRuleHost;
+        }
+        host = host[1..close_index];
+    } else if (std.mem.count(u8, host, ":") == 1) {
+        if (std.mem.lastIndexOfScalar(u8, host, ':')) |colon| {
+            const candidate = host[0..colon];
+            const port = host[colon + 1 ..];
+            if (candidate.len > 0 and port.len > 0 and allAsciiDigits(port)) {
+                host = candidate;
+            }
+        }
+    }
+
+    host = std.mem.trim(u8, std.mem.trimEnd(u8, host, "."), " \t\r\n");
+    if (host.len == 0) return error.EmptyNetworkRuleHost;
+    if (std.mem.indexOfScalar(u8, host, '*') != null) return error.WildcardNetworkRuleHost;
+    if (containsWhitespace(host)) return error.InvalidNetworkRuleHost;
+
+    const normalized = try allocator.alloc(u8, host.len);
+    for (host, 0..) |byte, index| {
+        normalized[index] = std.ascii.toLower(byte);
+    }
+    return normalized;
+}
+
+fn allAsciiDigits(value: []const u8) bool {
+    for (value) |byte| {
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    return true;
+}
+
+fn containsWhitespace(value: []const u8) bool {
+    for (value) |byte| {
+        if (std.ascii.isWhitespace(byte)) return true;
+    }
+    return false;
+}
+
+fn expectNetworkRuleParseError(
+    allocator: std.mem.Allocator,
+    expected_error: anyerror,
+    contents: []const u8,
+) !void {
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
+
+    try std.testing.expectError(
+        expected_error,
+        parsePolicy(allocator, contents, &rules, &host_executables, &network_rules),
+    );
 }
 
 const Assignment = struct {
@@ -909,6 +1094,10 @@ fn deinitHostExecutables(allocator: std.mem.Allocator, host_executables: []HostE
     for (host_executables) |host_executable| host_executable.deinit(allocator);
 }
 
+fn deinitNetworkRules(allocator: std.mem.Allocator, network_rules: []NetworkRule) void {
+    for (network_rules) |network_rule| network_rule.deinit(allocator);
+}
+
 fn freeStringList(allocator: std.mem.Allocator, values: []const []const u8) void {
     for (values) |value| allocator.free(value);
     allocator.free(values);
@@ -1060,6 +1249,72 @@ test "execpolicy parser ignores comments and quoted prefix rule text" {
     try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
 }
 
+test "execpolicy parser accepts and normalizes network rules" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\network_rule(host = "API.GITHUB.COM:443", protocol = "https_connect", decision = "deny")
+        \\network_rule(host = "Example.COM.", protocol = "http-connect", decision = "allow")
+        \\network_rule(host = "[::1]:8080", protocol = "socks5_udp", decision = "prompt", justification = "ipv6")
+        \\prefix_rule(pattern = ["curl"], decision = "prompt")
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables, &network_rules);
+
+    try std.testing.expectEqual(@as(usize, 3), network_rules.items.len);
+    try std.testing.expectEqualStrings("api.github.com", network_rules.items[0].host);
+    try std.testing.expectEqual(NetworkRuleProtocol.https, network_rules.items[0].protocol);
+    try std.testing.expectEqual(Decision.forbidden, network_rules.items[0].decision);
+    try std.testing.expectEqualStrings("example.com", network_rules.items[1].host);
+    try std.testing.expectEqual(NetworkRuleProtocol.https, network_rules.items[1].protocol);
+    try std.testing.expectEqual(Decision.allow, network_rules.items[1].decision);
+    try std.testing.expectEqualStrings("::1", network_rules.items[2].host);
+    try std.testing.expectEqual(NetworkRuleProtocol.socks5_udp, network_rules.items[2].protocol);
+    try std.testing.expectEqual(Decision.prompt, network_rules.items[2].decision);
+    try std.testing.expectEqualStrings("ipv6", network_rules.items[2].justification.?);
+
+    const command = [_][]const u8{"curl"};
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"prompt\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"curl\"],\"decision\":\"prompt\"}}]}",
+        rendered,
+    );
+}
+
+test "execpolicy parser rejects invalid network rules" {
+    const allocator = std.testing.allocator;
+
+    try expectNetworkRuleParseError(
+        allocator,
+        error.WildcardNetworkRuleHost,
+        \\network_rule(host = "*", protocol = "http", decision = "allow")
+        ,
+    );
+
+    try expectNetworkRuleParseError(
+        allocator,
+        error.InvalidNetworkRuleHost,
+        \\network_rule(host = "https://api.github.com", protocol = "https", decision = "allow")
+        ,
+    );
+
+    try expectNetworkRuleParseError(
+        allocator,
+        error.InvalidNetworkRuleProtocol,
+        \\network_rule(host = "api.github.com", protocol = "ftp", decision = "allow")
+        ,
+    );
+}
+
 test "execpolicy check resolves allowed host executable paths" {
     const allocator = std.testing.allocator;
     const rules_bytes =
@@ -1072,7 +1327,7 @@ test "execpolicy check resolves allowed host executable paths" {
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/usr/bin/git", "status" };
     const rendered = try evaluateRules(
@@ -1101,7 +1356,7 @@ test "execpolicy check allows basename fallback without host executable mapping"
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/usr/bin/git", "status" };
     const rendered = try evaluateRules(
@@ -1131,7 +1386,7 @@ test "execpolicy check blocks basename fallback for explicit empty host mapping"
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/usr/bin/git", "status" };
     const rendered = try evaluateRules(
@@ -1158,7 +1413,7 @@ test "execpolicy check ignores host paths outside explicit allowlist" {
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/opt/homebrew/bin/git", "status" };
     const rendered = try evaluateRules(
@@ -1186,7 +1441,7 @@ test "execpolicy parser keeps the last host executable definition" {
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/usr/bin/git", "status" };
     const rendered = try evaluateRules(
@@ -1214,7 +1469,7 @@ test "execpolicy check keeps exact absolute matches ahead of host fallback" {
     var host_executables = std.ArrayList(HostExecutable).empty;
     defer host_executables.deinit(allocator);
     defer deinitHostExecutables(allocator, host_executables.items);
-    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+    try parsePolicyWithHosts(allocator, rules_bytes, &rules, &host_executables);
 
     const command = [_][]const u8{ "/usr/bin/git", "status" };
     const rendered = try evaluateRules(
