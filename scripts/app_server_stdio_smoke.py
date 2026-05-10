@@ -3782,6 +3782,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'model_reasoning_effort = "high"',
                 'service_tier = "fast"',
                 "",
+                "[sandbox_workspace_write]",
+                'writable_roots = ["/tmp/codex-zig-project-root"]',
+                "network_access = false",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -3796,6 +3800,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'approval_policy = "on-failure"',
                 'model_reasoning_effort = "low"',
                 'service_tier = "flex"',
+                'sandbox_workspace_write = { exclude_tmpdir_env_var = true }',
                 "",
             ]
         ),
@@ -4025,6 +4030,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
         assert project_config_body["service_tier"] == "priority"
+        assert project_config_body["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-project-root"],
+            "network_access": False,
+            "exclude_tmpdir_env_var": False,
+            "exclude_slash_tmp": True,
+        }
         assert project_config_body["profile"] == "work"
         project_source = {
             "type": "project",
@@ -4038,10 +4049,16 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search",
             "model_reasoning_effort",
             "service_tier",
+            "sandbox_workspace_write.writable_roots.0",
+            "sandbox_workspace_write.network_access",
         ]:
             assert project_origins[key]["name"] == project_source
             assert project_origins[key]["version"].startswith("sha256:")
         assert project_origins["profile"]["name"] == {"type": "user", "file": config_path}
+        assert project_origins["sandbox_workspace_write.exclude_slash_tmp"]["name"] == {
+            "type": "user",
+            "file": config_path,
+        }
         project_layers = project_config_read["result"]["layers"]
         assert len(project_layers) == 2
         assert project_layers[0]["name"] == project_source
@@ -4053,6 +4070,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "cached",
             "model_reasoning_effort": "high",
             "service_tier": "priority",
+            "sandbox_workspace_write": {
+                "writable_roots": ["/tmp/codex-zig-project-root"],
+                "network_access": False,
+                "exclude_tmpdir_env_var": False,
+                "exclude_slash_tmp": False,
+            },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
 
@@ -4069,6 +4092,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
         assert nested_config_body["service_tier"] == "flex"
+        assert nested_config_body["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-project-root"],
+            "network_access": False,
+            "exclude_tmpdir_env_var": True,
+            "exclude_slash_tmp": True,
+        }
         assert nested_config_body["profile"] == "work"
         child_project_source = {
             "type": "project",
@@ -4081,6 +4110,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["web_search"]["name"] == project_source
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
         assert nested_origins["service_tier"]["name"] == child_project_source
+        assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
+        assert nested_origins["sandbox_workspace_write.network_access"]["name"] == project_source
+        assert nested_origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == child_project_source
+        assert nested_origins["sandbox_workspace_write.exclude_slash_tmp"]["name"] == {
+            "type": "user",
+            "file": config_path,
+        }
         assert nested_origins["profile"]["name"] == {"type": "user", "file": config_path}
         nested_layers = nested_project_config_read["result"]["layers"]
         assert len(nested_layers) == 3
@@ -4090,6 +4126,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "approval_policy": "on-failure",
             "model_reasoning_effort": "low",
             "service_tier": "flex",
+            "sandbox_workspace_write": {
+                "writable_roots": [],
+                "network_access": False,
+                "exclude_tmpdir_env_var": True,
+                "exclude_slash_tmp": False,
+            },
         }
         assert nested_layers[1]["name"] == project_source
         assert nested_layers[1]["config"] == {
@@ -4099,6 +4141,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "cached",
             "model_reasoning_effort": "high",
             "service_tier": "priority",
+            "sandbox_workspace_write": {
+                "writable_roots": ["/tmp/codex-zig-project-root"],
+                "network_access": False,
+                "exclude_tmpdir_env_var": False,
+                "exclude_slash_tmp": False,
+            },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
 
