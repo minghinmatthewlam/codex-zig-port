@@ -41,12 +41,15 @@ const AppServerOptions = struct {
 const AppServerState = struct {
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
+    skill_watch_roots: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         self.runtime_feature_enablement.deinit(allocator);
         for (self.fs_watches.items) |*watch| watch.deinit(allocator);
         self.fs_watches.deinit(allocator);
+        for (self.skill_watch_roots.items) |root| allocator.free(root);
+        self.skill_watch_roots.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
     }
@@ -485,10 +488,10 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handlePluginMethod(allocator, id_value.?, method, object.get("params"));
     }
     if (std.mem.eql(u8, method, "skills/list")) {
-        return try handleSkillsList(allocator, id_value.?, object.get("params"));
+        return try handleSkillsList(allocator, state, id_value.?, object.get("params"));
     }
     if (std.mem.eql(u8, method, "skills/config/write")) {
-        return try handleSkillsConfigWrite(allocator, id_value.?, object.get("params"));
+        return try handleSkillsConfigWrite(allocator, state, id_value.?, object.get("params"));
     }
     if (isFsMethod(method)) {
         return try handleFsMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -913,7 +916,7 @@ const ParsedSkillsListParams = struct {
     }
 };
 
-fn handleSkillsList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = parseSkillsListParams(allocator, params_value) catch |err| switch (err) {
         error.InvalidSkillsListParams => return renderJsonRpcError(allocator, id_value, -32602, "skills/list params must be an object"),
         error.InvalidSkillsListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
@@ -929,6 +932,7 @@ fn handleSkillsList(allocator: std.mem.Allocator, id_value: std.json.Value, para
         return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
     };
     defer listed.deinit(allocator);
+    try registerSkillWatchRoots(allocator, state, listed, params.extra_roots_by_cwd);
 
     const result = try renderSkillsListResponse(allocator, listed);
     defer allocator.free(result);
@@ -1075,12 +1079,73 @@ fn appendSkillErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
     try out.appendSlice(allocator, "}");
 }
 
+fn registerSkillWatchRoots(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    result: skills_list.Result,
+    extra_roots_by_cwd: []const skills_list.ExtraRootsForCwd,
+) !void {
+    for (result.entries) |entry| {
+        const codex_repo_root = try std.fs.path.join(allocator, &.{ entry.cwd, ".codex", "skills" });
+        defer allocator.free(codex_repo_root);
+        try appendSkillWatchRoot(allocator, state, codex_repo_root);
+
+        const agents_repo_root = try std.fs.path.join(allocator, &.{ entry.cwd, ".agents", "skills" });
+        defer allocator.free(agents_repo_root);
+        try appendSkillWatchRoot(allocator, state, agents_repo_root);
+
+        if (resolveCodexHome(allocator)) |codex_home| {
+            defer allocator.free(codex_home);
+            const user_root = try std.fs.path.join(allocator, &.{ codex_home, "skills" });
+            defer allocator.free(user_root);
+            try appendSkillWatchRoot(allocator, state, user_root);
+        } else |_| {}
+
+        for (extra_roots_by_cwd) |extra| {
+            if (!std.mem.eql(u8, extra.cwd, entry.cwd)) continue;
+            for (extra.roots) |root| try appendSkillWatchRoot(allocator, state, root);
+        }
+
+        for (entry.skills) |skill| {
+            const root = std.fs.path.dirname(skill.path) orelse continue;
+            try appendSkillWatchRoot(allocator, state, root);
+        }
+    }
+}
+
+fn appendSkillWatchRoot(allocator: std.mem.Allocator, state: *AppServerState, root: []const u8) !void {
+    for (state.skill_watch_roots.items) |existing| {
+        if (std.mem.eql(u8, existing, root)) return;
+    }
+    const owned = try allocator.dupe(u8, root);
+    errdefer allocator.free(owned);
+    try state.skill_watch_roots.append(allocator, owned);
+}
+
+fn queueSkillsChangedNotificationForPath(allocator: std.mem.Allocator, state: *AppServerState, changed_path: []const u8) !void {
+    for (state.skill_watch_roots.items) |root| {
+        if (pathIsSameOrDescendant(root, changed_path)) {
+            try queueSkillsChangedNotification(allocator, state);
+            return;
+        }
+    }
+}
+
+fn queueSkillsChangedNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    const notification = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"method\":\"skills/changed\",\"params\":{}}");
+    errdefer allocator.free(notification);
+    try state.pending_notifications.append(
+        allocator,
+        notification,
+    );
+}
+
 const ParsedSkillsConfigWriteParams = struct {
     selector: skills_list.ConfigSelector,
     enabled: bool,
 };
 
-fn handleSkillsConfigWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleSkillsConfigWrite(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "skills/config/write params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "skills/config/write params must be an object");
 
@@ -1110,6 +1175,7 @@ fn handleSkillsConfigWrite(allocator: std.mem.Allocator, id_value: std.json.Valu
     config.writeConfigTomlFile(config_path, updated) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "skills/config/write failed to write config", err);
     };
+    try queueSkillsChangedNotification(allocator, state);
 
     const result = try std.fmt.allocPrint(allocator, "{{\"effectiveEnabled\":{s}}}", .{if (parsed.enabled) "true" else "false"});
     defer allocator.free(result);
@@ -1252,6 +1318,7 @@ fn handleFsWriteFile(allocator: std.mem.Allocator, state: *AppServerState, id_va
         return renderJsonRpcErrorForFailure(allocator, id_value, "fs/writeFile failed", err);
     };
     try queueFsChangedNotifications(allocator, state, path);
+    try queueSkillsChangedNotificationForPath(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
@@ -1280,6 +1347,7 @@ fn handleFsCreateDirectory(allocator: std.mem.Allocator, state: *AppServerState,
         };
     }
     try queueFsChangedNotifications(allocator, state, path);
+    try queueSkillsChangedNotificationForPath(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
@@ -1408,6 +1476,7 @@ fn handleFsRemove(allocator: std.mem.Allocator, state: *AppServerState, id_value
         };
     }
     try queueFsChangedNotifications(allocator, state, path);
+    try queueSkillsChangedNotificationForPath(allocator, state, path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
@@ -1434,6 +1503,7 @@ fn handleFsCopy(allocator: std.mem.Allocator, state: *AppServerState, id_value: 
         return renderJsonRpcErrorForFailure(allocator, id_value, "fs/copy failed", err);
     };
     try queueFsChangedNotifications(allocator, state, destination_path);
+    try queueSkillsChangedNotificationForPath(allocator, state, destination_path);
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
