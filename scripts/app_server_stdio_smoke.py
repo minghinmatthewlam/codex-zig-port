@@ -4315,6 +4315,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "network_access = false",
                     "exclude_tmpdir_env_var = true",
                     "",
+                    "[tools.web_search]",
+                    'allowed_domains = ["managed.example"]',
+                    'location = { country = "JP" }',
+                    "",
+                    "[tools]",
+                    "view_image = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -4336,6 +4343,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "exclude_tmpdir_env_var": True,
             "exclude_slash_tmp": True,
         }
+        assert managed_config_body["tools"] == {
+            "web_search": {
+                "context_size": "high",
+                "allowed_domains": ["managed.example"],
+                "location": {
+                    "country": "JP",
+                    "region": "CA",
+                    "city": "New York, NY",
+                    "timezone": "America/New_York",
+                },
+            },
+            "view_image": True,
+        }
         managed_source = {
             "type": "legacyManagedConfigTomlFromFile",
             "file": str(managed_config_path),
@@ -4347,6 +4367,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
             "sandbox_workspace_write.exclude_tmpdir_env_var",
+            "tools.web_search.allowed_domains.0",
+            "tools.web_search.location.country",
+            "tools.view_image",
         ]:
             assert managed_origins[key]["name"] == managed_source
             assert managed_origins[key]["version"].startswith("sha256:")
@@ -4356,11 +4379,16 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_workspace_write.exclude_slash_tmp",
             "web_search",
             "service_tier",
+            "tools.web_search.context_size",
+            "tools.web_search.location.city",
+            "tools.web_search.location.timezone",
         ]:
             assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
             assert managed_origins[key]["version"].startswith("sha256:")
         assert managed_origins["model_reasoning_effort"]["name"] == system_source
         assert managed_origins["model_reasoning_effort"]["version"].startswith("sha256:")
+        assert managed_origins["tools.web_search.location.region"]["name"] == system_source
+        assert managed_origins["tools.web_search.location.region"]["version"].startswith("sha256:")
         managed_layers = managed_config_read["result"]["layers"]
         assert len(managed_layers) == 3
         assert managed_layers[0]["name"] == managed_source
@@ -4373,6 +4401,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "network_access": False,
                 "exclude_tmpdir_env_var": True,
                 "exclude_slash_tmp": False,
+            },
+            "tools": {
+                "web_search": {
+                    "context_size": None,
+                    "allowed_domains": ["managed.example"],
+                    "location": {
+                        "country": "JP",
+                        "region": None,
+                        "city": None,
+                        "timezone": None,
+                    },
+                },
+                "view_image": True,
             },
         }
         assert managed_layers[1]["name"] == {"type": "user", "file": config_path}
