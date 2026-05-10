@@ -229,6 +229,7 @@ fn runStatus(allocator: std.mem.Allocator, cfg: config.Config) !void {
 
     switch (credentials.mode) {
         .chatgpt => std.debug.print("Logged in using ChatGPT\n", .{}),
+        .chatgpt_auth_tokens => std.debug.print("Logged in using externally managed ChatGPT auth tokens\n", .{}),
         .agent_identity => std.debug.print("Logged in using access token\n", .{}),
         .api_key => {
             const formatted = try safeFormatKey(allocator, credentials.token);

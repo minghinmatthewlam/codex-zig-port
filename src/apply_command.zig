@@ -84,7 +84,7 @@ fn fetchTask(
     credentials: auth.Credentials,
     task_id: []const u8,
 ) ![]const u8 {
-    if (credentials.mode != .chatgpt and credentials.mode != .agent_identity) {
+    if (credentials.mode != .chatgpt and credentials.mode != .chatgpt_auth_tokens and credentials.mode != .agent_identity) {
         return error.ChatGptBackendAuthRequired;
     }
     const account_id = credentials.account_id orelse return error.MissingChatGptAccountId;

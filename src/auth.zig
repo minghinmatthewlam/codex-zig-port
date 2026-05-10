@@ -15,6 +15,7 @@ pub const Credentials = struct {
 
     pub const Mode = enum {
         chatgpt,
+        chatgpt_auth_tokens,
         agent_identity,
         api_key,
         local_oss,
@@ -28,6 +29,7 @@ pub const Credentials = struct {
     pub fn describe(self: Credentials) []const u8 {
         return switch (self.mode) {
             .chatgpt => "ChatGPT token from auth.json",
+            .chatgpt_auth_tokens => "Externally managed ChatGPT token",
             .agent_identity => "Access token",
             .api_key => "API key",
             .local_oss => "Local OSS provider",
@@ -196,14 +198,18 @@ fn loadStoredWithOptions(
         }
 
         if (parsed.value.tokens) |tokens| {
-            if (options.refresh_chatgpt and try shouldRefreshChatGptToken(allocator, tokens, parsed.value.last_refresh)) {
+            const credentials_mode: Credentials.Mode = if (parsed.value.auth_mode) |mode|
+                if (isChatGptAuthTokensMode(mode)) .chatgpt_auth_tokens else .chatgpt
+            else
+                .chatgpt;
+            if (credentials_mode == .chatgpt and options.refresh_chatgpt and try shouldRefreshChatGptToken(allocator, tokens, parsed.value.last_refresh)) {
                 refreshChatGptAuth(allocator, codex_home, parsed.value) catch |err| switch (err) {
                     error.OutOfMemory => return err,
                     else => std.debug.print("warning: could not refresh ChatGPT auth token: {s}\n", .{@errorName(err)}),
                 };
                 if (try loadStoredWithOptions(allocator, codex_home, .{})) |refreshed| return refreshed;
             }
-            return try chatGptCredentials(allocator, tokens);
+            return try chatGptCredentials(allocator, tokens, credentials_mode);
         }
 
         if (parsed.value.OPENAI_API_KEY) |api_key| {
@@ -234,16 +240,20 @@ fn isAgentIdentityAuthMode(mode: []const u8) bool {
     return std.mem.eql(u8, mode, "agentIdentity") or std.mem.eql(u8, mode, "agent_identity");
 }
 
+fn isChatGptAuthTokensMode(mode: []const u8) bool {
+    return std.mem.eql(u8, mode, "chatgptAuthTokens") or std.mem.eql(u8, mode, "chatgpt_auth_tokens");
+}
+
 fn agentIdentityCredentials(allocator: std.mem.Allocator, token: []const u8) !Credentials {
     const owned_token = try allocator.dupe(u8, token);
     return try agentIdentityCredentialsFromOwnedToken(allocator, owned_token);
 }
 
-fn chatGptCredentials(allocator: std.mem.Allocator, tokens: TokenData) !Credentials {
+fn chatGptCredentials(allocator: std.mem.Allocator, tokens: TokenData, mode: Credentials.Mode) !Credentials {
     const account_id = if (tokens.account_id) |id| try allocator.dupe(u8, id) else null;
     errdefer if (account_id) |id| allocator.free(id);
     return .{
-        .mode = .chatgpt,
+        .mode = mode,
         .token = try allocator.dupe(u8, tokens.access_token),
         .account_id = account_id,
         .fedramp = false,
@@ -440,6 +450,32 @@ pub fn saveApiKeyAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, 
     try writeAuthJson(allocator, codex_home, json);
 }
 
+pub fn saveChatGptAuthTokensJson(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    access_token: []const u8,
+    chatgpt_account_id: []const u8,
+) !void {
+    var claims = try parseChatGptClaims(allocator, access_token);
+    defer claims.deinit(allocator);
+
+    const last_refresh = try currentRfc3339(allocator);
+    defer allocator.free(last_refresh);
+
+    const json = try std.json.Stringify.valueAlloc(allocator, .{
+        .auth_mode = "chatgptAuthTokens",
+        .tokens = .{
+            .id_token = access_token,
+            .access_token = access_token,
+            .refresh_token = "",
+            .account_id = chatgpt_account_id,
+        },
+        .last_refresh = last_refresh,
+    }, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    try writeAuthJson(allocator, codex_home, json);
+}
+
 pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);
@@ -629,6 +665,35 @@ test "parses chatgpt auth" {
     try std.testing.expectEqual(Credentials.Mode.chatgpt, creds.mode);
     try std.testing.expectEqualStrings("tok", creds.token);
     try std.testing.expectEqualStrings("acct", creds.account_id.?);
+}
+
+test "saves externally managed chatgpt auth tokens" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const payload =
+        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_plan_type":"pro"}}
+    ;
+    var encoded_buffer: [512]u8 = undefined;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
+    const jwt = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
+    defer allocator.free(jwt);
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    try saveChatGptAuthTokensJson(allocator, root, jwt, "acct_external");
+
+    var creds = try load(allocator, root);
+    defer creds.deinit(allocator);
+    try std.testing.expectEqual(Credentials.Mode.chatgpt_auth_tokens, creds.mode);
+    try std.testing.expectEqualStrings(jwt, creds.token);
+    try std.testing.expectEqualStrings("acct_external", creds.account_id.?);
+
+    var info = (try loadStoredChatGptAccountInfo(allocator, root)).?;
+    defer info.deinit(allocator);
+    try std.testing.expectEqualStrings("external@example.com", info.email);
+    try std.testing.expectEqualStrings("pro", info.plan_type);
 }
 
 test "parses agent identity auth" {

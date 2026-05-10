@@ -984,7 +984,7 @@ fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
     std.debug.print("web_search: {s}\n", .{config.webSearchLabel(cfg.web_search_mode)});
     std.debug.print("service_tier: {s}\n", .{cfg.service_tier orelse "<none>"});
     std.debug.print("api_base_url: {s}\n", .{switch (credentials.mode) {
-        .chatgpt, .agent_identity => cfg.chatgpt_base_url,
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
         .api_key, .local_oss => cfg.openai_base_url,
     }});
     if (credentials.account_id) |account_id| {

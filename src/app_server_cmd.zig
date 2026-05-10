@@ -1330,7 +1330,7 @@ fn handlePluginSkillRead(allocator: std.mem.Allocator, id_value: std.json.Value,
     };
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
     }
 
@@ -1493,7 +1493,7 @@ fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShare
     };
     errdefer credentials.deinit(allocator);
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return error.RemotePluginShareAuthRequired,
     }
 
@@ -1606,7 +1606,7 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
         };
         defer credentials.deinit(allocator);
         switch (credentials.mode) {
-            .chatgpt, .agent_identity => {},
+            .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
             .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
         }
 
@@ -1715,7 +1715,7 @@ fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, i
     };
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
     }
 
@@ -1945,7 +1945,7 @@ fn fetchRemotePluginListMarketplaces(
     var credentials = try auth_mod.load(allocator, codex_home);
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return error.RemotePluginUnsupportedAuthMode,
     }
 
@@ -2000,7 +2000,7 @@ fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, para
         };
         defer credentials.deinit(allocator);
         switch (credentials.mode) {
-            .chatgpt, .agent_identity => {},
+            .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
             .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
         }
 
@@ -3604,16 +3604,23 @@ fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Valu
     if (type_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "type must be a string");
 
     const login_type = type_value.string;
-    if (!std.mem.eql(u8, login_type, "apiKey")) {
-        const message = try std.fmt.allocPrint(
-            allocator,
-            "account/login/start type {s} is parsed but not implemented yet",
-            .{login_type},
-        );
-        defer allocator.free(message);
-        return renderJsonRpcError(allocator, id_value, -32603, message);
+    if (std.mem.eql(u8, login_type, "apiKey")) {
+        return handleAccountLoginStartApiKey(allocator, id_value, object);
+    }
+    if (std.mem.eql(u8, login_type, "chatgptAuthTokens")) {
+        return handleAccountLoginStartChatGptAuthTokens(allocator, id_value, object);
     }
 
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "account/login/start type {s} is parsed but not implemented yet",
+        .{login_type},
+    );
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32603, message);
+}
+
+fn handleAccountLoginStartApiKey(allocator: std.mem.Allocator, id_value: std.json.Value, object: std.json.ObjectMap) ![]const u8 {
     const api_key_value = object.get("apiKey") orelse return renderJsonRpcError(allocator, id_value, -32602, "apiKey must be a non-empty string");
     if (api_key_value != .string or api_key_value.string.len == 0) {
         return renderJsonRpcError(allocator, id_value, -32602, "apiKey must be a non-empty string");
@@ -3630,7 +3637,39 @@ fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Valu
 
     const response = try renderJsonRpcResult(allocator, id_value, "{\"type\":\"apiKey\"}");
     defer allocator.free(response);
-    return renderResultWithApiKeyLoginNotifications(allocator, response);
+    return renderResultWithLoginNotifications(allocator, response, "apikey", null);
+}
+
+fn handleAccountLoginStartChatGptAuthTokens(allocator: std.mem.Allocator, id_value: std.json.Value, object: std.json.ObjectMap) ![]const u8 {
+    const access_token_value = object.get("accessToken") orelse return renderJsonRpcError(allocator, id_value, -32602, "accessToken must be a non-empty string");
+    if (access_token_value != .string or access_token_value.string.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32602, "accessToken must be a non-empty string");
+    }
+
+    const account_id_value = object.get("chatgptAccountId") orelse return renderJsonRpcError(allocator, id_value, -32602, "chatgptAccountId must be a non-empty string");
+    if (account_id_value != .string or account_id_value.string.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32602, "chatgptAccountId must be a non-empty string");
+    }
+
+    const plan_type = blk: {
+        const value = object.get("chatgptPlanType") orelse break :blk null;
+        if (value == .null) break :blk null;
+        if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "chatgptPlanType must be a string or null");
+        break :blk value.string;
+    };
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    auth_mod.saveChatGptAuthTokensJson(allocator, cfg.codex_home, access_token_value.string, account_id_value.string) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save ChatGPT auth tokens", err);
+    };
+
+    const response = try renderJsonRpcResult(allocator, id_value, "{\"type\":\"chatgptAuthTokens\"}");
+    defer allocator.free(response);
+    return renderResultWithLoginNotifications(allocator, response, "chatgptAuthTokens", plan_type);
 }
 
 fn handleAccountLoginCancel(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -3694,7 +3733,7 @@ fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.
     defer credentials.deinit(allocator);
 
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read rate limits"),
     }
 
@@ -3728,7 +3767,7 @@ fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.js
     defer credentials.deinit(allocator);
 
     switch (credentials.mode) {
-        .chatgpt, .agent_identity => {},
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
         .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to notify workspace owner"),
     }
 
@@ -3810,7 +3849,7 @@ const AuthStatusFields = struct {
 
 fn authStatusFields(credentials: auth_mod.Credentials, include_token: bool) AuthStatusFields {
     return switch (credentials.mode) {
-        .api_key, .chatgpt => if (credentials.token.len == 0)
+        .api_key, .chatgpt, .chatgpt_auth_tokens => if (credentials.token.len == 0)
             .{}
         else
             .{
@@ -3826,6 +3865,7 @@ fn authMethodLabel(mode: auth_mod.Credentials.Mode) ?[]const u8 {
     return switch (mode) {
         .api_key => "apikey",
         .chatgpt => "chatgpt",
+        .chatgpt_auth_tokens => "chatgptAuthTokens",
         .agent_identity => "agentIdentity",
         .local_oss => null,
     };
@@ -3944,7 +3984,7 @@ fn renderOpenAiAccountJson(allocator: std.mem.Allocator, codex_home: []const u8,
 
     switch (credentials.mode) {
         .api_key => return allocator.dupe(u8, "{\"type\":\"apiKey\"}"),
-        .chatgpt, .agent_identity => {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {
             if (try auth_mod.loadStoredChatGptAccountInfo(allocator, codex_home)) |info| {
                 defer info.deinit(allocator);
                 return renderChatGptAccountJson(allocator, info);
@@ -3975,11 +4015,24 @@ fn renderResultWithAccountUpdatedNotification(allocator: std.mem.Allocator, resp
     );
 }
 
-fn renderResultWithApiKeyLoginNotifications(allocator: std.mem.Allocator, response: []const u8) ![]const u8 {
+fn renderResultWithLoginNotifications(
+    allocator: std.mem.Allocator,
+    response: []const u8,
+    auth_mode: []const u8,
+    plan_type: ?[]const u8,
+) ![]const u8 {
+    const auth_mode_json = try std.json.Stringify.valueAlloc(allocator, auth_mode, .{});
+    defer allocator.free(auth_mode_json);
+    const plan_type_json = if (plan_type) |value|
+        try std.json.Stringify.valueAlloc(allocator, value, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(plan_type_json);
+
     return std.fmt.allocPrint(
         allocator,
-        "{s}\n{{\"method\":\"account/login/completed\",\"params\":{{\"loginId\":null,\"success\":true,\"error\":null}}}}\n{{\"method\":\"account/updated\",\"params\":{{\"authMode\":\"apikey\",\"planType\":null}}}}",
-        .{response},
+        "{s}\n{{\"method\":\"account/login/completed\",\"params\":{{\"loginId\":null,\"success\":true,\"error\":null}}}}\n{{\"method\":\"account/updated\",\"params\":{{\"authMode\":{s},\"planType\":{s}}}}}",
+        .{ response, auth_mode_json, plan_type_json },
     );
 }
 
