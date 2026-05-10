@@ -55,7 +55,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - accept `update_plan` tool calls and surface task progress in the TUI
 - run explicit local TUI shell commands with `!COMMAND`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
-- run a command through the macOS Seatbelt sandbox with `sandbox macos`
+- run a command through the macOS Seatbelt sandbox with `sandbox macos`,
+  including Rust built-in permission profiles and explicit unsupported errors
+  for parsed Seatbelt-only socket/denial flags
 - check `prefix_rule` execpolicy files against a command with
   `execpolicy check`, including `match` / `not_match` examples,
   `network_rule` validation, and absolute host executable resolution
