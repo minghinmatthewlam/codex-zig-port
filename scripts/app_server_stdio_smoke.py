@@ -3809,6 +3809,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'service_tier = "flex"',
                 'sandbox_workspace_write = { exclude_tmpdir_env_var = true }',
                 "",
+                "[tools.web_search]",
+                'allowed_domains = ["child.example"]',
+                "",
             ]
         ),
         encoding="utf-8",
@@ -4184,7 +4187,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
-                "allowed_domains": ["example.com"],
+                "allowed_domains": ["child.example"],
                 "location": {
                     "country": "US",
                     "region": "NY",
@@ -4213,10 +4216,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["tools.web_search.context_size"]["name"] == project_source
         assert nested_origins["tools.web_search.location.region"]["name"] == project_source
         assert nested_origins["tools.view_image"]["name"] == project_source
-        assert nested_origins["tools.web_search.allowed_domains.0"]["name"] == {
-            "type": "user",
-            "file": config_path,
-        }
+        assert nested_origins["tools.web_search.allowed_domains.0"]["name"] == child_project_source
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
         assert nested_origins["service_tier"]["name"] == child_project_source
         assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
@@ -4240,6 +4240,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "network_access": False,
                 "exclude_tmpdir_env_var": True,
                 "exclude_slash_tmp": False,
+            },
+            "tools": {
+                "web_search": {
+                    "context_size": None,
+                    "allowed_domains": ["child.example"],
+                    "location": None,
+                },
+                "view_image": None,
             },
         }
         assert nested_layers[1]["name"] == project_source
