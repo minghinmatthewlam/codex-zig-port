@@ -530,6 +530,90 @@ def run_model_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_experimental_feature_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            env,
+        )
+
+    try:
+        first_page = rpc(
+            "feature-list-first-page",
+            "experimentalFeature/list",
+            {"limit": 3},
+        )
+        assert first_page["id"] == "feature-list-first-page"
+        assert len(first_page["result"]["data"]) == 3
+        assert first_page["result"]["nextCursor"] == "3"
+        first_feature = first_page["result"]["data"][0]
+        assert set(first_feature) == {
+            "name",
+            "stage",
+            "displayName",
+            "description",
+            "announcement",
+            "enabled",
+            "defaultEnabled",
+        }
+
+        second_page = rpc(
+            "feature-list-second-page",
+            "experimentalFeature/list",
+            {"cursor": first_page["result"]["nextCursor"], "limit": 2},
+        )
+        assert second_page["id"] == "feature-list-second-page"
+        assert len(second_page["result"]["data"]) == 2
+
+        invalid_cursor = rpc(
+            "feature-list-invalid-cursor",
+            "experimentalFeature/list",
+            {"cursor": "bad"},
+        )
+        assert invalid_cursor["id"] == "feature-list-invalid-cursor"
+        assert invalid_cursor["error"]["code"] == -32600
+        assert invalid_cursor["error"]["message"] == "invalid cursor: bad"
+
+        (codex_home / "config.toml").write_text(
+            "[features]\napps = false\ngoals = true\n",
+            encoding="utf-8",
+        )
+        all_features = rpc("feature-list-all", "experimentalFeature/list", {})
+        assert all_features["id"] == "feature-list-all"
+        by_name = {item["name"]: item for item in all_features["result"]["data"]}
+        assert by_name["apps"]["enabled"] is False
+        assert by_name["apps"]["defaultEnabled"] is True
+        assert by_name["goals"]["enabled"] is True
+        assert by_name["goals"]["stage"] == "beta"
+        assert by_name["goals"]["displayName"] == "goals"
+
+        set_enablement = rpc(
+            "feature-enable-set",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"apps": True}},
+        )
+        assert set_enablement["id"] == "feature-enable-set"
+        assert set_enablement["error"]["code"] == -32603
+        assert "experimentalFeature/enablement/set is parsed but not implemented yet" in set_enablement[
+            "error"
+        ]["message"]
+
+        invalid_enablement = rpc(
+            "feature-enable-invalid",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"apps": "yes"}},
+        )
+        assert invalid_enablement["id"] == "feature-enable-invalid"
+        assert invalid_enablement["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -773,6 +857,8 @@ def main() -> None:
     print("app-server-filesystem-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
+    run_experimental_feature_rpc_smoke(binary)
+    print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
