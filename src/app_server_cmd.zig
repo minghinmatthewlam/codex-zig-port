@@ -4660,7 +4660,6 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
             error.InvalidCommandExecPermissionProfileEntries => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.entries must be an array"),
             error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer or null"),
             error.InvalidCommandExecPermissionProfileEntry => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
-            error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external permissionProfile is parsed but not implemented yet"),
             error.UnsupportedCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
             else => return err,
         }
@@ -4673,7 +4672,6 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
             error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeTmpdirEnvVar must be a boolean"),
             error.InvalidCommandExecSandboxPolicyExcludeSlashTmp => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeSlashTmp must be a boolean"),
             error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
-            error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external sandboxPolicy is parsed but not implemented yet"),
             else => return err,
         };
     defer command_sandbox.deinit(allocator);
@@ -4936,8 +4934,8 @@ fn parseCommandExecPermissionProfile(
         return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
     }
     if (std.mem.eql(u8, type_value.string, "external")) {
-        _ = try parseCommandExecPermissionNetwork(value.object.get("network"));
-        return error.CommandExecExternalSandboxNotImplemented;
+        const network_enabled = try parseCommandExecPermissionNetwork(value.object.get("network"));
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     if (!std.mem.eql(u8, type_value.string, "managed")) {
         return error.InvalidCommandExecPermissionProfileType;
@@ -5112,8 +5110,8 @@ fn parseCommandExecSandboxPolicy(
         return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     if (std.mem.eql(u8, type_value.string, "externalSandbox")) {
-        _ = try parseCommandExecExternalSandboxPolicyNetworkAccess(policy.object);
-        return error.CommandExecExternalSandboxNotImplemented;
+        const network_enabled = try parseCommandExecExternalSandboxPolicyNetworkAccess(policy.object);
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     if (!std.mem.eql(u8, type_value.string, "workspaceWrite")) return error.InvalidCommandExecSandboxPolicyType;
 

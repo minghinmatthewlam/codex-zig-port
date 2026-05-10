@@ -3896,15 +3896,18 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                 "id": "command-exec-sandbox-policy-external",
                 "method": "command/exec",
                 "params": {
-                    "command": ["/bin/echo", "unused"],
+                    "command": ["/bin/sh", "-c", "printf external-sandbox"],
                     "sandboxPolicy": {"type": "externalSandbox", "networkAccess": "enabled"},
                 },
             },
             env,
         )
         assert sandbox_policy_external["id"] == "command-exec-sandbox-policy-external"
-        assert sandbox_policy_external["error"]["code"] == -32603
-        assert "external sandboxPolicy" in sandbox_policy_external["error"]["message"]
+        assert sandbox_policy_external["result"] == {
+            "exitCode": 0,
+            "stdout": "external-sandbox",
+            "stderr": "",
+        }
 
         sandbox_policy_network_enabled = request_stdio_app_server(
             binary,
@@ -3984,6 +3987,10 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         disabled_permission_profile = {
             "type": "disabled",
         }
+        external_permission_profile = {
+            "type": "external",
+            "network": {"enabled": True},
+        }
         project_roots_write_permission_profile = {
             "type": "managed",
             "fileSystem": {
@@ -4038,6 +4045,26 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_disabled["result"] == {
             "exitCode": 0,
             "stdout": "profile-disabled",
+            "stderr": "",
+        }
+
+        permission_profile_external = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-external",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "printf profile-external"],
+                    "permissionProfile": external_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_external["id"] == "command-exec-permission-profile-external"
+        assert permission_profile_external["result"] == {
+            "exitCode": 0,
+            "stdout": "profile-external",
             "stderr": "",
         }
 
