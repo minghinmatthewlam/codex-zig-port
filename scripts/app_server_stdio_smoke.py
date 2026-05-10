@@ -4359,23 +4359,128 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert streaming_missing_process_id["error"]["code"] == -32600
         assert "requires a client-supplied processId" in streaming_missing_process_id["error"]["message"]
 
-        streaming = request_stdio_app_server(
-            binary,
-            {
-                "jsonrpc": "2.0",
-                "id": "command-exec-streaming",
-                "method": "command/exec",
-                "params": {
-                    "command": ["/bin/echo", "unused"],
-                    "streamStdoutStderr": True,
-                    "processId": "proc-1",
-                },
-            },
-            env,
+        streaming_proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
         )
-        assert streaming["id"] == "command-exec-streaming"
-        assert streaming["error"]["code"] == -32603
-        assert "streaming and tty modes" in streaming["error"]["message"]
+        try:
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-streaming",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [
+                            "/bin/sh",
+                            "-c",
+                            "printf stream-out && printf stream-err >&2",
+                        ],
+                        "streamStdoutStderr": True,
+                        "processId": "proc-1",
+                    },
+                },
+            )
+            streaming_stdout_delta = read_json_line(streaming_proc, 5)
+            streaming_stderr_delta = read_json_line(streaming_proc, 5)
+            streaming_response = read_json_line(streaming_proc, 5)
+            assert streaming_stdout_delta["method"] == "command/exec/outputDelta"
+            assert streaming_stdout_delta["params"]["processId"] == "proc-1"
+            assert streaming_stdout_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(streaming_stdout_delta["params"]["deltaBase64"])
+                == b"stream-out"
+            )
+            assert streaming_stdout_delta["params"]["capReached"] is False
+            assert streaming_stderr_delta["method"] == "command/exec/outputDelta"
+            assert streaming_stderr_delta["params"]["processId"] == "proc-1"
+            assert streaming_stderr_delta["params"]["stream"] == "stderr"
+            assert (
+                base64.b64decode(streaming_stderr_delta["params"]["deltaBase64"])
+                == b"stream-err"
+            )
+            assert streaming_stderr_delta["params"]["capReached"] is False
+            assert streaming_response["id"] == "command-exec-streaming"
+            assert streaming_response["result"] == {
+                "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-streaming-cap",
+                    "method": "command/exec",
+                    "params": {
+                        "command": ["/bin/sh", "-c", "printf capped-output"],
+                        "streamStdoutStderr": True,
+                        "processId": "proc-cap",
+                        "outputBytesCap": 6,
+                    },
+                },
+            )
+            streaming_cap_delta = read_json_line(streaming_proc, 5)
+            streaming_cap_response = read_json_line(streaming_proc, 5)
+            assert streaming_cap_delta["method"] == "command/exec/outputDelta"
+            assert streaming_cap_delta["params"]["processId"] == "proc-cap"
+            assert streaming_cap_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(streaming_cap_delta["params"]["deltaBase64"])
+                == b"capped"
+            )
+            assert streaming_cap_delta["params"]["capReached"] is True
+            assert streaming_cap_response["id"] == "command-exec-streaming-cap"
+            assert streaming_cap_response["result"] == {
+                "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-streaming-zero-cap",
+                    "method": "command/exec",
+                    "params": {
+                        "command": ["/bin/sh", "-c", "printf zero-cap"],
+                        "streamStdoutStderr": True,
+                        "processId": "proc-zero-cap",
+                        "outputBytesCap": 0,
+                    },
+                },
+            )
+            streaming_zero_cap_delta = read_json_line(streaming_proc, 5)
+            streaming_zero_cap_response = read_json_line(streaming_proc, 5)
+            assert streaming_zero_cap_delta["method"] == "command/exec/outputDelta"
+            assert streaming_zero_cap_delta["params"]["processId"] == "proc-zero-cap"
+            assert streaming_zero_cap_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(streaming_zero_cap_delta["params"]["deltaBase64"])
+                == b""
+            )
+            assert streaming_zero_cap_delta["params"]["capReached"] is True
+            assert streaming_zero_cap_response["id"] == "command-exec-streaming-zero-cap"
+            assert streaming_zero_cap_response["result"] == {
+                "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
+            assert streaming_proc.stdin is not None
+            streaming_proc.stdin.close()
+            streaming_proc.wait(timeout=5)
+            if streaming_proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {streaming_proc.returncode}: {streaming_proc.stderr.read()}"
+                )
+        finally:
+            if streaming_proc.poll() is None:
+                streaming_proc.kill()
+                streaming_proc.wait(timeout=5)
 
         missing_write_payload = request_stdio_app_server(
             binary,
