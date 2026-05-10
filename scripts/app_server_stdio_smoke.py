@@ -4793,6 +4793,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'allowed_sandbox_modes = ["danger-full-access"]',
                     'allowed_web_search_modes = ["cached"]',
                     "",
+                    "[features]",
+                    "apps = false",
+                    "goals = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -4819,6 +4823,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedApprovalsReviewers": ["guardian_subagent", "user"],
                 "allowedSandboxModes": ["danger-full-access"],
                 "allowedWebSearchModes": ["cached", "disabled"],
+                "featureRequirements": {"apps": False, "goals": True},
             }
         }
 
