@@ -4366,7 +4366,11 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                 "id": "command-exec-timeout",
                 "method": "command/exec",
                 "params": {
-                    "command": ["/bin/sh", "-c", "sleep 1"],
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf before-timeout && printf timeout-err >&2; sleep 1",
+                    ],
                     "timeoutMs": 10,
                 },
             },
@@ -4375,8 +4379,8 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert timeout_response["id"] == "command-exec-timeout"
         assert timeout_response["result"] == {
             "exitCode": 124,
-            "stdout": "",
-            "stderr": "",
+            "stdout": "before-timeout",
+            "stderr": "timeout-err",
         }
 
         empty_command = request_stdio_app_server(
@@ -4535,6 +4539,40 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             assert streaming_zero_cap_response["id"] == "command-exec-streaming-zero-cap"
             assert streaming_zero_cap_response["result"] == {
                 "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-streaming-timeout",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [
+                            "/bin/sh",
+                            "-c",
+                            "printf stream-timeout; sleep 1",
+                        ],
+                        "streamStdoutStderr": True,
+                        "processId": "proc-timeout",
+                        "timeoutMs": 10,
+                    },
+                },
+            )
+            streaming_timeout_delta = read_json_line(streaming_proc, 5)
+            streaming_timeout_response = read_json_line(streaming_proc, 5)
+            assert streaming_timeout_delta["method"] == "command/exec/outputDelta"
+            assert streaming_timeout_delta["params"]["processId"] == "proc-timeout"
+            assert streaming_timeout_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(streaming_timeout_delta["params"]["deltaBase64"])
+                == b"stream-timeout"
+            )
+            assert streaming_timeout_delta["params"]["capReached"] is False
+            assert streaming_timeout_response["id"] == "command-exec-streaming-timeout"
+            assert streaming_timeout_response["result"] == {
+                "exitCode": 124,
                 "stdout": "",
                 "stderr": "",
             }
