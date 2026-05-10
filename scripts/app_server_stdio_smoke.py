@@ -625,16 +625,111 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
 
 def run_plugin_rpc_smoke(binary: Path) -> None:
     env = os.environ.copy()
-    cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-list",
-            "method": "plugin/list",
-            "params": {
-                "cwds": ["/tmp/repo"],
-                "marketplaceKinds": ["local", "workspace-directory", "shared-with-me"],
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugins-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    repo = root / "repo"
+    plugin_root = repo / "plugins" / "enabled-plugin"
+    installed_root = (
+        codex_home
+        / "plugins"
+        / "cache"
+        / "local-market"
+        / "enabled-plugin"
+        / "local"
+    )
+    try:
+        codex_home.mkdir()
+        repo.joinpath(".agents", "plugins").mkdir(parents=True)
+        plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        installed_root.joinpath(".codex-plugin").mkdir(parents=True)
+        codex_home.joinpath("config.toml").write_text(
+            """[features]
+plugins = true
+
+[plugins."enabled-plugin@local-market"]
+enabled = true
+""",
+            encoding="utf-8",
+        )
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "interface": {"displayName": "Local Marketplace"},
+                    "plugins": [
+                        {
+                            "name": "enabled-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./plugins/enabled-plugin",
+                            },
+                            "category": "Developer tools",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "enabled-plugin",
+                    "keywords": ["api-key", "developer tools"],
+                    "interface": {
+                        "displayName": "Enabled Plugin",
+                        "shortDescription": "Plugin list smoke fixture",
+                        "capabilities": ["Write"],
+                        "defaultPrompt": "Use the enabled plugin",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        installed_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps({"name": "enabled-plugin"}),
+            encoding="utf-8",
+        )
+
+        env["CODEX_HOME"] = str(codex_home)
+        plugin_list = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-list",
+                "method": "plugin/list",
+                "params": {
+                    "cwds": [str(repo)],
+                    "marketplaceKinds": ["local"],
+                },
             },
-        },
+            env,
+        )
+        assert plugin_list["id"] == "plugin-list"
+        result = plugin_list["result"]
+        assert result["marketplaceLoadErrors"] == []
+        assert result["featuredPluginIds"] == []
+        assert len(result["marketplaces"]) == 1
+        marketplace = result["marketplaces"][0]
+        assert marketplace["name"] == "local-market"
+        assert marketplace["path"] == str(repo / ".agents" / "plugins" / "marketplace.json")
+        assert marketplace["interface"]["displayName"] == "Local Marketplace"
+        assert len(marketplace["plugins"]) == 1
+        plugin = marketplace["plugins"][0]
+        assert plugin["id"] == "enabled-plugin@local-market"
+        assert plugin["source"] == {"type": "local", "path": str(plugin_root)}
+        assert plugin["installed"] is True
+        assert plugin["enabled"] is True
+        assert plugin["installPolicy"] == "AVAILABLE"
+        assert plugin["authPolicy"] == "ON_INSTALL"
+        assert plugin["availability"] == "AVAILABLE"
+        assert plugin["interface"]["displayName"] == "Enabled Plugin"
+        assert plugin["interface"]["category"] == "Developer tools"
+        assert plugin["interface"]["defaultPrompt"] == ["Use the enabled plugin"]
+        assert plugin["keywords"] == ["api-key", "developer tools"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    cases = [
         {
             "jsonrpc": "2.0",
             "id": "plugin-read",
