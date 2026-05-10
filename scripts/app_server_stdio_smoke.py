@@ -3897,6 +3897,22 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[tools]",
                 "view_image = true",
                 "",
+                "[apps._default]",
+                "open_world_enabled = false",
+                "",
+                "[apps.app1]",
+                "default_tools_enabled = true",
+                "",
+                "[apps.app1.tools.summarize]",
+                "enabled = false",
+                "",
+                "[apps.app2]",
+                "enabled = false",
+                'default_tools_approval_mode = "approve"',
+                "",
+                "[apps.app2.tools.export]",
+                'approval_mode = "prompt"',
+                "",
             ]
         ),
         encoding="utf-8",
@@ -3951,7 +3967,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
             "view_image": False,
         }
-        assert config_body["apps"] == {
+        expected_apps = {
             "_default": {
                 "enabled": False,
                 "destructive_enabled": False,
@@ -3968,9 +3984,27 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                         "enabled": True,
                         "approval_mode": "approve",
                     },
+                    "summarize": {
+                        "enabled": False,
+                        "approval_mode": None,
+                    },
+                },
+            },
+            "app2": {
+                "enabled": False,
+                "destructive_enabled": None,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": "approve",
+                "default_tools_enabled": None,
+                "tools": {
+                    "export": {
+                        "enabled": None,
+                        "approval_mode": "prompt",
+                    },
                 },
             },
         }
+        assert config_body["apps"] == expected_apps, json.dumps(config_body["apps"], indent=2, sort_keys=True)
         assert config_body["features"]["apps"] is False
         assert config_body["features"]["goals"] is True
         assert config_body["features"]["memories"] is False
@@ -4012,6 +4046,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"].startswith("sha256:")
         assert origins["tools.web_search.location.region"]["name"] == system_source
         assert origins["tools.web_search.location.region"]["version"].startswith("sha256:")
+        for key in [
+            "apps.app1.tools.summarize.enabled",
+            "apps.app2.enabled",
+            "apps.app2.default_tools_approval_mode",
+            "apps.app2.tools.export.approval_mode",
+        ]:
+            assert origins[key]["name"] == system_source
+            assert origins[key]["version"].startswith("sha256:")
         layers = config_read["result"]["layers"]
         assert len(layers) == 2
         assert layers[0]["name"] == {"type": "user", "file": config_path}
@@ -4090,6 +4132,39 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
                 "view_image": True,
+            },
+            "apps": {
+                "_default": {
+                    "enabled": True,
+                    "destructive_enabled": True,
+                    "open_world_enabled": False,
+                },
+                "app1": {
+                    "enabled": True,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": None,
+                    "default_tools_enabled": True,
+                    "tools": {
+                        "summarize": {
+                            "enabled": False,
+                            "approval_mode": None,
+                        },
+                    },
+                },
+                "app2": {
+                    "enabled": False,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": "approve",
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "export": {
+                            "enabled": None,
+                            "approval_mode": "prompt",
+                        },
+                    },
+                },
             },
         }
 
