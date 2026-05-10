@@ -115,8 +115,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - notify workspace owners about credit or usage-limit issues with
   `account/sendAddCreditsNudgeEmail`
 - remove app-server auth with `account/logout` and emit `account/updated`
-- read app-server config basics plus effective feature flags and user
-  config-origin/layer metadata with `config/read`
+- read app-server config basics plus effective feature flags, user
+  config-origin/layer metadata, and trusted direct project
+  `model_reasoning_effort` layers with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
 - merge and replace existing app-server TOML table objects with
