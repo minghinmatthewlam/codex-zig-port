@@ -110,7 +110,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer allocator.free(additional_writable_roots);
 
     const include_cwd_write_root = if (sandbox_profile) |profile| profile.include_cwd_write_root else true;
-    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root);
+    const network_enabled = if (sandbox_profile) |profile| profile.network_enabled else true;
+    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled);
 }
 
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
@@ -222,6 +223,7 @@ fn runCommand(
     mode: config.SandboxMode,
     additional_writable_roots: []const []const u8,
     include_cwd_write_root: bool,
+    network_enabled: bool,
 ) !void {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -229,7 +231,7 @@ fn runCommand(
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox.shouldSandbox(mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, null, include_cwd_write_root);
+        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, null, include_cwd_write_root, network_enabled);
         break :blk sandboxed_argv.?.argv;
     } else argv;
 

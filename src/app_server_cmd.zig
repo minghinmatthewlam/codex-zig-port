@@ -4655,7 +4655,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     var sandboxed_argv: ?sandbox_mod.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox_mod.shouldSandbox(command_sandbox.mode)) blk: {
-        sandboxed_argv = try sandbox_mod.wrapArgvWithCwdOptions(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, sandbox_cwd, command_sandbox.include_cwd_write_root);
+        sandboxed_argv = try sandbox_mod.wrapArgvWithCwdOptions(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, sandbox_cwd, command_sandbox.include_cwd_write_root, true);
         break :blk sandboxed_argv.?.argv;
     } else command;
 

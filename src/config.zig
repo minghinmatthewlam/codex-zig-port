@@ -167,6 +167,7 @@ pub const SandboxPermissionProfile = struct {
     mode: SandboxMode,
     additional_writable_roots: StringList,
     include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
 
     pub fn deinit(self: *SandboxPermissionProfile, allocator: std.mem.Allocator) void {
         self.additional_writable_roots.deinit(allocator);
@@ -1650,7 +1651,7 @@ const ConfigView = struct {
 
         var saw_filesystem = false;
         var saw_network = false;
-        var network_enabled = false;
+        var network_enabled: ?bool = null;
         var network_unsupported = false;
         var in_filesystem = false;
         var in_network = false;
@@ -1678,10 +1679,10 @@ const ConfigView = struct {
             }
         }
 
-        if (!saw_filesystem or !saw_network or !network_enabled or network_unsupported) {
+        if (!saw_filesystem or !saw_network or network_enabled == null or network_unsupported) {
             return error.SandboxPermissionProfileUnsupported;
         }
-        return state.toSandboxPermissionProfile(allocator);
+        return state.toSandboxPermissionProfile(allocator, network_enabled.?);
     }
 
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
@@ -1715,6 +1716,7 @@ const CustomSandboxPermissionProfileState = struct {
     fn toSandboxPermissionProfile(
         self: *CustomSandboxPermissionProfileState,
         allocator: std.mem.Allocator,
+        network_enabled: bool,
     ) !SandboxPermissionProfile {
         if (self.unsupported or !self.root_read) return error.SandboxPermissionProfileUnsupported;
 
@@ -1726,6 +1728,7 @@ const CustomSandboxPermissionProfileState = struct {
             .mode = mode,
             .additional_writable_roots = .{ .items = try self.additional_writable_roots.toOwnedSlice(allocator) },
             .include_cwd_write_root = self.project_roots_write,
+            .network_enabled = network_enabled,
         };
     }
 };
@@ -2302,8 +2305,31 @@ test "sandbox permission profile resolves supported custom workspace shape" {
 
     try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
     try std.testing.expect(profile.include_cwd_write_root);
+    try std.testing.expect(profile.network_enabled);
     try std.testing.expectEqual(@as(usize, 1), profile.additional_writable_roots.items.len);
     try std.testing.expectEqualStrings("/tmp/codex-extra", profile.additional_writable_roots.items[0]);
+}
+
+test "sandbox permission profile supports disabled network" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\":project_roots" = "write"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = false
+        \\
+        ,
+    };
+
+    var profile = try view.resolveCustomSandboxPermissionProfile(allocator, "demo");
+    defer profile.deinit(allocator);
+
+    try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
+    try std.testing.expect(profile.include_cwd_write_root);
+    try std.testing.expect(!profile.network_enabled);
 }
 
 test "sandbox permission profile rejects narrow read and restricted network shapes" {
@@ -2326,7 +2352,8 @@ test "sandbox permission profile rejects narrow read and restricted network shap
         \\":root" = "read"
         \\
         \\[permissions.demo.network]
-        \\enabled = false
+        \\enabled = true
+        \\mode = "restricted"
         \\
         ,
     };

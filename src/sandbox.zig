@@ -38,7 +38,7 @@ pub fn wrapArgvWithCwd(
     additional_writable_roots: []const []const u8,
     cwd_override: ?[]const u8,
 ) !SandboxedArgv {
-    return wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, cwd_override, true);
+    return wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, cwd_override, true, true);
 }
 
 pub fn wrapArgvWithCwdOptions(
@@ -48,6 +48,7 @@ pub fn wrapArgvWithCwdOptions(
     additional_writable_roots: []const []const u8,
     cwd_override: ?[]const u8,
     include_cwd_write_root: bool,
+    network_enabled: bool,
 ) !SandboxedArgv {
     const cwd = if (cwd_override) |cwd|
         try allocator.dupe(u8, cwd)
@@ -64,7 +65,7 @@ pub fn wrapArgvWithCwdOptions(
         try allocator.alloc([]const u8, 0);
     defer freeResolvedRoots(allocator, resolved_roots);
 
-    const profile = try buildProfileWithOptions(allocator, mode, cwd, resolved_roots, include_cwd_write_root);
+    const profile = try buildProfileWithOptions(allocator, mode, cwd, resolved_roots, include_cwd_write_root, network_enabled);
     errdefer allocator.free(profile);
 
     var wrapped = try allocator.alloc([]const u8, argv.len + 4);
@@ -84,7 +85,7 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
-    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true);
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true);
 }
 
 fn buildProfileWithOptions(
@@ -93,10 +94,11 @@ fn buildProfileWithOptions(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
     include_cwd_write_root: bool,
+    network_enabled: bool,
 ) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
-        .read_only => allocator.dupe(u8, baseProfile ++ readOnlyWritePolicy),
+        .read_only => buildReadOnlyProfile(allocator, network_enabled),
         .workspace_write => blk: {
             var profile = std.ArrayList(u8).empty;
             errdefer profile.deinit(allocator);
@@ -112,9 +114,28 @@ fn buildProfileWithOptions(
             for (additional_writable_roots) |root| {
                 try appendWritableSubpath(allocator, &profile, root);
             }
+            try appendNetworkPolicy(allocator, &profile, network_enabled);
             break :blk try profile.toOwnedSlice(allocator);
         },
     };
+}
+
+fn buildReadOnlyProfile(allocator: std.mem.Allocator, network_enabled: bool) ![]const u8 {
+    var profile = std.ArrayList(u8).empty;
+    errdefer profile.deinit(allocator);
+    try profile.appendSlice(allocator, baseProfile);
+    try profile.appendSlice(allocator, readOnlyWritePolicy);
+    try appendNetworkPolicy(allocator, &profile, network_enabled);
+    return profile.toOwnedSlice(allocator);
+}
+
+fn appendNetworkPolicy(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    network_enabled: bool,
+) !void {
+    if (network_enabled) return;
+    try profile.appendSlice(allocator, deniedNetworkPolicy);
 }
 
 fn resolveAdditionalRoots(allocator: std.mem.Allocator, roots: []const []const u8) ![]const []const u8 {
@@ -172,6 +193,11 @@ const readOnlyWritePolicy =
     \\
 ;
 
+const deniedNetworkPolicy =
+    \\(deny network*)
+    \\
+;
+
 test "wrap argv builds sandbox-exec command" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{ "/bin/echo", "ok" };
@@ -190,6 +216,14 @@ test "seatbelt string escaping handles quotes and backslashes" {
     const escaped = try escapeSeatbeltString(allocator, "a\"b\\c");
     defer allocator.free(escaped);
     try std.testing.expectEqualStrings("a\\\"b\\\\c", escaped);
+}
+
+test "sandbox profile can disable network access" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") != null);
 }
 
 test "read-only sandbox denies file writes" {
@@ -345,7 +379,7 @@ test "workspace-write sandbox can omit cwd write root" {
     defer allocator.free(extra_target);
 
     const additional_roots = [_][]const u8{extra_root};
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true);
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,
