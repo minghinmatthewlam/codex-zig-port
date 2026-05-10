@@ -5076,31 +5076,12 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
 
     const run_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
     const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
-    const stdout_limit: std.Io.Limit = .unlimited;
-    const stderr_limit: std.Io.Limit = stdout_limit;
-    const timeout: std.Io.Timeout = if (disable_timeout)
-        .none
-    else
-        .{ .duration = .{
-            .raw = std.Io.Duration.fromMilliseconds(timeout_ms_i64),
-            .clock = .awake,
-        } };
     const env_map = if (child_env) |*map| map else null;
 
-    const result = std.process.run(allocator, io_instance.io(), .{
-        .argv = effective_argv,
-        .cwd = run_cwd,
-        .environ_map = env_map,
-        .stdout_limit = stdout_limit,
-        .stderr_limit = stderr_limit,
-        .timeout = timeout,
-    }) catch |err| switch (err) {
-        error.StreamTooLong => return renderJsonRpcError(allocator, id_value, -32603, "command/exec output exceeded configured cap"),
-        error.Timeout => return renderCommandExecResponse(allocator, id_value, COMMAND_EXEC_TIMEOUT_EXIT_CODE, "", ""),
+    var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, if (disable_timeout) null else timeout_ms_i64) catch |err| switch (err) {
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
     };
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    defer result.deinit(allocator);
 
     if (stream_output) {
         try queueCommandExecOutputDeltas(
@@ -5115,7 +5096,151 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
 
     const stdout_response = if (stream_output) "" else commandExecCappedOutput(result.stdout, effective_output_cap);
     const stderr_response = if (stream_output) "" else commandExecCappedOutput(result.stderr, effective_output_cap);
-    return renderCommandExecResponse(allocator, id_value, commandExecExitCode(result.term), stdout_response, stderr_response);
+    return renderCommandExecResponse(allocator, id_value, result.exit_code, stdout_response, stderr_response);
+}
+
+const CommandExecRunResult = struct {
+    exit_code: i32,
+    stdout: []const u8,
+    stderr: []const u8,
+
+    fn deinit(self: *CommandExecRunResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+        self.* = .{ .exit_code = 0, .stdout = "", .stderr = "" };
+    }
+};
+
+fn runCommandExecProcess(
+    allocator: std.mem.Allocator,
+    io_instance: *std.Io.Threaded,
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*std.process.Environ.Map,
+    timeout_ms: ?i64,
+) !CommandExecRunResult {
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = argv,
+        .cwd = cwd,
+        .environ_map = environ_map,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    var child_alive = true;
+    errdefer if (child_alive) child.kill(io_instance.io());
+
+    var stdout = std.ArrayList(u8).empty;
+    errdefer stdout.deinit(allocator);
+    var stderr = std.ArrayList(u8).empty;
+    errdefer stderr.deinit(allocator);
+
+    const started = std.Io.Timestamp.now(io_instance.io(), .awake);
+    while (true) {
+        if (pollCommandExecChild(&child)) |term| {
+            child_alive = false;
+            try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr);
+            return finishCommandExecRunResult(allocator, commandExecExitCode(term), &stdout, &stderr);
+        }
+
+        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, &stdout, 2);
+        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, &stderr, 2);
+
+        if (timeout_ms) |limit| {
+            if (elapsedCommandExecMilliseconds(io_instance.io(), started) >= @as(u64, @intCast(limit))) {
+                child.kill(io_instance.io());
+                child_alive = false;
+                try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr);
+                return finishCommandExecRunResult(allocator, COMMAND_EXEC_TIMEOUT_EXIT_CODE, &stdout, &stderr);
+            }
+        }
+    }
+}
+
+fn finishCommandExecRunResult(
+    allocator: std.mem.Allocator,
+    exit_code: i32,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+) !CommandExecRunResult {
+    const stdout_owned = try stdout.toOwnedSlice(allocator);
+    errdefer allocator.free(stdout_owned);
+    const stderr_owned = try stderr.toOwnedSlice(allocator);
+    return .{
+        .exit_code = exit_code,
+        .stdout = stdout_owned,
+        .stderr = stderr_owned,
+    };
+}
+
+fn drainCommandExecOutput(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+) !void {
+    var empty_rounds: usize = 0;
+    while (empty_rounds < 2) {
+        var made_progress = false;
+        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, stdout, 1) or made_progress;
+        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, stderr, 1) or made_progress;
+        if (made_progress) {
+            empty_rounds = 0;
+        } else {
+            empty_rounds += 1;
+        }
+    }
+}
+
+fn readCommandExecPipeChunk(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    maybe_file: ?std.Io.File,
+    output: *std.ArrayList(u8),
+    timeout_ms: u64,
+) !bool {
+    const file = maybe_file orelse return false;
+    var buffer: [4096]u8 = undefined;
+    const result = io_instance.io().operateTimeout(.{ .file_read_streaming = .{
+        .file = file,
+        .data = &.{buffer[0..]},
+    } }, .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } }) catch |err| switch (err) {
+        error.Timeout => return false,
+        else => return err,
+    };
+    const count = result.file_read_streaming catch |err| switch (err) {
+        error.EndOfStream => return false,
+        error.WouldBlock => return false,
+        else => return err,
+    };
+    if (count == 0) return false;
+    try output.appendSlice(allocator, buffer[0..count]);
+    return true;
+}
+
+fn pollCommandExecChild(child: *std.process.Child) ?std.process.Child.Term {
+    const pid = child.id orelse return null;
+    var status: c_int = 0;
+    const result = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+    if (result == 0) return null;
+    if (result < 0) return null;
+    child.id = null;
+
+    const status_u: u32 = @intCast(status);
+    if (std.c.W.IFEXITED(status_u)) return .{ .exited = std.c.W.EXITSTATUS(status_u) };
+    if (std.c.W.IFSIGNALED(status_u)) return .{ .signal = std.c.W.TERMSIG(status_u) };
+    if (std.c.W.IFSTOPPED(status_u)) return .{ .stopped = std.c.W.STOPSIG(status_u) };
+    return .{ .unknown = status_u };
+}
+
+fn elapsedCommandExecMilliseconds(io: std.Io, started: std.Io.Timestamp) u64 {
+    const elapsed = started.durationTo(std.Io.Timestamp.now(io, .awake));
+    if (elapsed.nanoseconds <= 0) return 0;
+    return @intCast(@divTrunc(elapsed.nanoseconds, std.time.ns_per_ms));
 }
 
 fn renderCommandExecResponse(
