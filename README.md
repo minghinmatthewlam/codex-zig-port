@@ -99,7 +99,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - parse Rust-compatible `plugin marketplace add|upgrade|remove` command shapes
   with explicit not-implemented errors
 - list local app-server skills from repo, user, and per-cwd extra roots with
-  `skills/list`
+  `skills/list`, including `skills/config/write` enablement toggles
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
   `exec-server`, and `update` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
