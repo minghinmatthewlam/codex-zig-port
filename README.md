@@ -56,7 +56,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run explicit local TUI shell commands with `!COMMAND`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`,
-  including Rust built-in permission profiles and explicit unsupported errors
+  including Rust built-ins and supported custom `[permissions]` profiles
   for parsed Seatbelt-only socket/denial flags
 - check `prefix_rule` execpolicy files against a command with
   `execpolicy check`, including `match` / `not_match` examples,
@@ -406,6 +406,7 @@ codex-zig exec resume --all last "continue"
 codex-zig exec --image screenshot.png "describe this"
 codex-zig sandbox macos -- /bin/echo ok
 codex-zig sandbox macos --permissions-profile :workspace --cd . -- /bin/echo ok
+codex-zig sandbox macos --permissions-profile custom-profile --cd . -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals
 codex-zig features disable goals
