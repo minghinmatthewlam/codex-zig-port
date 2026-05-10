@@ -97,6 +97,16 @@ const RemotePluginMutationResponsePayload = struct {
     enabled: bool,
 };
 
+pub const InstallResult = struct {
+    response_json: []const u8,
+    installed_path: []const u8,
+
+    pub fn deinit(self: InstallResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.response_json);
+        allocator.free(self.installed_path);
+    }
+};
+
 const RemotePluginShareUpdateTargetsResponsePayload = struct {
     principals: []const RemotePluginSharePrincipalPayload,
 };
@@ -239,6 +249,67 @@ pub fn uninstall(
     if (mutation_parse.value.enabled) return error.RemotePluginUnexpectedEnabledState;
 
     try removeRemotePluginCache(allocator, codex_home, marketplaceName(scope), detail_parse.value.name, plugin_id);
+}
+
+pub fn install(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    codex_home: []const u8,
+    requested_marketplace_name: []const u8,
+    plugin_id: []const u8,
+) !InstallResult {
+    _ = requested_marketplace_name;
+
+    const detail_url = try pluginDetailWithDownloadUrlsUrl(allocator, base_url, plugin_id);
+    defer allocator.free(detail_url);
+    const detail_body = try fetchJsonBytes(allocator, detail_url, credentials);
+    defer allocator.free(detail_body);
+
+    var detail_parse = try parsePluginDetail(allocator, detail_body, plugin_id);
+    defer detail_parse.deinit();
+    const detail = detail_parse.value;
+    const scope = scopeFromApiValue(detail.scope) orelse return error.RemotePluginInvalidScope;
+    const marketplace_name_value = marketplaceName(scope);
+
+    const availability = try normalizedAvailability(detail.status);
+    if (std.mem.eql(u8, availability, "DISABLED_BY_ADMIN")) return error.RemotePluginDisabledByAdmin;
+    const install_policy = try normalizedInstallPolicy(detail.installation_policy);
+    if (std.mem.eql(u8, install_policy, "NOT_AVAILABLE")) return error.RemotePluginNotAvailable;
+
+    const version = detail.release.version orelse return error.RemotePluginMissingReleaseVersion;
+    const bundle_url = detail.release.bundle_download_url orelse return error.RemotePluginMissingBundleDownloadUrl;
+    if (!isRemoteBundleDownloadUrlAllowed(bundle_url)) return error.RemotePluginInsecureBundleDownloadUrl;
+
+    const bundle = try fetchBytes(allocator, bundle_url, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
+    defer allocator.free(bundle);
+
+    const installed_path = try installRemotePluginBundle(
+        allocator,
+        codex_home,
+        marketplace_name_value,
+        detail.name,
+        version,
+        bundle,
+    );
+    errdefer allocator.free(installed_path);
+
+    const install_url = try installPluginUrl(allocator, base_url, plugin_id);
+    defer allocator.free(install_url);
+    const install_body = try sendJsonBytes(allocator, install_url, .POST, credentials);
+    defer allocator.free(install_body);
+
+    var mutation_parse = try std.json.parseFromSlice(RemotePluginMutationResponsePayload, allocator, install_body, .{ .ignore_unknown_fields = true });
+    defer mutation_parse.deinit();
+    if (!std.mem.eql(u8, mutation_parse.value.id, plugin_id)) return error.RemotePluginPluginIdMismatch;
+    if (!mutation_parse.value.enabled) return error.RemotePluginUnexpectedEnabledState;
+
+    const response_json = try renderInstallResponseJson(allocator, try normalizedAuthPolicy(detail.authentication_policy));
+    errdefer allocator.free(response_json);
+    return .{
+        .response_json = response_json,
+        .installed_path = installed_path,
+    };
 }
 
 pub fn fetchShareListJson(
@@ -421,6 +492,33 @@ pub fn fetchMarketplacesJson(
 
 fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
     return sendJsonBytes(allocator, url, .GET, credentials);
+}
+
+fn fetchBytes(allocator: std.mem.Allocator, url: []const u8, max_bytes: usize) ![]const u8 {
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_body.deinit();
+
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &response_body.writer,
+        .extra_headers = headers.items,
+    });
+    if (@intFromEnum(result.status) < 200 or @intFromEnum(result.status) >= 300) {
+        return error.RemotePluginHttpStatus;
+    }
+    if (response_body.writer.end > max_bytes) return error.RemotePluginArchiveTooLarge;
+    return response_body.toOwnedSlice();
 }
 
 fn sendJsonBytes(allocator: std.mem.Allocator, url: []const u8, method: std.http.Method, credentials: auth.Credentials) ![]const u8 {
@@ -619,6 +717,12 @@ fn pluginDetailUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id
     return url.toOwnedSlice(allocator);
 }
 
+fn pluginDetailWithDownloadUrlsUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8) ![]const u8 {
+    const detail_url = try pluginDetailUrl(allocator, base_url, plugin_id);
+    defer allocator.free(detail_url);
+    return std.fmt.allocPrint(allocator, "{s}?includeDownloadUrls=true", .{detail_url});
+}
+
 fn pluginListUrl(allocator: std.mem.Allocator, base_url: []const u8, scope: RemotePluginScope, page_token: ?[]const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
@@ -710,6 +814,19 @@ fn uninstallPluginUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin
     try url.appendSlice(allocator, "/plugins/");
     try appendPathSegment(allocator, &url, plugin_id);
     try url.appendSlice(allocator, "/uninstall");
+    return url.toOwnedSlice(allocator);
+}
+
+fn installPluginUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/ps/plugins/");
+    try appendPathSegment(allocator, &url, plugin_id);
+    try url.appendSlice(allocator, "/install");
     return url.toOwnedSlice(allocator);
 }
 
@@ -1385,6 +1502,15 @@ fn isSafePluginCacheSegment(value: []const u8) bool {
     return true;
 }
 
+fn isSafePluginVersionSegment(value: []const u8) bool {
+    if (value.len == 0 or std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '+') continue;
+        return false;
+    }
+    return true;
+}
+
 const PluginShareLocalPaths = struct {
     parsed: ?std.json.Parsed(std.json.Value) = null,
 
@@ -1599,6 +1725,254 @@ fn gzipCompressed(allocator: std.mem.Allocator, payload: []const u8, max_bytes: 
     return out.toOwnedSlice();
 }
 
+fn installRemotePluginBundle(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_name_value: []const u8,
+    plugin_name: []const u8,
+    plugin_version: []const u8,
+    archive: []const u8,
+) ![]const u8 {
+    if (!isSafePluginCacheSegment(marketplace_name_value) or
+        !isSafePluginCacheSegment(plugin_name) or
+        !isSafePluginVersionSegment(plugin_version))
+    {
+        return error.RemotePluginInvalidCachePath;
+    }
+
+    const plugin_base_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name_value, plugin_name });
+    defer allocator.free(plugin_base_root);
+    const installed_path = try std.fs.path.join(allocator, &.{ plugin_base_root, plugin_version });
+    errdefer allocator.free(installed_path);
+
+    const extract_root = try std.fmt.allocPrint(allocator, "{s}.download", .{plugin_base_root});
+    defer allocator.free(extract_root);
+    const staged_base_root = try std.fmt.allocPrint(allocator, "{s}.installing", .{plugin_base_root});
+    defer allocator.free(staged_base_root);
+    const backup_base_root = try std.fmt.allocPrint(allocator, "{s}.previous", .{plugin_base_root});
+    defer allocator.free(backup_base_root);
+    const staged_installed_path = try std.fs.path.join(allocator, &.{ staged_base_root, plugin_version });
+    defer allocator.free(staged_installed_path);
+
+    try deleteCachePathIfPresent(extract_root);
+    try deleteCachePathIfPresent(staged_base_root);
+    try deleteCachePathIfPresent(backup_base_root);
+    errdefer deleteCachePathIfPresent(extract_root) catch {};
+    errdefer deleteCachePathIfPresent(staged_base_root) catch {};
+
+    try extractRemotePluginArchive(allocator, archive, extract_root);
+    const extracted_plugin_root = try findExtractedPluginRoot(allocator, extract_root, plugin_name, plugin_version);
+    defer allocator.free(extracted_plugin_root);
+    try copyDirRecursive(allocator, extracted_plugin_root, staged_installed_path);
+
+    const had_existing = try renamePathIfPresent(plugin_base_root, backup_base_root);
+    std.Io.Dir.renameAbsolute(staged_base_root, plugin_base_root, std.Io.Threaded.global_single_threaded.io()) catch |err| {
+        if (had_existing) {
+            std.Io.Dir.renameAbsolute(backup_base_root, plugin_base_root, std.Io.Threaded.global_single_threaded.io()) catch {};
+        }
+        return err;
+    };
+    if (had_existing) deleteCachePathIfPresent(backup_base_root) catch {};
+    try deleteCachePathIfPresent(extract_root);
+    return installed_path;
+}
+
+fn extractRemotePluginArchive(allocator: std.mem.Allocator, archive: []const u8, extract_root: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, extract_root);
+
+    var gzip_reader: std.Io.Reader = .fixed(archive);
+    var tar_bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer tar_bytes.deinit();
+    var decompressor: std.compress.flate.Decompress = .init(&gzip_reader, .gzip, &.{});
+    _ = try decompressor.reader.streamRemaining(&tar_bytes.writer);
+    if (tar_bytes.writer.end > REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES) return error.RemotePluginArchiveTooLarge;
+
+    var tar_reader: std.Io.Reader = .fixed(tar_bytes.written());
+    var file_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var link_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var iter = std.tar.Iterator.init(&tar_reader, .{
+        .file_name_buffer = &file_name_buffer,
+        .link_name_buffer = &link_name_buffer,
+    });
+
+    var clean_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    while (try iter.next()) |file| {
+        const clean_path = try sanitizeRemoteArchivePath(&clean_path_buffer, file.name);
+        if (file.kind == .sym_link) return error.RemotePluginUnsupportedArchiveEntry;
+        if (clean_path.len == 0) {
+            if (file.kind == .directory) continue;
+            return error.RemotePluginInvalidArchivePath;
+        }
+
+        const output_path = try std.fs.path.join(allocator, &.{ extract_root, clean_path });
+        defer allocator.free(output_path);
+
+        switch (file.kind) {
+            .directory => try std.Io.Dir.cwd().createDirPath(io, output_path),
+            .file => {
+                if (std.fs.path.dirname(output_path)) |parent| {
+                    try std.Io.Dir.cwd().createDirPath(io, parent);
+                }
+                var out_file = try std.Io.Dir.cwd().createFile(io, output_path, .{ .exclusive = true });
+                defer out_file.close(io);
+                var write_buffer: [8192]u8 = undefined;
+                var writer = out_file.writer(io, &write_buffer);
+                try iter.streamRemaining(file, &writer.interface);
+                try writer.interface.flush();
+            },
+            .sym_link => unreachable,
+        }
+    }
+}
+
+fn sanitizeRemoteArchivePath(buffer: []u8, path: []const u8) ![]const u8 {
+    if (path.len == 0 or path[0] == '/') return error.RemotePluginInvalidArchivePath;
+    var output_len: usize = 0;
+    var components = std.mem.tokenizeScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, ".")) continue;
+        if (std.mem.eql(u8, component, "..")) return error.RemotePluginInvalidArchivePath;
+        if (std.mem.indexOfScalar(u8, component, 0) != null) return error.RemotePluginInvalidArchivePath;
+        if (output_len > 0) {
+            if (output_len >= buffer.len) return error.RemotePluginInvalidArchivePath;
+            buffer[output_len] = '/';
+            output_len += 1;
+        }
+        if (output_len + component.len > buffer.len) return error.RemotePluginInvalidArchivePath;
+        @memcpy(buffer[output_len..][0..component.len], component);
+        output_len += component.len;
+    }
+    return buffer[0..output_len];
+}
+
+fn findExtractedPluginRoot(
+    allocator: std.mem.Allocator,
+    extract_root: []const u8,
+    expected_name: []const u8,
+    expected_version: []const u8,
+) ![]const u8 {
+    if (try isValidExtractedPluginRoot(allocator, extract_root, expected_name, expected_version)) {
+        return allocator.dupe(u8, extract_root);
+    }
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = try std.Io.Dir.openDirAbsolute(io, extract_root, .{ .iterate = true });
+    defer dir.close(io);
+
+    var found_root: ?[]const u8 = null;
+    errdefer if (found_root) |root| allocator.free(root);
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ extract_root, entry.name });
+        errdefer allocator.free(candidate);
+        if (try isValidExtractedPluginRoot(allocator, candidate, expected_name, expected_version)) {
+            if (found_root != null) {
+                allocator.free(candidate);
+                return error.RemotePluginAmbiguousBundleRoot;
+            }
+            found_root = candidate;
+        } else {
+            allocator.free(candidate);
+        }
+    }
+
+    return found_root orelse error.RemotePluginMissingBundleManifest;
+}
+
+fn isValidExtractedPluginRoot(
+    allocator: std.mem.Allocator,
+    plugin_root: []const u8,
+    expected_name: []const u8,
+    expected_version: []const u8,
+) !bool {
+    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_root, ".codex-plugin", "plugin.json" });
+    defer allocator.free(manifest_path);
+    const manifest_bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        manifest_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(manifest_bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest_bytes, .{}) catch return error.RemotePluginInvalidBundleManifest;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.RemotePluginInvalidBundleManifest;
+    const object = parsed.value.object;
+    const name = object.get("name") orelse return error.RemotePluginInvalidBundleManifest;
+    if (name != .string or !std.mem.eql(u8, name.string, expected_name)) {
+        return error.RemotePluginBundleNameMismatch;
+    }
+    const version = object.get("version") orelse return error.RemotePluginBundleVersionMismatch;
+    if (version != .string or !std.mem.eql(u8, version.string, expected_version)) {
+        return error.RemotePluginBundleVersionMismatch;
+    }
+    return true;
+}
+
+fn copyDirRecursive(allocator: std.mem.Allocator, source_root: []const u8, target_root: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, target_root);
+
+    var source_dir = try std.Io.Dir.openDirAbsolute(io, source_root, .{ .iterate = true });
+    defer source_dir.close(io);
+
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const source_path = try std.fs.path.join(allocator, &.{ source_root, entry.name });
+        defer allocator.free(source_path);
+        const target_path = try std.fs.path.join(allocator, &.{ target_root, entry.name });
+        defer allocator.free(target_path);
+
+        if (entry.kind == .directory) {
+            try copyDirRecursive(allocator, source_path, target_path);
+        } else if (entry.kind == .file) {
+            try std.Io.Dir.copyFileAbsolute(source_path, target_path, io, .{});
+        } else {
+            return error.RemotePluginUnsupportedArchiveEntry;
+        }
+    }
+}
+
+fn renamePathIfPresent(old_path: []const u8, new_path: []const u8) !bool {
+    std.Io.Dir.renameAbsolute(old_path, new_path, std.Io.Threaded.global_single_threaded.io()) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
+fn renderInstallResponseJson(allocator: std.mem.Allocator, auth_policy: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"authPolicy\":");
+    try appendJsonString(allocator, &out, auth_policy);
+    try out.appendSlice(allocator, ",\"appsNeedingAuth\":[]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn isRemoteBundleDownloadUrlAllowed(url: []const u8) bool {
+    if (std.mem.startsWith(u8, url, "https://")) return true;
+    if (!std.mem.startsWith(u8, url, "http://")) return false;
+    if (std.c.getenv("CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS") == null) return false;
+
+    const authority_start = "http://".len;
+    const rest = url[authority_start..];
+    const authority_end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    const authority = rest[0..authority_end];
+    if (std.mem.eql(u8, authority, "[::1]")) return true;
+    if (std.mem.startsWith(u8, authority, "[::1]:")) return true;
+
+    const colon_index = std.mem.indexOfScalar(u8, authority, ':') orelse authority.len;
+    const host = authority[0..colon_index];
+    return std.mem.eql(u8, host, "127.0.0.1") or std.mem.eql(u8, host, "localhost");
+}
+
 fn scopeFromApiValue(value: []const u8) ?RemotePluginScope {
     if (std.mem.eql(u8, value, "GLOBAL")) return .global;
     if (std.mem.eql(u8, value, "WORKSPACE")) return .workspace;
@@ -1732,6 +2106,14 @@ test "remote plugin detail URLs match backend catalog paths" {
     const detail_url = try pluginDetailUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
     defer allocator.free(detail_url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/ps/plugins/plugins~Plugin_123", detail_url);
+
+    const detail_with_downloads_url = try pluginDetailWithDownloadUrlsUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
+    defer allocator.free(detail_with_downloads_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/ps/plugins/plugins~Plugin_123?includeDownloadUrls=true", detail_with_downloads_url);
+
+    const install_url = try installPluginUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
+    defer allocator.free(install_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/ps/plugins/plugins~Plugin_123/install", install_url);
 
     const installed_url = try installedPluginsUrl(allocator, "https://chatgpt.com/backend-api/", .global);
     defer allocator.free(installed_url);
@@ -2129,6 +2511,76 @@ test "remote share archive rejects symlink entries" {
     const plugin_path = try dir.dir.realPathFileAlloc(io, "shared", allocator);
     defer allocator.free(plugin_path);
     try std.testing.expectError(error.RemotePluginUnsupportedArchiveEntry, archivePluginForUpload(allocator, plugin_path));
+}
+
+test "remote install bundle writes versioned cache from root archive" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home");
+    try dir.dir.createDirPath(io, "linear/.codex-plugin");
+    try dir.dir.createDirPath(io, "linear/skills/plan-work");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "linear/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"linear\",\"version\":\"1.2.3\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "linear/skills/plan-work/SKILL.md",
+        .data = "# Plan Work\n",
+    });
+
+    const plugin_path = try dir.dir.realPathFileAlloc(io, "linear", allocator);
+    defer allocator.free(plugin_path);
+    const archive = try archivePluginForUpload(allocator, plugin_path);
+    defer allocator.free(archive);
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(codex_home);
+    const installed_path = try installRemotePluginBundle(allocator, codex_home, "chatgpt-global", "linear", "1.2.3", archive);
+    defer allocator.free(installed_path);
+
+    const expected_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", "chatgpt-global", "linear", "1.2.3" });
+    defer allocator.free(expected_path);
+    try std.testing.expectEqualStrings(expected_path, installed_path);
+    try std.testing.expect((try std.Io.Dir.cwd().statFile(io, installed_path, .{})).kind == .directory);
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ installed_path, ".codex-plugin", "plugin.json" });
+    defer allocator.free(manifest_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ installed_path, "skills", "plan-work", "SKILL.md" });
+    defer allocator.free(skill_path);
+    try std.testing.expect((try std.Io.Dir.cwd().statFile(io, manifest_path, .{})).kind == .file);
+    try std.testing.expect((try std.Io.Dir.cwd().statFile(io, skill_path, .{})).kind == .file);
+
+    const download_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", "chatgpt-global", "linear.download" });
+    defer allocator.free(download_path);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, download_path, .{}));
+}
+
+test "remote install bundle rejects symlink entries" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "home");
+
+    var tar_out: std.Io.Writer.Allocating = .init(allocator);
+    defer tar_out.deinit();
+    var tar_writer = std.tar.Writer{ .underlying_writer = &tar_out.writer };
+    try tar_writer.writeDir(".codex-plugin", .{ .mode = 0o755, .mtime = 0 });
+    try tar_writer.writeFileBytes(".codex-plugin/plugin.json", "{\"name\":\"linear\",\"version\":\"1.2.3\"}", .{ .mode = 0o644, .mtime = 0 });
+    try tar_writer.writeLink("skills/leak", "/tmp/leak", .{ .mode = 0o777, .mtime = 0 });
+    try tar_writer.finishPedantically();
+    const archive = try gzipCompressed(allocator, tar_out.written(), REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
+    defer allocator.free(archive);
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(codex_home);
+    try std.testing.expectError(
+        error.RemotePluginUnsupportedArchiveEntry,
+        installRemotePluginBundle(allocator, codex_home, "chatgpt-global", "linear", "1.2.3", archive),
+    );
 }
 
 test "remote share local path removal preserves unrelated mappings" {
