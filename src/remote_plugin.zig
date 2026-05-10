@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 
 const MAX_REMOTE_DEFAULT_PROMPT_LEN = 128;
+const REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 
 const RemotePluginScope = enum {
     global,
@@ -98,6 +99,17 @@ const RemotePluginMutationResponsePayload = struct {
 
 const RemotePluginShareUpdateTargetsResponsePayload = struct {
     principals: []const RemotePluginSharePrincipalPayload,
+};
+
+const RemoteWorkspacePluginUploadUrlResponsePayload = struct {
+    file_id: []const u8,
+    upload_url: []const u8,
+    etag: ?[]const u8 = null,
+};
+
+const RemoteWorkspacePluginCreateResponsePayload = struct {
+    plugin_id: []const u8,
+    share_url: ?[]const u8 = null,
 };
 
 const RemotePluginInstalledItemPayload = struct {
@@ -240,6 +252,54 @@ pub fn fetchShareListJson(
     defer local_paths.deinit();
 
     return renderShareListJson(allocator, &created_pages, &installed_pages, local_paths);
+}
+
+pub fn saveShareJson(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    codex_home: []const u8,
+    plugin_path: []const u8,
+    remote_plugin_id: ?[]const u8,
+    discoverability: ?[]const u8,
+    share_targets: ?[]const std.json.Value,
+) ![]const u8 {
+    const archive = try archivePluginForUpload(allocator, plugin_path);
+    defer allocator.free(archive);
+
+    const filename = try archiveFilename(allocator, plugin_path);
+    defer allocator.free(filename);
+
+    const upload_url = try workspacePluginUploadUrl(allocator, base_url);
+    defer allocator.free(upload_url);
+    const upload_payload = try renderWorkspacePluginUploadUrlRequestJson(allocator, filename, archive.len, remote_plugin_id);
+    defer allocator.free(upload_payload);
+    const upload_body = try sendJsonBytesWithPayload(allocator, upload_url, .POST, credentials, upload_payload);
+    defer allocator.free(upload_body);
+
+    var upload_parse = try std.json.parseFromSlice(RemoteWorkspacePluginUploadUrlResponsePayload, allocator, upload_body, .{
+        .ignore_unknown_fields = true,
+    });
+    defer upload_parse.deinit();
+    const etag = upload_parse.value.etag orelse return error.RemotePluginMissingUploadEtag;
+
+    try putWorkspacePluginUpload(allocator, upload_parse.value.upload_url, archive);
+
+    const finalize_url = try workspacePluginFinalizeUrl(allocator, base_url, remote_plugin_id);
+    defer allocator.free(finalize_url);
+    const finalize_payload = try renderWorkspacePluginCreateRequestJson(allocator, upload_parse.value.file_id, etag, discoverability, share_targets);
+    defer allocator.free(finalize_payload);
+    const finalize_body = try sendJsonBytesWithPayload(allocator, finalize_url, .POST, credentials, finalize_payload);
+    defer allocator.free(finalize_body);
+
+    var finalize_parse = try std.json.parseFromSlice(RemoteWorkspacePluginCreateResponsePayload, allocator, finalize_body, .{
+        .ignore_unknown_fields = true,
+    });
+    defer finalize_parse.deinit();
+    if (finalize_parse.value.plugin_id.len == 0) return error.RemotePluginMissingPluginId;
+
+    try recordPluginShareLocalPath(allocator, codex_home, finalize_parse.value.plugin_id, plugin_path);
+    return renderShareSaveJson(allocator, finalize_parse.value.plugin_id, finalize_parse.value.share_url);
 }
 
 pub fn updateShareTargetsJson(
@@ -407,6 +467,34 @@ fn sendJsonBytesWithPayload(
     }
 
     return response_body.toOwnedSlice();
+}
+
+fn putWorkspacePluginUpload(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) !void {
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    try headers.append(allocator, .{ .name = "x-ms-blob-type", .value = "BlockBlob" });
+    try headers.append(allocator, .{ .name = "Content-Type", .value = "application/gzip" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_body.deinit();
+
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .PUT,
+        .payload = payload,
+        .response_writer = &response_body.writer,
+        .extra_headers = headers.items,
+    });
+    if (result.status != .ok and result.status != .created) {
+        return error.RemotePluginHttpStatus;
+    }
 }
 
 fn fetchPluginListPages(
@@ -620,6 +708,32 @@ fn uninstallPluginUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin
     return url.toOwnedSlice(allocator);
 }
 
+fn workspacePluginUploadUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/public/plugins/workspace/upload-url");
+    return url.toOwnedSlice(allocator);
+}
+
+fn workspacePluginFinalizeUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: ?[]const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/public/plugins/workspace");
+    if (plugin_id) |id| {
+        try url.appendSlice(allocator, "/");
+        try appendPathSegment(allocator, &url, id);
+    }
+    return url.toOwnedSlice(allocator);
+}
+
 fn pluginShareTargetsUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
@@ -728,21 +842,99 @@ fn renderShareListJson(
     return out.toOwnedSlice(allocator);
 }
 
+fn renderShareSaveJson(allocator: std.mem.Allocator, remote_plugin_id: []const u8, share_url: ?[]const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"remotePluginId\":");
+    try appendJsonString(allocator, &out, remote_plugin_id);
+    try out.appendSlice(allocator, ",\"shareUrl\":");
+    try appendJsonString(allocator, &out, share_url orelse "");
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderWorkspacePluginUploadUrlRequestJson(
+    allocator: std.mem.Allocator,
+    filename: []const u8,
+    size_bytes: usize,
+    plugin_id: ?[]const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"filename\":");
+    try appendJsonString(allocator, &out, filename);
+    try out.appendSlice(allocator, ",\"mime_type\":\"application/gzip\",\"size_bytes\":");
+    try out.print(allocator, "{d}", .{size_bytes});
+    if (plugin_id) |id| {
+        try out.appendSlice(allocator, ",\"plugin_id\":");
+        try appendJsonString(allocator, &out, id);
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderWorkspacePluginCreateRequestJson(
+    allocator: std.mem.Allocator,
+    file_id: []const u8,
+    etag: []const u8,
+    discoverability: ?[]const u8,
+    share_targets: ?[]const std.json.Value,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"file_id\":");
+    try appendJsonString(allocator, &out, file_id);
+    try out.appendSlice(allocator, ",\"etag\":");
+    try appendJsonString(allocator, &out, etag);
+    if (discoverability) |value| {
+        try out.appendSlice(allocator, ",\"discoverability\":");
+        try appendJsonString(allocator, &out, value);
+    }
+    if (share_targets) |targets| {
+        try out.appendSlice(allocator, ",\"share_targets\":");
+        try appendShareTargetsArraySnakeCase(allocator, &out, targets);
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderShareTargetsRequestJson(allocator: std.mem.Allocator, share_targets: []const std.json.Value) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"targets\":[");
-    for (share_targets, 0..) |target, index| {
-        if (index > 0) try out.appendSlice(allocator, ",");
-        const object = target.object;
-        try out.appendSlice(allocator, "{\"principal_type\":");
-        try appendJsonString(allocator, &out, object.get("principalType").?.string);
-        try out.appendSlice(allocator, ",\"principal_id\":");
-        try appendJsonString(allocator, &out, object.get("principalId").?.string);
-        try out.appendSlice(allocator, "}");
-    }
+    try appendShareTargetsArrayBodySnakeCase(allocator, &out, share_targets);
     try out.appendSlice(allocator, "]}");
     return out.toOwnedSlice(allocator);
+}
+
+fn appendShareTargetsArraySnakeCase(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    share_targets: []const std.json.Value,
+) !void {
+    try out.appendSlice(allocator, "[");
+    try appendShareTargetsArrayBodySnakeCase(allocator, out, share_targets);
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendShareTargetsArrayBodySnakeCase(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    share_targets: []const std.json.Value,
+) !void {
+    for (share_targets, 0..) |target, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendShareTargetSnakeCase(allocator, out, target);
+    }
+}
+
+fn appendShareTargetSnakeCase(allocator: std.mem.Allocator, out: *std.ArrayList(u8), target: std.json.Value) !void {
+    const object = target.object;
+    try out.appendSlice(allocator, "{\"principal_type\":");
+    try appendJsonString(allocator, out, object.get("principalType").?.string);
+    try out.appendSlice(allocator, ",\"principal_id\":");
+    try appendJsonString(allocator, out, object.get("principalId").?.string);
+    try out.appendSlice(allocator, "}");
 }
 
 fn renderShareTargetsUpdateJson(allocator: std.mem.Allocator, principals: []const RemotePluginSharePrincipalPayload) ![]const u8 {
@@ -1218,6 +1410,51 @@ fn loadPluginShareLocalPaths(allocator: std.mem.Allocator, codex_home: []const u
     return .{ .parsed = parsed };
 }
 
+fn recordPluginShareLocalPath(allocator: std.mem.Allocator, codex_home: []const u8, remote_plugin_id: []const u8, plugin_path: []const u8) !void {
+    var local_paths = try loadPluginShareLocalPaths(allocator, codex_home);
+    defer local_paths.deinit();
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"localPluginPathsByRemotePluginId\":{");
+    var count: usize = 0;
+    var replaced = false;
+    if (local_paths.parsed) |parsed| {
+        if (parsed.value == .object) {
+            if (parsed.value.object.get("localPluginPathsByRemotePluginId")) |mapping| {
+                if (mapping == .object) {
+                    var iter = mapping.object.iterator();
+                    while (iter.next()) |entry| {
+                        if (entry.value_ptr.* != .string) continue;
+                        try appendCommaIfNeeded(allocator, &out, &count);
+                        try appendJsonString(allocator, &out, entry.key_ptr.*);
+                        try out.appendSlice(allocator, ":");
+                        if (std.mem.eql(u8, entry.key_ptr.*, remote_plugin_id)) {
+                            try appendJsonString(allocator, &out, plugin_path);
+                            replaced = true;
+                        } else {
+                            try appendJsonString(allocator, &out, entry.value_ptr.*.string);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!replaced) {
+        try appendCommaIfNeeded(allocator, &out, &count);
+        try appendJsonString(allocator, &out, remote_plugin_id);
+        try out.appendSlice(allocator, ":");
+        try appendJsonString(allocator, &out, plugin_path);
+    }
+    try out.appendSlice(allocator, "}}\n");
+
+    const path = try pluginShareLocalPathsPath(allocator, codex_home);
+    defer allocator.free(path);
+    const parent = std.fs.path.dirname(path) orelse return error.InvalidPluginShareLocalPathsPath;
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = path, .data = out.items });
+}
+
 fn removePluginShareLocalPath(allocator: std.mem.Allocator, codex_home: []const u8, remote_plugin_id: []const u8) !void {
     var local_paths = try loadPluginShareLocalPaths(allocator, codex_home);
     defer local_paths.deinit();
@@ -1261,6 +1498,109 @@ fn removePluginShareLocalPath(allocator: std.mem.Allocator, codex_home: []const 
 
 fn pluginShareLocalPathsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, ".tmp", "plugin-share-local-paths-v1.json" });
+}
+
+fn archiveFilename(allocator: std.mem.Allocator, plugin_path: []const u8) ![]const u8 {
+    const plugin_name = std.fs.path.basename(plugin_path);
+    if (plugin_name.len == 0 or std.mem.eql(u8, plugin_name, ".") or std.mem.eql(u8, plugin_name, "..")) {
+        return error.RemotePluginInvalidPluginPath;
+    }
+    return std.fmt.allocPrint(allocator, "{s}.tar.gz", .{plugin_name});
+}
+
+fn archivePluginForUpload(allocator: std.mem.Allocator, plugin_path: []const u8) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const plugin_metadata = std.Io.Dir.cwd().statFile(io, plugin_path, .{}) catch return error.RemotePluginInvalidPluginPath;
+    if (plugin_metadata.kind != .directory) return error.RemotePluginInvalidPluginPath;
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_path, ".codex-plugin", "plugin.json" });
+    defer allocator.free(manifest_path);
+    const manifest_metadata = std.Io.Dir.cwd().statFile(io, manifest_path, .{}) catch return error.RemotePluginInvalidPluginPath;
+    if (manifest_metadata.kind != .file) return error.RemotePluginInvalidPluginPath;
+
+    var tar_out: std.Io.Writer.Allocating = .init(allocator);
+    defer tar_out.deinit();
+    var tar_writer = std.tar.Writer{ .underlying_writer = &tar_out.writer };
+    try appendPluginTreeToTar(allocator, &tar_writer, plugin_path, "");
+    try tar_writer.finishPedantically();
+    const tar_bytes = try tar_out.toOwnedSlice();
+    defer allocator.free(tar_bytes);
+
+    return gzipStored(allocator, tar_bytes, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
+}
+
+fn appendPluginTreeToTar(
+    allocator: std.mem.Allocator,
+    tar_writer: *std.tar.Writer,
+    current_path: []const u8,
+    relative_prefix: []const u8,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = try std.Io.Dir.openDirAbsolute(io, current_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var names = std.ArrayList([]u8).empty;
+    defer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]u8, names.items, {}, stringSliceLessThan);
+
+    for (names.items) |name| {
+        const full_path = try std.fs.path.join(allocator, &.{ current_path, name });
+        defer allocator.free(full_path);
+        const rel_path = if (relative_prefix.len == 0)
+            try allocator.dupe(u8, name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ relative_prefix, name });
+        defer allocator.free(rel_path);
+
+        const metadata = try std.Io.Dir.cwd().statFile(io, full_path, .{});
+        if (metadata.kind == .directory) {
+            try tar_writer.writeDir(rel_path, .{ .mode = 0o755, .mtime = 0 });
+            try appendPluginTreeToTar(allocator, tar_writer, full_path, rel_path);
+        } else if (metadata.kind == .file) {
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(io, full_path, allocator, .limited(REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES + 1));
+            defer allocator.free(bytes);
+            try tar_writer.writeFileBytes(rel_path, bytes, .{ .mode = 0o644, .mtime = 0 });
+        } else {
+            return error.RemotePluginUnsupportedArchiveEntry;
+        }
+    }
+}
+
+fn stringSliceLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
+}
+
+fn gzipStored(allocator: std.mem.Allocator, payload: []const u8, max_bytes: usize) ![]const u8 {
+    var out = try std.Io.Writer.Allocating.initCapacity(allocator, payload.len + 32 + ((payload.len / 65535) + 1) * 5);
+    errdefer out.deinit();
+
+    try out.writer.writeAll(&.{ 0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 });
+    var offset: usize = 0;
+    while (true) {
+        const remaining = payload.len - offset;
+        const chunk_len = @min(remaining, 65535);
+        const final_block = offset + chunk_len >= payload.len;
+        try out.writer.writeByte(if (final_block) 0x01 else 0x00);
+        const len16: u16 = @intCast(chunk_len);
+        try out.writer.writeInt(u16, len16, .little);
+        try out.writer.writeInt(u16, ~len16, .little);
+        try out.writer.writeAll(payload[offset .. offset + chunk_len]);
+        offset += chunk_len;
+        if (final_block) break;
+    }
+    try out.writer.writeInt(u32, std.hash.Crc32.hash(payload), .little);
+    try out.writer.writeInt(u32, @as(u32, @truncate(payload.len)), .little);
+
+    if (out.writer.end > max_bytes) return error.RemotePluginArchiveTooLarge;
+    return out.toOwnedSlice();
 }
 
 fn scopeFromApiValue(value: []const u8) ?RemotePluginScope {
@@ -1680,6 +2020,99 @@ test "remote share target request and response JSON use Rust wire casing" {
     );
 }
 
+test "remote share save request JSON uses Rust workspace upload casing" {
+    const allocator = std.testing.allocator;
+    var request_parse = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"shareTargets":[{"principalType":"user","principalId":"user-1"},{"principalType":"workspace","principalId":"workspace-1"}]}
+    , .{});
+    defer request_parse.deinit();
+
+    const upload_request = try renderWorkspacePluginUploadUrlRequestJson(allocator, "shared-plugin.tar.gz", 123, "plugins~Plugin_123");
+    defer allocator.free(upload_request);
+    try std.testing.expectEqualStrings(
+        "{\"filename\":\"shared-plugin.tar.gz\",\"mime_type\":\"application/gzip\",\"size_bytes\":123,\"plugin_id\":\"plugins~Plugin_123\"}",
+        upload_request,
+    );
+
+    const create_request = try renderWorkspacePluginCreateRequestJson(
+        allocator,
+        "file_123",
+        "upload-etag",
+        "PRIVATE",
+        request_parse.value.object.get("shareTargets").?.array.items,
+    );
+    defer allocator.free(create_request);
+    try std.testing.expectEqualStrings(
+        "{\"file_id\":\"file_123\",\"etag\":\"upload-etag\",\"discoverability\":\"PRIVATE\",\"share_targets\":[{\"principal_type\":\"user\",\"principal_id\":\"user-1\"},{\"principal_type\":\"workspace\",\"principal_id\":\"workspace-1\"}]}",
+        create_request,
+    );
+
+    const response = try renderShareSaveJson(allocator, "plugins~Plugin_456", "https://chatgpt.example/share");
+    defer allocator.free(response);
+    try std.testing.expectEqualStrings(
+        "{\"remotePluginId\":\"plugins~Plugin_456\",\"shareUrl\":\"https://chatgpt.example/share\"}",
+        response,
+    );
+}
+
+test "remote share archive is gzip tar with plugin files" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "shared/.codex-plugin");
+    try dir.dir.createDirPath(io, "shared/skills/example");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "shared/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"shared\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "shared/skills/example/SKILL.md",
+        .data = "# Example\n",
+    });
+
+    const plugin_path = try dir.dir.realPathFileAlloc(io, "shared", allocator);
+    defer allocator.free(plugin_path);
+    const archive = try archivePluginForUpload(allocator, plugin_path);
+    defer allocator.free(archive);
+    try std.testing.expect(archive.len > 10);
+    try std.testing.expectEqual(@as(u8, 0x1f), archive[0]);
+    try std.testing.expectEqual(@as(u8, 0x8b), archive[1]);
+
+    var gzip_reader: std.Io.Reader = .fixed(archive);
+    var tar_bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer tar_bytes.deinit();
+    var decompressor: std.compress.flate.Decompress = .init(&gzip_reader, .gzip, &.{});
+    _ = try decompressor.reader.streamRemaining(&tar_bytes.writer);
+
+    var tar_reader: std.Io.Reader = .fixed(tar_bytes.written());
+    var file_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var link_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var iter = std.tar.Iterator.init(&tar_reader, .{
+        .file_name_buffer = &file_name_buffer,
+        .link_name_buffer = &link_name_buffer,
+    });
+
+    var saw_manifest = false;
+    var saw_skill = false;
+    while (try iter.next()) |file| {
+        if (file.kind != .file) continue;
+        var body: std.Io.Writer.Allocating = .init(allocator);
+        defer body.deinit();
+        try iter.streamRemaining(file, &body.writer);
+        if (std.mem.eql(u8, file.name, ".codex-plugin/plugin.json")) {
+            saw_manifest = true;
+            try std.testing.expectEqualStrings("{\"name\":\"shared\"}", body.written());
+        } else if (std.mem.eql(u8, file.name, "skills/example/SKILL.md")) {
+            saw_skill = true;
+            try std.testing.expectEqualStrings("# Example\n", body.written());
+        }
+    }
+    try std.testing.expect(saw_manifest);
+    try std.testing.expect(saw_skill);
+}
+
 test "remote share local path removal preserves unrelated mappings" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
@@ -1709,6 +2142,32 @@ test "remote share local path removal preserves unrelated mappings" {
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, mapping_path, .{}));
 }
 
+test "remote share local path recording replaces corrupt mappings" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home/.tmp");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "home/.tmp/plugin-share-local-paths-v1.json",
+        .data = "not json",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(root);
+    try recordPluginShareLocalPath(allocator, root, "plugins~Plugin_789", "/tmp/shared");
+
+    const mapping_path = try pluginShareLocalPathsPath(allocator, root);
+    defer allocator.free(mapping_path);
+    const remaining = try std.Io.Dir.cwd().readFileAlloc(io, mapping_path, allocator, .limited(1024));
+    defer allocator.free(remaining);
+    try std.testing.expectEqualStrings(
+        "{\"localPluginPathsByRemotePluginId\":{\"plugins~Plugin_789\":\"/tmp/shared\"}}\n",
+        remaining,
+    );
+}
+
 test "remote share endpoint URLs match backend paths" {
     const allocator = std.testing.allocator;
     const list_url = try createdWorkspacePluginsUrl(allocator, "https://chatgpt.com/backend-api/", "next page");
@@ -1722,6 +2181,18 @@ test "remote share endpoint URLs match backend paths" {
     const delete_url = try deletePluginShareUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
     defer allocator.free(delete_url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/public/plugins/workspace/plugins~Plugin_123", delete_url);
+
+    const upload_url = try workspacePluginUploadUrl(allocator, "https://chatgpt.com/backend-api/");
+    defer allocator.free(upload_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/public/plugins/workspace/upload-url", upload_url);
+
+    const finalize_create_url = try workspacePluginFinalizeUrl(allocator, "https://chatgpt.com/backend-api/", null);
+    defer allocator.free(finalize_create_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/public/plugins/workspace", finalize_create_url);
+
+    const finalize_update_url = try workspacePluginFinalizeUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
+    defer allocator.free(finalize_update_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/public/plugins/workspace/plugins~Plugin_123", finalize_update_url);
 }
 
 test "remote skill detail URL appends escaped path segments" {
