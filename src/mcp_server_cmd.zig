@@ -374,6 +374,10 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer if (model_provider_bearer_token) |value| allocator.free(value);
     var model_provider_auth_command = if (source.model_provider_auth_command) |value| try value.clone(allocator) else null;
     errdefer if (model_provider_auth_command) |*value| value.deinit(allocator);
+    var model_provider_http_headers = if (source.model_provider_http_headers) |value| try value.clone(allocator) else null;
+    errdefer if (model_provider_http_headers) |*value| value.deinit(allocator);
+    var model_provider_env_http_headers = if (source.model_provider_env_http_headers) |value| try value.clone(allocator) else null;
+    errdefer if (model_provider_env_http_headers) |*value| value.deinit(allocator);
     const oss_provider = if (source.oss_provider) |value| try allocator.dupe(u8, value) else null;
     errdefer if (oss_provider) |value| allocator.free(value);
     const installation_id = try allocator.dupe(u8, source.installation_id);
@@ -397,6 +401,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .model_provider_env_key = model_provider_env_key,
         .model_provider_bearer_token = model_provider_bearer_token,
         .model_provider_auth_command = model_provider_auth_command,
+        .model_provider_http_headers = model_provider_http_headers,
+        .model_provider_env_http_headers = model_provider_env_http_headers,
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = source.approval_policy,

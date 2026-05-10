@@ -3,6 +3,7 @@ const std = @import("std");
 const agents_md = @import("agents_md.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const env = @import("env.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 
 pub const FunctionCall = struct {
@@ -171,6 +172,11 @@ pub fn createTurnWithOptions(
     defer headers.deinit(allocator);
     var auth_header: ?[]const u8 = null;
     defer if (auth_header) |value| allocator.free(value);
+    var provider_env_header_values = std.ArrayList([]const u8).empty;
+    defer {
+        for (provider_env_header_values.items) |value| allocator.free(value);
+        provider_env_header_values.deinit(allocator);
+    }
     if (credentials.mode != .local_oss) {
         auth_header = try auth.authorizationHeader(allocator, credentials);
         try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
@@ -178,6 +184,7 @@ pub fn createTurnWithOptions(
     try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
     try headers.append(allocator, .{ .name = "Accept", .value = "text/event-stream" });
     try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+    try appendProviderHeaders(allocator, &headers, &provider_env_header_values, cfg);
     if (credentials.account_id) |account_id| {
         try headers.append(allocator, .{ .name = "ChatGPT-Account-ID", .value = account_id });
     }
@@ -214,6 +221,32 @@ pub fn createTurnWithOptions(
     }
 
     return parseSseResponse(allocator, bytes);
+}
+
+fn appendProviderHeaders(
+    allocator: std.mem.Allocator,
+    headers: *std.ArrayList(std.http.Header),
+    owned_env_values: *std.ArrayList([]const u8),
+    cfg: config.Config,
+) !void {
+    if (cfg.model_provider_http_headers) |header_map| {
+        for (header_map.entries) |entry| {
+            try headers.append(allocator, .{ .name = entry.key, .value = entry.value });
+        }
+    }
+    if (cfg.model_provider_env_http_headers) |header_map| {
+        for (header_map.entries) |entry| {
+            const value = try env.getOwnedDynamic(allocator, entry.value);
+            if (value) |owned| {
+                if (std.mem.trim(u8, owned, " \t\r\n").len == 0) {
+                    allocator.free(owned);
+                    continue;
+                }
+                try owned_env_values.append(allocator, owned);
+                try headers.append(allocator, .{ .name = entry.key, .value = owned });
+            }
+        }
+    }
 }
 
 const StreamingResponseWriter = struct {

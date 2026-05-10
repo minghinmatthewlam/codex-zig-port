@@ -12,6 +12,8 @@ pub const Config = struct {
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
     model_provider_auth_command: ?ProviderAuthCommand = null,
+    model_provider_http_headers: ?StringMap = null,
+    model_provider_env_http_headers: ?StringMap = null,
     oss_provider: ?[]const u8,
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
@@ -34,6 +36,8 @@ pub const Config = struct {
         if (self.model_provider_env_key) |value| allocator.free(value);
         if (self.model_provider_bearer_token) |value| allocator.free(value);
         if (self.model_provider_auth_command) |*value| value.deinit(allocator);
+        if (self.model_provider_http_headers) |*value| value.deinit(allocator);
+        if (self.model_provider_env_http_headers) |*value| value.deinit(allocator);
         if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
@@ -92,6 +96,43 @@ pub const ProviderAuthCommand = struct {
             .cwd = cwd,
             .timeout_ms = self.timeout_ms,
         };
+    }
+};
+
+pub const StringMapEntry = struct {
+    key: []const u8,
+    value: []const u8,
+
+    pub fn deinit(self: StringMapEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.value);
+    }
+};
+
+pub const StringMap = struct {
+    entries: []StringMapEntry,
+
+    pub fn deinit(self: *StringMap, allocator: std.mem.Allocator) void {
+        for (self.entries) |entry| entry.deinit(allocator);
+        allocator.free(self.entries);
+        self.entries = &.{};
+    }
+
+    pub fn clone(self: StringMap, allocator: std.mem.Allocator) !StringMap {
+        const entries = try allocator.alloc(StringMapEntry, self.entries.len);
+        errdefer allocator.free(entries);
+        var copied: usize = 0;
+        errdefer {
+            for (entries[0..copied]) |entry| entry.deinit(allocator);
+        }
+        for (self.entries, 0..) |entry, index| {
+            entries[index] = .{
+                .key = try allocator.dupe(u8, entry.key),
+                .value = try allocator.dupe(u8, entry.value),
+            };
+            copied += 1;
+        }
+        return .{ .entries = entries };
     }
 };
 
@@ -524,6 +565,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     var model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
     errdefer model_provider_auth.deinit(allocator);
+    var provider_headers = try resolveModelProviderHeaders(allocator, config_view, active_profile);
+    errdefer provider_headers.deinit(allocator);
 
     const oss_provider = try resolveOssProvider(allocator, config_view, active_profile);
     errdefer if (oss_provider) |provider| allocator.free(provider);
@@ -556,6 +599,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model_provider_env_key = model_provider_auth.env_key,
         .model_provider_bearer_token = model_provider_auth.bearer_token,
         .model_provider_auth_command = model_provider_auth.command,
+        .model_provider_http_headers = provider_headers.http_headers,
+        .model_provider_env_http_headers = provider_headers.env_http_headers,
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = approval_policy,
@@ -679,6 +724,16 @@ const ModelProviderAuth = struct {
     }
 };
 
+const ModelProviderHeaders = struct {
+    http_headers: ?StringMap = null,
+    env_http_headers: ?StringMap = null,
+
+    fn deinit(self: *ModelProviderHeaders, allocator: std.mem.Allocator) void {
+        if (self.http_headers) |*value| value.deinit(allocator);
+        if (self.env_http_headers) |*value| value.deinit(allocator);
+    }
+};
+
 fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderAuth {
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
@@ -698,6 +753,22 @@ fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigVie
         .env_key = env_key,
         .bearer_token = bearer_token,
         .command = command,
+    };
+}
+
+fn resolveModelProviderHeaders(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderHeaders {
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    const provider = model_provider orelse return .{};
+
+    var http_headers = try config_view.getModelProviderStringMap(allocator, provider, "http_headers");
+    errdefer if (http_headers) |*value| value.deinit(allocator);
+    var env_http_headers = try config_view.getModelProviderStringMap(allocator, provider, "env_http_headers");
+    errdefer if (env_http_headers) |*value| value.deinit(allocator);
+
+    return .{
+        .http_headers = http_headers,
+        .env_http_headers = env_http_headers,
     };
 }
 
@@ -1398,6 +1469,55 @@ const ConfigView = struct {
         };
     }
 
+    fn getModelProviderStringMap(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        provider: []const u8,
+        key: []const u8,
+    ) !?StringMap {
+        const section_name = try std.fmt.allocPrint(allocator, "model_providers.{s}.{s}", .{ provider, key });
+        defer allocator.free(section_name);
+
+        if (try self.getSectionStringMap(allocator, section_name)) |value| return value;
+        const inline_table = try self.getModelProviderInlineTable(allocator, provider, key);
+        defer if (inline_table) |value| allocator.free(value);
+        if (inline_table) |value| return try parseStringMapInlineTable(allocator, value);
+        return null;
+    }
+
+    fn getSectionStringMap(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        section_name: []const u8,
+    ) !?StringMap {
+        var in_section = false;
+        var entries = std.ArrayList(StringMapEntry).empty;
+        errdefer {
+            for (entries.items) |entry| entry.deinit(allocator);
+            entries.deinit(allocator);
+        }
+
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                if (in_section) break;
+                in_section = isExactSection(line, section_name);
+                continue;
+            }
+            if (!in_section) continue;
+            if (try stringMapEntryForLine(allocator, line)) |entry| {
+                try entries.append(allocator, entry);
+            }
+        }
+        if (entries.items.len == 0) {
+            entries.deinit(allocator);
+            return null;
+        }
+        return .{ .entries = try entries.toOwnedSlice(allocator) };
+    }
+
     fn getModelProviderInlineTable(
         self: ConfigView,
         allocator: std.mem.Allocator,
@@ -1478,6 +1598,25 @@ fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []cons
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
     return parseTomlString(allocator, rhs);
+}
+
+fn stringMapEntryForLine(allocator: std.mem.Allocator, line: []const u8) !?StringMapEntry {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const raw_key = std.mem.trim(u8, line[0..eq], " \t");
+    if (raw_key.len == 0) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    const value = try parseTomlString(allocator, rhs) orelse return null;
+    errdefer allocator.free(value);
+    const key = try parseTomlKey(allocator, raw_key);
+    return .{ .key = key, .value = value };
+}
+
+fn parseTomlKey(allocator: std.mem.Allocator, raw_key: []const u8) ![]const u8 {
+    if (raw_key.len >= 2 and raw_key[0] == '"') {
+        if (try parseTomlString(allocator, raw_key)) |value| return value;
+        return error.InvalidTomlString;
+    }
+    return allocator.dupe(u8, raw_key);
 }
 
 fn inlineTableValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
@@ -1609,6 +1748,53 @@ fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const 
         .cwd = owned_cwd,
         .timeout_ms = resolved_timeout,
     };
+}
+
+fn parseStringMapInlineTable(allocator: std.mem.Allocator, contents: []const u8) !?StringMap {
+    var entries = std.ArrayList(StringMapEntry).empty;
+    errdefer {
+        for (entries.items) |entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    var start: usize = 0;
+    var index: usize = 0;
+    var in_string = false;
+    var escaped = false;
+    while (index <= contents.len) : (index += 1) {
+        const at_end = index == contents.len;
+        if (!at_end) {
+            const byte = contents[index];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (byte == '\\') {
+                    escaped = true;
+                } else if (byte == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (byte == '"') {
+                in_string = true;
+                continue;
+            }
+            if (byte != ',') continue;
+        }
+
+        const entry_line = std.mem.trim(u8, contents[start..index], " \t\r\n");
+        start = index + 1;
+        if (entry_line.len == 0) continue;
+        if (try stringMapEntryForLine(allocator, entry_line)) |entry| {
+            try entries.append(allocator, entry);
+        }
+    }
+    if (in_string) return error.InvalidTomlInlineTable;
+    if (entries.items.len == 0) {
+        entries.deinit(allocator);
+        return null;
+    }
+    return .{ .entries = try entries.toOwnedSlice(allocator) };
 }
 
 pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
@@ -2196,6 +2382,33 @@ test "model provider command auth rejects auth conflicts" {
     };
 
     try std.testing.expectError(error.ModelProviderAuthConflict, resolveModelProviderAuth(allocator, view, null));
+}
+
+test "model provider headers resolve from provider tables and inline maps" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "header-provider"
+        \\
+        \\[model_providers.header-provider]
+        \\base_url = "https://proxy.example/v1"
+        \\env_http_headers = { "X-Env-Token" = "CORP_HEADER_TOKEN" }
+        \\
+        \\[model_providers.header-provider.http_headers]
+        \\"X-Corp-Static" = "static-value"
+        \\
+        ,
+    };
+
+    var headers = try resolveModelProviderHeaders(allocator, view, null);
+    defer headers.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), headers.http_headers.?.entries.len);
+    try std.testing.expectEqualStrings("X-Corp-Static", headers.http_headers.?.entries[0].key);
+    try std.testing.expectEqualStrings("static-value", headers.http_headers.?.entries[0].value);
+    try std.testing.expectEqual(@as(usize, 1), headers.env_http_headers.?.entries.len);
+    try std.testing.expectEqualStrings("X-Env-Token", headers.env_http_headers.?.entries[0].key);
+    try std.testing.expectEqualStrings("CORP_HEADER_TOKEN", headers.env_http_headers.?.entries[0].value);
 }
 
 test "profile model provider overrides top-level provider" {
