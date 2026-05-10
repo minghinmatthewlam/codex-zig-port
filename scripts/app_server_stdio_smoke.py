@@ -3811,6 +3811,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'web_search = "live"',
                 'service_tier = "flex"',
                 "",
+                "[sandbox_workspace_write]",
+                'writable_roots = ["/tmp/codex-zig-user-root"]',
+                "network_access = true",
+                "exclude_slash_tmp = true",
+                "",
                 "[tools.web_search]",
                 'context_size = "high"',
                 'allowed_domains = ["example.com"]',
@@ -3869,6 +3874,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["model"] == "gpt-config"
         assert config_body["approval_policy"] == "never"
         assert config_body["sandbox_mode"] == "danger-full-access"
+        assert config_body["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-user-root"],
+            "network_access": True,
+            "exclude_tmpdir_env_var": False,
+            "exclude_slash_tmp": True,
+        }
         assert config_body["web_search"] == "live"
         assert config_body["service_tier"] == "flex"
         assert config_body["tools"] == {
@@ -3905,6 +3916,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "profile",
             "approval_policy",
             "sandbox_mode",
+            "sandbox_workspace_write.writable_roots.0",
+            "sandbox_workspace_write.network_access",
+            "sandbox_workspace_write.exclude_slash_tmp",
             "web_search",
             "service_tier",
             "tools.web_search.context_size",
@@ -3928,6 +3942,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "profile": "work",
             "approval_policy": "never",
             "sandbox_mode": "danger-full-access",
+            "sandbox_workspace_write": {
+                "writable_roots": ["/tmp/codex-zig-user-root"],
+                "network_access": True,
+                "exclude_tmpdir_env_var": False,
+                "exclude_slash_tmp": True,
+            },
             "web_search": "live",
             "service_tier": "flex",
             "tools": {
@@ -4440,6 +4460,16 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                 "edits": [
                     {"keyPath": "sandbox_mode", "value": "workspace-write", "mergeStrategy": "replace"},
                     {
+                        "keyPath": "sandbox_workspace_write",
+                        "value": {
+                            "writable_roots": ["/tmp/codex-zig-batch-root"],
+                            "network_access": False,
+                            "exclude_tmpdir_env_var": True,
+                            "exclude_slash_tmp": True,
+                        },
+                        "mergeStrategy": "replace",
+                    },
+                    {
                         "keyPath": "mcp_servers.linear",
                         "value": {
                             "bearer_token_env_var": "REPLACED_TOKEN",
@@ -4461,6 +4491,12 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         after_versioned_batch = rpc("config-read-after-versioned-batch", "config/read", {})
         assert after_versioned_batch["id"] == "config-read-after-versioned-batch"
         assert after_versioned_batch["result"]["config"]["sandbox_mode"] == "workspace-write"
+        assert after_versioned_batch["result"]["config"]["sandbox_workspace_write"] == {
+            "writable_roots": ["/tmp/codex-zig-batch-root"],
+            "network_access": False,
+            "exclude_tmpdir_env_var": True,
+            "exclude_slash_tmp": True,
+        }
         replaced_contents = config_path.read_text(encoding="utf-8")
         assert 'bearer_token_env_var = "REPLACED_TOKEN"' in replaced_contents
         assert 'alpha = "replaced"' in replaced_contents
