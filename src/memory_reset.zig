@@ -5,6 +5,28 @@ const env = @import("env.zig");
 
 pub const state_db_filename = "state_5.sqlite";
 
+const sqlite3 = opaque {};
+const SqliteCallback = *const fn (?*anyopaque, c_int, [*c][*c]u8, [*c][*c]u8) callconv(.c) c_int;
+
+const SQLITE_OK = 0;
+const SQLITE_OPEN_READWRITE = 0x00000002;
+
+extern fn sqlite3_open_v2(
+    filename: [*:0]const u8,
+    pp_db: *?*sqlite3,
+    flags: c_int,
+    z_vfs: ?[*:0]const u8,
+) c_int;
+extern fn sqlite3_close(db: *sqlite3) c_int;
+extern fn sqlite3_exec(
+    db: *sqlite3,
+    sql: [*:0]const u8,
+    callback: ?SqliteCallback,
+    arg: ?*anyopaque,
+    errmsg: *?[*:0]u8,
+) c_int;
+extern fn sqlite3_free(ptr: ?*anyopaque) void;
+
 pub fn resolveStateDbPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     const sqlite_home = try resolveSqliteHome(allocator, codex_home);
     defer allocator.free(sqlite_home);
@@ -24,20 +46,24 @@ pub fn clearMemoryStateDb(allocator: std.mem.Allocator, state_path: []const u8) 
         \\COMMIT;
     ;
 
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
+    const state_path_z = try allocator.dupeZ(u8, state_path);
+    defer allocator.free(state_path_z);
 
-    const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = &.{ "sqlite3", state_path, sql },
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    var db: ?*sqlite3 = null;
+    if (sqlite3_open_v2(state_path_z.ptr, &db, SQLITE_OPEN_READWRITE, null) != SQLITE_OK) {
+        if (db) |handle| _ = sqlite3_close(handle);
+        return error.MemoryStateDbOpenFailed;
+    }
+    defer if (db) |handle| {
+        _ = sqlite3_close(handle);
+    };
 
-    switch (result.term) {
-        .exited => |code| if (code != 0) return error.MemoryStateDbClearFailed,
-        else => return error.MemoryStateDbClearFailed,
+    var errmsg: ?[*:0]u8 = null;
+    defer if (errmsg) |message| {
+        sqlite3_free(message);
+    };
+    if (sqlite3_exec(db.?, sql, null, null, &errmsg) != SQLITE_OK) {
+        return error.MemoryStateDbClearFailed;
     }
 }
 

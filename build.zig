@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.linkSystemLibrary("sqlite3", .{});
 
     const exe = b.addExecutable(.{
         .name = "codex-zig",
@@ -23,13 +24,16 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run codex-zig");
     run_step.dependOn(&run_cmd.step);
 
+    const unit_tests_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_all.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    unit_tests_mod.linkSystemLibrary("sqlite3", .{});
+
     const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/test_all.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+        .root_module = unit_tests_mod,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
