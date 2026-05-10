@@ -76,14 +76,58 @@ const RemotePluginSkillDetailPayload = struct {
     skill_md_contents: ?[]const u8 = null,
 };
 
+const RemotePluginPaginationPayload = struct {
+    next_page_token: ?[]const u8 = null,
+};
+
+const RemotePluginListResponsePayload = struct {
+    plugins: ?[]const RemotePluginDetailPayload = null,
+    pagination: RemotePluginPaginationPayload = .{},
+};
+
 const RemotePluginInstalledResponsePayload = struct {
     plugins: ?[]const RemotePluginInstalledItemPayload = null,
+    pagination: RemotePluginPaginationPayload = .{},
 };
 
 const RemotePluginInstalledItemPayload = struct {
     id: []const u8,
+    name: ?[]const u8 = null,
+    scope: ?[]const u8 = null,
+    creator_account_user_id: ?[]const u8 = null,
+    creator_name: ?[]const u8 = null,
+    share_url: ?[]const u8 = null,
+    share_principals: ?[]const RemotePluginSharePrincipalPayload = null,
+    installation_policy: ?[]const u8 = null,
+    authentication_policy: ?[]const u8 = null,
+    status: ?[]const u8 = null,
+    release: ?RemotePluginReleasePayload = null,
     enabled: bool,
     disabled_skill_names: ?[]const []const u8 = null,
+};
+
+pub const MarketplaceSources = struct {
+    global: bool = false,
+    workspace_directory: bool = false,
+    shared_with_me: bool = false,
+
+    pub fn isEmpty(self: MarketplaceSources) bool {
+        return !self.global and !self.workspace_directory and !self.shared_with_me;
+    }
+};
+
+const RemotePluginListSource = union(enum) {
+    scoped: RemotePluginScope,
+    shared_workspace,
+};
+
+const RemotePluginListPages = std.ArrayList(std.json.Parsed(RemotePluginListResponsePayload));
+const RemoteInstalledPluginPages = std.ArrayList(std.json.Parsed(RemotePluginInstalledResponsePayload));
+
+const RemoteMarketplacePluginEntry = struct {
+    detail: RemotePluginDetailPayload,
+    scope: RemotePluginScope,
+    installed: ?RemotePluginInstalledItemPayload,
 };
 
 pub fn isKnownRemoteMarketplace(name: []const u8) bool {
@@ -141,6 +185,81 @@ pub fn fetchSkillReadJson(
     return renderSkillReadJson(allocator, bytes, plugin_id, skill_name);
 }
 
+pub fn fetchMarketplacesJson(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    sources: MarketplaceSources,
+) ![]const u8 {
+    var workspace_installed_pages: ?RemoteInstalledPluginPages = null;
+    defer if (workspace_installed_pages) |*pages| deinitInstalledPluginPages(allocator, pages);
+    if (sources.workspace_directory or sources.shared_with_me) {
+        workspace_installed_pages = try fetchInstalledPluginPages(allocator, base_url, credentials, .workspace);
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "[");
+    var marketplace_count: usize = 0;
+
+    if (sources.global) {
+        var directory_pages = try fetchPluginListPages(allocator, base_url, credentials, .{ .scoped = .global });
+        defer deinitPluginListPages(allocator, &directory_pages);
+        var installed_pages = try fetchInstalledPluginPages(allocator, base_url, credentials, .global);
+        defer deinitInstalledPluginPages(allocator, &installed_pages);
+        try appendRemoteMarketplaceJsonFromPages(
+            allocator,
+            &out,
+            &marketplace_count,
+            "chatgpt-global",
+            "ChatGPT Plugins",
+            .global,
+            &directory_pages,
+            &installed_pages,
+            true,
+        );
+    }
+
+    if (sources.workspace_directory) {
+        var directory_pages = try fetchPluginListPages(allocator, base_url, credentials, .{ .scoped = .workspace });
+        defer deinitPluginListPages(allocator, &directory_pages);
+        if (workspace_installed_pages) |*installed_pages| {
+            try appendRemoteMarketplaceJsonFromPages(
+                allocator,
+                &out,
+                &marketplace_count,
+                "workspace-directory",
+                "Workspace Directory",
+                .workspace,
+                &directory_pages,
+                installed_pages,
+                false,
+            );
+        }
+    }
+
+    if (sources.shared_with_me) {
+        var directory_pages = try fetchPluginListPages(allocator, base_url, credentials, .shared_workspace);
+        defer deinitPluginListPages(allocator, &directory_pages);
+        if (workspace_installed_pages) |*installed_pages| {
+            try appendRemoteMarketplaceJsonFromPages(
+                allocator,
+                &out,
+                &marketplace_count,
+                "shared-with-me",
+                "Shared with me",
+                .workspace,
+                &directory_pages,
+                installed_pages,
+                false,
+            );
+        }
+    }
+
+    try out.appendSlice(allocator, "]");
+    return out.toOwnedSlice(allocator);
+}
+
 fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
@@ -178,6 +297,75 @@ fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: au
     return response_body.toOwnedSlice();
 }
 
+fn fetchPluginListPages(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    source: RemotePluginListSource,
+) !RemotePluginListPages {
+    var pages = RemotePluginListPages.empty;
+    errdefer deinitPluginListPages(allocator, &pages);
+
+    var next_page_token: ?[]const u8 = null;
+    while (true) {
+        const url = switch (source) {
+            .scoped => |scope| try pluginListUrl(allocator, base_url, scope, next_page_token),
+            .shared_workspace => try sharedWorkspacePluginsUrl(allocator, base_url, next_page_token),
+        };
+        defer allocator.free(url);
+        const body = try fetchJsonBytes(allocator, url, credentials);
+        defer allocator.free(body);
+
+        var parsed = try std.json.parseFromSlice(RemotePluginListResponsePayload, allocator, body, .{ .ignore_unknown_fields = true });
+        var appended = false;
+        errdefer if (!appended) parsed.deinit();
+        next_page_token = parsed.value.pagination.next_page_token;
+        try pages.append(allocator, parsed);
+        appended = true;
+        if (next_page_token == null) break;
+    }
+
+    return pages;
+}
+
+fn fetchInstalledPluginPages(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    scope: RemotePluginScope,
+) !RemoteInstalledPluginPages {
+    var pages = RemoteInstalledPluginPages.empty;
+    errdefer deinitInstalledPluginPages(allocator, &pages);
+
+    var next_page_token: ?[]const u8 = null;
+    while (true) {
+        const url = try installedPluginsPageUrl(allocator, base_url, scope, next_page_token);
+        defer allocator.free(url);
+        const body = try fetchJsonBytes(allocator, url, credentials);
+        defer allocator.free(body);
+
+        var parsed = try std.json.parseFromSlice(RemotePluginInstalledResponsePayload, allocator, body, .{ .ignore_unknown_fields = true });
+        var appended = false;
+        errdefer if (!appended) parsed.deinit();
+        next_page_token = parsed.value.pagination.next_page_token;
+        try pages.append(allocator, parsed);
+        appended = true;
+        if (next_page_token == null) break;
+    }
+
+    return pages;
+}
+
+fn deinitPluginListPages(allocator: std.mem.Allocator, pages: *RemotePluginListPages) void {
+    for (pages.items) |*page| page.deinit();
+    pages.deinit(allocator);
+}
+
+fn deinitInstalledPluginPages(allocator: std.mem.Allocator, pages: *RemoteInstalledPluginPages) void {
+    for (pages.items) |*page| page.deinit();
+    pages.deinit(allocator);
+}
+
 fn pluginDetailUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
@@ -190,7 +378,43 @@ fn pluginDetailUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id
     return url.toOwnedSlice(allocator);
 }
 
+fn pluginListUrl(allocator: std.mem.Allocator, base_url: []const u8, scope: RemotePluginScope, page_token: ?[]const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/ps/plugins/list?scope=");
+    try url.appendSlice(allocator, scopeApiValue(scope));
+    try url.appendSlice(allocator, "&limit=200");
+    if (page_token) |token| {
+        try url.appendSlice(allocator, "&pageToken=");
+        try appendPathSegment(allocator, &url, token);
+    }
+    return url.toOwnedSlice(allocator);
+}
+
+fn sharedWorkspacePluginsUrl(allocator: std.mem.Allocator, base_url: []const u8, page_token: ?[]const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/ps/plugins/workspace/shared?limit=200");
+    if (page_token) |token| {
+        try url.appendSlice(allocator, "&pageToken=");
+        try appendPathSegment(allocator, &url, token);
+    }
+    return url.toOwnedSlice(allocator);
+}
+
 fn installedPluginsUrl(allocator: std.mem.Allocator, base_url: []const u8, scope: RemotePluginScope) ![]const u8 {
+    return installedPluginsPageUrl(allocator, base_url, scope, null);
+}
+
+fn installedPluginsPageUrl(allocator: std.mem.Allocator, base_url: []const u8, scope: RemotePluginScope, page_token: ?[]const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
 
@@ -199,6 +423,10 @@ fn installedPluginsUrl(allocator: std.mem.Allocator, base_url: []const u8, scope
     try url.appendSlice(allocator, trimmed);
     try url.appendSlice(allocator, "/ps/plugins/installed?scope=");
     try url.appendSlice(allocator, scopeApiValue(scope));
+    if (page_token) |token| {
+        try url.appendSlice(allocator, "&pageToken=");
+        try appendPathSegment(allocator, &url, token);
+    }
     return url.toOwnedSlice(allocator);
 }
 
@@ -297,6 +525,61 @@ fn appendRemotePluginSummaryJson(
     try out.appendSlice(allocator, ",\"keywords\":");
     try appendStringArrayJson(allocator, out, detail.release.keywords);
     try out.appendSlice(allocator, "}");
+}
+
+fn appendRemoteMarketplaceJsonFromPages(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    marketplace_name_value: []const u8,
+    display_name: []const u8,
+    scope: RemotePluginScope,
+    directory_pages: *const RemotePluginListPages,
+    installed_pages: *const RemoteInstalledPluginPages,
+    include_installed_only: bool,
+) !void {
+    var entries = std.ArrayList(RemoteMarketplacePluginEntry).empty;
+    defer entries.deinit(allocator);
+
+    for (directory_pages.items) |page| {
+        if (page.value.plugins) |plugins| {
+            for (plugins) |plugin| {
+                const installed_plugin = findInstalledPluginInPages(installed_pages, plugin.id);
+                if (indexOfRemoteMarketplaceEntry(entries.items, plugin.id)) |index| {
+                    entries.items[index] = .{ .detail = plugin, .scope = scope, .installed = installed_plugin };
+                } else {
+                    try entries.append(allocator, .{ .detail = plugin, .scope = scope, .installed = installed_plugin });
+                }
+            }
+        }
+    }
+
+    if (include_installed_only) {
+        for (installed_pages.items) |page| {
+            if (page.value.plugins) |plugins| {
+                for (plugins) |installed_plugin| {
+                    if (indexOfRemoteMarketplaceEntry(entries.items, installed_plugin.id) != null) continue;
+                    const detail = installedPluginAsDetail(installed_plugin) orelse continue;
+                    try entries.append(allocator, .{ .detail = detail, .scope = scope, .installed = installed_plugin });
+                }
+            }
+        }
+    }
+
+    if (entries.items.len == 0) return;
+    std.mem.sort(RemoteMarketplacePluginEntry, entries.items, {}, remoteMarketplaceEntryLessThan);
+
+    try appendCommaIfNeeded(allocator, out, marketplace_count);
+    try out.appendSlice(allocator, "{\"name\":");
+    try appendJsonString(allocator, out, marketplace_name_value);
+    try out.appendSlice(allocator, ",\"path\":null,\"interface\":{\"displayName\":");
+    try appendJsonString(allocator, out, display_name);
+    try out.appendSlice(allocator, "},\"plugins\":[");
+    for (entries.items, 0..) |entry, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendRemotePluginSummaryJson(allocator, out, entry.detail, entry.scope, entry.installed);
+    }
+    try out.appendSlice(allocator, "]}");
 }
 
 fn appendRemoteShareContextJson(
@@ -518,6 +801,71 @@ fn findInstalledPlugin(plugins_opt: ?[]const RemotePluginInstalledItemPayload, p
         if (std.mem.eql(u8, plugin.id, plugin_id)) return plugin;
     }
     return null;
+}
+
+fn findInstalledPluginInPages(installed_pages: *const RemoteInstalledPluginPages, plugin_id: []const u8) ?RemotePluginInstalledItemPayload {
+    for (installed_pages.items) |page| {
+        if (page.value.plugins) |plugins| {
+            if (findInstalledPlugin(plugins, plugin_id)) |plugin| return plugin;
+        }
+    }
+    return null;
+}
+
+fn installedPluginAsDetail(installed_plugin: RemotePluginInstalledItemPayload) ?RemotePluginDetailPayload {
+    const name = installed_plugin.name orelse return null;
+    const scope = installed_plugin.scope orelse return null;
+    const installation_policy = installed_plugin.installation_policy orelse return null;
+    const authentication_policy = installed_plugin.authentication_policy orelse return null;
+    const release = installed_plugin.release orelse return null;
+    if (scopeFromApiValue(scope) == null) return null;
+    return .{
+        .id = installed_plugin.id,
+        .name = name,
+        .scope = scope,
+        .creator_account_user_id = installed_plugin.creator_account_user_id,
+        .creator_name = installed_plugin.creator_name,
+        .share_url = installed_plugin.share_url,
+        .share_principals = installed_plugin.share_principals,
+        .installation_policy = installation_policy,
+        .authentication_policy = authentication_policy,
+        .status = installed_plugin.status,
+        .release = release,
+    };
+}
+
+fn indexOfRemoteMarketplaceEntry(entries: []const RemoteMarketplacePluginEntry, plugin_id: []const u8) ?usize {
+    for (entries, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.detail.id, plugin_id)) return index;
+    }
+    return null;
+}
+
+fn remoteMarketplaceEntryLessThan(_: void, left: RemoteMarketplacePluginEntry, right: RemoteMarketplacePluginEntry) bool {
+    const left_name = remotePluginDisplayName(left.detail);
+    const right_name = remotePluginDisplayName(right.detail);
+    const lower_order = asciiLowerOrder(left_name, right_name);
+    if (lower_order != .eq) return lower_order == .lt;
+    const display_order = std.mem.order(u8, left_name, right_name);
+    if (display_order != .eq) return display_order == .lt;
+    return std.mem.lessThan(u8, left.detail.id, right.detail.id);
+}
+
+fn remotePluginDisplayName(detail: RemotePluginDetailPayload) []const u8 {
+    return nonEmptyString(detail.release.display_name) orelse detail.name;
+}
+
+fn asciiLowerOrder(left: []const u8, right: []const u8) std.math.Order {
+    const len = @min(left.len, right.len);
+    for (left[0..len], right[0..len]) |left_byte, right_byte| {
+        const left_lower = std.ascii.toLower(left_byte);
+        const right_lower = std.ascii.toLower(right_byte);
+        if (left_lower < right_lower) return .lt;
+        if (left_lower > right_lower) return .gt;
+    }
+    if (left.len < right.len) return .lt;
+    if (left.len > right.len) return .gt;
+    return .eq;
 }
 
 fn scopeFromApiValue(value: []const u8) ?RemotePluginScope {

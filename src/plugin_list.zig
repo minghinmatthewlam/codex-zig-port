@@ -35,12 +35,20 @@ pub fn renderResponse(
     cwds: []const []const u8,
     include_local: bool,
 ) ![]const u8 {
-    if (!include_local or !plugin_config.pluginsFeatureEnabled(config_bytes)) {
+    return renderResponseWithRemoteMarketplaces(allocator, codex_home, config_bytes, cwds, include_local, null);
+}
+
+pub fn renderResponseWithRemoteMarketplaces(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    cwds: []const []const u8,
+    include_local: bool,
+    remote_marketplaces_json: ?[]const u8,
+) ![]const u8 {
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
         return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
     }
-
-    const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
-    defer plugin_config.freeStringList(allocator, enabled_ids);
 
     var seen_plugin_ids = std.ArrayList([]const u8).empty;
     defer {
@@ -56,9 +64,17 @@ pub fn renderResponse(
     defer load_errors.deinit(allocator);
     var load_error_count: usize = 0;
 
-    try appendMarketplacesForRoot(allocator, codex_home, codex_home, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
-    for (cwds) |cwd| {
-        try appendMarketplacesForRoot(allocator, codex_home, cwd, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+    if (include_local) {
+        const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
+        defer plugin_config.freeStringList(allocator, enabled_ids);
+
+        try appendMarketplacesForRoot(allocator, codex_home, codex_home, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        for (cwds) |cwd| {
+            try appendMarketplacesForRoot(allocator, codex_home, cwd, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        }
+    }
+    if (remote_marketplaces_json) |json| {
+        try appendRemoteMarketplaceArrayItems(allocator, &marketplaces, &marketplace_count, json);
     }
 
     var out = std.ArrayList(u8).empty;
@@ -69,6 +85,21 @@ pub fn renderResponse(
     try out.appendSlice(allocator, load_errors.items);
     try out.appendSlice(allocator, "],\"featuredPluginIds\":[]}");
     return out.toOwnedSlice(allocator);
+}
+
+fn appendRemoteMarketplaceArrayItems(
+    allocator: std.mem.Allocator,
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    remote_marketplaces_json: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, remote_marketplaces_json, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') return error.InvalidRemoteMarketplaceJson;
+    const inner = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n");
+    if (inner.len == 0) return;
+    if (marketplace_count.* > 0) try marketplaces.append(allocator, ',');
+    try marketplaces.appendSlice(allocator, inner);
+    marketplace_count.* += 1;
 }
 
 pub fn renderReadResponse(

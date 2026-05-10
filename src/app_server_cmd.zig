@@ -1250,8 +1250,18 @@ fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, para
         return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
+    const raw_config_bytes = config_bytes orelse "";
 
-    const result = plugin_list.renderResponse(allocator, codex_home, config_bytes orelse "", params.cwds, params.include_local) catch |err| {
+    var remote_marketplaces_json: ?[]const u8 = null;
+    defer if (remote_marketplaces_json) |json| allocator.free(json);
+    if (plugin_config.pluginsFeatureEnabled(raw_config_bytes)) {
+        const remote_sources = params.remoteSources(raw_config_bytes);
+        if (!remote_sources.isEmpty()) {
+            remote_marketplaces_json = fetchRemotePluginListMarketplaces(allocator, codex_home, remote_sources) catch null;
+        }
+    }
+
+    const result = plugin_list.renderResponseWithRemoteMarketplaces(allocator, codex_home, raw_config_bytes, params.cwds, params.include_local(), remote_marketplaces_json) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
     };
     defer allocator.free(result);
@@ -1259,14 +1269,14 @@ fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, para
 }
 
 fn parsePluginListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedPluginListParams {
-    const params = params_value orelse return .{ .cwds = try allocator.alloc([]const u8, 0), .include_local = true };
-    if (params == .null) return .{ .cwds = try allocator.alloc([]const u8, 0), .include_local = true };
+    const params = params_value orelse return .{ .cwds = try allocator.alloc([]const u8, 0), .marketplace_kinds = .{} };
+    if (params == .null) return .{ .cwds = try allocator.alloc([]const u8, 0), .marketplace_kinds = .{} };
     if (params != .object) return error.InvalidPluginListParams;
 
     const cwds = try parsePluginListCwds(allocator, params.object.get("cwds"));
     errdefer allocator.free(cwds);
-    const include_local = try parsePluginListIncludeLocal(params.object.get("marketplaceKinds"));
-    return .{ .cwds = cwds, .include_local = include_local };
+    const marketplace_kinds = try parsePluginListMarketplaceKinds(params.object.get("marketplaceKinds"));
+    return .{ .cwds = cwds, .marketplace_kinds = marketplace_kinds };
 }
 
 fn parsePluginListCwds(allocator: std.mem.Allocator, value_opt: ?std.json.Value) ![]const []const u8 {
@@ -1283,17 +1293,37 @@ fn parsePluginListCwds(allocator: std.mem.Allocator, value_opt: ?std.json.Value)
     return cwds;
 }
 
-fn parsePluginListIncludeLocal(value_opt: ?std.json.Value) !bool {
-    const value = value_opt orelse return true;
-    if (value == .null) return true;
+fn parsePluginListMarketplaceKinds(value_opt: ?std.json.Value) !PluginListMarketplaceKinds {
+    const value = value_opt orelse return .{};
+    if (value == .null) return .{};
     if (value != .array) return error.InvalidPluginListMarketplaceKinds;
-    var include_local = false;
+    var kinds = PluginListMarketplaceKinds{ .explicit = true, .include_local = false };
     for (value.array.items) |item| {
         if (item != .string) return error.InvalidPluginListMarketplaceKinds;
         if (!isPluginMarketplaceKind(item.string)) return error.InvalidPluginListMarketplaceKind;
-        if (std.mem.eql(u8, item.string, "local")) include_local = true;
+        if (std.mem.eql(u8, item.string, "local")) kinds.include_local = true;
+        if (std.mem.eql(u8, item.string, "workspace-directory")) kinds.include_workspace_directory = true;
+        if (std.mem.eql(u8, item.string, "shared-with-me")) kinds.include_shared_with_me = true;
     }
-    return include_local;
+    return kinds;
+}
+
+fn fetchRemotePluginListMarketplaces(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    remote_sources: remote_plugin.MarketplaceSources,
+) ![]const u8 {
+    var cfg = try config.loadWithOptions(allocator, .{});
+    defer cfg.deinit(allocator);
+
+    var credentials = try auth_mod.load(allocator, codex_home);
+    defer credentials.deinit(allocator);
+    switch (credentials.mode) {
+        .chatgpt, .agent_identity => {},
+        .api_key, .local_oss => return error.RemotePluginUnsupportedAuthMode,
+    }
+
+    return remote_plugin.fetchMarketplacesJson(allocator, cfg.chatgpt_base_url, credentials, remote_sources);
 }
 
 fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -1426,11 +1456,32 @@ fn optionalStringForPluginParams(object: std.json.ObjectMap, field: []const u8) 
 
 const ParsedPluginListParams = struct {
     cwds: []const []const u8,
-    include_local: bool,
+    marketplace_kinds: PluginListMarketplaceKinds,
+
+    fn include_local(self: ParsedPluginListParams) bool {
+        return self.marketplace_kinds.include_local;
+    }
+
+    fn remoteSources(self: ParsedPluginListParams, config_bytes: []const u8) remote_plugin.MarketplaceSources {
+        var sources = remote_plugin.MarketplaceSources{};
+        if (!self.marketplace_kinds.explicit and plugin_config.remotePluginFeatureEnabled(config_bytes)) {
+            sources.global = true;
+        }
+        sources.workspace_directory = self.marketplace_kinds.include_workspace_directory;
+        sources.shared_with_me = self.marketplace_kinds.include_shared_with_me;
+        return sources;
+    }
 
     fn deinit(self: ParsedPluginListParams, allocator: std.mem.Allocator) void {
         allocator.free(self.cwds);
     }
+};
+
+const PluginListMarketplaceKinds = struct {
+    explicit: bool = false,
+    include_local: bool = true,
+    include_workspace_directory: bool = false,
+    include_shared_with_me: bool = false,
 };
 
 const ParsedSkillsListParams = struct {
