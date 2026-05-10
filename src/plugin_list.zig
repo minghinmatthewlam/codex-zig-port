@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const marketplace_config = @import("marketplace_config.zig");
 const plugin_config = @import("plugin_config.zig");
 const skills_list = @import("skills_list.zig");
 
@@ -106,6 +107,14 @@ pub fn renderResponseWithRemoteMarketplaces(
         defer plugin_config.freeStringList(allocator, enabled_ids);
 
         try appendMarketplacesForRoot(allocator, codex_home, codex_home, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        const configured_roots = try marketplace_config.configuredMarketplaceRoots(allocator, codex_home, config_bytes);
+        defer {
+            for (configured_roots) |*root| root.deinit(allocator);
+            allocator.free(configured_roots);
+        }
+        for (configured_roots) |root| {
+            try appendMarketplacesForRoot(allocator, codex_home, root.root, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        }
         for (cwds) |cwd| {
             try appendMarketplacesForRoot(allocator, codex_home, cwd, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         }

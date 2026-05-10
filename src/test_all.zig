@@ -21,6 +21,7 @@ const modules = .{
     @import("input_images.zig"),
     @import("login.zig"),
     @import("memory_reset.zig"),
+    @import("marketplace_config.zig"),
     @import("model_catalog.zig"),
     @import("mcp_cmd.zig"),
     @import("mcp_server_cmd.zig"),

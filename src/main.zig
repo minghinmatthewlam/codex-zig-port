@@ -333,7 +333,7 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "plugin")) {
-            try plugin_cmd.run(&args);
+            try plugin_cmd.run(allocator, &args);
             return;
         }
         if (isKnownUnimplementedCommand(cmd)) {

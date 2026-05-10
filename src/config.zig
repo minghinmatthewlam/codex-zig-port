@@ -478,7 +478,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     };
 }
 
-fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
+pub fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     if (try env.getOwned(allocator, "CODEX_HOME")) |value| {
         return value;
     }

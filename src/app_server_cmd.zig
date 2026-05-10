@@ -11,6 +11,7 @@ const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const hooks_list = @import("hooks_list.zig");
 const memory_reset = @import("memory_reset.zig");
+const marketplace_config = @import("marketplace_config.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
 const plugin_config = @import("plugin_config.zig");
@@ -907,10 +908,12 @@ fn handleMarketplaceMethod(
         if (validateMarketplaceAddParams(params_value)) |message| {
             return try renderJsonRpcError(allocator, id_value, -32602, message);
         }
+        return handleMarketplaceAdd(allocator, id_value, params_value.?);
     } else if (std.mem.eql(u8, method, "marketplace/remove")) {
         if (validateMarketplaceRemoveParams(params_value)) |message| {
             return try renderJsonRpcError(allocator, id_value, -32602, message);
         }
+        return handleMarketplaceRemove(allocator, id_value, params_value.?);
     } else if (std.mem.eql(u8, method, "marketplace/upgrade")) {
         if (validateMarketplaceUpgradeParams(params_value)) |message| {
             return try renderJsonRpcError(allocator, id_value, -32602, message);
@@ -924,6 +927,139 @@ fn handleMarketplaceMethod(
     );
     defer allocator.free(message);
     return try renderJsonRpcError(allocator, id_value, -32603, message);
+}
+
+fn handleMarketplaceAdd(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: std.json.Value) ![]const u8 {
+    const object = params_value.object;
+    const source = object.get("source").?.string;
+    const ref_name = optionalStringField(object, "refName");
+    const sparse_paths = try optionalStringArray(allocator, object, "sparsePaths");
+    defer allocator.free(sparse_paths);
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to read config.toml", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const add = marketplace_config.addLocalMarketplace(allocator, config_bytes orelse "", source, ref_name, sparse_paths) catch |err| {
+        return renderMarketplaceAddError(allocator, id_value, err);
+    };
+    defer add.deinit(allocator);
+
+    config.writeConfigTomlFile(config_path, add.updated_config) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to write config.toml", err);
+    };
+
+    const result = try renderMarketplaceAddResult(allocator, add.marketplace_name, add.installed_root, add.already_added);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleMarketplaceRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: std.json.Value) ![]const u8 {
+    const marketplace_name = params_value.object.get("marketplaceName").?.string;
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to read config.toml", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const removed = marketplace_config.removeMarketplace(allocator, codex_home, config_bytes orelse "", marketplace_name) catch |err| {
+        return renderMarketplaceRemoveError(allocator, id_value, marketplace_name, err);
+    };
+    defer removed.deinit(allocator);
+
+    config.writeConfigTomlFile(config_path, removed.updated_config) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to write config.toml", err);
+    };
+
+    const result = try renderMarketplaceRemoveResult(allocator, removed.marketplace_name, removed.installed_root);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn optionalStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    return value.string;
+}
+
+fn optionalStringArray(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8) ![]const []const u8 {
+    const value = object.get(field) orelse return allocator.alloc([]const u8, 0);
+    if (value == .null) return allocator.alloc([]const u8, 0);
+    var values = try allocator.alloc([]const u8, value.array.items.len);
+    for (value.array.items, 0..) |item, index| {
+        values[index] = item.string;
+    }
+    return values;
+}
+
+fn renderMarketplaceAddError(allocator: std.mem.Allocator, id_value: std.json.Value, err: anyerror) ![]const u8 {
+    return switch (err) {
+        error.UnsupportedMarketplaceSource => renderJsonRpcError(allocator, id_value, -32603, "marketplace/add source is parsed but not implemented yet"),
+        error.MarketplaceSourceEmpty => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace source must not be empty"),
+        error.RefUnsupportedForLocalSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: --ref is only supported for git marketplace sources"),
+        error.SparseUnsupportedForLocalSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: --sparse is only supported for git marketplace sources"),
+        error.InvalidLocalMarketplaceSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: failed to resolve local marketplace source path"),
+        error.LocalMarketplaceSourceMustBeDirectory => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: local marketplace source must be a directory, not a file"),
+        error.InvalidMarketplaceRoot => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace root"),
+        error.InvalidMarketplaceName => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace name"),
+        error.ReservedMarketplaceName => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace 'openai-curated' is reserved and cannot be added from this source"),
+        error.MarketplaceAlreadyAddedDifferentSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace is already added from a different source; remove it before adding this source"),
+        else => renderJsonRpcErrorForFailure(allocator, id_value, "failed to add marketplace", err),
+    };
+}
+
+fn renderMarketplaceRemoveError(allocator: std.mem.Allocator, id_value: std.json.Value, marketplace_name: []const u8, err: anyerror) ![]const u8 {
+    return switch (err) {
+        error.InvalidMarketplaceName => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace name"),
+        error.UnknownMarketplace => blk: {
+            const message = try std.fmt.allocPrint(allocator, "marketplace `{s}` is not configured or installed", .{marketplace_name});
+            defer allocator.free(message);
+            break :blk renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        else => renderJsonRpcErrorForFailure(allocator, id_value, "failed to remove marketplace", err),
+    };
+}
+
+fn renderMarketplaceAddResult(allocator: std.mem.Allocator, marketplace_name: []const u8, installed_root: []const u8, already_added: bool) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"marketplaceName\":");
+    try appendJsonString(allocator, &result, marketplace_name);
+    try result.appendSlice(allocator, ",\"installedRoot\":");
+    try appendJsonString(allocator, &result, installed_root);
+    try result.appendSlice(allocator, ",\"alreadyAdded\":");
+    try result.appendSlice(allocator, if (already_added) "true" else "false");
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderMarketplaceRemoveResult(allocator: std.mem.Allocator, marketplace_name: []const u8, installed_root: ?[]const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"marketplaceName\":");
+    try appendJsonString(allocator, &result, marketplace_name);
+    try result.appendSlice(allocator, ",\"installedRoot\":");
+    if (installed_root) |path| {
+        try appendJsonString(allocator, &result, path);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
 }
 
 fn validateMarketplaceAddParams(params_value: ?std.json.Value) ?[]const u8 {
@@ -4739,7 +4875,7 @@ test "app-server initialize result exposes server info" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"capabilities\":{}") != null);
 }
 
-test "app-server marketplace methods validate params and return not implemented" {
+test "app-server marketplace methods validate params and preserve unsupported stubs" {
     const allocator = std.testing.allocator;
     var state = AppServerState{};
     defer state.deinit(allocator);
@@ -4751,7 +4887,7 @@ test "app-server marketplace methods validate params and return not implemented"
     );
     defer allocator.free(valid_add.?);
     try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "\"code\":-32603") != null);
-    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "marketplace/add is parsed but not implemented yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "marketplace/add source is parsed but not implemented yet") != null);
 
     const valid_remove = try handleJsonRpcLine(
         allocator,
@@ -4759,7 +4895,7 @@ test "app-server marketplace methods validate params and return not implemented"
         "{\"jsonrpc\":\"2.0\",\"id\":\"remove\",\"method\":\"marketplace/remove\",\"params\":{\"marketplaceName\":\"debug\"}}",
     );
     defer allocator.free(valid_remove.?);
-    try std.testing.expect(std.mem.indexOf(u8, valid_remove.?, "\"code\":-32603") != null);
+    try std.testing.expect(std.mem.indexOf(u8, valid_remove.?, "\"code\":-32600") != null);
 
     const valid_upgrade = try handleJsonRpcLine(
         allocator,
