@@ -755,6 +755,168 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-status-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    try:
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[mcp_servers.docs]",
+                    'command = "docs-server"',
+                    'args = ["--stdio"]',
+                    "",
+                    "[mcp_servers.logged_out]",
+                    'url = "https://example.com/no-token"',
+                    'bearer_token_env_var = "MISSING_MCP_TOKEN"',
+                    "",
+                    "[mcp_servers.remote]",
+                    'url = "https://example.com/mcp"',
+                    'bearer_token_env_var = "TEST_MCP_TOKEN"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["TEST_MCP_TOKEN"] = "test-token"
+        env.pop("MISSING_MCP_TOKEN", None)
+
+        reload_response = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-reload",
+                "method": "config/mcpServer/reload",
+                "params": {},
+            },
+            env,
+        )
+        assert reload_response["id"] == "mcp-reload"
+        assert reload_response["result"] == {}
+
+        first_page = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-first-page",
+                "method": "mcpServerStatus/list",
+                "params": {"limit": 2, "detail": "toolsAndAuthOnly"},
+            },
+            env,
+        )
+        assert first_page["id"] == "mcp-status-first-page"
+        assert first_page["result"]["nextCursor"] == "2"
+        first_entries = first_page["result"]["data"]
+        assert [entry["name"] for entry in first_entries] == ["docs", "logged_out"]
+        assert first_entries[0]["tools"] == {}
+        assert first_entries[0]["resources"] == []
+        assert first_entries[0]["resourceTemplates"] == []
+        assert first_entries[0]["authStatus"] == "unsupported"
+        assert first_entries[1]["authStatus"] == "notLoggedIn"
+
+        second_page = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-second-page",
+                "method": "mcpServerStatus/list",
+                "params": {"cursor": "2", "limit": 2},
+            },
+            env,
+        )
+        assert second_page["id"] == "mcp-status-second-page"
+        assert second_page["result"]["nextCursor"] is None
+        second_entries = second_page["result"]["data"]
+        assert [entry["name"] for entry in second_entries] == ["remote"]
+        assert second_entries[0]["authStatus"] == "bearerToken"
+        assert second_entries[0]["tools"] == {}
+        assert second_entries[0]["resources"] == []
+        assert second_entries[0]["resourceTemplates"] == []
+
+        zero_limit = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-zero-limit",
+                "method": "mcpServerStatus/list",
+                "params": {"limit": 0},
+            },
+            env,
+        )
+        assert zero_limit["id"] == "mcp-status-zero-limit"
+        assert zero_limit["result"]["nextCursor"] == "1"
+        assert [entry["name"] for entry in zero_limit["result"]["data"]] == ["docs"]
+
+        invalid_cursor = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-invalid-cursor",
+                "method": "mcpServerStatus/list",
+                "params": {"cursor": "bad"},
+            },
+            env,
+        )
+        assert invalid_cursor["id"] == "mcp-status-invalid-cursor"
+        assert invalid_cursor["error"]["code"] == -32602
+
+        invalid_cursor_range = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-invalid-cursor-range",
+                "method": "mcpServerStatus/list",
+                "params": {"cursor": "9"},
+            },
+            env,
+        )
+        assert invalid_cursor_range["id"] == "mcp-status-invalid-cursor-range"
+        assert invalid_cursor_range["error"]["code"] == -32602
+
+        invalid_limit = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-invalid-limit",
+                "method": "mcpServerStatus/list",
+                "params": {"limit": -1},
+            },
+            env,
+        )
+        assert invalid_limit["id"] == "mcp-status-invalid-limit"
+        assert invalid_limit["error"]["code"] == -32602
+
+        invalid_detail = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-invalid-detail",
+                "method": "mcpServerStatus/list",
+                "params": {"detail": "minimal"},
+            },
+            env,
+        )
+        assert invalid_detail["id"] == "mcp-status-invalid-detail"
+        assert invalid_detail["error"]["code"] == -32602
+
+        invalid_reload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-reload-invalid-params",
+                "method": "config/mcpServer/reload",
+                "params": "bad",
+            },
+            env,
+        )
+        assert invalid_reload["id"] == "mcp-reload-invalid-params"
+        assert invalid_reload["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_filesystem_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
     env = os.environ.copy()
@@ -2410,6 +2572,8 @@ def main() -> None:
     print("app-server-plugin-rpc-e2e: ok")
     run_skills_list_rpc_smoke(binary)
     print("app-server-skills-list-rpc-e2e: ok")
+    run_mcp_server_status_rpc_smoke(binary)
+    print("app-server-mcp-server-status-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
