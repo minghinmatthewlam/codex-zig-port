@@ -45,13 +45,113 @@ pub const Options = struct {
     initial_prompt: ?[]const u8 = null,
     initial_input_images: []const []const u8 = &.{},
     no_alt_screen: bool = false,
+    remote: ?[]const u8 = null,
+    remote_auth_token_env: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
     try runWithOptions(allocator, .{});
 }
 
+const RemoteUrlParts = struct {
+    scheme: []const u8,
+    host: []const u8,
+};
+
+fn validateRemoteOptions(allocator: std.mem.Allocator, remote: ?[]const u8, remote_auth_token_env: ?[]const u8) !void {
+    const remote_url = remote orelse {
+        if (remote_auth_token_env != null) {
+            std.debug.print("`--remote-auth-token-env` requires `--remote`.\n", .{});
+            return error.RemoteAuthTokenEnvRequiresRemote;
+        }
+        return;
+    };
+    const parts = validateRemoteUrl(remote_url) catch |err| {
+        std.debug.print("invalid remote address `{s}`; expected `ws://host:port` or `wss://host:port`\n", .{remote_url});
+        return err;
+    };
+    if (remote_auth_token_env) |env_name| {
+        if (!remoteUrlSupportsAuthToken(parts)) {
+            std.debug.print("remote auth tokens require `wss://` or loopback `ws://` URLs; got `{s}`\n", .{remote_url});
+            return error.RemoteAuthTokenTransportUnsupported;
+        }
+        const token = try getEnvVarOwned(allocator, env_name);
+        defer if (token) |value| allocator.free(value);
+        const value = token orelse {
+            std.debug.print("environment variable `{s}` is not set\n", .{env_name});
+            return error.RemoteAuthTokenEnvNotSet;
+        };
+        if (std.mem.trim(u8, value, " \t\r\n").len == 0) {
+            std.debug.print("environment variable `{s}` is empty\n", .{env_name});
+            return error.RemoteAuthTokenEnvEmpty;
+        }
+    }
+}
+
+fn validateRemoteUrl(value: []const u8) !RemoteUrlParts {
+    const scheme: []const u8 = if (std.mem.startsWith(u8, value, "ws://"))
+        "ws"
+    else if (std.mem.startsWith(u8, value, "wss://"))
+        "wss"
+    else
+        return error.InvalidRemoteAddress;
+    const rest = if (std.mem.eql(u8, scheme, "ws"))
+        value["ws://".len..]
+    else
+        value["wss://".len..];
+
+    if (rest.len == 0) return error.InvalidRemoteAddress;
+    if (std.mem.indexOfAny(u8, rest, "?#") != null) return error.InvalidRemoteAddress;
+    const slash_index = std.mem.indexOfScalar(u8, rest, '/');
+    const host_port = if (slash_index) |index| blk: {
+        if (index != rest.len - 1) return error.InvalidRemoteAddress;
+        break :blk rest[0..index];
+    } else rest;
+    if (host_port.len == 0) return error.InvalidRemoteAddress;
+
+    const host: []const u8 = if (host_port[0] == '[') blk: {
+        const close_index = std.mem.indexOfScalar(u8, host_port, ']') orelse return error.InvalidRemoteAddress;
+        if (close_index + 1 >= host_port.len or host_port[close_index + 1] != ':') return error.InvalidRemoteAddress;
+        break :blk host_port[0 .. close_index + 1];
+    } else blk: {
+        const colon_index = std.mem.lastIndexOfScalar(u8, host_port, ':') orelse return error.InvalidRemoteAddress;
+        break :blk host_port[0..colon_index];
+    };
+    const port_text: []const u8 = if (host_port[0] == '[') blk: {
+        const close_index = std.mem.indexOfScalar(u8, host_port, ']') orelse return error.InvalidRemoteAddress;
+        break :blk host_port[close_index + 2 ..];
+    } else blk: {
+        const colon_index = std.mem.lastIndexOfScalar(u8, host_port, ':') orelse return error.InvalidRemoteAddress;
+        break :blk host_port[colon_index + 1 ..];
+    };
+    if (host.len == 0 or port_text.len == 0) return error.InvalidRemoteAddress;
+    _ = std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteAddress;
+    return .{ .scheme = scheme, .host = host };
+}
+
+fn remoteUrlSupportsAuthToken(parts: RemoteUrlParts) bool {
+    if (std.mem.eql(u8, parts.scheme, "wss")) return true;
+    if (!std.mem.eql(u8, parts.scheme, "ws")) return false;
+    return std.ascii.eqlIgnoreCase(parts.host, "localhost") or
+        std.mem.startsWith(u8, parts.host, "127.") or
+        std.mem.eql(u8, parts.host, "[::1]");
+}
+
+fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) !?[]const u8 {
+    const name_z = try allocator.dupeZ(u8, name);
+    defer allocator.free(name_z);
+    const value = std.c.getenv(name_z.ptr) orelse return null;
+    const copy: []const u8 = try allocator.dupe(u8, std.mem.span(value));
+    return copy;
+}
+
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
+    try validateRemoteOptions(allocator, options.remote, options.remote_auth_token_env);
+    if (options.remote) |remote| {
+        std.debug.print("remote app-server TUI is parsed but not implemented yet: {s}\n", .{remote});
+        return error.RemoteAppServerTuiNotImplemented;
+    }
+
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
@@ -2037,6 +2137,32 @@ test "parse history limit" {
     try std.testing.expectEqual(@as(usize, 10), try parseSessionListLimit(""));
     try std.testing.expectEqual(@as(usize, 2), try parseSessionListLimit("2"));
     try std.testing.expectError(error.InvalidCharacter, parseSessionListLimit("x"));
+}
+
+test "validates remote app-server URLs" {
+    const ws = try validateRemoteUrl("ws://127.0.0.1:4500");
+    try std.testing.expectEqualStrings("ws", ws.scheme);
+    try std.testing.expectEqualStrings("127.0.0.1", ws.host);
+
+    const wss = try validateRemoteUrl("wss://example.com:443/");
+    try std.testing.expectEqualStrings("wss", wss.scheme);
+    try std.testing.expectEqualStrings("example.com", wss.host);
+
+    const ipv6 = try validateRemoteUrl("ws://[::1]:4500");
+    try std.testing.expectEqualStrings("[::1]", ipv6.host);
+
+    try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("https://127.0.0.1:4500"));
+    try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("ws://127.0.0.1"));
+    try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("ws://127.0.0.1:4500/path"));
+}
+
+test "remote auth token transport is limited to secure or loopback URLs" {
+    try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.0.0.1:4500")));
+    try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.1.2.3:4500")));
+    try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://localhost:4500")));
+    try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://[::1]:4500")));
+    try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("wss://example.com:443")));
+    try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://example.com:4500")));
 }
 
 test "parse resume picker selection" {

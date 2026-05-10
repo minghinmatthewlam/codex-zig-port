@@ -622,6 +622,8 @@ def run_help_command_smoke(
         raise AssertionError(
             f"expected root help command in output:\n{root_result.stderr}"
         )
+    if "codex-zig --remote ws://HOST:PORT" not in root_result.stderr:
+        raise AssertionError(f"expected remote flag help output:\n{root_result.stderr}")
 
     exec_result = subprocess.run(
         [str(binary), "help", "exec"],
@@ -667,6 +669,97 @@ def run_help_command_smoke(
     if "a app-server apply" not in completion_result.stdout:
         raise AssertionError(
             f"expected apply commands in bash completion:\n{completion_result.stdout}"
+        )
+
+
+def run_remote_flag_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    remote_env = env.copy()
+    remote_env["CODEX_REMOTE_AUTH_TOKEN"] = "  remote-token  "
+    remote_result = subprocess.run(
+        [
+            str(binary),
+            "--remote",
+            "ws://127.0.0.1:4500",
+            "--remote-auth-token-env",
+            "CODEX_REMOTE_AUTH_TOKEN",
+            "--no-alt-screen",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if remote_result.returncode == 0:
+        raise AssertionError("remote TUI smoke unexpectedly succeeded")
+    if "remote app-server TUI is parsed but not implemented yet" not in remote_result.stderr:
+        raise AssertionError(
+            f"expected remote not-implemented message:\n{remote_result.stderr}"
+        )
+
+    resume_result = subprocess.run(
+        [
+            str(binary),
+            "resume",
+            "--remote=ws://127.0.0.1:4500",
+            "--last",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resume_result.returncode == 0:
+        raise AssertionError("remote resume smoke unexpectedly succeeded")
+    if "remote app-server TUI is parsed but not implemented yet" not in resume_result.stderr:
+        raise AssertionError(
+            f"expected remote resume not-implemented message:\n{resume_result.stderr}"
+        )
+
+    missing_remote_result = subprocess.run(
+        [
+            str(binary),
+            "--remote-auth-token-env",
+            "CODEX_REMOTE_AUTH_TOKEN",
+            "--no-alt-screen",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if missing_remote_result.returncode == 0:
+        raise AssertionError("remote auth token env without remote unexpectedly succeeded")
+    if "RemoteAuthTokenEnvRequiresRemote" not in missing_remote_result.stderr:
+        raise AssertionError(
+            f"expected remote auth token env validation failure:\n{missing_remote_result.stderr}"
+        )
+
+    rejected_result = subprocess.run(
+        [
+            str(binary),
+            "--remote",
+            "ws://127.0.0.1:4500",
+            "exec",
+            "hello",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if rejected_result.returncode == 0:
+        raise AssertionError("remote non-interactive command unexpectedly succeeded")
+    if "only supported for interactive TUI commands" not in rejected_result.stderr:
+        raise AssertionError(
+            f"expected non-interactive remote rejection:\n{rejected_result.stderr}"
         )
 
 
@@ -807,6 +900,7 @@ def run_e2e(binary: Path) -> str:
 
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
+            run_remote_flag_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
 

@@ -35,6 +35,8 @@ const CliOverrides = struct {
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     no_alt_screen: bool = false,
+    remote: ?[]const u8 = null,
+    remote_auth_token_env: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -183,6 +185,22 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.web_search_mode = .live;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--remote")) {
+            overrides.remote = args.next() orelse return error.MissingRemoteOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote=")) {
+            overrides.remote = arg["--remote=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-auth-token-env")) {
+            overrides.remote_auth_token_env = args.next() orelse return error.MissingRemoteAuthTokenEnvOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
+            overrides.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--no-alt-screen")) {
             overrides.no_alt_screen = true;
             continue;
@@ -225,6 +243,8 @@ fn mainInner(init: std.process.Init) !void {
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
             .no_alt_screen = overrides.no_alt_screen,
+            .remote = overrides.remote,
+            .remote_auth_token_env = overrides.remote_auth_token_env,
         });
         return;
     }
@@ -237,6 +257,9 @@ fn mainInner(init: std.process.Init) !void {
         if (isVersionFlag(cmd)) {
             printVersion();
             return;
+        }
+        if (commandRejectsRootRemote(cmd)) {
+            try rejectRemoteModeForSubcommand(overrides.remote, overrides.remote_auth_token_env, cmd);
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
             if (args.next()) |value| {
@@ -361,6 +384,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
                 return;
             }
@@ -373,6 +398,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
             } else {
                 try runTuiWithImages(allocator, initial_image_files.items, .{
@@ -383,6 +410,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
             }
             return;
@@ -404,6 +433,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
                 return;
             }
@@ -416,6 +447,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
             } else {
                 try runTuiWithImages(allocator, initial_image_files.items, .{
@@ -426,6 +459,8 @@ fn mainInner(init: std.process.Init) !void {
                     .oss_provider = overrides.oss_provider,
                     .additional_writable_roots = overrides.additional_writable_roots,
                     .no_alt_screen = overrides.no_alt_screen,
+                    .remote = parsed.remote orelse overrides.remote,
+                    .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
                 });
             }
             return;
@@ -467,6 +502,8 @@ fn mainInner(init: std.process.Init) !void {
             .additional_writable_roots = overrides.additional_writable_roots,
             .initial_prompt = initial_prompt,
             .no_alt_screen = overrides.no_alt_screen,
+            .remote = overrides.remote,
+            .remote_auth_token_env = overrides.remote_auth_token_env,
         });
         return;
     }
@@ -478,6 +515,8 @@ fn mainInner(init: std.process.Init) !void {
         .oss_provider = overrides.oss_provider,
         .additional_writable_roots = overrides.additional_writable_roots,
         .no_alt_screen = overrides.no_alt_screen,
+        .remote = overrides.remote,
+        .remote_auth_token_env = overrides.remote_auth_token_env,
     });
 }
 
@@ -508,6 +547,46 @@ fn isExecCommand(cmd: []const u8) bool {
 
 fn isApplyCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "apply") or std.mem.eql(u8, cmd, "a");
+}
+
+fn commandRejectsRootRemote(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "auth-status") or
+        std.mem.eql(u8, cmd, "login") or
+        std.mem.eql(u8, cmd, "logout") or
+        std.mem.eql(u8, cmd, "review") or
+        std.mem.eql(u8, cmd, "sandbox") or
+        std.mem.eql(u8, cmd, "features") or
+        std.mem.eql(u8, cmd, "completion") or
+        std.mem.eql(u8, cmd, "debug") or
+        std.mem.eql(u8, cmd, "mcp") or
+        std.mem.eql(u8, cmd, "app-server") or
+        std.mem.eql(u8, cmd, "stdio-to-uds") or
+        std.mem.eql(u8, cmd, "help") or
+        std.mem.eql(u8, cmd, "mcp-server") or
+        std.mem.eql(u8, cmd, "sessions") or
+        std.mem.eql(u8, cmd, "mock-demo") or
+        std.mem.eql(u8, cmd, "mock-apply-patch") or
+        std.mem.eql(u8, cmd, "mock-policy-demo") or
+        std.mem.eql(u8, cmd, "mock-sandbox-demo") or
+        isExecCommand(cmd) or
+        isApplyCommand(cmd);
+}
+
+fn rejectRemoteModeForSubcommand(remote: ?[]const u8, remote_auth_token_env: ?[]const u8, subcommand: []const u8) !void {
+    if (remote) |value| {
+        std.debug.print(
+            "`--remote {s}` is only supported for interactive TUI commands, not `codex-zig {s}`\n",
+            .{ value, subcommand },
+        );
+        return error.RemoteModeUnsupportedForSubcommand;
+    }
+    if (remote_auth_token_env != null) {
+        std.debug.print(
+            "`--remote-auth-token-env` is only supported for interactive TUI commands, not `codex-zig {s}`\n",
+            .{subcommand},
+        );
+        return error.RemoteModeUnsupportedForSubcommand;
+    }
 }
 
 fn runHelpCommand(args: *std.process.Args.Iterator) !void {
@@ -597,6 +676,8 @@ const SessionCommandArgs = struct {
     last: bool = false,
     show_all: bool = false,
     include_non_interactive: bool = false,
+    remote: ?[]const u8 = null,
+    remote_auth_token_env: ?[]const u8 = null,
     help: bool = false,
 };
 
@@ -614,7 +695,9 @@ fn collectRemainingArgs(
 
 fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interactive: bool) !SessionCommandArgs {
     var parsed = SessionCommandArgs{};
-    for (args) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             parsed.help = true;
             continue;
@@ -630,6 +713,26 @@ fn parseSessionCommandArgs(args: []const []const u8, allow_include_non_interacti
         if (std.mem.eql(u8, arg, "--include-non-interactive")) {
             if (!allow_include_non_interactive) return error.UnknownSessionCommandOption;
             parsed.include_non_interactive = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote")) {
+            if (index + 1 >= args.len) return error.MissingRemoteOptionValue;
+            index += 1;
+            parsed.remote = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote=")) {
+            parsed.remote = arg["--remote=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-auth-token-env")) {
+            if (index + 1 >= args.len) return error.MissingRemoteAuthTokenEnvOptionValue;
+            index += 1;
+            parsed.remote_auth_token_env = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
+            parsed.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) {
@@ -711,6 +814,10 @@ fn printHelp() !void {
         \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
+        \\  codex-zig --remote ws://HOST:PORT
+        \\                          Parse remote app-server target for interactive TUI
+        \\  codex-zig --remote-auth-token-env ENV_VAR
+        \\                          Read bearer token env var for remote app-server
         \\  codex-zig --no-alt-screen
         \\                          Disable alternate-screen TUI mode
         \\  codex-zig --version
@@ -767,12 +874,12 @@ fn printResumeHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig resume
-        \\  codex-zig resume [--all] [--include-non-interactive]
-        \\  codex-zig resume --last [--all] [--include-non-interactive]
+        \\  codex-zig resume [--all] [--include-non-interactive] [--remote ADDR]
+        \\  codex-zig resume --last [--all] [--include-non-interactive] [--remote ADDR]
         \\  codex-zig resume ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
-        \\--all and --include-non-interactive are accepted for Rust CLI compatibility.
+        \\--all, --include-non-interactive, and remote flags are accepted for Rust CLI compatibility.
         \\
     , .{});
 }
@@ -781,12 +888,12 @@ fn printForkHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig fork
-        \\  codex-zig fork [--all]
-        \\  codex-zig fork --last [--all]
+        \\  codex-zig fork [--all] [--remote ADDR]
+        \\  codex-zig fork --last [--all] [--remote ADDR]
         \\  codex-zig fork ID|PATH|last
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
-        \\--all is accepted for Rust CLI compatibility.
+        \\--all and remote flags are accepted for Rust CLI compatibility.
         \\
     , .{});
 }
@@ -1047,6 +1154,20 @@ test "session command flags parse resume compatibility options" {
     try std.testing.expect(parsed.target == null);
 }
 
+test "session command flags parse remote compatibility options" {
+    const argv = [_][]const u8{
+        "--remote",
+        "ws://127.0.0.1:4500",
+        "--remote-auth-token-env=CODEX_REMOTE_AUTH_TOKEN",
+        "--last",
+    };
+    const parsed = try parseSessionCommandArgs(argv[0..], true);
+
+    try std.testing.expect(parsed.last);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:4500", parsed.remote.?);
+    try std.testing.expectEqualStrings("CODEX_REMOTE_AUTH_TOKEN", parsed.remote_auth_token_env.?);
+}
+
 test "session command flags parse target and reject extra target" {
     const target_argv = [_][]const u8{"session-id"};
     const target = try parseSessionCommandArgs(target_argv[0..], false);
@@ -1059,4 +1180,12 @@ test "session command flags parse target and reject extra target" {
 test "fork session command rejects include non interactive" {
     const argv = [_][]const u8{"--include-non-interactive"};
     try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionCommandArgs(argv[0..], false));
+}
+
+test "root remote is only accepted for interactive commands" {
+    try std.testing.expect(commandRejectsRootRemote("exec"));
+    try std.testing.expect(commandRejectsRootRemote("app-server"));
+    try std.testing.expect(!commandRejectsRootRemote("resume"));
+    try std.testing.expect(!commandRejectsRootRemote("fork"));
+    try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
 }
