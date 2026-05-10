@@ -3,6 +3,7 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const features_cmd = @import("features_cmd.zig");
 const memory_reset = @import("memory_reset.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -443,6 +444,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
     }
     if (isModelMethod(method)) {
         return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
+    }
+    if (isExperimentalFeatureMethod(method)) {
+        return try handleExperimentalFeatureMethod(allocator, id_value.?, method, object.get("params"));
     }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
@@ -1291,6 +1295,162 @@ fn handleModelProviderCapabilitiesRead(allocator: std.mem.Allocator, id_value: s
     );
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn isExperimentalFeatureMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "experimentalFeature/list") or
+        std.mem.eql(u8, method, "experimentalFeature/enablement/set");
+}
+
+fn handleExperimentalFeatureMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "experimentalFeature/list")) {
+        return handleExperimentalFeatureList(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "experimentalFeature/enablement/set")) {
+        return handleExperimentalFeatureEnablementSet(allocator, id_value, params_value);
+    }
+    return try renderJsonRpcError(allocator, id_value, -32601, "unknown experimental feature method");
+}
+
+fn handleExperimentalFeatureList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = switch (optionalExperimentalFeatureListParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var cursor: ?[]const u8 = null;
+    var limit: ?usize = null;
+    if (params) |object| {
+        if (object.get("cursor")) |value| {
+            if (value != .null) {
+                if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cursor must be a string or null");
+                cursor = value.string;
+            }
+        }
+        if (object.get("limit")) |value| {
+            limit = switch (value) {
+                .null => null,
+                .integer => |integer| blk: {
+                    if (integer < 0) return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                    break :blk @intCast(integer);
+                },
+                .number_string => |number| std.fmt.parseUnsigned(usize, number, 10) catch {
+                    return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                },
+                else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+            };
+        }
+    }
+
+    const start = if (cursor) |value|
+        std.fmt.parseUnsigned(usize, value, 10) catch {
+            const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    else
+        0;
+
+    const all_features = features_cmd.FeatureSpec.all;
+    const total = all_features.len;
+    if (start > total) {
+        const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total feature flags {d}", .{ start, total });
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+    var feature_overrides = features_cmd.loadFeatureOverrides(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load feature config", err);
+    };
+    defer feature_overrides.deinit(allocator);
+
+    const effective_limit = if (total == 0) 0 else @min(@max(limit orelse total, 1), total);
+    const end = @min(start + effective_limit, total);
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (all_features[start..end], 0..) |feature, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        const enabled = feature_overrides.get(feature.key) orelse feature.default_enabled;
+        try appendExperimentalFeatureJson(allocator, &result, feature, enabled);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        const next_cursor_json = try std.json.Stringify.valueAlloc(allocator, next_cursor, .{});
+        defer allocator.free(next_cursor_json);
+        try result.appendSlice(allocator, next_cursor_json);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn optionalExperimentalFeatureListParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "experimentalFeature/list params must be an object" };
+    return .{ .object = params.object };
+}
+
+fn appendExperimentalFeatureJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    feature: features_cmd.FeatureSpec,
+    enabled: bool,
+) !void {
+    const key_json = try std.json.Stringify.valueAlloc(allocator, feature.key, .{});
+    defer allocator.free(key_json);
+    try result.appendSlice(allocator, "{\"name\":");
+    try result.appendSlice(allocator, key_json);
+    try result.appendSlice(allocator, ",\"stage\":\"");
+    try result.appendSlice(allocator, experimentalFeatureStageLabel(feature.stage));
+    try result.appendSlice(allocator, "\",\"displayName\":");
+    if (std.mem.eql(u8, feature.stage, "experimental")) {
+        try result.appendSlice(allocator, key_json);
+        try result.appendSlice(allocator, ",\"description\":\"Experimental Zig feature flag.\",\"announcement\":\"Available for opt-in testing in the Zig port.\"");
+    } else {
+        try result.appendSlice(allocator, "null,\"description\":null,\"announcement\":null");
+    }
+    try result.appendSlice(allocator, ",\"enabled\":");
+    try result.appendSlice(allocator, if (enabled) "true" else "false");
+    try result.appendSlice(allocator, ",\"defaultEnabled\":");
+    try result.appendSlice(allocator, if (feature.default_enabled) "true" else "false");
+    try result.appendSlice(allocator, "}");
+}
+
+fn experimentalFeatureStageLabel(stage: []const u8) []const u8 {
+    if (std.mem.eql(u8, stage, "experimental")) return "beta";
+    if (std.mem.eql(u8, stage, "under development")) return "underDevelopment";
+    if (std.mem.eql(u8, stage, "stable")) return "stable";
+    if (std.mem.eql(u8, stage, "deprecated")) return "deprecated";
+    if (std.mem.eql(u8, stage, "removed")) return "removed";
+    return "underDevelopment";
+}
+
+fn handleExperimentalFeatureEnablementSet(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "experimentalFeature/enablement/set params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "experimentalFeature/enablement/set params must be an object");
+    const enablement = params.object.get("enablement") orelse return renderJsonRpcError(allocator, id_value, -32602, "enablement must be an object");
+    if (enablement != .object) return renderJsonRpcError(allocator, id_value, -32602, "enablement must be an object");
+    for (enablement.object.values()) |value| {
+        if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "enablement values must be booleans");
+    }
+    return renderFsParsedButNotImplemented(allocator, id_value, "experimentalFeature/enablement/set");
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {

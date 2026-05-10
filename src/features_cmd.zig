@@ -3,7 +3,9 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 
-const FeatureSpec = struct {
+pub const FeatureSpec = struct {
+    pub const all = features[0..];
+
     key: []const u8,
     stage: []const u8,
     default_enabled: bool,
@@ -189,6 +191,12 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
     const message = try std.fmt.allocPrint(allocator, "{s} feature `{s}` in config.toml.\n", .{ verb, feature });
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
+}
+
+pub fn loadFeatureOverrides(allocator: std.mem.Allocator, codex_home: []const u8) !FeatureOverrides {
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    return parseFeatureOverrides(allocator, config_bytes orelse "");
 }
 
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
