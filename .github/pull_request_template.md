@@ -1,10 +1,10 @@
 ## Summary
 
-- 
+-
 
 ## Parity Surface
 
-- 
+-
 
 ## Verification
 
@@ -15,4 +15,4 @@
 
 ## Notes
 
-- 
+-
