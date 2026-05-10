@@ -137,6 +137,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - enforce Rust-compatible non-interactive `exec` Git-repository checks, with
   `--skip-git-repo-check` and dangerous bypass exceptions, including for
   `exec review`
+- reject conflicting approval-policy flags when dangerous bypass mode is set
 - inspect known feature flags with `features list`
 - enable or disable known feature flags for one invocation with root
   `--enable/--disable`
