@@ -245,7 +245,7 @@ app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations and unwatch cleanup,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
-git-diff-to-remote, fuzzy-file-search one-shot and session notifications,
+git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read, config-value-write, config-batch-write,
