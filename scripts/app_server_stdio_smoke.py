@@ -118,44 +118,55 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "/backend-api/ps/plugins/"
             "plugins~Plugin_00000000000000000000000000000000"
         )
+        list_path = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
         installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
         skill_path = (
             "/backend-api/ps/plugins/"
             "plugins~Plugin_00000000000000000000000000000000"
             "/skills/plan-work"
         )
+        if self.path == detail_path or self.path == list_path:
+            plugin = {
+                "id": "plugins~Plugin_00000000000000000000000000000000",
+                "name": "linear",
+                "scope": "GLOBAL",
+                "installation_policy": "AVAILABLE",
+                "authentication_policy": "ON_USE",
+                "status": "ENABLED",
+                "release": {
+                    "display_name": "Linear",
+                    "description": "Track work in Linear",
+                    "app_ids": ["gmail"],
+                    "keywords": ["issue-tracking", "project management"],
+                    "interface": {
+                        "short_description": "Plan and track work",
+                        "capabilities": ["Read", "Write"],
+                        "logo_url": "https://example.com/linear.png",
+                        "screenshot_urls": ["https://example.com/linear-shot.png"],
+                    },
+                    "skills": [
+                        {
+                            "name": "plan-work",
+                            "description": "Plan work from Linear issues",
+                            "plugin_release_skill_id": "skill-1",
+                            "interface": {
+                                "display_name": "Plan Work",
+                                "short_description": "Create a plan from issues",
+                            },
+                        }
+                    ],
+                },
+            }
         if self.path == detail_path:
             body = json.dumps(
+                plugin,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == list_path:
+            body = json.dumps(
                 {
-                    "id": "plugins~Plugin_00000000000000000000000000000000",
-                    "name": "linear",
-                    "scope": "GLOBAL",
-                    "installation_policy": "AVAILABLE",
-                    "authentication_policy": "ON_USE",
-                    "status": "ENABLED",
-                    "release": {
-                        "display_name": "Linear",
-                        "description": "Track work in Linear",
-                        "app_ids": ["gmail"],
-                        "keywords": ["issue-tracking", "project management"],
-                        "interface": {
-                            "short_description": "Plan and track work",
-                            "capabilities": ["Read", "Write"],
-                            "logo_url": "https://example.com/linear.png",
-                            "screenshot_urls": ["https://example.com/linear-shot.png"],
-                        },
-                        "skills": [
-                            {
-                                "name": "plan-work",
-                                "description": "Plan work from Linear issues",
-                                "plugin_release_skill_id": "skill-1",
-                                "interface": {
-                                    "display_name": "Plan Work",
-                                    "short_description": "Create a plan from issues",
-                                },
-                            }
-                        ],
-                    },
+                    "plugins": [plugin],
+                    "pagination": {"limit": 200, "next_page_token": None},
                 },
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -946,6 +957,7 @@ description: Summarize plugin smoke threads
 
 [features]
 plugins = true
+remote_plugin = true
 """,
             encoding="utf-8",
         )
@@ -975,6 +987,54 @@ plugins = true
         remote_env.pop("OPENAI_API_KEY", None)
         remote_env.pop("CODEX_ACCESS_TOKEN", None)
         remote_env["CODEX_HOME"] = str(remote_home)
+        remote_plugin_list = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-plugin-list",
+                "method": "plugin/list",
+                "params": {},
+            },
+            remote_env,
+        )
+        assert remote_plugin_list["id"] == "remote-plugin-list"
+        assert "result" in remote_plugin_list, remote_plugin_list
+        remote_marketplaces = remote_plugin_list["result"]["marketplaces"]
+        assert len(remote_marketplaces) == 1, {
+            "response": remote_plugin_list,
+            "backend_requests": PluginBackendHandler.requests,
+        }
+        remote_marketplace = remote_marketplaces[0]
+        assert remote_marketplace["name"] == "chatgpt-global"
+        assert remote_marketplace["path"] is None
+        assert remote_marketplace["interface"] == {"displayName": "ChatGPT Plugins"}
+        assert len(remote_marketplace["plugins"]) == 1
+        listed_plugin = remote_marketplace["plugins"][0]
+        assert listed_plugin["id"] == "plugins~Plugin_00000000000000000000000000000000"
+        assert listed_plugin["name"] == "linear"
+        assert listed_plugin["source"] == {"type": "remote"}
+        assert listed_plugin["installed"] is True
+        assert listed_plugin["enabled"] is False
+        assert listed_plugin["installPolicy"] == "AVAILABLE"
+        assert listed_plugin["authPolicy"] == "ON_USE"
+        assert listed_plugin["availability"] == "AVAILABLE"
+        assert listed_plugin["interface"]["displayName"] == "Linear"
+        assert listed_plugin["interface"]["shortDescription"] == "Plan and track work"
+        assert listed_plugin["keywords"] == ["issue-tracking", "project management"]
+        assert PluginBackendHandler.requests == [
+            {
+                "path": "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": "/backend-api/ps/plugins/installed?scope=GLOBAL",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
+        PluginBackendHandler.requests = []
+
         remote_plugin_read = request_stdio_app_server(
             binary,
             {
