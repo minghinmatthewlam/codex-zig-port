@@ -4778,21 +4778,19 @@ test "app-server marketplace methods validate params and return not implemented"
     try std.testing.expect(std.mem.indexOf(u8, invalid_add.?, "\"code\":-32602") != null);
 }
 
-test "app-server plugin methods validate params and return not implemented" {
+test "app-server plugin methods validate params" {
     const allocator = std.testing.allocator;
     var state = AppServerState{};
     defer state.deinit(allocator);
 
-    const cases = [_][]const u8{
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"gmail\"}}",
-    };
-
-    for (cases) |line| {
-        const response = try handleJsonRpcLine(allocator, &state, line);
-        defer allocator.free(response.?);
-        try std.testing.expect(std.mem.indexOf(u8, response.?, "\"code\":-32603") != null);
-        try std.testing.expect(std.mem.indexOf(u8, response.?, "is parsed but not implemented yet") != null);
-    }
+    const invalid_remote_install = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"bad/plugin\"}}",
+    );
+    defer allocator.free(invalid_remote_install.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_remote_install.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_remote_install.?, "invalid remote plugin id") != null);
 
     const invalid_read = try handleJsonRpcLine(
         allocator,
