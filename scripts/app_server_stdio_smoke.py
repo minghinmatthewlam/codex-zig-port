@@ -6877,16 +6877,40 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
 
+        command_exec = json.loads((out_dir / "CommandExecParams.json").read_text(encoding="utf-8"))
+        assert command_exec["title"] == "CommandExecParams"
+        assert command_exec["required"] == ["command"]
+        assert command_exec["properties"]["command"]["items"]["type"] == "string"
+        assert command_exec["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"] == "SandboxPolicy.json"
+        command_exec_output_delta = json.loads(
+            (out_dir / "CommandExecOutputDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert command_exec_output_delta["title"] == "CommandExecOutputDeltaNotification"
+        assert command_exec_output_delta["properties"]["stream"]["enum"] == [
+            "stdout",
+            "stderr",
+        ]
+        command_exec_write_response = json.loads(
+            (out_dir / "CommandExecWriteResponse.json").read_text(encoding="utf-8")
+        )
+        assert command_exec_write_response["title"] == "CommandExecWriteResponse"
+        assert command_exec_write_response["additionalProperties"] is False
+
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
         )
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
+        assert "CommandExecParams" in bundle["$defs"]
+        assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
         )
         assert v2_bundle["$defs"]["JSONRPCMessage"] == bundle["$defs"]["JSONRPCMessage"]
+        assert v2_bundle["$defs"]["CommandExecResponse"] == bundle["$defs"]["CommandExecResponse"]
 
         missing_out = subprocess.run(
             [str(binary), "app-server", "generate-json-schema"],
@@ -6935,12 +6959,40 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
+        assert 'method: "command/exec";' in client_request
+        assert "params: CommandExecParams;" in client_request
+        assert 'method: "command/exec/write";' in client_request
+        assert "params: CommandExecWriteParams;" in client_request
+
+        command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface CommandExecParams" in command_exec
+        assert "command: string[]" in command_exec
+        assert "sandboxPolicy?: SandboxPolicy | null;" in command_exec
+        sandbox_policy = (out_dir / "v2" / "SandboxPolicy.ts").read_text(encoding="utf-8")
+        assert 'type: "workspaceWrite"' in sandbox_policy
+        assert "networkAccess?: boolean;" in sandbox_policy
+        assert "networkAccess?: NetworkAccess" in sandbox_policy
+        command_exec_delta = (
+            out_dir / "v2" / "CommandExecOutputDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface CommandExecOutputDeltaNotification" in command_exec_delta
+        assert "deltaBase64: string;" in command_exec_delta
+        assert (
+            out_dir / "v2" / "CommandExecWriteResponse.ts"
+        ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export * as v2 from "./v2";' in index
-        assert (out_dir / "v2" / "index.ts").read_text(encoding="utf-8").startswith(
-            "// GENERATED CODE! DO NOT MODIFY BY HAND!"
+        v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
+        assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
+        assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
+        assert (
+            'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
+            in v2_index
         )
 
         missing_out = subprocess.run(
