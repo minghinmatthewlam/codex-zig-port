@@ -1,0 +1,57 @@
+name: Bug report
+description: Report behavior that diverges from the expected Codex CLI surface.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve this independent Zig port. Please avoid including tokens, auth files, private prompts, or local session transcripts.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: List the smallest command or workflow that shows the issue.
+      placeholder: |
+        1. Run `zig build`
+        2. Run `zig build run -- ...`
+        3. Observe ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - interactive TUI
+        - exec
+        - review
+        - app-server
+        - MCP
+        - plugins
+        - auth/login
+        - config
+        - sandbox/tools
+        - docs
+        - other
+    validations:
+      required: true
+  - type: input
+    id: zig-version
+    attributes:
+      label: Zig version
+      placeholder: "0.16.0"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste only redacted output.
+      render: text

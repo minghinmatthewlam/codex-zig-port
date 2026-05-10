@@ -1,0 +1,36 @@
+name: Feature request
+description: Request a parity slice or OSS improvement.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What behavior or capability should be added?
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - Rust CLI parity
+        - developer experience
+        - documentation
+        - testing
+        - security
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reference behavior or evidence
+      description: Link to source, docs, terminal output, or a small example when possible.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How should maintainers verify that this is done?
