@@ -4792,6 +4792,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'allowed_approval_policies = ["on-request"]',
                     'allowed_sandbox_modes = ["danger-full-access"]',
                     'allowed_web_search_modes = ["cached"]',
+                    'enforce_residency = "us"',
                     "",
                     "[features]",
                     "apps = false",
@@ -4824,6 +4825,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedSandboxModes": ["danger-full-access"],
                 "allowedWebSearchModes": ["cached", "disabled"],
                 "featureRequirements": {"apps": False, "goals": True},
+                "enforceResidency": "us",
             }
         }
 
