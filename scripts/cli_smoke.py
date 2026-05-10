@@ -403,6 +403,45 @@ def run_exec_stdin_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_git_repo_check_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        rejected = subprocess.run(
+            [str(binary.resolve()), "exec", "say", "hi"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "Not inside a trusted directory and --skip-git-repo-check was not specified." in rejected.stderr
+        assert server.request_bodies == []
+
+        bypassed = subprocess.run(
+            [str(binary.resolve()), "exec", "--dangerously-bypass-approvals-and-sandbox", "say", "hi"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert bypassed.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "say hi"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -410,11 +449,13 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_exec_equals_options_smoke(binary)
     run_exec_stdin_smoke(binary)
+    run_exec_git_repo_check_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
     print("cli-exec-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
+    print("cli-exec-git-check-e2e: ok")
 
 
 if __name__ == "__main__":
