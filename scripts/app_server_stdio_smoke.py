@@ -10,9 +10,69 @@ import sys
 import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 _OMIT = object()
+
+
+class RateLimitBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def do_GET(self) -> None:
+        RateLimitBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+            }
+        )
+        if self.path != "/api/codex/usage":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 42,
+                        "limit_window_seconds": 300,
+                        "reset_at": 123,
+                    },
+                    "secondary_window": {
+                        "used_percent": 84,
+                        "limit_window_seconds": 3600,
+                        "reset_at": 456,
+                    },
+                },
+                "additional_rate_limits": [
+                    {
+                        "limit_name": "codex_other",
+                        "metered_feature": "codex_other",
+                        "rate_limit": {
+                            "primary_window": {
+                                "used_percent": 70,
+                                "limit_window_seconds": 900,
+                                "reset_at": 789,
+                            }
+                        },
+                    }
+                ],
+                "credits": {"has_credits": True, "unlimited": False, "balance": "9.99"},
+                "rate_limit_reached_type": {"kind": "workspace_member_credits_depleted"},
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
 
 
 def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
@@ -653,6 +713,13 @@ def encode_unsigned_jwt(payload: dict) -> str:
     return f"{header}.{body}.{signature}"
 
 
+def start_rate_limit_backend() -> tuple[ThreadingHTTPServer, str]:
+    RateLimitBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RateLimitBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
 def run_account_read_rpc_smoke(binary: Path) -> None:
     def request(codex_home: Path, request_id: str, params_marker: object, extra_env: dict[str, str] | None = None) -> dict:
         env = os.environ.copy()
@@ -900,6 +967,101 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
                 proc.wait(timeout=5)
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_account_rate_limits_rpc_smoke(binary: Path) -> None:
+    def request(codex_home: Path, request_id: str, params_marker: object) -> dict:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "account/rateLimits/read"}
+        if params_marker is not _OMIT:
+            payload["params"] = params_marker
+        return request_stdio_app_server(binary, payload, env)
+
+    server, base_url = start_rate_limit_backend()
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-rate-limits-chatgpt-", dir="/tmp"))
+    no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-rate-limits-none-", dir="/tmp"))
+    api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-rate-limits-api-", dir="/tmp"))
+    try:
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        (chatgpt_home / "config.toml").write_text(f'chatgpt_base_url = "{base_url}"\n', encoding="utf-8")
+        (chatgpt_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        rate_limits = request(chatgpt_home, "rate-limits", _OMIT)
+        assert rate_limits["id"] == "rate-limits"
+        result = rate_limits["result"]
+        primary = result["rateLimits"]
+        assert primary == {
+            "limitId": "codex",
+            "limitName": None,
+            "primary": {"usedPercent": 42, "windowDurationMins": 5, "resetsAt": 123},
+            "secondary": {"usedPercent": 84, "windowDurationMins": 60, "resetsAt": 456},
+            "credits": {"hasCredits": True, "unlimited": False, "balance": "9.99"},
+            "planType": "pro",
+            "rateLimitReachedType": "workspace_member_credits_depleted",
+        }
+        assert result["rateLimitsByLimitId"]["codex"] == primary
+        assert result["rateLimitsByLimitId"]["codex_other"] == {
+            "limitId": "codex_other",
+            "limitName": "codex_other",
+            "primary": {"usedPercent": 70, "windowDurationMins": 15, "resetsAt": 789},
+            "secondary": None,
+            "credits": None,
+            "planType": "pro",
+            "rateLimitReachedType": None,
+        }
+        assert RateLimitBackendHandler.requests == [
+            {
+                "path": "/api/codex/usage",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            }
+        ]
+
+        no_auth = request(no_auth_home, "rate-limits-no-auth", _OMIT)
+        assert no_auth["id"] == "rate-limits-no-auth"
+        assert no_auth["error"]["code"] == -32602
+        assert "codex account authentication required" in no_auth["error"]["message"]
+
+        (api_key_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}),
+            encoding="utf-8",
+        )
+        api_key = request(api_key_home, "rate-limits-api-key", None)
+        assert api_key["id"] == "rate-limits-api-key"
+        assert api_key["error"]["code"] == -32602
+        assert "chatgpt authentication required" in api_key["error"]["message"]
+
+        invalid = request(chatgpt_home, "rate-limits-invalid", {})
+        assert invalid["id"] == "rate-limits-invalid"
+        assert invalid["error"]["code"] == -32602
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(no_auth_home, ignore_errors=True)
+        shutil.rmtree(api_key_home, ignore_errors=True)
 
 
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
@@ -1287,6 +1449,8 @@ def main() -> None:
     print("app-server-account-logout-rpc-e2e: ok")
     run_account_login_rpc_smoke(binary)
     print("app-server-account-login-rpc-e2e: ok")
+    run_account_rate_limits_rpc_smoke(binary)
+    print("app-server-account-rate-limits-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
