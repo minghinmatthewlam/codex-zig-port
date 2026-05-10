@@ -721,7 +721,6 @@ fn isPluginMarketplaceKind(value: []const u8) bool {
 }
 
 const FS_ABSOLUTE_PATH_MESSAGE = "Invalid request: AbsolutePathBuf deserialized without a base path";
-const FS_MAX_READ_BYTES = 64 * 1024 * 1024;
 
 const FsObjectParams = union(enum) {
     object: std.json.ObjectMap,
@@ -779,7 +778,7 @@ fn handleFsReadFile(allocator: std.mem.Allocator, id_value: std.json.Value, para
     };
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(FS_MAX_READ_BYTES)) catch |err| {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "fs/readFile failed", err);
     };
     defer allocator.free(data);
@@ -910,7 +909,10 @@ fn handleFsReadDirectory(allocator: std.mem.Allocator, id_value: std.json.Value,
 
     var first = true;
     var iter = dir.iterate();
-    while (try iter.next(io)) |entry| {
+    while (true) {
+        const entry = (iter.next(io) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "fs/readDirectory failed", err);
+        }) orelse break;
         const child_path = try std.fs.path.join(allocator, &.{ path, entry.name });
         defer allocator.free(child_path);
         const metadata = (statPathFollow(allocator, child_path) catch continue) orelse continue;
@@ -1031,19 +1033,17 @@ fn handleFsUnwatch(allocator: std.mem.Allocator, id_value: std.json.Value, param
 }
 
 fn fsObjectParams(params_value: ?std.json.Value, method: []const u8) FsObjectParams {
-    const params = params_value orelse {
-        if (std.mem.eql(u8, method, "fs/copy")) return .{ .message = "fs/copy params must be an object" };
-        if (std.mem.eql(u8, method, "fs/watch")) return .{ .message = "fs/watch params must be an object" };
-        if (std.mem.eql(u8, method, "fs/unwatch")) return .{ .message = "fs/unwatch params must be an object" };
-        return .{ .message = "filesystem params must be an object" };
-    };
-    if (params != .object) {
-        if (std.mem.eql(u8, method, "fs/copy")) return .{ .message = "fs/copy params must be an object" };
-        if (std.mem.eql(u8, method, "fs/watch")) return .{ .message = "fs/watch params must be an object" };
-        if (std.mem.eql(u8, method, "fs/unwatch")) return .{ .message = "fs/unwatch params must be an object" };
-        return .{ .message = "filesystem params must be an object" };
-    }
+    const invalid_message = fsObjectParamsMessage(method);
+    const params = params_value orelse return .{ .message = invalid_message };
+    if (params != .object) return .{ .message = invalid_message };
     return .{ .object = params.object };
+}
+
+fn fsObjectParamsMessage(method: []const u8) []const u8 {
+    if (std.mem.eql(u8, method, "fs/copy")) return "fs/copy params must be an object";
+    if (std.mem.eql(u8, method, "fs/watch")) return "fs/watch params must be an object";
+    if (std.mem.eql(u8, method, "fs/unwatch")) return "fs/unwatch params must be an object";
+    return "filesystem params must be an object";
 }
 
 fn requiredAbsolutePathField(object: std.json.ObjectMap, field: []const u8) FsStringField {
