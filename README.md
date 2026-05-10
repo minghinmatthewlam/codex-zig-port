@@ -80,6 +80,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply multiple app-server config edits in one file write with
   `config/batchWrite`
 - report absent managed config requirements with `configRequirements/read`
+- list app-server collaboration mode presets with `collaborationMode/list`
 - list app-server experimental feature metadata and patch process-local runtime
   feature enablement
 - proxy stdio JSON-RPC to the app-server Unix control socket with
@@ -163,11 +164,11 @@ app-server MCP server status pagination and bearer-token auth reporting, verifie
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations and unwatch cleanup,
-checks app-server model catalog, provider-capability, git-diff-to-remote,
-fuzzy-file-search, account-read, get-auth-status, account-logout, account-login,
-account-login-cancel, account-rate-limits, account-add-credits-nudge,
-config-read, config-value-write, config-batch-write, and config-requirements
-RPCs against temporary config homes and a
+checks app-server model catalog, provider-capability, collaboration-mode-list,
+git-diff-to-remote, fuzzy-file-search, account-read, get-auth-status,
+account-logout, account-login, account-login-cancel, account-rate-limits,
+account-add-credits-nudge, config-read, config-value-write, config-batch-write,
+and config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. Run

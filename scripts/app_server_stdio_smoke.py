@@ -1570,6 +1570,51 @@ def run_model_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_collaboration_mode_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-collaboration-", dir="/tmp"))
+
+    def rpc(request_id: str, params: object = _OMIT) -> dict:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "collaborationMode/list"}
+        if params is not _OMIT:
+            payload["params"] = params
+        return request_stdio_app_server(binary, payload, env)
+
+    try:
+        response = rpc("collaboration-mode-list", {})
+        assert response["id"] == "collaboration-mode-list"
+        assert response["result"]["data"] == [
+            {
+                "name": "Plan",
+                "mode": "plan",
+                "model": None,
+                "reasoning_effort": "medium",
+            },
+            {
+                "name": "Default",
+                "mode": "default",
+                "model": None,
+                "reasoning_effort": None,
+            },
+        ]
+
+        omitted = rpc("collaboration-mode-list-omitted")
+        assert omitted["id"] == "collaboration-mode-list-omitted"
+        assert omitted["result"] == response["result"]
+
+        null_params = rpc("collaboration-mode-list-null", None)
+        assert null_params["id"] == "collaboration-mode-list-null"
+        assert null_params["result"] == response["result"]
+
+        invalid = rpc("collaboration-mode-list-invalid", [])
+        assert invalid["id"] == "collaboration-mode-list-invalid"
+        assert invalid["error"]["code"] == -32602
+        assert invalid["error"]["message"] == "params must be an object"
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_config_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-", dir="/tmp"))
     (codex_home / "config.toml").write_text(
@@ -3048,6 +3093,8 @@ def main() -> None:
     print("app-server-filesystem-watch-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
+    run_collaboration_mode_rpc_smoke(binary)
+    print("app-server-collaboration-mode-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
