@@ -1336,6 +1336,7 @@ fn appendJsonFieldName(
 
 fn isAccountMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "account/read") or
+        std.mem.eql(u8, method, "account/login/cancel") or
         std.mem.eql(u8, method, "account/login/start") or
         std.mem.eql(u8, method, "account/rateLimits/read") or
         std.mem.eql(u8, method, "account/logout");
@@ -1349,6 +1350,9 @@ fn handleAccountMethod(
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "account/read")) {
         return handleAccountRead(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "account/login/cancel")) {
+        return handleAccountLoginCancel(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "account/login/start")) {
         return handleAccountLoginStart(allocator, id_value, params_value);
@@ -1398,6 +1402,32 @@ fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Valu
     const response = try renderJsonRpcResult(allocator, id_value, "{\"type\":\"apiKey\"}");
     defer allocator.free(response);
     return renderResultWithApiKeyLoginNotifications(allocator, response);
+}
+
+fn handleAccountLoginCancel(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "account/login/cancel params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "account/login/cancel params must be an object");
+
+    const login_id_value = params.object.get("loginId") orelse return renderJsonRpcError(allocator, id_value, -32602, "loginId must be a string");
+    if (login_id_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "loginId must be a string");
+    if (!isUuidString(login_id_value.string)) {
+        const message = try std.fmt.allocPrint(allocator, "invalid login id: {s}", .{login_id_value.string});
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notFound\"}");
+}
+
+fn isUuidString(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |byte, index| {
+        switch (index) {
+            8, 13, 18, 23 => if (byte != '-') return false,
+            else => if (!std.ascii.isHex(byte)) return false,
+        }
+    }
+    return true;
 }
 
 fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
