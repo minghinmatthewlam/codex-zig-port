@@ -3741,7 +3741,7 @@ fn renderConfigReadResponse(
     const system_web_search_mode = if (system_layer) |layer| layer.web_search_mode else null;
     const web_search_mode = project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
-    try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(project_layers, user_layer, system_layer));
+    try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
     try appendConfigReadAppsField(allocator, &result, &first, if (user_layer) |layer| layer.apps else null);
     const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
     const model_reasoning_effort = project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
@@ -3769,6 +3769,7 @@ const ConfigReadManagedLayer = struct {
     model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
+    tools: ConfigReadTools = .{},
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
 
     fn deinit(self: *ConfigReadManagedLayer, allocator: std.mem.Allocator) void {
@@ -3777,6 +3778,7 @@ const ConfigReadManagedLayer = struct {
         if (self.model) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.tools.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
     }
 
@@ -3789,6 +3791,10 @@ const ConfigReadManagedLayer = struct {
 
     fn hasSandboxWorkspaceWriteRoot(self: ConfigReadManagedLayer) bool {
         return self.sandbox_workspace_write.writable_roots != null;
+    }
+
+    fn hasToolsAllowedDomains(self: ConfigReadManagedLayer) bool {
+        return configReadToolsHasAllowedDomains(self.tools);
     }
 };
 
@@ -4179,11 +4185,14 @@ fn effectiveConfigReadSandboxWorkspaceWrite(
 }
 
 fn effectiveConfigReadTools(
+    managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     system_layer: ?ConfigReadSystemLayer,
 ) ?ConfigReadTools {
-    var tools = project_layers.tools();
+    var tools = ConfigReadTools{};
+    if (managed_layer) |layer| mergeConfigReadTools(&tools, layer.tools);
+    mergeConfigReadTools(&tools, project_layers.tools());
     if (user_layer) |layer| mergeConfigReadTools(&tools, layer.tools);
     if (system_layer) |layer| mergeConfigReadTools(&tools, layer.tools);
     if (!tools.present) return null;
@@ -4659,6 +4668,8 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     errdefer if (model) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
+    var tools = ConfigReadTools{};
+    errdefer tools.deinit(allocator);
 
     if (try config.topLevelStringValue(allocator, payload, "model")) |value| {
         model = value;
@@ -4674,6 +4685,8 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         sandbox_mode = try config.SandboxMode.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "sandbox_mode");
     }
+    tools = try loadConfigReadTools(allocator, payload);
+    try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
 
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, payload);
     errdefer sandbox_workspace_write.deinit(allocator);
@@ -4691,6 +4704,7 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .model = model,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
+        .tools = tools,
         .sandbox_workspace_write = sandbox_workspace_write,
     };
 }
@@ -5144,6 +5158,7 @@ fn appendConfigReadOrigins(
                 if (if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) continue;
                 if (configReadProjectSliceHasSandboxWorkspaceWriteRoot(project_layers.items[0..index])) continue;
             } else if (isConfigReadToolsAllowedDomainsOriginKey(key)) {
+                if (if (managed_layer) |managed| managed.hasToolsAllowedDomains() else false) continue;
                 if (configReadProjectSliceHasToolsAllowedDomains(project_layers.items[0..index])) continue;
             } else {
                 if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
@@ -5158,7 +5173,7 @@ fn appendConfigReadOrigins(
             if (project_layers.hasOriginKey(key)) continue;
             try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
         }
-        try appendConfigReadUserToolsOrigins(allocator, result, &first, project_layers, layer);
+        try appendConfigReadUserToolsOrigins(allocator, result, &first, managed_layer, project_layers, layer);
         try appendConfigReadUserAppsOrigins(allocator, result, &first, layer);
         try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, managed_layer, project_layers, layer);
     }
@@ -5169,6 +5184,7 @@ fn appendConfigReadOrigins(
                 if (project_layers.hasSandboxWorkspaceWriteRoot()) continue;
                 if (if (user_layer) |user| user.sandbox_workspace_write.writable_roots != null else false) continue;
             } else if (isConfigReadToolsAllowedDomainsOriginKey(key)) {
+                if (if (managed_layer) |managed| managed.hasToolsAllowedDomains() else false) continue;
                 if (project_layers.hasToolsAllowedDomains()) continue;
                 if (if (user_layer) |user| configReadUserLayerHasToolsAllowedDomains(user) else false) continue;
             } else {
@@ -5186,37 +5202,38 @@ fn appendConfigReadUserToolsOrigins(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
 ) !void {
     if (layer.tools.web_search) |web_search| {
         if (web_search.context_size != null) {
-            try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.web_search.context_size");
+            try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.web_search.context_size");
         }
         if (web_search.allowed_domains) |domains| {
             for (domains.items, 0..) |_, index| {
                 const key = try std.fmt.allocPrint(allocator, "tools.web_search.allowed_domains.{d}", .{index});
                 defer allocator.free(key);
-                try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, key);
+                try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, key);
             }
         }
         if (web_search.location) |location| {
             if (location.country != null) {
-                try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.web_search.location.country");
+                try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.web_search.location.country");
             }
             if (location.region != null) {
-                try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.web_search.location.region");
+                try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.web_search.location.region");
             }
             if (location.city != null) {
-                try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.web_search.location.city");
+                try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.web_search.location.city");
             }
             if (location.timezone != null) {
-                try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.web_search.location.timezone");
+                try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.web_search.location.timezone");
             }
         }
     }
     if (layer.tools.view_image != null) {
-        try appendConfigReadUserToolOrigin(allocator, result, first, project_layers, layer, "tools.view_image");
+        try appendConfigReadUserToolOrigin(allocator, result, first, managed_layer, project_layers, layer, "tools.view_image");
     }
 }
 
@@ -5224,10 +5241,13 @@ fn appendConfigReadUserToolOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
     key: []const u8,
 ) !void {
+    if (isConfigReadToolsAllowedDomainsOriginKey(key) and (if (managed_layer) |managed| managed.hasToolsAllowedDomains() else false)) return;
+    if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) return;
     if (isConfigReadToolsAllowedDomainsOriginKey(key) and project_layers.hasToolsAllowedDomains()) return;
     if (project_layers.hasOriginKey(key)) return;
     try appendConfigReadUserOrigin(allocator, result, first, layer, key);
@@ -5698,6 +5718,10 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
         try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
+    }
+    if (layer.tools.present) {
+        try appendJsonFieldName(allocator, result, &first, "tools");
+        try appendConfigReadToolsObject(allocator, result, layer.tools);
     }
     try result.append(allocator, '}');
 }
