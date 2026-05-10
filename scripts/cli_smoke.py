@@ -709,6 +709,80 @@ def run_removed_top_level_command_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_sandbox_permission_profile_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-sandbox-profile-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "macos", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "--permissions-profile NAME" in help_result.stderr
+        assert "--include-managed-config" in help_result.stderr
+
+        cwd_without_profile = subprocess.run(
+            [str(binary.resolve()), "sandbox", "macos", "--cd", str(temp_root), "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert cwd_without_profile.returncode != 0
+        assert "error: MissingSandboxPermissionsProfile" in cwd_without_profile.stderr
+
+        managed_without_profile = subprocess.run(
+            [str(binary.resolve()), "sandbox", "macos", "--include-managed-config", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert managed_without_profile.returncode != 0
+        assert "error: MissingSandboxPermissionsProfile" in managed_without_profile.stderr
+
+        profile_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":workspace",
+                "--cd",
+                str(temp_root),
+                "--",
+                "/bin/echo",
+                "ok",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert profile_unsupported.returncode != 0
+        assert "error: SandboxPermissionProfileUnsupported" in profile_unsupported.stderr
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -721,6 +795,7 @@ def main() -> None:
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
     run_removed_top_level_command_smoke(binary)
+    run_sandbox_permission_profile_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
@@ -731,6 +806,7 @@ def main() -> None:
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
     print("cli-removed-top-level-e2e: ok")
+    print("cli-sandbox-permission-profile-e2e: ok")
 
 
 if __name__ == "__main__":
