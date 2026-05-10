@@ -92,8 +92,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - report app-server account state with `account/read` for no-auth, API-key,
   ChatGPT, Bedrock, custom no-auth provider, and local-OSS cases
 - report legacy app-server auth status with `getAuthStatus`
-- start app-server API-key login with `account/login/start` and emit account
-  login/update notifications
+- start app-server API-key and external ChatGPT-token login with
+  `account/login/start` and emit account login/update notifications
 - handle app-server login cancellation requests with `account/login/cancel`
 - read app-server account rate limits with `account/rateLimits/read`
 - notify workspace owners about credit or usage-limit issues with
