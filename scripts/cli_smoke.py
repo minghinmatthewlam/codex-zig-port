@@ -130,6 +130,42 @@ def make_exec_provider_wire_api_env(temp_root: Path, base_url: str, wire_api: st
     return env
 
 
+def make_exec_provider_command_auth_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    auth_dir = temp_root / "provider-auth"
+    auth_dir.mkdir()
+    token_script = auth_dir / "print-token.sh"
+    token_script.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\"\n", encoding="utf-8")
+    token_script.chmod(0o755)
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-command"',
+                'model_provider = "corp"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}"',
+                'wire_api = "responses"',
+                'requires_openai_auth = false',
+                "",
+                "[model_providers.corp.auth]",
+                'command = "./print-token.sh"',
+                'args = ["command-token"]',
+                f'cwd = "{auth_dir}"',
+                "timeout_ms = 5000",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
 def clean_git_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
@@ -827,6 +863,34 @@ def run_exec_provider_wire_api_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_provider_command_auth_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-command-auth-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_provider_command_auth_env(temp_root, base_url)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "command", "auth"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_paths == ["/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-provider-command"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use command auth"
+        assert server.request_headers[0]["Authorization"] == "Bearer command-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1444,6 +1508,7 @@ def main() -> None:
     run_exec_stdin_smoke(binary)
     run_exec_provider_env_key_smoke(binary)
     run_exec_provider_wire_api_smoke(binary)
+    run_exec_provider_command_auth_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1460,6 +1525,7 @@ def main() -> None:
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-provider-env-key-e2e: ok")
     print("cli-exec-provider-wire-api-e2e: ok")
+    print("cli-exec-provider-command-auth-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
