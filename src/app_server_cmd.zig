@@ -2832,11 +2832,12 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     const default_slug = model_catalog.defaultModel().slug;
     for (model_catalog.bundled_models) |model| {
         if (!include_hidden and model.hidden()) continue;
-        defer visible_index += 1;
-        if (visible_index < start or visible_index >= end) continue;
-        if (emitted) try result.appendSlice(allocator, ",");
-        try appendAppServerModelJson(allocator, &result, model, std.mem.eql(u8, model.slug, default_slug));
-        emitted = true;
+        if (visible_index >= start and visible_index < end) {
+            if (emitted) try result.appendSlice(allocator, ",");
+            try appendAppServerModelJson(allocator, &result, model, std.mem.eql(u8, model.slug, default_slug));
+            emitted = true;
+        }
+        visible_index += 1;
     }
     try result.appendSlice(allocator, "],\"nextCursor\":");
     if (end < total) {
