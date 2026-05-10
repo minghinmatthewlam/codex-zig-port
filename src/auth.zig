@@ -61,10 +61,24 @@ const AgentIdentityClaims = struct {
 
 pub const ChatGptClaims = struct {
     account_id: ?[]const u8 = null,
+    email: ?[]const u8 = null,
+    plan_type: ?[]const u8 = null,
     fedramp: bool = false,
 
     pub fn deinit(self: ChatGptClaims, allocator: std.mem.Allocator) void {
         if (self.account_id) |account_id| allocator.free(account_id);
+        if (self.email) |email| allocator.free(email);
+        if (self.plan_type) |plan_type| allocator.free(plan_type);
+    }
+};
+
+pub const ChatGptAccountInfo = struct {
+    email: []const u8,
+    plan_type: []const u8,
+
+    pub fn deinit(self: ChatGptAccountInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.email);
+        allocator.free(self.plan_type);
     }
 };
 
@@ -101,8 +115,57 @@ pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
     return error.NoUsableAuth;
 }
 
+pub fn loadNoRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
+    if (try loadStoredWithOptions(allocator, codex_home, .{})) |credentials| {
+        return credentials;
+    }
+
+    const env_access_token = try env.getOwned(allocator, "CODEX_ACCESS_TOKEN");
+    if (env_access_token) |access_token| {
+        return try agentIdentityCredentialsFromOwnedToken(allocator, access_token);
+    }
+
+    const env_api_key = try env.getOwned(allocator, "OPENAI_API_KEY");
+    if (env_api_key) |api_key| {
+        return .{ .mode = .api_key, .token = api_key };
+    }
+
+    return error.NoUsableAuth;
+}
+
 pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Credentials {
     return loadStoredWithOptions(allocator, codex_home, .{});
+}
+
+pub fn loadStoredChatGptAccountInfo(allocator: std.mem.Allocator, codex_home: []const u8) !?ChatGptAccountInfo {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const tokens = parsed.value.tokens orelse return null;
+    const id_token = tokens.id_token orelse return null;
+
+    var claims = parseChatGptClaims(allocator, id_token) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer claims.deinit(allocator);
+
+    const email = claims.email orelse return null;
+    claims.email = null;
+    const plan_type = if (claims.plan_type) |value| value else try allocator.dupe(u8, "unknown");
+    claims.plan_type = null;
+    errdefer allocator.free(email);
+    errdefer allocator.free(plan_type);
+
+    return .{ .email = email, .plan_type = plan_type };
 }
 
 const LoadStoredOptions = struct {
@@ -385,8 +448,12 @@ pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGp
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidJsonObject;
     const object = parsed.value.object;
-    const auth_value = object.get("https://api.openai.com/auth") orelse return .{};
-    if (auth_value != .object) return .{};
+
+    const email = try parseChatGptEmailClaim(allocator, object);
+    errdefer if (email) |value| allocator.free(value);
+
+    const auth_value = object.get("https://api.openai.com/auth") orelse return .{ .email = email };
+    if (auth_value != .object) return .{ .email = email };
     const auth_object = auth_value.object;
 
     const account_id = if (auth_object.get("chatgpt_account_id")) |value|
@@ -395,12 +462,44 @@ pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGp
         null;
     errdefer if (account_id) |id| allocator.free(id);
 
+    const plan_type = if (auth_object.get("chatgpt_plan_type")) |value|
+        if (value == .string) try normalizeChatGptPlanType(allocator, value.string) else null
+    else
+        null;
+    errdefer if (plan_type) |value| allocator.free(value);
+
     const fedramp = if (auth_object.get("chatgpt_account_is_fedramp")) |value|
         value == .bool and value.bool
     else
         false;
 
-    return .{ .account_id = account_id, .fedramp = fedramp };
+    return .{ .account_id = account_id, .email = email, .plan_type = plan_type, .fedramp = fedramp };
+}
+
+fn parseChatGptEmailClaim(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    if (object.get("email")) |value| {
+        if (value == .string) return try allocator.dupe(u8, value.string);
+    }
+    const profile = object.get("https://api.openai.com/profile") orelse return null;
+    if (profile != .object) return null;
+    const email = profile.object.get("email") orelse return null;
+    if (email != .string) return null;
+    return try allocator.dupe(u8, email.string);
+}
+
+fn normalizeChatGptPlanType(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (std.ascii.eqlIgnoreCase(raw, "free")) return allocator.dupe(u8, "free");
+    if (std.ascii.eqlIgnoreCase(raw, "go")) return allocator.dupe(u8, "go");
+    if (std.ascii.eqlIgnoreCase(raw, "plus")) return allocator.dupe(u8, "plus");
+    if (std.ascii.eqlIgnoreCase(raw, "pro")) return allocator.dupe(u8, "pro");
+    if (std.ascii.eqlIgnoreCase(raw, "prolite")) return allocator.dupe(u8, "prolite");
+    if (std.ascii.eqlIgnoreCase(raw, "team")) return allocator.dupe(u8, "team");
+    if (std.ascii.eqlIgnoreCase(raw, "self_serve_business_usage_based")) return allocator.dupe(u8, "self_serve_business_usage_based");
+    if (std.ascii.eqlIgnoreCase(raw, "business")) return allocator.dupe(u8, "business");
+    if (std.ascii.eqlIgnoreCase(raw, "enterprise_cbp_usage_based")) return allocator.dupe(u8, "enterprise_cbp_usage_based");
+    if (std.ascii.eqlIgnoreCase(raw, "enterprise") or std.ascii.eqlIgnoreCase(raw, "hc")) return allocator.dupe(u8, "enterprise");
+    if (std.ascii.eqlIgnoreCase(raw, "education") or std.ascii.eqlIgnoreCase(raw, "edu")) return allocator.dupe(u8, "edu");
+    return allocator.dupe(u8, "unknown");
 }
 
 fn parseJwtPayload(allocator: std.mem.Allocator, jwt: []const u8) !std.json.Parsed(std.json.Value) {
