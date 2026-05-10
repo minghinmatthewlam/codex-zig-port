@@ -292,9 +292,10 @@ and unwatch cleanup,
 verifies app-server buffered `command/exec` for stdout/stderr capture, cwd and
 environment overrides, nonzero exit responses, supported `permissionProfile`
 execution shapes using Rust-shaped `fileSystem` / `network.enabled` payloads,
-managed permission-profile network enabled/restricted behavior, external
-permission-profile and external sandbox-policy execution, sandbox-policy
-`networkAccess` enforcement, explicit unsupported streaming mode,
+managed permission-profile network enabled/restricted behavior,
+`streamStdoutStderr` output-delta notifications, external permission-profile
+and external sandbox-policy execution, sandbox-policy `networkAccess`
+enforcement, explicit unsupported stdin streaming and PTY modes,
 workspace-write sandbox-policy temp-root defaults and exclude
 flags, implicit workspace-write temp-root defaults, required streaming
 `processId` validation, and follow-up command session validation/inactive-process
