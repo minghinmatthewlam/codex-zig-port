@@ -703,6 +703,54 @@ def run_unimplemented_command_smoke(
             )
 
 
+def write_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
+    root.joinpath(".agents", "plugins").mkdir(parents=True)
+    root.joinpath("plugins", plugin_name, ".codex-plugin").mkdir(parents=True)
+    root.joinpath(".agents", "plugins", "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "plugins": [
+                    {
+                        "name": plugin_name,
+                        "source": {
+                            "source": "local",
+                            "path": f"./plugins/{plugin_name}",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    root.joinpath("plugins", plugin_name, ".codex-plugin", "plugin.json").write_text(
+        json.dumps({"name": plugin_name})
+    )
+
+
+def write_git_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
+    write_marketplace_fixture(root, name, plugin_name)
+    git(root, "init")
+    git(root, "config", "user.name", "Codex Zig Smoke")
+    git(root, "config", "user.email", "codex-zig-smoke@example.invalid")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "init")
+    git(root, "branch", "-M", "release")
+
+
+def write_git_url_rewrite_config(path: Path, source_url: str, repo: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                '[protocol "file"]',
+                "    allow = always",
+                f'[url "{repo.resolve().as_uri()}"]',
+                f"    insteadOf = {source_url}",
+                "",
+            ]
+        )
+    )
+
+
 def run_plugin_marketplace_smoke(
     binary: Path,
     env: dict[str, str],
@@ -761,24 +809,12 @@ def run_plugin_marketplace_smoke(
             raise AssertionError(f"expected {usage} help output:\n{result.stderr}")
 
     source = workspace / "marketplace-source"
-    source.joinpath(".agents", "plugins").mkdir(parents=True)
-    source.joinpath("plugins", "sample", ".codex-plugin").mkdir(parents=True)
-    source.joinpath(".agents", "plugins", "marketplace.json").write_text(
-        json.dumps(
-            {
-                "name": "debug",
-                "plugins": [
-                    {
-                        "name": "sample",
-                        "source": {"source": "local", "path": "./plugins/sample"},
-                    }
-                ],
-            }
-        )
-    )
-    source.joinpath("plugins", "sample", ".codex-plugin", "plugin.json").write_text(
-        json.dumps({"name": "sample"})
-    )
+    git_source = workspace / "marketplace-git-source"
+    git_config = workspace / "gitconfig"
+    git_url = "https://github.com/owner/repo.git"
+    write_marketplace_fixture(source, "debug", "sample")
+    write_git_marketplace_fixture(git_source, "git-debug", "git-sample")
+    write_git_url_rewrite_config(git_config, git_url, git_source)
 
     add = subprocess.run(
         [str(binary), "plugin", "marketplace", "add", str(source)],
@@ -816,11 +852,86 @@ def run_plugin_marketplace_smoke(
     if "Removed marketplace `debug`." not in remove.stderr:
         raise AssertionError(f"expected marketplace remove output:\n{remove.stderr}")
 
+    git_env = env.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = str(git_config)
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_add = subprocess.run(
+        [
+            str(binary),
+            "plugin",
+            "marketplace",
+            "add",
+            "--ref",
+            "release",
+            "--sparse",
+            ".agents",
+            "--sparse",
+            "plugins/git-sample",
+            "owner/repo",
+        ],
+        cwd=workspace,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added marketplace `git-debug`" not in git_add.stderr:
+        raise AssertionError(f"expected git marketplace add output:\n{git_add.stderr}")
+    if git_url not in git_add.stderr or "#release" not in git_add.stderr:
+        raise AssertionError(f"expected git source display:\n{git_add.stderr}")
+    git_root = Path(env["CODEX_HOME"], ".tmp", "marketplaces", "git-debug")
+    if not git_root.joinpath("plugins", "git-sample", ".codex-plugin", "plugin.json").is_file():
+        raise AssertionError(f"expected sparse git marketplace install at {git_root}")
+    config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
+    for expected in [
+        "[marketplaces.git-debug]",
+        'source_type = "git"',
+        f'source = "{git_url}"',
+        'ref = "release"',
+        'sparse_paths = [".agents", "plugins/git-sample"]',
+    ]:
+        if expected not in config_text:
+            raise AssertionError(f"expected {expected!r} in config:\n{config_text}")
+
+    git_repeated = subprocess.run(
+        [
+            str(binary),
+            "plugin",
+            "marketplace",
+            "add",
+            "--ref",
+            "release",
+            "--sparse",
+            ".agents",
+            "--sparse",
+            "plugins/git-sample",
+            "owner/repo",
+        ],
+        cwd=workspace,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "is already added" not in git_repeated.stderr:
+        raise AssertionError(
+            f"expected git marketplace already-added output:\n{git_repeated.stderr}"
+        )
+
+    git_remove = subprocess.run(
+        [str(binary), "plugin", "marketplace", "remove", "git-debug"],
+        cwd=workspace,
+        env=git_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Removed marketplace `git-debug`." not in git_remove.stderr:
+        raise AssertionError(f"expected git marketplace remove output:\n{git_remove.stderr}")
+    if git_root.exists():
+        raise AssertionError(f"expected git marketplace root to be removed: {git_root}")
+
     unsupported_cases = [
-        (
-            ["add", "--ref", "main", "--sparse", "agents", "owner/repo"],
-            "parsed for git sources but not implemented yet",
-        ),
         (["upgrade", "debug"], "parsed but not implemented yet"),
     ]
     for args, expected in unsupported_cases:

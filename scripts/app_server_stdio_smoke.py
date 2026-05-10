@@ -612,6 +612,64 @@ def clean_git_env() -> dict[str, str]:
     return git_env
 
 
+def write_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
+    root.joinpath(".agents", "plugins").mkdir(parents=True)
+    root.joinpath("plugins", plugin_name, ".codex-plugin").mkdir(parents=True)
+    root.joinpath(".agents", "plugins", "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "plugins": [
+                    {
+                        "name": plugin_name,
+                        "source": {
+                            "source": "local",
+                            "path": f"./plugins/{plugin_name}",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    root.joinpath("plugins", plugin_name, ".codex-plugin", "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": plugin_name,
+                "interface": {
+                    "displayName": f"{plugin_name.title()} Plugin",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_git_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
+    write_marketplace_fixture(root, name, plugin_name)
+    git(root, "init")
+    git(root, "config", "user.name", "Codex Zig Smoke")
+    git(root, "config", "user.email", "codex-zig-smoke@example.invalid")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "init")
+    git(root, "branch", "-M", "release")
+
+
+def write_git_url_rewrite_config(path: Path, source_url: str, repo: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                '[protocol "file"]',
+                "    allow = always",
+                f'[url "{repo.resolve().as_uri()}"]',
+                f"    insteadOf = {source_url}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def assert_empty_dir(path: Path) -> None:
     if not path.is_dir():
         raise AssertionError(f"expected directory to exist: {path}")
@@ -980,29 +1038,17 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-marketplace-", dir="/tmp"))
     codex_home = root / "codex-home"
     source = root / "marketplace-source"
+    git_source = root / "marketplace-git-source"
+    git_config = root / "gitconfig"
+    git_url = "https://github.com/owner/repo.git"
     try:
         codex_home.mkdir()
-        source.joinpath(".agents", "plugins").mkdir(parents=True)
-        source.joinpath("plugins", "sample", ".codex-plugin").mkdir(parents=True)
-        source.joinpath(".agents", "plugins", "marketplace.json").write_text(
-            json.dumps(
-                {
-                    "name": "debug",
-                    "plugins": [
-                        {
-                            "name": "sample",
-                            "source": {"source": "local", "path": "./plugins/sample"},
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        source.joinpath("plugins", "sample", ".codex-plugin", "plugin.json").write_text(
-            json.dumps({"name": "sample", "interface": {"displayName": "Sample"}}),
-            encoding="utf-8",
-        )
+        write_marketplace_fixture(source, "debug", "sample")
+        write_git_marketplace_fixture(git_source, "git-debug", "git-sample")
+        write_git_url_rewrite_config(git_config, git_url, git_source)
         env["CODEX_HOME"] = str(codex_home)
+        env["GIT_CONFIG_GLOBAL"] = str(git_config)
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
         expected_source = str(source.resolve())
 
         added = request_stdio_app_server(
@@ -1081,7 +1127,7 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
         assert unknown_remove["id"] == "marketplace-remove-unknown"
         assert unknown_remove["error"]["code"] == -32600
 
-        git_add = request_stdio_app_server(
+        git_added = request_stdio_app_server(
             binary,
             {
                 "jsonrpc": "2.0",
@@ -1089,15 +1135,84 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
                 "method": "marketplace/add",
                 "params": {
                     "source": "owner/repo",
-                    "refName": "main",
-                    "sparsePaths": ["plugins/foo"],
+                    "refName": "release",
+                    "sparsePaths": [".agents", "plugins/git-sample"],
                 },
             },
             env,
         )
-        assert git_add["id"] == "marketplace-add-git"
-        assert git_add["error"]["code"] == -32603
-        assert "marketplace/add source is parsed but not implemented yet" in git_add["error"]["message"]
+        expected_git_root = codex_home / ".tmp" / "marketplaces" / "git-debug"
+        assert git_added["id"] == "marketplace-add-git"
+        if "result" not in git_added:
+            raise AssertionError(f"expected git marketplace add result: {git_added!r}")
+        assert git_added["result"] == {
+            "marketplaceName": "git-debug",
+            "installedRoot": str(expected_git_root),
+            "alreadyAdded": False,
+        }
+        assert expected_git_root.joinpath(
+            "plugins", "git-sample", ".codex-plugin", "plugin.json"
+        ).is_file()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert "[marketplaces.git-debug]" in config_text
+        assert 'source_type = "git"' in config_text
+        assert f'source = "{git_url}"' in config_text
+        assert 'ref = "release"' in config_text
+        assert 'sparse_paths = [".agents", "plugins/git-sample"]' in config_text
+
+        git_repeated = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-add-git-repeat",
+                "method": "marketplace/add",
+                "params": {
+                    "source": "owner/repo",
+                    "refName": "release",
+                    "sparsePaths": [".agents", "plugins/git-sample"],
+                },
+            },
+            env,
+        )
+        assert git_repeated["id"] == "marketplace-add-git-repeat"
+        assert git_repeated["result"]["alreadyAdded"] is True
+        assert git_repeated["result"]["installedRoot"] == str(expected_git_root)
+
+        git_listed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-list-git",
+                "method": "plugin/list",
+                "params": {},
+            },
+            env,
+        )
+        assert git_listed["id"] == "marketplace-list-git"
+        git_marketplaces = [
+            marketplace
+            for marketplace in git_listed["result"]["marketplaces"]
+            if marketplace["name"] == "git-debug"
+        ]
+        assert len(git_marketplaces) == 1
+        assert git_marketplaces[0]["plugins"][0]["id"] == "git-sample@git-debug"
+
+        git_removed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-remove-git",
+                "method": "marketplace/remove",
+                "params": {"marketplaceName": "git-debug"},
+            },
+            env,
+        )
+        assert git_removed["id"] == "marketplace-remove-git"
+        assert git_removed["result"] == {
+            "marketplaceName": "git-debug",
+            "installedRoot": str(expected_git_root),
+        }
+        assert not expected_git_root.exists()
 
         upgrade = request_stdio_app_server(
             binary,
