@@ -59,6 +59,38 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert "unsupported app-server method" in missing["error"]["message"]
 
 
+def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(proc, payload)
+        response = read_json_line(proc, 5)
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        return response
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def assert_empty_dir(path: Path) -> None:
+    if not path.is_dir():
+        raise AssertionError(f"expected directory to exist: {path}")
+    entries = list(path.iterdir())
+    if entries:
+        raise AssertionError(f"expected empty directory {path}, saw {entries!r}")
+
+
 def run_stdio_smoke(binary: Path) -> None:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -85,6 +117,77 @@ def run_stdio_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_memory_reset_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-memory-", dir="/tmp"))
+    try:
+        memories = codex_home / "memories"
+        rollout_summaries = memories / "rollout_summaries"
+        extensions = codex_home / "memories_extensions"
+        rollout_summaries.mkdir(parents=True)
+        extensions.mkdir()
+        (memories / "MEMORY.md").write_text("stale memory index\n")
+        (rollout_summaries / "rollout.md").write_text("stale rollout\n")
+        (extensions / "scratch.txt").write_text("stale extension\n")
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        response = request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": "memory-reset", "method": "memory/reset"},
+            env,
+        )
+        assert response["id"] == "memory-reset"
+        assert response["result"] == {}
+        assert_empty_dir(memories)
+        assert_empty_dir(extensions)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+    state_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-memory-state-", dir="/tmp"))
+    try:
+        memories = state_home / "memories"
+        memories.mkdir()
+        memory_file = memories / "MEMORY.md"
+        memory_file.write_text("keep until full reset is implemented\n")
+        (state_home / "state_5.sqlite").write_text("placeholder\n")
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(state_home)
+        response = request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": "state-db", "method": "memory/reset"},
+            env,
+        )
+        assert response["id"] == "state-db"
+        assert response["error"]["code"] == -32603
+        assert "memory-state clearing is not implemented yet" in response["error"]["message"]
+        assert memory_file.read_text() == "keep until full reset is implemented\n"
+    finally:
+        shutil.rmtree(state_home, ignore_errors=True)
+
+    symlink_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-memory-symlink-", dir="/tmp"))
+    try:
+        target = symlink_home / "outside"
+        target.mkdir()
+        target_file = target / "keep.txt"
+        target_file.write_text("keep\n")
+        (symlink_home / "memories").symlink_to(target, target_is_directory=True)
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(symlink_home)
+        response = request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": "symlink", "method": "memory/reset"},
+            env,
+        )
+        assert response["id"] == "symlink"
+        assert response["error"]["code"] == -32603
+        assert "SymlinkedMemoryRoot" in response["error"]["message"]
+        assert target_file.read_text() == "keep\n"
+    finally:
+        shutil.rmtree(symlink_home, ignore_errors=True)
 
 
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
@@ -320,6 +423,8 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_stdio_smoke(binary)
     print("app-server-stdio-e2e: ok")
+    run_memory_reset_smoke(binary)
+    print("app-server-memory-reset-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)

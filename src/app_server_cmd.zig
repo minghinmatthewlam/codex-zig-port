@@ -2,6 +2,7 @@ const std = @import("std");
 
 const cli_utils = @import("cli_utils.zig");
 const env = @import("env.zig");
+const memory_reset = @import("memory_reset.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
@@ -427,10 +428,43 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
     }
+    if (std.mem.eql(u8, method, "memory/reset")) {
+        return try handleMemoryReset(allocator, id_value.?);
+    }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
     defer allocator.free(message);
     return try renderJsonRpcError(allocator, id_value, -32601, message);
+}
+
+fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const state_path = memory_reset.resolveStateDbPath(allocator, codex_home) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve state db path", err);
+    };
+    defer allocator.free(state_path);
+
+    const state_exists = memory_reset.stateDbExists(allocator, state_path) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to inspect state db", err);
+    };
+    if (state_exists) {
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "state db found at {s}; Zig memory-state clearing is not implemented yet",
+            .{state_path},
+        );
+        defer allocator.free(message);
+        return try renderJsonRpcError(allocator, id_value, -32603, message);
+    }
+
+    memory_reset.clearMemoryRootsContents(allocator, codex_home) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
+    };
+    return try renderJsonRpcResult(allocator, id_value, "{}");
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
@@ -463,6 +497,17 @@ fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, c
         "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
         .{ id_json, code, message_json },
     );
+}
+
+fn renderJsonRpcErrorForFailure(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    context: []const u8,
+    err: anyerror,
+) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "{s}: {s}", .{ context, @errorName(err) });
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32603, message);
 }
 
 fn writeStdoutLine(payload: []const u8) !void {

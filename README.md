@@ -109,7 +109,8 @@ also launches the TUI without `--no-alt-screen` to verify alternate-screen
 enter/leave escape sequences, checks `tui.alternate_screen = "never"` stays
 inline, then launches `codex-zig app-server` as a subprocess and verifies
 newline-delimited JSON-RPC initialize requests and unsupported-method errors
-over stdio, an explicit Unix socket, and the default
+over stdio, verifies `memory/reset` against temporary memory roots plus
+partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, and checks app-server flag compatibility

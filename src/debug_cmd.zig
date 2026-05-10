@@ -1,14 +1,11 @@
 const std = @import("std");
 
 const api = @import("api.zig");
-const builtin = @import("builtin");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
-const env = @import("env.zig");
 const input_images = @import("input_images.zig");
+const memory_reset = @import("memory_reset.zig");
 const session = @import("session.zig");
-
-const state_db_filename = "state_5.sqlite";
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
@@ -117,9 +114,9 @@ fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
 
-    const state_path = try resolveStateDbPath(allocator, cfg.codex_home);
+    const state_path = try memory_reset.resolveStateDbPath(allocator, cfg.codex_home);
     defer allocator.free(state_path);
-    const state_exists = (try statPathNoFollow(allocator, state_path)) != null;
+    const state_exists = try memory_reset.stateDbExists(allocator, state_path);
     if (state_exists) {
         const message = try std.fmt.allocPrint(
             allocator,
@@ -131,7 +128,7 @@ fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         return error.MemoryStateDbClearNotImplemented;
     }
 
-    try clearMemoryRootsContents(allocator, cfg.codex_home);
+    try memory_reset.clearMemoryRootsContents(allocator, cfg.codex_home);
 
     const message = try std.fmt.allocPrint(
         allocator,
@@ -233,75 +230,6 @@ fn defaultModelEntry(slug: []const u8, display_name: []const u8, description: []
 
 fn stringifyModels(allocator: std.mem.Allocator, models: []const ModelEntry) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{ .whitespace = .indent_2 });
-}
-
-fn clearMemoryRootsContents(allocator: std.mem.Allocator, codex_home: []const u8) !void {
-    const roots = [_][]const u8{ "memories", "memories_extensions" };
-    for (roots) |root_name| {
-        const root_path = try std.fs.path.join(allocator, &.{ codex_home, root_name });
-        defer allocator.free(root_path);
-        try clearMemoryRootContents(allocator, root_path);
-    }
-}
-
-fn clearMemoryRootContents(allocator: std.mem.Allocator, root_path: []const u8) !void {
-    if (try statPathNoFollow(allocator, root_path)) |stat| {
-        const mode: u32 = @intCast(stat.mode);
-        if (std.c.S.ISLNK(mode)) return error.SymlinkedMemoryRoot;
-        if (!std.c.S.ISDIR(mode)) return error.MemoryRootNotDirectory;
-    }
-
-    const io = std.Io.Threaded.global_single_threaded.io();
-    try std.Io.Dir.cwd().createDirPath(io, root_path);
-    var dir = try std.Io.Dir.cwd().openDir(io, root_path, .{ .iterate = true });
-    defer dir.close(io);
-
-    var iter = dir.iterate();
-    while (try iter.next(io)) |entry| {
-        try dir.deleteTree(io, entry.name);
-    }
-}
-
-fn resolveStateDbPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
-    const sqlite_home = try resolveSqliteHome(allocator, codex_home);
-    defer allocator.free(sqlite_home);
-    return std.fs.path.join(allocator, &.{ sqlite_home, state_db_filename });
-}
-
-fn resolveSqliteHome(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
-    if (try env.getOwned(allocator, "CODEX_SQLITE_HOME")) |raw| {
-        defer allocator.free(raw);
-        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-        if (trimmed.len > 0) {
-            if (std.fs.path.isAbsolute(trimmed)) return allocator.dupe(u8, trimmed);
-
-            const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
-            defer allocator.free(cwd);
-            return std.fs.path.join(allocator, &.{ cwd, trimmed });
-        }
-    }
-    return allocator.dupe(u8, codex_home);
-}
-
-fn statPathNoFollow(allocator: std.mem.Allocator, path: []const u8) !?std.c.Stat {
-    const path_z = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_z);
-
-    var stat = std.mem.zeroes(std.c.Stat);
-    while (true) {
-        switch (std.c.errno(std.c.fstatat(std.c.AT.FDCWD, path_z.ptr, &stat, std.c.AT.SYMLINK_NOFOLLOW))) {
-            .SUCCESS => break,
-            .INTR => continue,
-            .NOENT => return null,
-            .NOTDIR => return error.NotDir,
-            .ACCES => return error.AccessDenied,
-            .PERM => return error.PermissionDenied,
-            .LOOP => return error.SymLinkLoop,
-            .NAMETOOLONG => return error.NameTooLong,
-            else => |err| return std.posix.unexpectedErrno(err),
-        }
-    }
-    return stat;
 }
 
 pub fn printHelp() void {
@@ -411,61 +339,4 @@ test "debug models bundled ignores configured model" {
     const model = parsed.value.object.get("models").?.array.items[0].object;
     try std.testing.expectEqualStrings("gpt-5.2-codex", model.get("slug").?.string);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"slug\": \"gpt-test\"") == null);
-}
-
-test "debug clear memories preserves empty root directory" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var dir = std.testing.tmpDir(.{});
-    defer dir.cleanup();
-    try dir.dir.createDirPath(io, "memories/rollout_summaries");
-    try dir.dir.writeFile(io, .{ .sub_path = "memories/MEMORY.md", .data = "stale memory index\n" });
-    try dir.dir.writeFile(io, .{ .sub_path = "memories/rollout_summaries/rollout.md", .data = "stale rollout\n" });
-
-    const root = try dir.dir.realPathFileAlloc(io, "memories", allocator);
-    defer allocator.free(root);
-    try clearMemoryRootContents(allocator, root);
-
-    var memory_dir = try dir.dir.openDir(io, "memories", .{ .iterate = true });
-    defer memory_dir.close(io);
-    var iter = memory_dir.iterate();
-    try std.testing.expect((try iter.next(io)) == null);
-}
-
-test "debug clear memories creates missing roots" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var dir = std.testing.tmpDir(.{});
-    defer dir.cleanup();
-
-    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
-    defer allocator.free(root);
-    try clearMemoryRootsContents(allocator, root);
-
-    var memories = try dir.dir.openDir(io, "memories", .{ .iterate = true });
-    defer memories.close(io);
-    var extensions = try dir.dir.openDir(io, "memories_extensions", .{ .iterate = true });
-    defer extensions.close(io);
-}
-
-test "debug clear memories rejects symlinked root" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var dir = std.testing.tmpDir(.{});
-    defer dir.cleanup();
-    try dir.dir.createDirPath(io, "outside");
-    try dir.dir.writeFile(io, .{ .sub_path = "outside/keep.txt", .data = "keep\n" });
-    try dir.dir.symLink(io, "outside", "memories", .{ .is_directory = true });
-
-    const temp_root = try dir.dir.realPathFileAlloc(io, ".", allocator);
-    defer allocator.free(temp_root);
-    const root = try std.fs.path.join(allocator, &.{ temp_root, "memories" });
-    defer allocator.free(root);
-    try std.testing.expectError(error.SymlinkedMemoryRoot, clearMemoryRootContents(allocator, root));
-
-    const kept = try dir.dir.readFileAlloc(io, "outside/keep.txt", allocator, .limited(1024));
-    defer allocator.free(kept);
-    try std.testing.expectEqualStrings("keep\n", kept);
 }
