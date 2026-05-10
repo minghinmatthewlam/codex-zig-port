@@ -785,12 +785,56 @@ const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_LOADED_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadLoadedListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_LOADED_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadLoadedListResponse {
+    \\  data: string[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_UNSUBSCRIBE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadUnsubscribeParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_UNSUBSCRIBE_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadUnsubscribeStatus = "notLoaded" | "notSubscribed" | "unsubscribed";
+    \\
+    ;
+
+const THREAD_UNSUBSCRIBE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
+    \\
+    \\export interface ThreadUnsubscribeResponse {
+    \\  status: ThreadUnsubscribeStatus;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
+    \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
     \\export type ClientRequest =
@@ -813,6 +857,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "command/exec/resize";
     \\      params: CommandExecResizeParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/loaded/list";
+    \\      params?: ThreadLoadedListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "thread/unsubscribe";
+    \\      params: ThreadUnsubscribeParams;
     \\    };
     \\
     ;
@@ -823,6 +875,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
+    \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
     \\
@@ -851,6 +905,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "command/exec/resize";
     \\      result: CommandExecResizeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/loaded/list";
+    \\      result: ThreadLoadedListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/unsubscribe";
+    \\      result: ThreadUnsubscribeResponse;
     \\    };
     \\
     ;
@@ -908,6 +972,11 @@ const V2_INDEX_TS =
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
+    \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
+    \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
+    \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
+    \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
+    \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
     \\
     ;
 
@@ -1509,6 +1578,72 @@ const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadLoadedListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadLoadedListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "type": "string" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_UNSUBSCRIBE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnsubscribeParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_UNSUBSCRIBE_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnsubscribeStatus",
+    \\  "enum": ["notLoaded", "notSubscribed", "unsubscribed"]
+    \\}
+    \\
+;
+
+const THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnsubscribeResponse",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "ThreadUnsubscribeStatus.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1841,6 +1976,40 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "deltaBase64": { "type": "string" },
     \\        "capReached": { "type": "boolean" }
     \\      }
+    \\    },
+    \\    "ThreadLoadedListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadLoadedListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "type": "string" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      }
+    \\    },
+    \\    "ThreadUnsubscribeParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadUnsubscribeStatus": {
+    \\      "enum": ["notLoaded", "notSubscribed", "unsubscribed"]
+    \\    },
+    \\    "ThreadUnsubscribeResponse": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/ThreadUnsubscribeStatus" }
+    \\      }
     \\    }
     \\  }
     \\}
@@ -1900,6 +2069,11 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CommandExecResizeParams.json", .contents = COMMAND_EXEC_RESIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "CommandExecResizeResponse.json", .contents = COMMAND_EXEC_RESIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecOutputDeltaNotification.json", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadLoadedListParams.json", .contents = THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadUnsubscribeParams.json", .contents = THREAD_UNSUBSCRIBE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadUnsubscribeStatus.json", .contents = THREAD_UNSUBSCRIBE_STATUS_JSON_SCHEMA },
+    .{ .name = "ThreadUnsubscribeResponse.json", .contents = THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -1940,6 +2114,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecResizeParams.ts", .contents = COMMAND_EXEC_RESIZE_PARAMS_TS },
     .{ .name = "v2/CommandExecResizeResponse.ts", .contents = COMMAND_EXEC_RESIZE_RESPONSE_TS },
     .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadLoadedListParams.ts", .contents = THREAD_LOADED_LIST_PARAMS_TS },
+    .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadUnsubscribeParams.ts", .contents = THREAD_UNSUBSCRIBE_PARAMS_TS },
+    .{ .name = "v2/ThreadUnsubscribeStatus.ts", .contents = THREAD_UNSUBSCRIBE_STATUS_TS },
+    .{ .name = "v2/ThreadUnsubscribeResponse.ts", .contents = THREAD_UNSUBSCRIBE_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
