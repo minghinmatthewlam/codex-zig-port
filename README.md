@@ -377,8 +377,9 @@ those same fields, reads `[tui].theme`, `[tui].status_line`,
 `experimental_bearer_token` for custom providers. It also supports
 section-form `[model_providers.<name>.auth]` and inline `auth = { ... }`
 `command`, `args`, `cwd`, and `timeout_ms` for command-backed bearer tokens.
-The current port supports Responses wire API providers and rejects the removed
-`wire_api = "chat"` setting.
+The current port supports Responses wire API providers, rejects the removed
+`wire_api = "chat"` setting, and rejects command-auth combinations that Rust
+marks invalid.
 
 ```sh
 codex-zig --profile work auth-status
