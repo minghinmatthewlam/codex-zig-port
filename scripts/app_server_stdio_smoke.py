@@ -137,6 +137,66 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_PUT(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body_text = self.rfile.read(content_length).decode("utf-8")
+        body_json = json.loads(body_text) if body_text else None
+        PluginBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+                "body": body_json,
+            }
+        )
+        update_path = (
+            "/backend-api/public/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+            "/shares"
+        )
+        if self.path != update_path:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "principals": [
+                    {
+                        "principal_type": "user",
+                        "principal_id": "user-1",
+                        "name": "Gavin",
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_DELETE(self) -> None:
+        PluginBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+            }
+        )
+        delete_path = (
+            "/backend-api/public/plugins/workspace/"
+            "plugins~Plugin_00000000000000000000000000000000"
+        )
+        if self.path != delete_path:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        self.send_response(204)
+        self.end_headers()
+
     def do_GET(self) -> None:
         PluginBackendHandler.requests.append(
             {
@@ -151,6 +211,8 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
         )
         list_path = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
         installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
+        workspace_created_path = "/backend-api/ps/plugins/workspace/created?limit=200"
+        workspace_installed_path = "/backend-api/ps/plugins/installed?scope=WORKSPACE"
         skill_path = (
             "/backend-api/ps/plugins/"
             "plugins~Plugin_00000000000000000000000000000000"
@@ -188,6 +250,42 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                     ],
                 },
             }
+        workspace_plugin = {
+            "id": "plugins~Plugin_00000000000000000000000000000000",
+            "name": "linear",
+            "scope": "WORKSPACE",
+            "creator_account_user_id": "user-owner",
+            "creator_name": "Owner",
+            "share_url": "https://chatgpt.example/plugins/share/share-key-1",
+            "share_principals": [
+                {
+                    "principal_type": "user",
+                    "principal_id": "user-owner",
+                    "role": "owner",
+                    "name": "Owner",
+                },
+                {
+                    "principal_type": "user",
+                    "principal_id": "user-reader",
+                    "role": "reader",
+                    "name": "Reader",
+                },
+            ],
+            "installation_policy": "AVAILABLE",
+            "authentication_policy": "ON_USE",
+            "status": "ENABLED",
+            "release": {
+                "display_name": "Linear",
+                "description": "Track work in Linear",
+                "app_ids": [],
+                "keywords": ["workspace"],
+                "interface": {
+                    "short_description": "Plan and track workspace work",
+                    "capabilities": ["Read"],
+                },
+                "skills": [],
+            },
+        }
         if self.path == detail_path:
             body = json.dumps(
                 plugin,
@@ -228,6 +326,25 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                             "disabled_skill_names": ["plan-work"],
                         }
                     ],
+                    "pagination": {"limit": 50, "next_page_token": None},
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == workspace_created_path:
+            body = json.dumps(
+                {
+                    "plugins": [workspace_plugin],
+                    "pagination": {"limit": 200, "next_page_token": None},
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == workspace_installed_path:
+            installed_workspace_plugin = dict(workspace_plugin)
+            installed_workspace_plugin["enabled"] = True
+            installed_workspace_plugin["disabled_skill_names"] = []
+            body = json.dumps(
+                {
+                    "plugins": [installed_workspace_plugin],
                     "pagination": {"limit": 50, "next_page_token": None},
                 },
                 separators=(",", ":"),
@@ -1229,6 +1346,140 @@ remote_plugin = true
         assert invalid_skill["id"] == "plugin-skill-read-invalid"
         assert invalid_skill["error"]["code"] == -32600
 
+        share_mapping = remote_home / ".tmp" / "plugin-share-local-paths-v1.json"
+        share_mapping.parent.mkdir()
+        local_shared_plugin = remote_home / "shared-linear"
+        share_mapping.write_text(
+            json.dumps(
+                {
+                    "localPluginPathsByRemotePluginId": {
+                        "plugins~Plugin_00000000000000000000000000000000": str(
+                            local_shared_plugin
+                        )
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        PluginBackendHandler.requests = []
+        plugin_share_list = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-list",
+                "method": "plugin/share/list",
+                "params": {},
+            },
+            remote_env,
+        )
+        assert plugin_share_list["id"] == "plugin-share-list"
+        share_items = plugin_share_list["result"]["data"]
+        assert len(share_items) == 1
+        share_item = share_items[0]
+        assert share_item["shareUrl"] == "https://chatgpt.example/plugins/share/share-key-1"
+        assert share_item["localPluginPath"] == str(local_shared_plugin)
+        share_summary = share_item["plugin"]
+        assert share_summary["id"] == "plugins~Plugin_00000000000000000000000000000000"
+        assert share_summary["name"] == "linear"
+        assert share_summary["source"] == {"type": "remote"}
+        assert share_summary["installed"] is True
+        assert share_summary["enabled"] is True
+        assert share_summary["shareContext"] == {
+            "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+            "shareUrl": "https://chatgpt.example/plugins/share/share-key-1",
+            "creatorAccountUserId": "user-owner",
+            "creatorName": "Owner",
+            "shareTargets": [
+                {
+                    "principalType": "user",
+                    "principalId": "user-reader",
+                    "name": "Reader",
+                }
+            ],
+        }
+        assert PluginBackendHandler.requests == [
+            {
+                "path": "/backend-api/ps/plugins/workspace/created?limit=200",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": "/backend-api/ps/plugins/installed?scope=WORKSPACE",
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
+
+        PluginBackendHandler.requests = []
+        plugin_share_update = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-update",
+                "method": "plugin/share/updateTargets",
+                "params": {
+                    "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                    "shareTargets": [
+                        {"principalType": "user", "principalId": "user-1"}
+                    ],
+                },
+            },
+            remote_env,
+        )
+        assert plugin_share_update["id"] == "plugin-share-update"
+        assert plugin_share_update["result"] == {
+            "principals": [
+                {
+                    "principalType": "user",
+                    "principalId": "user-1",
+                    "name": "Gavin",
+                }
+            ]
+        }
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/public/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                    "/shares"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+                "body": {
+                    "targets": [
+                        {"principal_type": "user", "principal_id": "user-1"}
+                    ]
+                },
+            }
+        ]
+
+        PluginBackendHandler.requests = []
+        plugin_share_delete = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-delete",
+                "method": "plugin/share/delete",
+                "params": {
+                    "remotePluginId": "plugins~Plugin_00000000000000000000000000000000"
+                },
+            },
+            remote_env,
+        )
+        assert plugin_share_delete["id"] == "plugin-share-delete"
+        assert plugin_share_delete["result"] == {}
+        assert not share_mapping.exists()
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/public/plugins/workspace/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            }
+        ]
+
         current_cache = (
             remote_home
             / "plugins"
@@ -1314,31 +1565,6 @@ remote_plugin = true
                 "remotePluginId": None,
                 "discoverability": "PRIVATE",
                 "shareTargets": [{"principalType": "user", "principalId": "user-1"}],
-            },
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-share-update",
-            "method": "plugin/share/updateTargets",
-            "params": {
-                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
-                "shareTargets": [
-                    {"principalType": "workspace", "principalId": "workspace-1"}
-                ],
-            },
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-share-list",
-            "method": "plugin/share/list",
-            "params": {},
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-share-delete",
-            "method": "plugin/share/delete",
-            "params": {
-                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000"
             },
         },
         {
