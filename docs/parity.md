@@ -67,8 +67,10 @@ plus Rust-shaped validation for streaming `processId` requirements and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
 accepts supported Rust-shaped `permissionProfile` payloads using `fileSystem`,
 `network.enabled`, and `globScanMaxDepth` for disabled, root-read-only,
-managed-unrestricted, project-roots workspace-write, and absolute writable-root
-profiles, with command-cwd sandbox rooting for project roots. Unsupported
+managed-unrestricted, project-roots workspace-write, absolute writable-root,
+and external profiles, with command-cwd sandbox rooting for project roots.
+Supported `externalSandbox` policies also run through the explicit unsandboxed
+external-sandbox path. Unsupported
 profile entries return explicit not-implemented errors rather than weakening
 sandbox behavior. Permission-profile network policy is enforced for supported
 macOS sandbox-backed managed profiles, including enabled and restricted network
