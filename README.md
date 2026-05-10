@@ -153,7 +153,8 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
-and plugin RPC stubs, verifies app-server skills-list discovery, verifies
+and plugin RPC stubs, verifies app-server skills-list discovery plus
+`skills/changed` invalidations for in-process skill and config mutations, verifies
 app-server MCP server status pagination and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
