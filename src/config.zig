@@ -1103,7 +1103,7 @@ const ConfigView = struct {
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
             if (line.len == 0 or line[0] == '#') continue;
-            if (line[0] == '[' and isProfileSection(line, profile)) return true;
+            if (line[0] == '[' and isProfileOrNestedSection(line, profile)) return true;
         }
         return false;
     }
@@ -1224,6 +1224,30 @@ fn parseTomlStringArray(allocator: std.mem.Allocator, rhs: []const u8) !?StringL
 
 fn isProfileSection(line: []const u8, profile: []const u8) bool {
     return isNamedSection(line, "profiles.", profile);
+}
+
+fn isProfileOrNestedSection(line: []const u8, profile: []const u8) bool {
+    if (isProfileSection(line, profile)) return true;
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "profiles.";
+    if (!std.mem.startsWith(u8, section, prefix)) return false;
+    const remainder = section[prefix.len..];
+    if (remainder.len >= profile.len + 1 and
+        std.mem.startsWith(u8, remainder, profile) and
+        remainder[profile.len] == '.')
+    {
+        return true;
+    }
+    if (remainder.len >= profile.len + 3 and
+        remainder[0] == '"' and
+        std.mem.eql(u8, remainder[1 .. 1 + profile.len], profile) and
+        remainder[1 + profile.len] == '"' and
+        remainder[2 + profile.len] == '.')
+    {
+        return true;
+    }
+    return false;
 }
 
 fn isNamedSection(line: []const u8, prefix: []const u8, name: []const u8) bool {
@@ -1447,6 +1471,22 @@ test "quoted profile section names are supported" {
     const model = try view.getScopedString(allocator, "team a", "model");
     defer allocator.free(model.?);
     try std.testing.expectEqualStrings("quoted-profile-model", model.?);
+}
+
+test "nested profile sections count as existing profiles" {
+    const view = ConfigView{
+        .bytes =
+        \\[profiles."team a".features]
+        \\goals = true
+        \\[profiles.work.features]
+        \\shell_tool = false
+        \\
+        ,
+    };
+
+    try std.testing.expect(view.hasProfile("team a"));
+    try std.testing.expect(view.hasProfile("work"));
+    try std.testing.expect(!view.hasProfile("other"));
 }
 
 test "model provider base url resolves from active provider table" {

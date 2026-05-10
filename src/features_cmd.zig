@@ -151,7 +151,7 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
     const config_bytes = try readConfigToml(allocator, cfg.codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    var config_overrides = try parseFeatureOverrides(allocator, config_bytes orelse "");
+    var config_overrides = try parseFeatureOverridesForProfile(allocator, config_bytes orelse "", cfg.active_profile);
     defer config_overrides.deinit(allocator);
 
     var name_width: usize = 0;
@@ -169,18 +169,18 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
 fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u8, enabled: bool) !void {
     if (!isKnownFeature(feature)) return error.UnknownFeature;
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
-    defer cfg.deinit(allocator);
+    const codex_home = try config.resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
 
-    const config_bytes = try readConfigToml(allocator, cfg.codex_home);
+    const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", feature, enabled);
+    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", options.profile, feature, enabled);
     defer allocator.free(updated);
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    try std.Io.Dir.cwd().createDirPath(io, cfg.codex_home);
-    const path = try std.fs.path.join(allocator, &.{ cfg.codex_home, "config.toml" });
+    try std.Io.Dir.cwd().createDirPath(io, codex_home);
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
     defer allocator.free(path);
     try std.Io.Dir.cwd().writeFile(io, .{
         .sub_path = path,
@@ -194,9 +194,17 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
 }
 
 pub fn loadFeatureOverrides(allocator: std.mem.Allocator, codex_home: []const u8) !FeatureOverrides {
+    return loadFeatureOverridesForProfile(allocator, codex_home, null);
+}
+
+pub fn loadFeatureOverridesForProfile(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    profile: ?[]const u8,
+) !FeatureOverrides {
     const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
-    return parseFeatureOverrides(allocator, config_bytes orelse "");
+    return parseFeatureOverridesForProfile(allocator, config_bytes orelse "", profile);
 }
 
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -209,10 +217,20 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
 }
 
 fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !FeatureOverrides {
-    var overrides = FeatureOverrides{};
-    errdefer overrides.deinit(allocator);
+    return parseFeatureOverridesForProfile(allocator, bytes, null);
+}
 
-    var in_features = false;
+fn parseFeatureOverridesForProfile(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    profile: ?[]const u8,
+) !FeatureOverrides {
+    var base_overrides = FeatureOverrides{};
+    defer base_overrides.deinit(allocator);
+    var profile_overrides = FeatureOverrides{};
+    defer profile_overrides.deinit(allocator);
+
+    var section: FeatureConfigSection = .none;
     var start: usize = 0;
     while (start < bytes.len) {
         const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
@@ -223,10 +241,10 @@ fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !Featu
         const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0) continue;
         if (line[0] == '[') {
-            in_features = std.mem.eql(u8, line, "[features]");
+            section = featureConfigSectionForLine(line, profile);
             continue;
         }
-        if (!in_features) continue;
+        if (section == .none) continue;
 
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
@@ -237,15 +255,40 @@ fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !Featu
             false
         else
             continue;
-        if (isKnownFeature(key)) try overrides.put(allocator, key, enabled);
+        if (!isKnownFeature(key)) continue;
+        switch (section) {
+            .none => {},
+            .top_level => try base_overrides.put(allocator, key, enabled),
+            .profile => try profile_overrides.put(allocator, key, enabled),
+        }
     }
 
+    var overrides = try base_overrides.clone(allocator);
+    errdefer overrides.deinit(allocator);
+    for (profile_overrides.items.items) |item| {
+        try overrides.put(allocator, item.key, item.enabled);
+    }
     return overrides;
+}
+
+const FeatureConfigSection = enum {
+    none,
+    top_level,
+    profile,
+};
+
+fn featureConfigSectionForLine(line: []const u8, profile: ?[]const u8) FeatureConfigSection {
+    if (std.mem.eql(u8, line, "[features]")) return .top_level;
+    if (profile) |name| {
+        if (isProfileFeaturesSection(line, name)) return .profile;
+    }
+    return .none;
 }
 
 fn updateFeatureConfig(
     allocator: std.mem.Allocator,
     bytes: []const u8,
+    profile: ?[]const u8,
     feature: []const u8,
     enabled: bool,
 ) ![]const u8 {
@@ -253,8 +296,9 @@ fn updateFeatureConfig(
     errdefer output.deinit(allocator);
 
     const replacement = if (enabled) "true" else "false";
-    var in_features = false;
-    var saw_features = false;
+    const target_section = if (profile != null) FeatureConfigSection.profile else FeatureConfigSection.top_level;
+    var in_target_section = false;
+    var saw_target_section = false;
     var wrote_feature = false;
 
     var start: usize = 0;
@@ -266,15 +310,15 @@ fn updateFeatureConfig(
         const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
         const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
         if (trimmed.len > 0 and trimmed[0] == '[') {
-            if (in_features and !wrote_feature) {
+            if (in_target_section and !wrote_feature) {
                 try appendFeatureLine(allocator, &output, feature, replacement);
                 wrote_feature = true;
             }
-            in_features = std.mem.eql(u8, trimmed, "[features]");
-            saw_features = saw_features or in_features;
+            in_target_section = featureConfigSectionForLine(trimmed, profile) == target_section;
+            saw_target_section = saw_target_section or in_target_section;
         }
 
-        if (in_features and featureLineMatches(trimmed, feature)) {
+        if (in_target_section and featureLineMatches(trimmed, feature)) {
             try appendFeatureLine(allocator, &output, feature, replacement);
             wrote_feature = true;
             continue;
@@ -284,18 +328,57 @@ fn updateFeatureConfig(
         try output.append(allocator, '\n');
     }
 
-    if (!saw_features) {
+    if (!saw_target_section) {
         if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') {
             try output.append(allocator, '\n');
         }
         if (output.items.len > 0) try output.append(allocator, '\n');
-        try output.appendSlice(allocator, "[features]\n");
+        try appendFeatureSectionHeader(allocator, &output, profile);
     }
     if (!wrote_feature) {
         try appendFeatureLine(allocator, &output, feature, replacement);
     }
 
     return output.toOwnedSlice(allocator);
+}
+
+fn isProfileFeaturesSection(line: []const u8, profile: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "profiles.";
+    const suffix = ".features";
+    if (!std.mem.startsWith(u8, section, prefix) or !std.mem.endsWith(u8, section, suffix)) return false;
+    const raw_name = section[prefix.len .. section.len - suffix.len];
+    if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
+        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], profile);
+    }
+    return std.mem.eql(u8, raw_name, profile);
+}
+
+fn appendFeatureSectionHeader(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    profile: ?[]const u8,
+) !void {
+    if (profile) |name| {
+        try output.appendSlice(allocator, "[profiles.");
+        try appendTomlStringLiteral(allocator, output, name);
+        try output.appendSlice(allocator, ".features]\n");
+    } else {
+        try output.appendSlice(allocator, "[features]\n");
+    }
+}
+
+fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
+    try output.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '\\' => try output.appendSlice(allocator, "\\\\"),
+            '"' => try output.appendSlice(allocator, "\\\""),
+            else => try output.append(allocator, byte),
+        }
+    }
+    try output.append(allocator, '"');
 }
 
 fn featureLineMatches(trimmed: []const u8, feature: []const u8) bool {
@@ -367,6 +450,7 @@ pub fn printHelp() void {
         \\  codex-zig features disable FEATURE
         \\
         \\Writes update the top-level [features] table in CODEX_HOME/config.toml.
+        \\Root --profile NAME writes to [profiles.NAME.features] instead.
         \\Root --enable/--disable flags apply only to the current invocation.
         \\
     , .{});
@@ -389,6 +473,7 @@ fn printSetHelp(action: []const u8) void {
         \\  codex-zig features {s} FEATURE
         \\
         \\Updates CODEX_HOME/config.toml for a known feature key.
+        \\Root --profile NAME scopes the write to that profile.
         \\
     , .{action});
 }
@@ -487,6 +572,37 @@ test "feature overrides parse booleans from features table" {
     try std.testing.expect(overrides.get("unknown") == null);
 }
 
+test "feature overrides apply profile scoped values over base values" {
+    const allocator = std.testing.allocator;
+    var overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features]
+        \\goals = false
+        \\shell_tool = true
+        \\[profiles.work.features]
+        \\goals = true
+        \\shell_tool = false
+        \\
+    , "work");
+    defer overrides.deinit(allocator);
+
+    try std.testing.expectEqual(true, overrides.get("goals").?);
+    try std.testing.expectEqual(false, overrides.get("shell_tool").?);
+}
+
+test "feature overrides parse quoted profile feature sections" {
+    const allocator = std.testing.allocator;
+    var overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features]
+        \\goals = false
+        \\[profiles."team a".features]
+        \\goals = true
+        \\
+    , "team a");
+    defer overrides.deinit(allocator);
+
+    try std.testing.expectEqual(true, overrides.get("goals").?);
+}
+
 test "features table is sorted by key" {
     var index: usize = 1;
     while (index < features.len) : (index += 1) {
@@ -531,7 +647,7 @@ test "runtime feature toggles reject unknown keys" {
 
 test "feature config update creates features table" {
     const allocator = std.testing.allocator;
-    const updated = try updateFeatureConfig(allocator, "model = \"demo\"\n", "goals", true);
+    const updated = try updateFeatureConfig(allocator, "model = \"demo\"\n", null, "goals", true);
     defer allocator.free(updated);
 
     try std.testing.expectEqualStrings(
@@ -550,7 +666,7 @@ test "feature config update replaces existing feature" {
         \\[profiles.work]
         \\model = "work"
         \\
-    , "goals", true);
+    , null, "goals", true);
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "goals = true\n") != null);
@@ -564,9 +680,39 @@ test "feature config update appends to existing features table" {
         \\[features]
         \\shell_tool = true
         \\
-    , "goals", false);
+    , null, "goals", false);
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "shell_tool = true\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "goals = false\n") != null);
+}
+
+test "feature config update creates profile feature table" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator,
+        \\model = "demo"
+        \\
+    , "team a", "goals", true);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.\"team a\".features]\ngoals = true\n") != null);
+}
+
+test "feature config update replaces profile feature value" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator,
+        \\[features]
+        \\goals = false
+        \\[profiles.work.features]
+        \\goals = false
+        \\shell_tool = true
+        \\[profiles.other.features]
+        \\goals = false
+        \\
+    , "work", "goals", true);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\ngoals = false\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work.features]\ngoals = true\nshell_tool = true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.other.features]\ngoals = false\n") != null);
 }
