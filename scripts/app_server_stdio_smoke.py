@@ -602,6 +602,55 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert missing["error"]["code"] == -32601
     assert "unsupported app-server method" in missing["error"]["message"]
 
+    write_line({"jsonrpc": "2.0", "id": "loaded-threads", "method": "thread/loaded/list"})
+    loaded_threads = read_line()
+    assert loaded_threads == {
+        "jsonrpc": "2.0",
+        "id": "loaded-threads",
+        "result": {"data": [], "nextCursor": None},
+    }
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "loaded-threads-paged",
+            "method": "thread/loaded/list",
+            "params": {"cursor": "thread_123", "limit": 1},
+        }
+    )
+    loaded_threads_paged = read_line()
+    assert loaded_threads_paged["id"] == "loaded-threads-paged"
+    assert loaded_threads_paged["result"] == {"data": [], "nextCursor": None}
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "bad-loaded-threads",
+            "method": "thread/loaded/list",
+            "params": {"limit": -1},
+        }
+    )
+    bad_loaded_threads = read_line()
+    assert bad_loaded_threads["id"] == "bad-loaded-threads"
+    assert bad_loaded_threads["error"]["code"] == -32602
+    assert "limit must be a non-negative integer or null" in bad_loaded_threads["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "too-large-loaded-threads-limit",
+            "method": "thread/loaded/list",
+            "params": {"limit": 4294967296},
+        }
+    )
+    too_large_loaded_threads_limit = read_line()
+    assert too_large_loaded_threads_limit["id"] == "too-large-loaded-threads-limit"
+    assert too_large_loaded_threads_limit["error"]["code"] == -32602
+    assert (
+        "limit must be a non-negative integer or null"
+        in too_large_loaded_threads_limit["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
