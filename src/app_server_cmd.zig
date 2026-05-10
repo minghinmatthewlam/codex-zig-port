@@ -3173,7 +3173,7 @@ const ConfigRequirementsReadRequirements = struct {
     allowed_web_search_modes: ?config.StringList = null,
     feature_requirements: ?FeatureRequirementList = null,
     enforce_residency: ?[]const u8 = null,
-    network: ?NetworkRequirementScalars = null,
+    network: ?NetworkRequirements = null,
 
     fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
         if (self.allowed_approval_policies) |*value| value.deinit(allocator);
@@ -3182,6 +3182,7 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.allowed_web_search_modes) |*value| value.deinit(allocator);
         if (self.feature_requirements) |*value| value.deinit(allocator);
         if (self.enforce_residency) |value| allocator.free(value);
+        if (self.network) |*value| value.deinit(allocator);
         self.* = .{};
     }
 
@@ -3242,24 +3243,49 @@ const FeatureRequirementList = struct {
     }
 };
 
-const NetworkRequirementScalars = struct {
+const NetworkPermissionEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+const NetworkPermissionEntryList = struct {
+    items: []NetworkPermissionEntry,
+
+    fn deinit(self: *NetworkPermissionEntryList, allocator: std.mem.Allocator) void {
+        for (self.items) |item| deinitNetworkPermissionEntry(allocator, item);
+        allocator.free(self.items);
+        self.items = &.{};
+    }
+};
+
+const NetworkRequirements = struct {
     enabled: ?bool = null,
     http_port: ?u16 = null,
     socks_port: ?u16 = null,
     allow_upstream_proxy: ?bool = null,
     dangerously_allow_non_loopback_proxy: ?bool = null,
     dangerously_allow_all_unix_sockets: ?bool = null,
+    domains: ?NetworkPermissionEntryList = null,
     managed_allowed_domains_only: ?bool = null,
+    unix_sockets: ?NetworkPermissionEntryList = null,
     allow_local_binding: ?bool = null,
 
-    fn isEmpty(self: NetworkRequirementScalars) bool {
+    fn deinit(self: *NetworkRequirements, allocator: std.mem.Allocator) void {
+        if (self.domains) |*value| value.deinit(allocator);
+        if (self.unix_sockets) |*value| value.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn isEmpty(self: NetworkRequirements) bool {
         return self.enabled == null and
             self.http_port == null and
             self.socks_port == null and
             self.allow_upstream_proxy == null and
             self.dangerously_allow_non_loopback_proxy == null and
             self.dangerously_allow_all_unix_sockets == null and
+            self.domains == null and
             self.managed_allowed_domains_only == null and
+            self.unix_sockets == null and
             self.allow_local_binding == null;
     }
 };
@@ -3310,7 +3336,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
     requirements.feature_requirements = try parseFeatureRequirements(allocator, payload);
     requirements.enforce_residency = try parseResidencyRequirement(allocator, payload);
-    requirements.network = try parseNetworkRequirementScalars(payload);
+    requirements.network = try parseNetworkRequirements(allocator, payload);
 
     return requirements;
 }
@@ -3490,9 +3516,9 @@ fn parseResidencyRequirement(allocator: std.mem.Allocator, payload: []const u8) 
     return value;
 }
 
-fn parseNetworkRequirementScalars(payload: []const u8) !?NetworkRequirementScalars {
+fn parseNetworkRequirements(allocator: std.mem.Allocator, payload: []const u8) !?NetworkRequirements {
     const section = "experimental_network";
-    var network = NetworkRequirementScalars{
+    var network = NetworkRequirements{
         .enabled = config.sectionBoolValue(payload, section, "enabled"),
         .http_port = try sectionU16Value(payload, section, "http_port"),
         .socks_port = try sectionU16Value(payload, section, "socks_port"),
@@ -3502,8 +3528,194 @@ fn parseNetworkRequirementScalars(payload: []const u8) !?NetworkRequirementScala
         .managed_allowed_domains_only = config.sectionBoolValue(payload, section, "managed_allowed_domains_only"),
         .allow_local_binding = config.sectionBoolValue(payload, section, "allow_local_binding"),
     };
+    errdefer network.deinit(allocator);
+
+    network.domains = try parseNetworkDomainRequirements(allocator, payload);
+    network.unix_sockets = try parseNetworkUnixSocketRequirements(allocator, payload);
+
     if (network.isEmpty()) return null;
     return network;
+}
+
+fn parseNetworkDomainRequirements(allocator: std.mem.Allocator, payload: []const u8) !?NetworkPermissionEntryList {
+    var canonical = try parseNetworkPermissionSection(allocator, payload, "experimental_network.domains", .domain);
+    errdefer if (canonical) |*value| value.deinit(allocator);
+
+    var allowed_domains = try config.sectionStringArrayValue(allocator, payload, "experimental_network", "allowed_domains");
+    defer if (allowed_domains) |*value| value.deinit(allocator);
+    var denied_domains = try config.sectionStringArrayValue(allocator, payload, "experimental_network", "denied_domains");
+    defer if (denied_domains) |*value| value.deinit(allocator);
+
+    if (canonical != null and (allowed_domains != null or denied_domains != null)) {
+        return error.InvalidNetworkRequirement;
+    }
+    if (canonical) |value| return value;
+
+    var entries = std.ArrayList(NetworkPermissionEntry).empty;
+    errdefer {
+        deinitNetworkPermissionEntries(allocator, entries.items);
+        entries.deinit(allocator);
+    }
+    if (allowed_domains) |list| {
+        for (list.items) |domain| try putNetworkPermissionEntryFromParts(allocator, &entries, domain, "allow");
+    }
+    if (denied_domains) |list| {
+        for (list.items) |domain| try putNetworkPermissionEntryFromParts(allocator, &entries, domain, "deny");
+    }
+    if (entries.items.len == 0) {
+        entries.deinit(allocator);
+        return null;
+    }
+    const items = try entries.toOwnedSlice(allocator);
+    std.mem.sort(NetworkPermissionEntry, items, {}, networkPermissionEntryLessThan);
+    return .{ .items = items };
+}
+
+fn parseNetworkUnixSocketRequirements(allocator: std.mem.Allocator, payload: []const u8) !?NetworkPermissionEntryList {
+    var canonical = try parseNetworkPermissionSection(allocator, payload, "experimental_network.unix_sockets", .unix_socket);
+    errdefer if (canonical) |*value| value.deinit(allocator);
+
+    var allow_unix_sockets = try config.sectionStringArrayValue(allocator, payload, "experimental_network", "allow_unix_sockets");
+    defer if (allow_unix_sockets) |*value| value.deinit(allocator);
+
+    if (canonical != null and allow_unix_sockets != null) {
+        return error.InvalidNetworkRequirement;
+    }
+    if (canonical) |value| return value;
+
+    var entries = std.ArrayList(NetworkPermissionEntry).empty;
+    errdefer {
+        deinitNetworkPermissionEntries(allocator, entries.items);
+        entries.deinit(allocator);
+    }
+    if (allow_unix_sockets) |list| {
+        for (list.items) |path| try putNetworkPermissionEntryFromParts(allocator, &entries, path, "allow");
+    }
+    if (entries.items.len == 0) {
+        entries.deinit(allocator);
+        return null;
+    }
+    const items = try entries.toOwnedSlice(allocator);
+    std.mem.sort(NetworkPermissionEntry, items, {}, networkPermissionEntryLessThan);
+    return .{ .items = items };
+}
+
+const NetworkPermissionKind = enum {
+    domain,
+    unix_socket,
+};
+
+fn parseNetworkPermissionSection(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    section_name: []const u8,
+    kind: NetworkPermissionKind,
+) !?NetworkPermissionEntryList {
+    var entries = std.ArrayList(NetworkPermissionEntry).empty;
+    errdefer {
+        deinitNetworkPermissionEntries(allocator, entries.items);
+        entries.deinit(allocator);
+    }
+
+    var in_section = false;
+    var iter = std.mem.splitScalar(u8, payload, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_section = isExactTomlSection(line, section_name);
+            continue;
+        }
+        if (!in_section) continue;
+        if (try parseNetworkPermissionLine(allocator, line, kind)) |entry| {
+            var owned_entry = entry;
+            errdefer deinitNetworkPermissionEntry(allocator, owned_entry);
+            try putOwnedNetworkPermissionEntry(allocator, &entries, &owned_entry);
+        }
+    }
+
+    if (entries.items.len == 0) {
+        entries.deinit(allocator);
+        return null;
+    }
+    const items = try entries.toOwnedSlice(allocator);
+    std.mem.sort(NetworkPermissionEntry, items, {}, networkPermissionEntryLessThan);
+    return .{ .items = items };
+}
+
+fn parseNetworkPermissionLine(
+    allocator: std.mem.Allocator,
+    line: []const u8,
+    kind: NetworkPermissionKind,
+) !?NetworkPermissionEntry {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const raw_key = std.mem.trim(u8, line[0..eq], " \t");
+    const raw_value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (raw_key.len == 0) return error.InvalidNetworkRequirement;
+
+    const value = try config.parseTomlString(allocator, raw_value) orelse return error.InvalidNetworkRequirement;
+    errdefer allocator.free(value);
+    try validateNetworkPermission(value, kind);
+
+    const key = try parseTomlKeyName(allocator, raw_key);
+    errdefer allocator.free(key);
+    return .{ .key = key, .value = value };
+}
+
+fn validateNetworkPermission(value: []const u8, kind: NetworkPermissionKind) !void {
+    switch (kind) {
+        .domain => {
+            if (std.mem.eql(u8, value, "allow") or std.mem.eql(u8, value, "deny")) return;
+        },
+        .unix_socket => {
+            if (std.mem.eql(u8, value, "allow") or std.mem.eql(u8, value, "none")) return;
+        },
+    }
+    return error.InvalidNetworkRequirement;
+}
+
+fn putNetworkPermissionEntryFromParts(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(NetworkPermissionEntry),
+    key: []const u8,
+    value: []const u8,
+) !void {
+    var entry = NetworkPermissionEntry{
+        .key = try allocator.dupe(u8, key),
+        .value = try allocator.dupe(u8, value),
+    };
+    errdefer deinitNetworkPermissionEntry(allocator, entry);
+    try putOwnedNetworkPermissionEntry(allocator, entries, &entry);
+}
+
+fn putOwnedNetworkPermissionEntry(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(NetworkPermissionEntry),
+    entry: *NetworkPermissionEntry,
+) !void {
+    for (entries.items) |*existing| {
+        if (std.mem.eql(u8, existing.key, entry.key)) {
+            deinitNetworkPermissionEntry(allocator, existing.*);
+            existing.* = entry.*;
+            entry.* = .{ .key = &.{}, .value = &.{} };
+            return;
+        }
+    }
+    try entries.append(allocator, entry.*);
+    entry.* = .{ .key = &.{}, .value = &.{} };
+}
+
+fn deinitNetworkPermissionEntry(allocator: std.mem.Allocator, entry: NetworkPermissionEntry) void {
+    if (entry.key.len > 0) allocator.free(entry.key);
+    if (entry.value.len > 0) allocator.free(entry.value);
+}
+
+fn deinitNetworkPermissionEntries(allocator: std.mem.Allocator, entries: []NetworkPermissionEntry) void {
+    for (entries) |entry| deinitNetworkPermissionEntry(allocator, entry);
+}
+
+fn networkPermissionEntryLessThan(_: void, lhs: NetworkPermissionEntry, rhs: NetworkPermissionEntry) bool {
+    return std.mem.lessThan(u8, lhs.key, rhs.key);
 }
 
 fn sectionU16Value(bytes: []const u8, section_name: []const u8, key: []const u8) !?u16 {
@@ -3617,7 +3829,7 @@ fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requiremen
     }
     if (requirements.network) |network| {
         try appendJsonFieldName(allocator, &result, &first, "network");
-        try appendNetworkRequirementScalarsObject(allocator, &result, network);
+        try appendNetworkRequirementsObject(allocator, &result, network);
     }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
@@ -3638,10 +3850,10 @@ fn appendFeatureRequirementsObject(
     try result.appendSlice(allocator, "}");
 }
 
-fn appendNetworkRequirementScalarsObject(
+fn appendNetworkRequirementsObject(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
-    network: NetworkRequirementScalars,
+    network: NetworkRequirements,
 ) !void {
     var first = true;
     try result.appendSlice(allocator, "{");
@@ -3651,9 +3863,73 @@ fn appendNetworkRequirementScalarsObject(
     if (network.allow_upstream_proxy) |value| try appendJsonBoolField(allocator, result, &first, "allowUpstreamProxy", value);
     if (network.dangerously_allow_non_loopback_proxy) |value| try appendJsonBoolField(allocator, result, &first, "dangerouslyAllowNonLoopbackProxy", value);
     if (network.dangerously_allow_all_unix_sockets) |value| try appendJsonBoolField(allocator, result, &first, "dangerouslyAllowAllUnixSockets", value);
+    if (network.domains) |domains| {
+        try appendJsonFieldName(allocator, result, &first, "domains");
+        try appendNetworkPermissionMap(allocator, result, domains);
+    }
     if (network.managed_allowed_domains_only) |value| try appendJsonBoolField(allocator, result, &first, "managedAllowedDomainsOnly", value);
+    if (network.domains) |domains| {
+        if (hasNetworkPermissionEntries(domains, "allow")) {
+            try appendJsonFieldName(allocator, result, &first, "allowedDomains");
+            try appendNetworkPermissionKeysArray(allocator, result, domains, "allow");
+        }
+        if (hasNetworkPermissionEntries(domains, "deny")) {
+            try appendJsonFieldName(allocator, result, &first, "deniedDomains");
+            try appendNetworkPermissionKeysArray(allocator, result, domains, "deny");
+        }
+    }
+    if (network.unix_sockets) |unix_sockets| {
+        try appendJsonFieldName(allocator, result, &first, "unixSockets");
+        try appendNetworkPermissionMap(allocator, result, unix_sockets);
+        if (hasNetworkPermissionEntries(unix_sockets, "allow")) {
+            try appendJsonFieldName(allocator, result, &first, "allowUnixSockets");
+            try appendNetworkPermissionKeysArray(allocator, result, unix_sockets, "allow");
+        }
+    }
     if (network.allow_local_binding) |value| try appendJsonBoolField(allocator, result, &first, "allowLocalBinding", value);
     try result.appendSlice(allocator, "}");
+}
+
+fn appendNetworkPermissionMap(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    entries: NetworkPermissionEntryList,
+) !void {
+    try result.appendSlice(allocator, "{");
+    for (entries.items, 0..) |entry, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendJsonString(allocator, result, entry.key);
+        try result.appendSlice(allocator, ":");
+        try appendJsonString(allocator, result, entry.value);
+    }
+    try result.appendSlice(allocator, "}");
+}
+
+fn hasNetworkPermissionEntries(entries: NetworkPermissionEntryList, permission: []const u8) bool {
+    for (entries.items) |entry| {
+        if (std.mem.eql(u8, entry.value, permission)) return true;
+    }
+    return false;
+}
+
+fn appendNetworkPermissionKeysArray(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    entries: NetworkPermissionEntryList,
+    permission: []const u8,
+) !void {
+    var first = true;
+    try result.appendSlice(allocator, "[");
+    for (entries.items) |entry| {
+        if (!std.mem.eql(u8, entry.value, permission)) continue;
+        if (first) {
+            first = false;
+        } else {
+            try result.appendSlice(allocator, ",");
+        }
+        try appendJsonString(allocator, result, entry.key);
+    }
+    try result.appendSlice(allocator, "]");
 }
 
 fn appendJsonU16Field(
