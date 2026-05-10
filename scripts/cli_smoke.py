@@ -5,7 +5,39 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+
+class ExecResponsesHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_bodies.append(json.loads(body))
+        payload = (
+            b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class ExecResponsesServer(ThreadingHTTPServer):
+    request_bodies: list[dict]
+
+
+def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
+    server = ExecResponsesServer(("127.0.0.1", 0), ExecResponsesHandler)
+    server.request_bodies = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
 
 
 def run_features_profile_smoke(binary: Path) -> None:
@@ -279,14 +311,58 @@ def run_exec_review_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_exec_equals_options_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-options-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            f'openai_base_url = "{base_url}"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--approval-policy=never",
+                "--output-last-message=last.txt",
+                "say",
+                "hi",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert (temp_root / "last.txt").read_text(encoding="utf-8") == "stored reply"
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "say hi"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
+    run_exec_equals_options_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
+    print("cli-exec-options-e2e: ok")
 
 
 if __name__ == "__main__":
