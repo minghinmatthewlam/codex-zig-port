@@ -643,7 +643,9 @@ const FILE_SYSTEM_SANDBOX_ENTRY_TS =
 
 const PERMISSION_PROFILE_NETWORK_PERMISSIONS_TS =
     GENERATED_TS_HEADER ++
-    \\export type PermissionProfileNetworkPermissions = "restricted" | "enabled";
+    \\export interface PermissionProfileNetworkPermissions {
+    \\  enabled: boolean;
+    \\}
     \\
     ;
 
@@ -655,7 +657,7 @@ const PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_TS =
     \\  | {
     \\      type: "restricted";
     \\      entries: FileSystemSandboxEntry[];
-    \\      glob_scan_max_depth?: number;
+    \\      globScanMaxDepth?: number;
     \\    }
     \\  | { type: "unrestricted" };
     \\
@@ -669,7 +671,7 @@ const PERMISSION_PROFILE_TS =
     \\export type PermissionProfile =
     \\  | {
     \\      type: "managed";
-    \\      file_system: PermissionProfileFileSystemPermissions;
+    \\      fileSystem: PermissionProfileFileSystemPermissions;
     \\      network: PermissionProfileNetworkPermissions;
     \\    }
     \\  | { type: "disabled" }
@@ -1129,10 +1131,10 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\  "oneOf": [
     \\    {
     \\      "type": "object",
-    \\      "required": ["type", "file_system", "network"],
+    \\      "required": ["type", "fileSystem", "network"],
     \\      "properties": {
     \\        "type": { "const": "managed" },
-    \\        "file_system": {
+    \\        "fileSystem": {
     \\          "oneOf": [
     \\            {
     \\              "type": "object",
@@ -1151,7 +1153,7 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\                    "additionalProperties": true
     \\                  }
     \\                },
-    \\                "glob_scan_max_depth": { "type": "integer", "minimum": 1 }
+    \\                "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
     \\              },
     \\              "additionalProperties": true
     \\            },
@@ -1163,7 +1165,14 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\            }
     \\          ]
     \\        },
-    \\        "network": { "enum": ["restricted", "enabled"] }
+    \\        "network": {
+    \\          "type": "object",
+    \\          "required": ["enabled"],
+    \\          "properties": {
+    \\            "enabled": { "type": "boolean" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -1178,7 +1187,14 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\      "required": ["type", "network"],
     \\      "properties": {
     \\        "type": { "const": "external" },
-    \\        "network": { "enum": ["restricted", "enabled"] }
+    \\        "network": {
+    \\          "type": "object",
+    \\          "required": ["enabled"],
+    \\          "properties": {
+    \\            "enabled": { "type": "boolean" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    }
@@ -4628,10 +4644,11 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
         parseCommandExecPermissionProfile(allocator, object.get("permissionProfile").?, cfg.sandbox_mode) catch |err| switch (err) {
             error.InvalidCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile must be an object or null"),
             error.InvalidCommandExecPermissionProfileType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.type must be disabled, managed, or external"),
-            error.InvalidCommandExecPermissionProfileNetwork => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.network must be restricted or enabled"),
-            error.InvalidCommandExecPermissionProfileFileSystem => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system must be an object"),
-            error.InvalidCommandExecPermissionProfileFileSystemType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system.type must be restricted or unrestricted"),
-            error.InvalidCommandExecPermissionProfileEntries => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.file_system.entries must be an array"),
+            error.InvalidCommandExecPermissionProfileNetwork => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.network.enabled must be a boolean"),
+            error.InvalidCommandExecPermissionProfileFileSystem => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem must be an object"),
+            error.InvalidCommandExecPermissionProfileFileSystemType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.type must be restricted or unrestricted"),
+            error.InvalidCommandExecPermissionProfileEntries => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.entries must be an array"),
+            error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer or null"),
             error.InvalidCommandExecPermissionProfileEntry => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
             error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external permissionProfile is parsed but not implemented yet"),
             error.UnsupportedCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
@@ -4917,17 +4934,19 @@ fn parseCommandExecPermissionProfile(
     }
 
     const network_enabled = try parseCommandExecPermissionNetwork(value.object.get("network"));
-    const file_system_value = value.object.get("file_system") orelse return error.InvalidCommandExecPermissionProfileFileSystem;
+    const file_system_value = value.object.get("fileSystem") orelse return error.InvalidCommandExecPermissionProfileFileSystem;
     if (file_system_value != .object) return error.InvalidCommandExecPermissionProfileFileSystem;
     const file_system_type = file_system_value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileFileSystemType;
     if (file_system_type != .string) return error.InvalidCommandExecPermissionProfileFileSystemType;
 
     if (std.mem.eql(u8, file_system_type.string, "unrestricted")) {
+        try validateCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
         return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
     }
     if (!std.mem.eql(u8, file_system_type.string, "restricted")) {
         return error.InvalidCommandExecPermissionProfileFileSystemType;
     }
+    try validateCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
 
     const entries_value = file_system_value.object.get("entries") orelse return error.InvalidCommandExecPermissionProfileEntries;
     if (entries_value != .array) return error.InvalidCommandExecPermissionProfileEntries;
@@ -4957,10 +4976,24 @@ fn parseCommandExecPermissionProfile(
 
 fn parseCommandExecPermissionNetwork(value: ?std.json.Value) !bool {
     const network = value orelse return error.InvalidCommandExecPermissionProfileNetwork;
-    if (network != .string) return error.InvalidCommandExecPermissionProfileNetwork;
-    if (std.mem.eql(u8, network.string, "restricted")) return false;
-    if (std.mem.eql(u8, network.string, "enabled")) return true;
-    return error.InvalidCommandExecPermissionProfileNetwork;
+    if (network != .object) return error.InvalidCommandExecPermissionProfileNetwork;
+    const enabled = network.object.get("enabled") orelse return error.InvalidCommandExecPermissionProfileNetwork;
+    if (enabled != .bool) return error.InvalidCommandExecPermissionProfileNetwork;
+    return enabled.bool;
+}
+
+fn validateCommandExecPermissionProfileGlobScanMaxDepth(object: std.json.ObjectMap) !void {
+    const value = object.get("globScanMaxDepth") orelse return;
+    if (value == .null) return;
+    const depth = switch (value) {
+        .integer => |integer| blk: {
+            if (integer <= 0) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
+            break :blk @as(u64, @intCast(integer));
+        },
+        .number_string => |raw| std.fmt.parseUnsigned(u64, raw, 10) catch return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth,
+        else => return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth,
+    };
+    if (depth == 0) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
 }
 
 fn addCommandExecPermissionProfileEntry(

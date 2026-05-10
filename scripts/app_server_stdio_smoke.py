@@ -3965,8 +3965,9 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
 
         root_read_only_permission_profile = {
             "type": "managed",
-            "file_system": {
+            "fileSystem": {
                 "type": "restricted",
+                "globScanMaxDepth": 1,
                 "entries": [
                     {
                         "path": {"type": "special", "value": {"kind": "root"}},
@@ -3974,18 +3975,18 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     }
                 ],
             },
-            "network": "restricted",
+            "network": {"enabled": False},
         }
         root_read_only_network_enabled_permission_profile = dict(
             root_read_only_permission_profile,
-            network="enabled",
+            network={"enabled": True},
         )
         disabled_permission_profile = {
             "type": "disabled",
         }
         project_roots_write_permission_profile = {
             "type": "managed",
-            "file_system": {
+            "fileSystem": {
                 "type": "restricted",
                 "entries": [
                     {
@@ -3998,13 +3999,13 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     },
                 ],
             },
-            "network": "restricted",
+            "network": {"enabled": False},
         }
         absolute_writable_root = root / "absolute-writable"
         absolute_writable_root.mkdir()
         absolute_write_permission_profile = {
             "type": "managed",
-            "file_system": {
+            "fileSystem": {
                 "type": "restricted",
                 "entries": [
                     {
@@ -4017,7 +4018,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     },
                 ],
             },
-            "network": "restricted",
+            "network": {"enabled": False},
         }
 
         permission_profile_disabled = request_stdio_app_server(
@@ -4175,7 +4176,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     "command": ["/bin/echo", "unused"],
                     "permissionProfile": {
                         "type": "managed",
-                        "file_system": {
+                        "fileSystem": {
                             "type": "restricted",
                             "entries": [
                                 {
@@ -4184,7 +4185,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                                 }
                             ],
                         },
-                        "network": "restricted",
+                        "network": {"enabled": False},
                     },
                 },
             },
@@ -7471,10 +7472,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert command_exec["properties"]["permissionProfile"]["oneOf"][0]["$ref"] == "PermissionProfile.json"
         permission_profile = json.loads((out_dir / "PermissionProfile.json").read_text(encoding="utf-8"))
         assert permission_profile["title"] == "PermissionProfile"
-        assert permission_profile["oneOf"][0]["properties"]["network"]["enum"] == [
-            "restricted",
-            "enabled",
-        ]
+        managed_profile = permission_profile["oneOf"][0]
+        assert managed_profile["required"] == ["type", "fileSystem", "network"]
+        assert managed_profile["properties"]["network"]["required"] == ["enabled"]
+        assert managed_profile["properties"]["network"]["properties"]["enabled"]["type"] == "boolean"
+        assert "fileSystem" in managed_profile["properties"]
+        assert "globScanMaxDepth" in managed_profile["properties"]["fileSystem"]["oneOf"][0]["properties"]
         command_exec_output_delta = json.loads(
             (out_dir / "CommandExecOutputDeltaNotification.json").read_text(
                 encoding="utf-8"
@@ -7570,6 +7573,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'type: "managed"' in permission_profile
         assert 'type: "disabled"' in permission_profile
         assert 'type: "external"' in permission_profile
+        assert "fileSystem: PermissionProfileFileSystemPermissions;" in permission_profile
+        assert "network: PermissionProfileNetworkPermissions;" in permission_profile
+        permission_profile_network = (
+            out_dir / "v2" / "PermissionProfileNetworkPermissions.ts"
+        ).read_text(encoding="utf-8")
+        assert "enabled: boolean;" in permission_profile_network
+        permission_profile_file_system = (
+            out_dir / "v2" / "PermissionProfileFileSystemPermissions.ts"
+        ).read_text(encoding="utf-8")
+        assert "globScanMaxDepth?: number;" in permission_profile_file_system
         filesystem_entry = (out_dir / "v2" / "FileSystemSandboxEntry.ts").read_text(
             encoding="utf-8"
         )
