@@ -242,7 +242,10 @@ fn appendProviderHeaders(
                     allocator.free(owned);
                     continue;
                 }
-                try owned_env_values.append(allocator, owned);
+                owned_env_values.append(allocator, owned) catch |err| {
+                    allocator.free(owned);
+                    return err;
+                };
                 try headers.append(allocator, .{ .name = entry.key, .value = owned });
             }
         }

@@ -109,6 +109,13 @@ pub const StringMapEntry = struct {
     }
 };
 
+fn cloneStringMapEntry(allocator: std.mem.Allocator, entry: StringMapEntry) !StringMapEntry {
+    const key = try allocator.dupe(u8, entry.key);
+    errdefer allocator.free(key);
+    const value = try allocator.dupe(u8, entry.value);
+    return .{ .key = key, .value = value };
+}
+
 pub const StringMap = struct {
     entries: []StringMapEntry,
 
@@ -126,10 +133,7 @@ pub const StringMap = struct {
             for (entries[0..copied]) |entry| entry.deinit(allocator);
         }
         for (self.entries, 0..) |entry, index| {
-            entries[index] = .{
-                .key = try allocator.dupe(u8, entry.key),
-                .value = try allocator.dupe(u8, entry.value),
-            };
+            entries[index] = try cloneStringMapEntry(allocator, entry);
             copied += 1;
         }
         return .{ .entries = entries };
