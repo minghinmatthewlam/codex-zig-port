@@ -115,7 +115,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - notify workspace owners about credit or usage-limit issues with
   `account/sendAddCreditsNudgeEmail`
 - remove app-server auth with `account/logout` and emit `account/updated`
-- read app-server config basics plus effective feature flags with `config/read`
+- read app-server config basics plus effective feature flags and user
+  config-origin/layer metadata with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
 - apply multiple app-server config edits in one file write with
@@ -253,8 +254,8 @@ checks app-server model catalog, provider-capability, collaboration-mode-list,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
-account-add-credits-nudge, config-read, config-value-write, config-batch-write,
-and config-requirements RPCs against temporary config homes and a
+account-add-credits-nudge, config-read with user origin/layer metadata,
+config-value-write, config-batch-write, and config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
