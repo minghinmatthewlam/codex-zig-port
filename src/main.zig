@@ -10,6 +10,7 @@ const config = @import("config.zig");
 const debug_cmd = @import("debug_cmd.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
+const execpolicy_cmd = @import("execpolicy_cmd.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const input_images = @import("input_images.zig");
@@ -324,6 +325,10 @@ fn mainInner(init: std.process.Init) !void {
             });
             return;
         }
+        if (std.mem.eql(u8, cmd, "execpolicy")) {
+            try execpolicy_cmd.run(allocator, &args);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "mcp")) {
             try mcp_cmd.run(allocator, &args);
             return;
@@ -567,6 +572,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "features") or
         std.mem.eql(u8, cmd, "completion") or
         std.mem.eql(u8, cmd, "debug") or
+        std.mem.eql(u8, cmd, "execpolicy") or
         std.mem.eql(u8, cmd, "mcp") or
         std.mem.eql(u8, cmd, "app-server") or
         std.mem.eql(u8, cmd, "plugin") or
@@ -665,6 +671,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         sandbox_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "debug")) {
         debug_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "execpolicy")) {
+        execpolicy_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "features")) {
         features_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "auth-status")) {
@@ -825,6 +833,8 @@ fn printHelp() !void {
         \\                          Generate shell completion scripts
         \\  codex-zig debug prompt-input [PROMPT]
         \\                          Print model-visible input JSON
+        \\  codex-zig execpolicy check --rules PATH COMMAND...
+        \\                          Check execpolicy files against a command
         \\  codex-zig mcp list
         \\                          List configured MCP servers
         \\  codex-zig mcp-server
