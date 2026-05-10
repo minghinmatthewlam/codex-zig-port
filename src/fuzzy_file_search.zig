@@ -150,6 +150,7 @@ fn scanDir(
             .directory => .directory,
             else => null,
         };
+        const should_recurse = stat.kind == .directory;
         if (match_type) |kind| {
             if (try fuzzyMatchPath(allocator, relative_path, query)) |fuzzy| {
                 defer allocator.free(fuzzy.indices);
@@ -167,7 +168,7 @@ fn scanDir(
                     .indices = owned_indices,
                 });
                 owns_relative_path = false;
-            } else {
+            } else if (!should_recurse) {
                 allocator.free(relative_path);
                 owns_relative_path = false;
             }
@@ -176,10 +177,20 @@ fn scanDir(
             owns_relative_path = false;
         }
 
-        if (stat.kind == .directory) {
-            var child_dir = openIterableDir(io, full_path) catch continue;
+        if (should_recurse) {
+            var child_dir = openIterableDir(io, full_path) catch {
+                if (owns_relative_path) {
+                    allocator.free(relative_path);
+                    owns_relative_path = false;
+                }
+                continue;
+            };
             defer child_dir.close(io);
             try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state);
+            if (owns_relative_path) {
+                allocator.free(relative_path);
+                owns_relative_path = false;
+            }
         }
     }
 }
