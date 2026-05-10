@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const auth_mod = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
@@ -458,6 +459,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (isConfigMethod(method)) {
         return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
+    if (isAccountMethod(method)) {
+        return try handleAccountMethod(allocator, id_value.?, method, object.get("params"));
     }
     if (isModelMethod(method)) {
         return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
@@ -1327,6 +1331,114 @@ fn appendJsonFieldName(
     defer allocator.free(name_json);
     try result.appendSlice(allocator, name_json);
     try result.appendSlice(allocator, ":");
+}
+
+fn isAccountMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "account/read");
+}
+
+fn handleAccountMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "account/read")) {
+        return handleAccountRead(allocator, id_value, params_value);
+    }
+    return try renderJsonRpcError(allocator, id_value, -32601, "unknown account method");
+}
+
+fn handleAccountRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = switch (optionalAccountReadParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var refresh_token = false;
+    if (params) |object| {
+        if (object.get("refreshToken")) |value| {
+            if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "refreshToken must be a boolean");
+            refresh_token = value.bool;
+        }
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/read failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const model_provider = config.loadModelProviderId(allocator, null) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/read failed to load model provider", err);
+    };
+    defer if (model_provider) |value| allocator.free(value);
+
+    const is_bedrock = if (model_provider) |provider| std.mem.eql(u8, provider, "amazon-bedrock") else false;
+    const provider_requires_openai_auth = config.loadModelProviderRequiresOpenAiAuth(allocator, null) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/read failed to load model provider auth requirements", err);
+    };
+    const requires_openai_auth = cfg.oss_provider == null and provider_requires_openai_auth;
+    const account_json = if (requires_openai_auth)
+        try renderOpenAiAccountJson(allocator, cfg.codex_home, refresh_token)
+    else if (is_bedrock)
+        try allocator.dupe(u8, "{\"type\":\"amazonBedrock\"}")
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(account_json);
+
+    const result = try std.fmt.allocPrint(
+        allocator,
+        "{{\"account\":{s},\"requiresOpenaiAuth\":{}}}",
+        .{ account_json, requires_openai_auth },
+    );
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn optionalAccountReadParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "account/read params must be an object" };
+    return .{ .object = params.object };
+}
+
+fn renderOpenAiAccountJson(allocator: std.mem.Allocator, codex_home: []const u8, refresh_token: bool) ![]const u8 {
+    var credentials = blk: {
+        const loaded = if (refresh_token)
+            auth_mod.load(allocator, codex_home)
+        else
+            auth_mod.loadNoRefresh(allocator, codex_home);
+        break :blk loaded catch |err| switch (err) {
+            error.NoUsableAuth => return allocator.dupe(u8, "null"),
+            else => return err,
+        };
+    };
+    defer credentials.deinit(allocator);
+
+    switch (credentials.mode) {
+        .api_key => return allocator.dupe(u8, "{\"type\":\"apiKey\"}"),
+        .chatgpt, .agent_identity => {
+            if (try auth_mod.loadStoredChatGptAccountInfo(allocator, codex_home)) |info| {
+                defer info.deinit(allocator);
+                return renderChatGptAccountJson(allocator, info);
+            }
+            return allocator.dupe(u8, "null");
+        },
+        .local_oss => return allocator.dupe(u8, "null"),
+    }
+}
+
+fn renderChatGptAccountJson(allocator: std.mem.Allocator, info: auth_mod.ChatGptAccountInfo) ![]const u8 {
+    const email_json = try std.json.Stringify.valueAlloc(allocator, info.email, .{});
+    defer allocator.free(email_json);
+    const plan_type_json = try std.json.Stringify.valueAlloc(allocator, info.plan_type, .{});
+    defer allocator.free(plan_type_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"type\":\"chatgpt\",\"email\":{s},\"planType\":{s}}}",
+        .{ email_json, plan_type_json },
+    );
 }
 
 fn isModelMethod(method: []const u8) bool {
