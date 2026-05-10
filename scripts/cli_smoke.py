@@ -104,6 +104,45 @@ network_rule(host = "blocked.example.com", protocol = "https", decision = "deny"
             ],
         }
 
+        example_rules_path = temp_root / "examples.rules"
+        example_rules_path.write_text(
+            """
+prefix_rule(
+    pattern = ["git", "status"],
+    match = [["git", "status"], "git 'status'"],
+    not_match = [["git", "commit"], "git commit"],
+)
+""",
+            encoding="utf-8",
+        )
+        example_result = subprocess.run(
+            [
+                str(binary),
+                "execpolicy",
+                "check",
+                "--rules",
+                str(example_rules_path),
+                "git",
+                "status",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert json.loads(example_result.stdout) == {
+            "decision": "allow",
+            "matchedRules": [
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["git", "status"],
+                        "decision": "allow",
+                    }
+                }
+            ],
+        }
+
         resolved_rules_path = temp_root / "resolved.rules"
         resolved_rules_path.write_text(
             """
@@ -166,6 +205,32 @@ network_rule(host = "*", protocol = "http", decision = "allow")
         )
         assert invalid_network_result.returncode != 0
         assert "WildcardNetworkRuleHost" in invalid_network_result.stderr
+
+        invalid_example_rules_path = temp_root / "invalid-example.rules"
+        invalid_example_rules_path.write_text(
+            """
+prefix_rule(pattern = ["git"], not_match = ["git status"])
+""",
+            encoding="utf-8",
+        )
+        invalid_example_result = subprocess.run(
+            [
+                str(binary),
+                "execpolicy",
+                "check",
+                "--rules",
+                str(invalid_example_rules_path),
+                "git",
+                "status",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert invalid_example_result.returncode != 0
+        assert "ExecPolicyExampleDidMatch" in invalid_example_result.stderr
 
         help_result = subprocess.run(
             [str(binary), "help", "execpolicy"],
