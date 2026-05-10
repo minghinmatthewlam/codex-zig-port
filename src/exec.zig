@@ -109,10 +109,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
 
-    if (parsed.prompt == null and !parsed.read_stdin) {
+    const stdin_is_tty = isStdinTty();
+    if (parsed.prompt == null and !parsed.read_stdin and stdin_is_tty) {
         std.debug.print("codex-zig exec requires a prompt or - for stdin\n", .{});
         return error.MissingExecPrompt;
     }
+    const should_append_piped_stdin = !stdin_is_tty and !parsed.read_stdin and parsed.prompt != null and parsed.resume_target == null;
+    const should_read_stdin = parsed.read_stdin or parsed.prompt == null or should_append_piped_stdin;
     const effective_oss = options.oss or parsed.oss;
     const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
 
@@ -126,8 +129,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     );
     defer allocator.free(additional_writable_roots);
 
-    const prompt = if (parsed.read_stdin)
-        try readPromptFromStdin(allocator, parsed.prompt)
+    const prompt = if (should_read_stdin)
+        try readPromptFromStdin(allocator, parsed.prompt, !should_append_piped_stdin)
     else
         try allocator.dupe(u8, parsed.prompt.?);
     defer allocator.free(prompt);
@@ -542,11 +545,26 @@ fn parseColor(value: []const u8) !void {
     return error.InvalidExecColor;
 }
 
-fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8) ![]const u8 {
+fn isStdinTty() bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.File.stdin().isTty(io) catch false;
+}
+
+fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8, required: bool) ![]const u8 {
     var buffer: [4096]u8 = undefined;
     var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
     const stdin_text = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
     errdefer allocator.free(stdin_text);
+
+    if (std.mem.trim(u8, stdin_text, " \t\r\n").len == 0) {
+        allocator.free(stdin_text);
+        if (!required) {
+            const text = prefix orelse "";
+            return allocator.dupe(u8, text);
+        }
+        std.debug.print("No prompt provided via stdin.\n", .{});
+        return error.MissingExecPrompt;
+    }
 
     if (prefix) |text| {
         var combined = std.ArrayList(u8).empty;
@@ -554,7 +572,10 @@ fn readPromptFromStdin(allocator: std.mem.Allocator, prefix: ?[]const u8) ![]con
         try combined.appendSlice(allocator, text);
         try combined.appendSlice(allocator, "\n\n<stdin>\n");
         try combined.appendSlice(allocator, stdin_text);
-        try combined.appendSlice(allocator, "\n</stdin>");
+        if (stdin_text[stdin_text.len - 1] != '\n') {
+            try combined.append(allocator, '\n');
+        }
+        try combined.appendSlice(allocator, "</stdin>");
         allocator.free(stdin_text);
         return combined.toOwnedSlice(allocator);
     }
