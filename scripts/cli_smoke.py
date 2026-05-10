@@ -30,6 +30,7 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
         self.server.request_bodies.append(json.loads(body))
         self.server.request_headers.append(dict(self.headers.items()))
         payload = (
@@ -47,12 +48,14 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
 
 
 class ExecResponsesServer(ThreadingHTTPServer):
+    request_paths: list[str]
     request_bodies: list[dict]
     request_headers: list[dict[str, str]]
 
 
 def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server = ExecResponsesServer(("127.0.0.1", 0), ExecResponsesHandler)
+    server.request_paths = []
     server.request_bodies = []
     server.request_headers = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -86,6 +89,33 @@ def make_exec_provider_env_key_env(temp_root: Path, base_url: str) -> dict[str, 
                 f'base_url = "{base_url}"',
                 'env_key = "CORP_API_KEY"',
                 'wire_api = "responses"',
+                'requires_openai_auth = false',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CORP_API_KEY"] = "provider-token"
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
+def make_exec_provider_wire_api_env(temp_root: Path, base_url: str, wire_api: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-wire"',
+                'model_provider = "corp"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}"',
+                'env_key = "CORP_API_KEY"',
+                f'wire_api = "{wire_api}"',
                 'requires_openai_auth = false',
                 "",
             ]
@@ -743,9 +773,54 @@ def run_exec_provider_env_key_smoke(binary: Path) -> None:
         )
         assert result.stdout == "stored reply\n"
         assert len(server.request_bodies) == 1
+        assert server.request_paths == ["/responses"]
         assert server.request_bodies[0]["model"] == "gpt-provider-env"
         assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use provider auth"
         assert server.request_headers[0]["Authorization"] == "Bearer provider-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_exec_provider_wire_api_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-wire-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_provider_wire_api_env(temp_root, base_url, "responses")
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "provider", "wire"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_paths == ["/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-provider-wire"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use provider wire"
+
+        invalid_root = temp_root / "invalid-wire"
+        invalid_root.mkdir()
+        invalid_env = make_exec_provider_wire_api_env(invalid_root, base_url, "chat")
+        rejected = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "old", "wire"],
+            cwd=temp_root,
+            env=invalid_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "RemovedModelProviderChatWireApi" in rejected.stderr
+        assert len(server.request_bodies) == 1
     finally:
         server.shutdown()
         server.server_close()
@@ -1368,6 +1443,7 @@ def main() -> None:
     run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
     run_exec_provider_env_key_smoke(binary)
+    run_exec_provider_wire_api_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1383,6 +1459,7 @@ def main() -> None:
     print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-provider-env-key-e2e: ok")
+    print("cli-exec-provider-wire-api-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
