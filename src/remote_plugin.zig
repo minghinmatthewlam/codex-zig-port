@@ -256,11 +256,8 @@ pub fn install(
     base_url: []const u8,
     credentials: auth.Credentials,
     codex_home: []const u8,
-    requested_marketplace_name: []const u8,
     plugin_id: []const u8,
 ) !InstallResult {
-    _ = requested_marketplace_name;
-
     const detail_url = try pluginDetailWithDownloadUrlsUrl(allocator, base_url, plugin_id);
     defer allocator.free(detail_url);
     const detail_body = try fetchJsonBytes(allocator, detail_url, credentials);

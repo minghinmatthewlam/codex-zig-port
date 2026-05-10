@@ -1415,7 +1415,6 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
             cfg.chatgpt_base_url,
             credentials,
             cfg.codex_home,
-            remote_marketplace_name,
             params.plugin_name,
         ) catch |err| switch (err) {
             error.RemotePluginDisabledByAdmin => {
