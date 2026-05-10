@@ -3832,7 +3832,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[apps.app1]",
                 "enabled = false",
                 "destructive_enabled = false",
+                "open_world_enabled = true",
                 'default_tools_approval_mode = "prompt"',
+                "default_tools_enabled = false",
                 "",
                 "[apps.app1.tools.search]",
                 "enabled = true",
@@ -3913,9 +3915,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "app1": {
                 "enabled": False,
                 "destructive_enabled": False,
-                "open_world_enabled": None,
+                "open_world_enabled": True,
                 "default_tools_approval_mode": "prompt",
-                "default_tools_enabled": None,
+                "default_tools_enabled": False,
                 "tools": {
                     "search": {
                         "enabled": True,
@@ -3950,7 +3952,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps._default.open_world_enabled",
             "apps.app1.enabled",
             "apps.app1.destructive_enabled",
+            "apps.app1.open_world_enabled",
             "apps.app1.default_tools_approval_mode",
+            "apps.app1.default_tools_enabled",
             "apps.app1.tools.search.enabled",
             "apps.app1.tools.search.approval_mode",
         ]:
@@ -3995,9 +3999,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "app1": {
                     "enabled": False,
                     "destructive_enabled": False,
-                    "open_world_enabled": None,
+                    "open_world_enabled": True,
                     "default_tools_approval_mode": "prompt",
-                    "default_tools_enabled": None,
+                    "default_tools_enabled": False,
                     "tools": {
                         "search": {
                             "enabled": True,
