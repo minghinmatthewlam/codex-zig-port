@@ -14,6 +14,7 @@ const ReviewArgs = struct {
     commit: ?[]const u8 = null,
     commit_title: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
+    read_stdin: bool = false,
 
     fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
         if (self.base) |base| allocator.free(base);
@@ -65,7 +66,12 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
         try auth.load(allocator, cfg.codex_home);
     defer credentials.deinit(allocator);
 
-    const prompt = try buildPrompt(allocator, parsed);
+    const prompt = if (parsed.read_stdin) prompt: {
+        try cli_utils.writeStderr("Reading review prompt from stdin...\n");
+        const stdin_prompt = try readPromptFromStdin(allocator);
+        defer allocator.free(stdin_prompt);
+        break :prompt try buildCustomPrompt(allocator, stdin_prompt);
+    } else try buildPrompt(allocator, parsed);
     defer allocator.free(prompt);
 
     var transcript = session.Transcript{};
@@ -139,6 +145,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
             try setRequiredOption(allocator, &parsed.commit_title, arg["--title=".len..]);
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "-") and prompt_parts.items.len == 0) {
+            parsed.read_stdin = true;
+            continue;
+        }
         if (!end_options and std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownReviewOption;
         }
@@ -150,6 +160,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
     if (parsed.uncommitted) target_count += 1;
     if (parsed.base != null) target_count += 1;
     if (parsed.commit != null) target_count += 1;
+    if (parsed.read_stdin) target_count += 1;
     if (prompt_parts.items.len > 0) target_count += 1;
     if (target_count > 1) return error.InvalidReviewArguments;
     if (parsed.commit_title != null and parsed.commit == null) return error.InvalidReviewArguments;
@@ -157,9 +168,23 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
     if (prompt_parts.items.len > 0) {
         parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
     }
-    if (!parsed.help and !parsed.uncommitted and parsed.base == null and parsed.commit == null and parsed.prompt == null) return error.MissingReviewTarget;
+    if (!parsed.help and !parsed.uncommitted and parsed.base == null and parsed.commit == null and !parsed.read_stdin and parsed.prompt == null) return error.MissingReviewTarget;
 
     return parsed;
+}
+
+fn readPromptFromStdin(allocator: std.mem.Allocator) ![]const u8 {
+    var buffer: [4096]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
+    const stdin_text = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    errdefer allocator.free(stdin_text);
+
+    if (std.mem.trim(u8, stdin_text, " \t\r\n").len == 0) {
+        std.debug.print("No review prompt provided via stdin.\n", .{});
+        return error.MissingReviewTarget;
+    }
+
+    return stdin_text;
 }
 
 fn setRevisionOption(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) !void {
@@ -282,6 +307,16 @@ test "review args join custom prompt" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("check this", parsed.prompt.?);
+}
+
+test "review args parse stdin prompt sentinel" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{"-"};
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.read_stdin);
+    try std.testing.expect(parsed.prompt == null);
 }
 
 test "review args parse commit and title" {
