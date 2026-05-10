@@ -2337,7 +2337,8 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
 }
 
 fn isThreadMethod(method: []const u8) bool {
-    return std.mem.eql(u8, method, "thread/loaded/list");
+    return std.mem.eql(u8, method, "thread/loaded/list") or
+        std.mem.eql(u8, method, "thread/unsubscribe");
 }
 
 fn handleThreadMethod(
@@ -2352,7 +2353,28 @@ fn handleThreadMethod(
         }
         return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
     }
+    if (std.mem.eql(u8, method, "thread/unsubscribe")) {
+        if (parseThreadIdParam(params_value)) |thread_id| {
+            if (!isUuidString(thread_id)) {
+                const message = try std.fmt.allocPrint(allocator, "invalid thread id: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notLoaded\"}");
+        } else |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+            error.InvalidThreadUnsubscribeParams => return renderJsonRpcError(allocator, id_value, -32602, "thread/unsubscribe params must be an object"),
+        }
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
+}
+
+fn parseThreadIdParam(params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return error.InvalidThreadUnsubscribeParams;
+    if (params != .object) return error.InvalidThreadUnsubscribeParams;
+    const thread_id = params.object.get("threadId") orelse return error.MissingThreadId;
+    if (thread_id != .string) return error.MissingThreadId;
+    return thread_id.string;
 }
 
 fn validateThreadLoadedListParams(params_value: ?std.json.Value) ?[]const u8 {
