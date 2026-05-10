@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import io
 import json
 import os
 import queue
@@ -7,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -14,6 +16,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 _OMIT = object()
+
+
+def remote_plugin_bundle_bytes() -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for name, data in {
+            "linear/.codex-plugin/plugin.json": json.dumps(
+                {"name": "linear", "version": "1.2.3"},
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            "linear/skills/plan-work/SKILL.md": b"# Plan Work\n",
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 0
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
 
 
 class RateLimitBackendHandler(BaseHTTPRequestHandler):
@@ -121,6 +141,11 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "plugins~Plugin_00000000000000000000000000000000"
             "/uninstall"
         )
+        install_path = (
+            "/backend-api/ps/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+            "/install"
+        )
         if self.path == upload_url_path:
             PluginBackendHandler.requests.append(
                 {
@@ -182,6 +207,21 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                 {
                     "id": "plugins~Plugin_00000000000000000000000000000000",
                     "enabled": False,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path == install_path:
+            body = json.dumps(
+                {
+                    "id": "plugins~Plugin_00000000000000000000000000000000",
+                    "enabled": True,
                 },
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -285,6 +325,8 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "/backend-api/ps/plugins/"
             "plugins~Plugin_00000000000000000000000000000000"
         )
+        detail_with_downloads_path = detail_path + "?includeDownloadUrls=true"
+        bundle_path = "/bundles/linear.tar.gz"
         list_path = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
         installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
         workspace_created_path = "/backend-api/ps/plugins/workspace/created?limit=200"
@@ -294,7 +336,16 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "plugins~Plugin_00000000000000000000000000000000"
             "/skills/plan-work"
         )
-        if self.path == detail_path or self.path == list_path:
+        if self.path == bundle_path:
+            body = remote_plugin_bundle_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path == detail_path or self.path == detail_with_downloads_path or self.path == list_path:
             plugin = {
                 "id": "plugins~Plugin_00000000000000000000000000000000",
                 "name": "linear",
@@ -326,6 +377,11 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                     ],
                 },
             }
+            if self.path == detail_with_downloads_path:
+                plugin["release"]["version"] = "1.2.3"
+                plugin["release"]["bundle_download_url"] = (
+                    f"http://{self.headers['Host']}/bundles/linear.tar.gz"
+                )
         workspace_plugin = {
             "id": "plugins~Plugin_00000000000000000000000000000000",
             "name": "linear",
@@ -362,7 +418,7 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                 "skills": [],
             },
         }
-        if self.path == detail_path:
+        if self.path == detail_path or self.path == detail_with_downloads_path:
             body = json.dumps(
                 plugin,
                 separators=(",", ":"),
@@ -1319,6 +1375,7 @@ remote_plugin = true
         remote_env.pop("OPENAI_API_KEY", None)
         remote_env.pop("CODEX_ACCESS_TOKEN", None)
         remote_env["CODEX_HOME"] = str(remote_home)
+        remote_env["CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS"] = "1"
         remote_plugin_list = request_stdio_app_server(
             binary,
             {
@@ -1491,6 +1548,61 @@ remote_plugin = true
         )
         assert invalid_skill["id"] == "plugin-skill-read-invalid"
         assert invalid_skill["error"]["code"] == -32600
+
+        PluginBackendHandler.requests = []
+        remote_plugin_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-plugin-install",
+                "method": "plugin/install",
+                "params": {
+                    "remoteMarketplaceName": "caller-marketplace-is-ignored",
+                    "pluginName": "plugins~Plugin_00000000000000000000000000000000",
+                },
+            },
+            remote_env,
+        )
+        assert remote_plugin_install["id"] == "remote-plugin-install"
+        assert remote_plugin_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        installed_remote = (
+            remote_home
+            / "plugins"
+            / "cache"
+            / "chatgpt-global"
+            / "linear"
+            / "1.2.3"
+        )
+        assert installed_remote.joinpath(".codex-plugin", "plugin.json").is_file()
+        assert installed_remote.joinpath("skills", "plan-work", "SKILL.md").is_file()
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                    "?includeDownloadUrls=true"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": "/bundles/linear.tar.gz",
+                "authorization": None,
+                "account_id": None,
+            },
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                    "/install"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
 
         share_source = remote_home / "share-source"
         share_source.joinpath(".codex-plugin").mkdir(parents=True)
