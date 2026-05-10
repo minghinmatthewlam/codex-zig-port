@@ -63,6 +63,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   login/update notifications
 - handle app-server login cancellation requests with `account/login/cancel`
 - read app-server account rate limits with `account/rateLimits/read`
+- notify workspace owners about credit or usage-limit issues with
+  `account/sendAddCreditsNudgeEmail`
 - remove app-server auth with `account/logout` and emit `account/updated`
 - read app-server config basics plus effective feature flags with `config/read`
 - report absent managed config requirements with `configRequirements/read`
@@ -141,10 +143,11 @@ and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
 directory listing, copy, and remove behavior against a temporary directory,
 checks app-server model catalog, provider-capability, account-read,
 account-logout, account-login, account-login-cancel, account-rate-limits,
-config-read, and config-requirements RPCs against temporary config homes and a
-mock backend, checks app-server experimental feature listing and runtime
-enablement patching against temporary config homes, and checks app-server flag
-compatibility for analytics defaults plus websocket auth parsing. Run
+account-add-credits-nudge, config-read, and config-requirements RPCs against
+temporary config homes and a mock backend, checks app-server experimental
+feature listing and runtime enablement patching against temporary config homes,
+and checks app-server flag compatibility for analytics defaults plus websocket
+auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
