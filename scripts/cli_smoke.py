@@ -7,8 +7,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLETION_SHELLS = ("bash", "elvish", "fish", "powershell", "zsh")
@@ -34,6 +36,9 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
         self.server.request_bodies.append(json.loads(body))
         self.server.request_headers.append(dict(self.headers.items()))
         status = self.server.response_statuses.pop(0) if self.server.response_statuses else 200
+        delay = self.server.response_delays.pop(0) if self.server.response_delays else 0
+        if delay:
+            time.sleep(delay)
         if status == 401:
             payload = b"unauthorized"
             self.send_response(401)
@@ -42,10 +47,7 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        payload = (
-            b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
-            b"data: [DONE]\n\n"
-        )
+        payload = self.server.response_payloads.pop(0) if self.server.response_payloads else default_exec_response_payload()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -61,6 +63,15 @@ class ExecResponsesServer(ThreadingHTTPServer):
     request_bodies: list[dict]
     request_headers: list[dict[str, str]]
     response_statuses: list[int]
+    response_payloads: list[bytes]
+    response_delays: list[float]
+
+
+def default_exec_response_payload() -> bytes:
+    return (
+        b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
+        b"data: [DONE]\n\n"
+    )
 
 
 def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
@@ -69,6 +80,8 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.request_bodies = []
     server.request_headers = []
     server.response_statuses = []
+    server.response_payloads = []
+    server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -256,7 +269,11 @@ def make_exec_provider_command_auth_env(
     return env
 
 
-def make_exec_provider_command_auth_refresh_env(temp_root: Path, base_url: str) -> dict[str, str]:
+def make_exec_provider_command_auth_refresh_env(
+    temp_root: Path,
+    base_url: str,
+    refresh_interval_ms: Optional[int] = None,
+) -> dict[str, str]:
     codex_home = temp_root / "codex-home"
     codex_home.mkdir()
     auth_dir = temp_root / "provider-auth-refresh"
@@ -295,6 +312,7 @@ def make_exec_provider_command_auth_refresh_env(temp_root: Path, base_url: str) 
                 f'args = ["{counter_file}"]',
                 f'cwd = "{auth_dir}"',
                 "timeout_ms = 5000",
+                *([] if refresh_interval_ms is None else [f"refresh_interval_ms = {refresh_interval_ms}"]),
                 "",
             ]
         ),
@@ -1160,6 +1178,45 @@ def run_exec_provider_command_auth_refresh_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_provider_command_auth_refresh_interval_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-command-interval-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    server.response_payloads = [
+        (
+            b'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call-1","name":"update_plan","arguments":"{\\"plan\\":[{\\"step\\":\\"wait\\",\\"status\\":\\"completed\\"}]}"}}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+        default_exec_response_payload(),
+    ]
+    server.response_delays = [1.1]
+    try:
+        env = make_exec_provider_command_auth_refresh_env(temp_root, base_url, refresh_interval_ms=1000)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "refresh", "before", "second", "request"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_paths == ["/responses", "/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-provider-command-refresh"
+        assert server.request_bodies[1]["model"] == "gpt-provider-command-refresh"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "refresh before second request"
+        assert server.request_bodies[1]["input"][-1]["type"] == "function_call_output"
+        assert server.request_headers[0]["Authorization"] == "Bearer first-token"
+        assert server.request_headers[1]["Authorization"] == "Bearer second-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1834,6 +1891,7 @@ def main() -> None:
     run_exec_provider_query_params_smoke(binary)
     run_exec_provider_command_auth_smoke(binary)
     run_exec_provider_command_auth_refresh_smoke(binary)
+    run_exec_provider_command_auth_refresh_interval_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1854,6 +1912,7 @@ def main() -> None:
     print("cli-exec-provider-query-params-e2e: ok")
     print("cli-exec-provider-command-auth-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-e2e: ok")
+    print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
