@@ -190,6 +190,56 @@ def run_memory_reset_smoke(binary: Path) -> None:
         shutil.rmtree(symlink_home, ignore_errors=True)
 
 
+def run_marketplace_rpc_smoke(binary: Path) -> None:
+    env = os.environ.copy()
+
+    cases = [
+        {
+            "jsonrpc": "2.0",
+            "id": "marketplace-add",
+            "method": "marketplace/add",
+            "params": {
+                "source": "owner/repo",
+                "refName": "main",
+                "sparsePaths": ["plugins/foo"],
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "marketplace-remove",
+            "method": "marketplace/remove",
+            "params": {"marketplaceName": "debug"},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "marketplace-upgrade",
+            "method": "marketplace/upgrade",
+            "params": {"marketplaceName": None},
+        },
+    ]
+    for payload in cases:
+        response = request_stdio_app_server(binary, payload, env)
+        assert response["id"] == payload["id"]
+        assert response["error"]["code"] == -32603
+        assert (
+            f"app-server method {payload['method']} is parsed but not implemented yet"
+            in response["error"]["message"]
+        )
+
+    invalid = request_stdio_app_server(
+        binary,
+        {
+            "jsonrpc": "2.0",
+            "id": "marketplace-add-invalid",
+            "method": "marketplace/add",
+            "params": {"refName": "main"},
+        },
+        env,
+    )
+    assert invalid["id"] == "marketplace-add-invalid"
+    assert invalid["error"]["code"] == -32602
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -425,6 +475,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_memory_reset_smoke(binary)
     print("app-server-memory-reset-e2e: ok")
+    run_marketplace_rpc_smoke(binary)
+    print("app-server-marketplace-rpc-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
