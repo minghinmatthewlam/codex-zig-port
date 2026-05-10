@@ -769,6 +769,38 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_shell_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-clean-invalid",
+            "method": "thread/backgroundTerminals/clean",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_background_clean_invalid = read_line()
+    assert thread_background_clean_invalid["id"] == "thread-background-clean-invalid"
+    assert thread_background_clean_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_background_clean_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-clean-missing",
+            "method": "thread/backgroundTerminals/clean",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000004"},
+        }
+    )
+    thread_background_clean_missing = read_line()
+    assert thread_background_clean_missing["id"] == "thread-background-clean-missing"
+    assert thread_background_clean_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000004"
+        in thread_background_clean_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
