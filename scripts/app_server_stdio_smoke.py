@@ -726,20 +726,40 @@ enabled = true
         assert plugin["interface"]["category"] == "Developer tools"
         assert plugin["interface"]["defaultPrompt"] == ["Use the enabled plugin"]
         assert plugin["keywords"] == ["api-key", "developer tools"]
+
+        plugin_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-read",
+                "method": "plugin/read",
+                "params": {
+                    "marketplacePath": str(repo / ".agents" / "plugins" / "marketplace.json"),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "enabled-plugin",
+                },
+            },
+            env,
+        )
+        assert plugin_read["id"] == "plugin-read"
+        detail = plugin_read["result"]["plugin"]
+        assert detail["marketplaceName"] == "local-market"
+        assert detail["marketplacePath"] == str(
+            repo / ".agents" / "plugins" / "marketplace.json"
+        )
+        assert detail["summary"]["id"] == "enabled-plugin@local-market"
+        assert detail["summary"]["installed"] is True
+        assert detail["summary"]["enabled"] is True
+        assert detail["summary"]["interface"]["displayName"] == "Enabled Plugin"
+        assert detail["description"] is None
+        assert detail["skills"] == []
+        assert detail["hooks"] == []
+        assert detail["apps"] == []
+        assert detail["mcpServers"] == []
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
     cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-read",
-            "method": "plugin/read",
-            "params": {
-                "marketplacePath": "/tmp/marketplace.json",
-                "remoteMarketplaceName": None,
-                "pluginName": "gmail",
-            },
-        },
         {
             "jsonrpc": "2.0",
             "id": "plugin-skill-read",

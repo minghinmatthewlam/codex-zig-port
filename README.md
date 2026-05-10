@@ -56,6 +56,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
+- read local app-server plugin details with `plugin/read` for marketplace-backed
+  local plugins, including summary metadata and manifest description
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
@@ -165,7 +167,7 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 stubs, local app-server `plugin/list` marketplace discovery, and remaining
-plugin RPC stubs, verifies app-server hooks-list discovery for user and
+plugin RPC behavior including local `plugin/read`, verifies app-server hooks-list discovery for user and
 project `config.toml` / `hooks.json` command hooks, enabled local plugin-cache
 command hooks, persisted user hook state, and malformed JSON warnings, verifies
 app-server
