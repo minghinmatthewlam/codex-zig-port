@@ -917,6 +917,9 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         )
         assert "--permissions-profile NAME" in help_result.stderr
         assert "--include-managed-config" in help_result.stderr
+        assert ":read-only" in help_result.stderr
+        assert ":workspace" in help_result.stderr
+        assert ":danger-no-sandbox" in help_result.stderr
 
         cwd_without_profile = subprocess.run(
             [str(binary.resolve()), "sandbox", "macos", "--cd", str(temp_root), "--", "/bin/echo", "ok"],
@@ -944,13 +947,96 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert managed_without_profile.returncode != 0
         assert "error: MissingSandboxPermissionsProfile" in managed_without_profile.stderr
 
-        profile_unsupported = subprocess.run(
+        workspace = temp_root / "workspace"
+        outside = temp_root / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+
+        read_only_denied = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":read-only",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf nope > blocked.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert read_only_denied.returncode != 0
+        assert not (workspace / "blocked.txt").exists()
+
+        workspace_allowed = subprocess.run(
             [
                 str(binary.resolve()),
                 "sandbox",
                 "macos",
                 "--permissions-profile",
                 ":workspace",
+                "--include-managed-config",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                f"printf ok > allowed.txt; printf nope > {outside / 'blocked.txt'}",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert workspace_allowed.returncode != 0
+        assert (workspace / "allowed.txt").read_text(encoding="utf-8") == "ok"
+        assert not (outside / "blocked.txt").exists()
+
+        no_sandbox = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":danger-no-sandbox",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                f"printf ok > danger.txt; printf outside > {outside / 'danger.txt'}",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert no_sandbox.stdout == ""
+        assert (workspace / "danger.txt").read_text(encoding="utf-8") == "ok"
+        assert (outside / "danger.txt").read_text(encoding="utf-8") == "outside"
+
+        profile_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "custom-profile",
                 "--cd",
                 str(temp_root),
                 "--",
