@@ -77,6 +77,7 @@ const RemotePluginSkillDetailPayload = struct {
 };
 
 const RemotePluginPaginationPayload = struct {
+    limit: ?usize = null,
     next_page_token: ?[]const u8 = null,
 };
 
@@ -316,7 +317,10 @@ fn fetchPluginListPages(
         const body = try fetchJsonBytes(allocator, url, credentials);
         defer allocator.free(body);
 
-        var parsed = try std.json.parseFromSlice(RemotePluginListResponsePayload, allocator, body, .{ .ignore_unknown_fields = true });
+        var parsed = try std.json.parseFromSlice(RemotePluginListResponsePayload, allocator, body, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
         var appended = false;
         errdefer if (!appended) parsed.deinit();
         next_page_token = parsed.value.pagination.next_page_token;
@@ -344,7 +348,10 @@ fn fetchInstalledPluginPages(
         const body = try fetchJsonBytes(allocator, url, credentials);
         defer allocator.free(body);
 
-        var parsed = try std.json.parseFromSlice(RemotePluginInstalledResponsePayload, allocator, body, .{ .ignore_unknown_fields = true });
+        var parsed = try std.json.parseFromSlice(RemotePluginInstalledResponsePayload, allocator, body, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
         var appended = false;
         errdefer if (!appended) parsed.deinit();
         next_page_token = parsed.value.pagination.next_page_token;
@@ -1059,6 +1066,88 @@ test "remote plugin read JSON maps installed detail state" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"path\":null,\"enabled\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"apps\":[{\"id\":\"gmail\",\"name\":\"gmail\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"availability\":\"AVAILABLE\"") != null);
+}
+
+test "remote plugin marketplace JSON renders directory and installed state" {
+    const allocator = std.testing.allocator;
+    const list_body =
+        \\{
+        \\  "plugins": [
+        \\    {
+        \\      "id": "plugins~Plugin_123",
+        \\      "name": "linear",
+        \\      "scope": "GLOBAL",
+        \\      "installation_policy": "AVAILABLE",
+        \\      "authentication_policy": "ON_USE",
+        \\      "status": "ENABLED",
+        \\      "release": {
+        \\        "display_name": "Linear",
+        \\        "description": "Track work in Linear",
+        \\        "app_ids": ["gmail"],
+        \\        "keywords": ["issue-tracking"],
+        \\        "interface": {"short_description": "Plan and track work"},
+        \\        "skills": []
+        \\      }
+        \\    }
+        \\  ],
+        \\  "pagination": {"limit": 200, "next_page_token": null}
+        \\}
+    ;
+    const installed_body =
+        \\{
+        \\  "plugins": [
+        \\    {
+        \\      "id": "plugins~Plugin_123",
+        \\      "name": "linear",
+        \\      "scope": "GLOBAL",
+        \\      "installation_policy": "AVAILABLE",
+        \\      "authentication_policy": "ON_USE",
+        \\      "release": {
+        \\        "display_name": "Linear",
+        \\        "description": "Track work in Linear",
+        \\        "app_ids": [],
+        \\        "keywords": [],
+        \\        "interface": {},
+        \\        "skills": []
+        \\      },
+        \\      "enabled": false,
+        \\      "disabled_skill_names": []
+        \\    }
+        \\  ],
+        \\  "pagination": {"limit": 50, "next_page_token": null}
+        \\}
+    ;
+
+    var directory_pages = RemotePluginListPages.empty;
+    defer deinitPluginListPages(allocator, &directory_pages);
+    const list_parse = try std.json.parseFromSlice(RemotePluginListResponsePayload, allocator, list_body, .{ .ignore_unknown_fields = true });
+    try directory_pages.append(allocator, list_parse);
+
+    var installed_pages = RemoteInstalledPluginPages.empty;
+    defer deinitInstalledPluginPages(allocator, &installed_pages);
+    const installed_parse = try std.json.parseFromSlice(RemotePluginInstalledResponsePayload, allocator, installed_body, .{ .ignore_unknown_fields = true });
+    try installed_pages.append(allocator, installed_parse);
+
+    var rendered = std.ArrayList(u8).empty;
+    defer rendered.deinit(allocator);
+    try rendered.appendSlice(allocator, "[");
+    var marketplace_count: usize = 0;
+    try appendRemoteMarketplaceJsonFromPages(
+        allocator,
+        &rendered,
+        &marketplace_count,
+        "chatgpt-global",
+        "ChatGPT Plugins",
+        .global,
+        &directory_pages,
+        &installed_pages,
+        true,
+    );
+    try rendered.appendSlice(allocator, "]");
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "\"name\":\"chatgpt-global\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "\"installed\":true,\"enabled\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "\"keywords\":[\"issue-tracking\"]") != null);
 }
 
 test "remote plugin read JSON returns workspace share context readers" {
