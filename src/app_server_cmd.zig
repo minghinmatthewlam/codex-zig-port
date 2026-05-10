@@ -235,7 +235,10 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             try runProxy(allocator, subcommand_args.items);
             return;
         }
-        if (std.mem.eql(u8, name, "generate-ts")) return error.AppServerGenerateTsNotImplemented;
+        if (std.mem.eql(u8, name, "generate-ts")) {
+            try runGenerateTs(allocator, subcommand_args.items);
+            return;
+        }
         if (std.mem.eql(u8, name, "generate-json-schema")) {
             try runGenerateJsonSchema(allocator, subcommand_args.items);
             return;
@@ -347,6 +350,46 @@ fn validateSha256DigestArg(value: []const u8) !void {
     }
 }
 
+fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var out_dir: ?[]const u8 = null;
+    var prettier: ?[]const u8 = null;
+    var experimental = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
+            if (index + 1 >= args.len) return error.MissingAppServerGenerateTsOutDir;
+            index += 1;
+            out_dir = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--out=")) {
+            out_dir = arg["--out=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prettier")) {
+            if (index + 1 >= args.len) return error.MissingAppServerGenerateTsPrettierPath;
+            index += 1;
+            prettier = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--prettier=")) {
+            prettier = arg["--prettier=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental")) {
+            experimental = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownAppServerGenerateTsOption;
+        return error.UnexpectedAppServerGenerateTsArgument;
+    }
+
+    const target_dir = out_dir orelse return error.MissingAppServerGenerateTsOutDir;
+    if (target_dir.len == 0) return error.MissingAppServerGenerateTsOutDir;
+    try writeAppServerTs(allocator, target_dir, prettier, experimental);
+}
+
 fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var out_dir: ?[]const u8 = null;
     var experimental = false;
@@ -404,6 +447,167 @@ const SchemaFile = struct {
     name: []const u8,
     contents: []const u8,
 };
+
+const GENERATED_TS_HEADER = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
+
+const REQUEST_ID_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RequestId = string | number;
+    \\
+    ;
+
+const JSONRPC_REQUEST_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RequestId } from "./RequestId";
+    \\
+    \\export interface JSONRPCRequest {
+    \\  id: RequestId;
+    \\  method: string;
+    \\  params?: unknown;
+    \\  trace?: Record<string, unknown>;
+    \\}
+    \\
+    ;
+
+const JSONRPC_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface JSONRPCNotification {
+    \\  method: string;
+    \\  params?: unknown;
+    \\}
+    \\
+    ;
+
+const JSONRPC_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RequestId } from "./RequestId";
+    \\
+    \\export interface JSONRPCResponse {
+    \\  id: RequestId;
+    \\  result: unknown;
+    \\}
+    \\
+    ;
+
+const JSONRPC_ERROR_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface JSONRPCErrorError {
+    \\  code: number;
+    \\  message: string;
+    \\  data?: unknown;
+    \\}
+    \\
+    ;
+
+const JSONRPC_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JSONRPCErrorError } from "./JSONRPCErrorError";
+    \\import type { RequestId } from "./RequestId";
+    \\
+    \\export interface JSONRPCError {
+    \\  id: RequestId;
+    \\  error: JSONRPCErrorError;
+    \\}
+    \\
+    ;
+
+const JSONRPC_MESSAGE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JSONRPCError } from "./JSONRPCError";
+    \\import type { JSONRPCNotification } from "./JSONRPCNotification";
+    \\import type { JSONRPCRequest } from "./JSONRPCRequest";
+    \\import type { JSONRPCResponse } from "./JSONRPCResponse";
+    \\
+    \\export type JSONRPCMessage =
+    \\  | JSONRPCRequest
+    \\  | JSONRPCNotification
+    \\  | JSONRPCResponse
+    \\  | JSONRPCError;
+    \\
+    ;
+
+const INITIALIZE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ClientInfo {
+    \\  name: string;
+    \\  title?: string | null;
+    \\  version: string;
+    \\}
+    \\
+    \\export interface InitializeCapabilities {
+    \\  experimentalApi?: boolean;
+    \\  optOutNotificationMethods?: string[] | null;
+    \\}
+    \\
+    \\export interface InitializeParams {
+    \\  clientInfo: ClientInfo;
+    \\  capabilities?: InitializeCapabilities | null;
+    \\}
+    \\
+    ;
+
+const INITIALIZE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ServerInfo {
+    \\  name: string;
+    \\  version: string;
+    \\}
+    \\
+    \\export interface InitializeResponse {
+    \\  serverInfo: ServerInfo;
+    \\  capabilities: Record<string, unknown>;
+    \\}
+    \\
+    ;
+
+const CLIENT_REQUEST_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { InitializeParams } from "./InitializeParams";
+    \\
+    \\export type ClientRequest =
+    \\  | {
+    \\      method: "initialize";
+    \\      params: InitializeParams;
+    \\    };
+    \\
+    ;
+
+const CLIENT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { InitializeResponse } from "./InitializeResponse";
+    \\import type { RequestId } from "./RequestId";
+    \\
+    \\export type ClientResponse =
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "initialize";
+    \\      result: InitializeResponse;
+    \\    };
+    \\
+    ;
+
+const INDEX_TS =
+    GENERATED_TS_HEADER ++
+    \\export type { ClientRequest } from "./ClientRequest";
+    \\export type { ClientResponse } from "./ClientResponse";
+    \\export type { InitializeCapabilities, InitializeParams, ClientInfo } from "./InitializeParams";
+    \\export type { InitializeResponse, ServerInfo } from "./InitializeResponse";
+    \\export type { JSONRPCError } from "./JSONRPCError";
+    \\export type { JSONRPCErrorError } from "./JSONRPCErrorError";
+    \\export type { JSONRPCMessage } from "./JSONRPCMessage";
+    \\export type { JSONRPCNotification } from "./JSONRPCNotification";
+    \\export type { JSONRPCRequest } from "./JSONRPCRequest";
+    \\export type { JSONRPCResponse } from "./JSONRPCResponse";
+    \\export type { RequestId } from "./RequestId";
+    \\export * as v2 from "./v2";
+    \\
+    ;
+
+const V2_INDEX_TS =
+    GENERATED_TS_HEADER ++
+    \\export {};
+    \\
+    ;
 
 const REQUEST_ID_JSON_SCHEMA =
     \\{
@@ -692,6 +896,32 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
+
+const APP_SERVER_TS_FILES = [_]SchemaFile{
+    .{ .name = "RequestId.ts", .contents = REQUEST_ID_TS },
+    .{ .name = "JSONRPCMessage.ts", .contents = JSONRPC_MESSAGE_TS },
+    .{ .name = "JSONRPCRequest.ts", .contents = JSONRPC_REQUEST_TS },
+    .{ .name = "JSONRPCNotification.ts", .contents = JSONRPC_NOTIFICATION_TS },
+    .{ .name = "JSONRPCResponse.ts", .contents = JSONRPC_RESPONSE_TS },
+    .{ .name = "JSONRPCError.ts", .contents = JSONRPC_ERROR_TS },
+    .{ .name = "JSONRPCErrorError.ts", .contents = JSONRPC_ERROR_ERROR_TS },
+    .{ .name = "InitializeParams.ts", .contents = INITIALIZE_PARAMS_TS },
+    .{ .name = "InitializeResponse.ts", .contents = INITIALIZE_RESPONSE_TS },
+    .{ .name = "ClientRequest.ts", .contents = CLIENT_REQUEST_TS },
+    .{ .name = "ClientResponse.ts", .contents = CLIENT_RESPONSE_TS },
+    .{ .name = "index.ts", .contents = INDEX_TS },
+    .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
+};
+
+fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
+    _ = prettier;
+    _ = experimental;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const v2_out_dir = try std.fs.path.join(allocator, &.{ out_dir, "v2" });
+    defer allocator.free(v2_out_dir);
+    try std.Io.Dir.cwd().createDirPath(io, v2_out_dir);
+    try writeSchemaFiles(allocator, out_dir, &APP_SERVER_TS_FILES);
+}
 
 fn writeAppServerJsonSchemas(allocator: std.mem.Allocator, out_dir: []const u8, experimental: bool) !void {
     _ = experimental;
