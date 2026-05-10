@@ -3736,7 +3736,7 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
     const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse cfg.sandbox_mode else project_layers.sandboxMode() orelse cfg.sandbox_mode;
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
-    try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, user_layer));
+    try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer));
     const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, if (user_layer) |layer| layer.tools else null);
@@ -3798,6 +3798,7 @@ const ConfigReadProjectLayer = struct {
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
     service_tier: ?[]const u8,
+    sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
 
     fn deinit(self: *ConfigReadProjectLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.dot_codex_folder);
@@ -3806,6 +3807,7 @@ const ConfigReadProjectLayer = struct {
         if (self.service_tier) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.sandbox_workspace_write.deinit(allocator);
     }
 };
 
@@ -3863,8 +3865,39 @@ const ConfigReadProjectLayers = struct {
         return null;
     }
 
+    fn sandboxWorkspaceWrite(self: ConfigReadProjectLayers) ConfigReadSandboxWorkspaceWrite {
+        var sandbox = ConfigReadSandboxWorkspaceWrite{};
+        for (self.items) |layer| {
+            const layer_sandbox = layer.sandbox_workspace_write;
+            if (layer_sandbox.present) sandbox.present = true;
+            if (sandbox.writable_roots == null) {
+                if (layer_sandbox.writable_roots) |roots| sandbox.writable_roots = roots;
+            }
+            if (!sandbox.network_access_present and layer_sandbox.network_access_present) {
+                sandbox.network_access = layer_sandbox.network_access;
+                sandbox.network_access_present = true;
+            }
+            if (!sandbox.exclude_tmpdir_env_var_present and layer_sandbox.exclude_tmpdir_env_var_present) {
+                sandbox.exclude_tmpdir_env_var = layer_sandbox.exclude_tmpdir_env_var;
+                sandbox.exclude_tmpdir_env_var_present = true;
+            }
+            if (!sandbox.exclude_slash_tmp_present and layer_sandbox.exclude_slash_tmp_present) {
+                sandbox.exclude_slash_tmp = layer_sandbox.exclude_slash_tmp;
+                sandbox.exclude_slash_tmp_present = true;
+            }
+        }
+        return sandbox;
+    }
+
     fn hasOriginKey(self: ConfigReadProjectLayers, key: []const u8) bool {
         return configReadProjectSliceHasOriginKey(self.items, key);
+    }
+
+    fn hasSandboxWorkspaceWriteRoot(self: ConfigReadProjectLayers) bool {
+        for (self.items) |layer| {
+            if (layer.sandbox_workspace_write.writable_roots != null) return true;
+        }
+        return false;
     }
 };
 
@@ -3995,21 +4028,23 @@ const ConfigReadSandboxWorkspaceWrite = struct {
 
 fn effectiveConfigReadSandboxWorkspaceWrite(
     managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
 ) ?ConfigReadSandboxWorkspaceWrite {
     const managed = if (managed_layer) |layer| layer.sandbox_workspace_write else ConfigReadSandboxWorkspaceWrite{};
+    const project = project_layers.sandboxWorkspaceWrite();
     const user = if (user_layer) |layer| layer.sandbox_workspace_write else ConfigReadSandboxWorkspaceWrite{};
-    if (!managed.present and !user.present) return null;
+    if (!managed.present and !project.present and !user.present) return null;
 
     return .{
         .present = true,
-        .writable_roots = managed.writable_roots orelse user.writable_roots,
-        .network_access = if (managed.network_access_present) managed.network_access else user.network_access,
-        .network_access_present = managed.network_access_present or user.network_access_present,
-        .exclude_tmpdir_env_var = if (managed.exclude_tmpdir_env_var_present) managed.exclude_tmpdir_env_var else user.exclude_tmpdir_env_var,
-        .exclude_tmpdir_env_var_present = managed.exclude_tmpdir_env_var_present or user.exclude_tmpdir_env_var_present,
-        .exclude_slash_tmp = if (managed.exclude_slash_tmp_present) managed.exclude_slash_tmp else user.exclude_slash_tmp,
-        .exclude_slash_tmp_present = managed.exclude_slash_tmp_present or user.exclude_slash_tmp_present,
+        .writable_roots = managed.writable_roots orelse project.writable_roots orelse user.writable_roots,
+        .network_access = if (managed.network_access_present) managed.network_access else if (project.network_access_present) project.network_access else user.network_access,
+        .network_access_present = managed.network_access_present or project.network_access_present or user.network_access_present,
+        .exclude_tmpdir_env_var = if (managed.exclude_tmpdir_env_var_present) managed.exclude_tmpdir_env_var else if (project.exclude_tmpdir_env_var_present) project.exclude_tmpdir_env_var else user.exclude_tmpdir_env_var,
+        .exclude_tmpdir_env_var_present = managed.exclude_tmpdir_env_var_present or project.exclude_tmpdir_env_var_present or user.exclude_tmpdir_env_var_present,
+        .exclude_slash_tmp = if (managed.exclude_slash_tmp_present) managed.exclude_slash_tmp else if (project.exclude_slash_tmp_present) project.exclude_slash_tmp else user.exclude_slash_tmp,
+        .exclude_slash_tmp_present = managed.exclude_slash_tmp_present or project.exclude_slash_tmp_present or user.exclude_slash_tmp_present,
     };
 }
 
@@ -4695,6 +4730,8 @@ fn loadConfigReadProjectLayer(
     var model_reasoning_effort: ?config.ReasoningEffort = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
+    var sandbox_workspace_write = ConfigReadSandboxWorkspaceWrite{};
+    errdefer sandbox_workspace_write.deinit(allocator);
     if (project_config_bytes) |config_bytes| {
         if (try config.topLevelStringValue(allocator, config_bytes, "model")) |value| {
             model = value;
@@ -4725,6 +4762,8 @@ fn loadConfigReadProjectLayer(
             service_tier = try config.normalizeServiceTier(allocator, value);
             try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
         }
+        sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, config_bytes);
+        try appendConfigReadSandboxWorkspaceOriginKeys(allocator, &origin_keys, sandbox_workspace_write);
     }
     const owned_origin_keys = if (origin_keys.items.len > 0)
         try origin_keys.toOwnedSlice(allocator)
@@ -4741,6 +4780,7 @@ fn loadConfigReadProjectLayer(
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
+        .sandbox_workspace_write = sandbox_workspace_write,
     };
 }
 
@@ -4811,8 +4851,13 @@ fn appendConfigReadOrigins(
     }
     for (project_layers.items, 0..) |layer, index| {
         for (layer.origin_keys) |key| {
-            if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
-            if (configReadProjectSliceHasOriginKey(project_layers.items[0..index], key)) continue;
+            if (isConfigReadSandboxWorkspaceRootOriginKey(key)) {
+                if (if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) continue;
+                if (configReadProjectSliceHasSandboxWorkspaceWriteRoot(project_layers.items[0..index])) continue;
+            } else {
+                if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
+                if (configReadProjectSliceHasOriginKey(project_layers.items[0..index], key)) continue;
+            }
             try appendConfigReadProjectOrigin(allocator, result, &first, layer, key);
         }
     }
@@ -4824,7 +4869,7 @@ fn appendConfigReadOrigins(
         }
         try appendConfigReadUserToolsOrigins(allocator, result, &first, layer);
         try appendConfigReadUserAppsOrigins(allocator, result, &first, layer);
-        try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, managed_layer, layer);
+        try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, managed_layer, project_layers, layer);
     }
     try result.append(allocator, '}');
 }
@@ -4942,10 +4987,11 @@ fn appendConfigReadUserSandboxWorkspaceOrigins(
     result: *std.ArrayList(u8),
     first: *bool,
     managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
 ) !void {
     if (layer.sandbox_workspace_write.writable_roots) |roots| {
-        if (!(if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false)) {
+        if (!(if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) and !project_layers.hasSandboxWorkspaceWriteRoot()) {
             for (roots.items, 0..) |_, index| {
                 const key = try std.fmt.allocPrint(allocator, "sandbox_workspace_write.writable_roots.{d}", .{index});
                 defer allocator.free(key);
@@ -4954,17 +5000,17 @@ fn appendConfigReadUserSandboxWorkspaceOrigins(
         }
     }
     if (layer.sandbox_workspace_write.network_access_present) {
-        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.network_access") else false)) {
+        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.network_access") else false) and !project_layers.hasOriginKey("sandbox_workspace_write.network_access")) {
             try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.network_access");
         }
     }
     if (layer.sandbox_workspace_write.exclude_tmpdir_env_var_present) {
-        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.exclude_tmpdir_env_var") else false)) {
+        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.exclude_tmpdir_env_var") else false) and !project_layers.hasOriginKey("sandbox_workspace_write.exclude_tmpdir_env_var")) {
             try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.exclude_tmpdir_env_var");
         }
     }
     if (layer.sandbox_workspace_write.exclude_slash_tmp_present) {
-        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.exclude_slash_tmp") else false)) {
+        if (!(if (managed_layer) |managed| managed.hasOriginKey("sandbox_workspace_write.exclude_slash_tmp") else false) and !project_layers.hasOriginKey("sandbox_workspace_write.exclude_slash_tmp")) {
             try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.exclude_slash_tmp");
         }
     }
@@ -4977,6 +5023,17 @@ fn configReadProjectSliceHasOriginKey(layers: []const ConfigReadProjectLayer, ke
         }
     }
     return false;
+}
+
+fn configReadProjectSliceHasSandboxWorkspaceWriteRoot(layers: []const ConfigReadProjectLayer) bool {
+    for (layers) |layer| {
+        if (layer.sandbox_workspace_write.writable_roots != null) return true;
+    }
+    return false;
+}
+
+fn isConfigReadSandboxWorkspaceRootOriginKey(key: []const u8) bool {
+    return std.mem.startsWith(u8, key, "sandbox_workspace_write.writable_roots.");
 }
 
 fn appendConfigReadManagedOrigin(
@@ -5194,6 +5251,10 @@ fn appendConfigReadProjectLayerConfig(
         } else if (std.mem.eql(u8, key, "service_tier")) {
             if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, key, value);
         }
+    }
+    if (layer.sandbox_workspace_write.present) {
+        try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
+        try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
     }
     try result.append(allocator, '}');
 }
