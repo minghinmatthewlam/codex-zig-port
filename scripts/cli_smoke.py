@@ -819,7 +819,7 @@ def run_exec_provider_wire_api_smoke(binary: Path) -> None:
             check=False,
         )
         assert rejected.returncode != 0
-        assert "RemovedModelProviderChatWireApi" in rejected.stderr
+        assert '`wire_api = "chat"` is no longer supported' in rejected.stderr
         assert len(server.request_bodies) == 1
     finally:
         server.shutdown()

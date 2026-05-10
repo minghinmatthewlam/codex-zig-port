@@ -45,7 +45,17 @@ const CliOverrides = struct {
 
 pub fn main(init: std.process.Init) !void {
     mainInner(init) catch |err| {
-        std.debug.print("error: {s}\n", .{@errorName(err)});
+        switch (err) {
+            error.RemovedModelProviderChatWireApi => std.debug.print(
+                "error: `wire_api = \"chat\"` is no longer supported. Set `wire_api = \"responses\"` in your provider config.\n",
+                .{},
+            ),
+            error.InvalidModelProviderWireApi => std.debug.print(
+                "error: unsupported model provider `wire_api`; supported values: responses\n",
+                .{},
+            ),
+            else => std.debug.print("error: {s}\n", .{@errorName(err)}),
+        }
         std.process.exit(1);
     };
 }
