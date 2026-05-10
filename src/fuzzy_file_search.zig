@@ -43,10 +43,38 @@ const ScanState = struct {
     scanned_entries: usize = 0,
 };
 
+const CharClass = enum {
+    whitespace,
+    non_word,
+    delimiter,
+    lower,
+    upper,
+    number,
+};
+
 const FuzzyMatch = struct {
     score: u32,
     indices: []const u32,
 };
+
+const ScoreState = struct {
+    score: u32 = 0,
+    run_bonus: u32 = 0,
+    valid: bool = false,
+};
+
+const ParentIndexNone = std.math.maxInt(usize);
+
+const ScoreMatch = 16;
+const PenaltyGapStart = 3;
+const PenaltyGapExtension = 1;
+const BonusBoundary = ScoreMatch / 2;
+const BonusCamel123 = BonusBoundary - PenaltyGapStart;
+const BonusNonWord = BonusBoundary;
+const BonusConsecutive = PenaltyGapStart + PenaltyGapExtension;
+const BonusFirstCharMultiplier = 2;
+const BonusBoundaryWhite = BonusBoundary;
+const BonusBoundaryDelimiter = BonusBoundary + 1;
 
 pub fn search(allocator: std.mem.Allocator, query: []const u8, roots: []const []const u8) !Results {
     var matches = std.ArrayList(Match).empty;
@@ -175,69 +203,169 @@ fn shouldSkipName(name: []const u8) bool {
 }
 
 fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const u8) !?FuzzyMatch {
-    var indices = std.ArrayList(u32).empty;
-    errdefer indices.deinit(allocator);
+    if (query.len == 0) {
+        return .{
+            .score = 0,
+            .indices = try allocator.alloc(u32, 0),
+        };
+    }
+    if (query.len > path.len) return null;
 
-    var search_from: usize = 0;
-    for (query) |query_byte| {
+    const path_len = path.len;
+    const bonuses = try allocator.alloc(u32, path_len);
+    defer allocator.free(bonuses);
+    fillPathBonuses(path, bonuses);
+
+    var parents = try allocator.alloc(usize, query.len * path_len);
+    defer allocator.free(parents);
+    @memset(parents, ParentIndexNone);
+
+    var previous = try allocator.alloc(ScoreState, path_len);
+    defer allocator.free(previous);
+    @memset(previous, .{});
+
+    var current = try allocator.alloc(ScoreState, path_len);
+    defer allocator.free(current);
+
+    for (query, 0..) |query_byte, query_index| {
+        @memset(current, .{});
+        var best_gap_value: ?u32 = null;
+        var best_gap_index: usize = ParentIndexNone;
         const query_lower = std.ascii.toLower(query_byte);
-        var found_index: ?usize = null;
-        var index = search_from;
-        while (index < path.len) : (index += 1) {
-            if (std.ascii.toLower(path[index]) == query_lower) {
-                found_index = index;
-                break;
+
+        for (path, 0..) |path_byte, path_index| {
+            if (query_index > 0 and path_index >= 2 and previous[path_index - 2].valid) {
+                const candidate_gap_value = previous[path_index - 2].score + @as(u32, @intCast(path_index - 2));
+                if (best_gap_value == null or candidate_gap_value > best_gap_value.?) {
+                    best_gap_value = candidate_gap_value;
+                    best_gap_index = path_index - 2;
+                }
+            }
+
+            if (std.ascii.toLower(path_byte) != query_lower) continue;
+
+            const row_offset = query_index * path_len + path_index;
+            const base_score = ScoreMatch + bonuses[path_index];
+
+            if (query_index == 0) {
+                current[path_index] = .{
+                    .score = ScoreMatch + bonuses[path_index] * BonusFirstCharMultiplier,
+                    .run_bonus = bonuses[path_index],
+                    .valid = true,
+                };
+                continue;
+            }
+
+            var best: ScoreState = .{};
+            var parent: usize = ParentIndexNone;
+
+            if (path_index > 0 and previous[path_index - 1].valid) {
+                var consecutive_bonus = @max(previous[path_index - 1].run_bonus, BonusConsecutive);
+                if (bonuses[path_index] >= BonusBoundary and bonuses[path_index] > consecutive_bonus) {
+                    consecutive_bonus = bonuses[path_index];
+                }
+                best = .{
+                    .score = previous[path_index - 1].score + ScoreMatch + @max(consecutive_bonus, bonuses[path_index]),
+                    .run_bonus = consecutive_bonus,
+                    .valid = true,
+                };
+                parent = path_index - 1;
+            }
+
+            if (best_gap_value) |gap_value| {
+                const gap_penalty_offset = @as(u32, @intCast(path_index + 1));
+                const gap_adjustment = if (gap_value > gap_penalty_offset) gap_value - gap_penalty_offset else 0;
+                const gap_score = gap_adjustment + base_score;
+                if (!best.valid or gap_score > best.score) {
+                    best = .{
+                        .score = gap_score,
+                        .run_bonus = bonuses[path_index],
+                        .valid = true,
+                    };
+                    parent = best_gap_index;
+                }
+            }
+
+            if (best.valid) {
+                current[path_index] = best;
+                parents[row_offset] = parent;
             }
         }
-        const matched = found_index orelse return null;
-        try indices.append(allocator, @intCast(matched));
-        search_from = matched + 1;
+
+        const temp = previous;
+        previous = current;
+        current = temp;
+    }
+
+    var best_index: usize = ParentIndexNone;
+    var best_score: u32 = 0;
+    for (previous, 0..) |state, index| {
+        if (state.valid and (best_index == ParentIndexNone or state.score > best_score)) {
+            best_index = index;
+            best_score = state.score;
+        }
+    }
+
+    if (best_index == ParentIndexNone) return null;
+
+    var indices = try allocator.alloc(u32, query.len);
+    errdefer allocator.free(indices);
+    var query_index = query.len;
+    var path_index = best_index;
+    while (query_index > 0) {
+        query_index -= 1;
+        indices[query_index] = @intCast(path_index);
+        const parent = parents[query_index * path_len + path_index];
+        if (query_index == 0) break;
+        path_index = parent;
     }
 
     return .{
-        .score = scoreMatch(path, query, indices.items),
-        .indices = try indices.toOwnedSlice(allocator),
+        .score = best_score,
+        .indices = indices,
     };
 }
 
-fn scoreMatch(path: []const u8, query: []const u8, indices: []const u32) u32 {
-    var score: u32 = @intCast(query.len * 12);
-    const basename = std.fs.path.basename(path);
-    if (startsWithIgnoreCase(basename, query)) score += 40;
-    if (containsIgnoreCase(path, query)) score += 20;
-    if (indices.len > 0) {
-        const leading_gap = if (indices[0] > 16) 16 else indices[0];
-        score += 16 - leading_gap;
+fn fillPathBonuses(path: []const u8, bonuses: []u32) void {
+    var previous_class = CharClass.delimiter;
+    for (path, 0..) |byte, index| {
+        const class = charClass(byte);
+        bonuses[index] = bonusFor(previous_class, class);
+        previous_class = class;
+    }
+}
+
+fn bonusFor(previous_class: CharClass, class: CharClass) u32 {
+    switch (class) {
+        .lower, .upper, .number => switch (previous_class) {
+            .whitespace => return BonusBoundaryWhite,
+            .delimiter => return BonusBoundaryDelimiter,
+            .non_word => return BonusBoundary,
+            else => {},
+        },
+        else => {},
     }
 
-    var contiguous_bonus: u32 = 0;
-    for (indices[1..], 1..) |value, index| {
-        if (value == indices[index - 1] + 1) contiguous_bonus += 8;
+    if ((previous_class == .lower and class == .upper) or
+        (previous_class != .number and class == .number))
+    {
+        return BonusCamel123;
     }
-    score += contiguous_bonus;
 
-    const gap_penalty: u32 = if (indices.len == 0) 0 else penalty: {
-        const last_index: usize = @intCast(indices[indices.len - 1]);
-        const spread = last_index + 1 - indices.len;
-        const capped = @min(path.len, spread);
-        break :penalty @intCast(@min(capped, std.math.maxInt(u32)));
+    return switch (class) {
+        .whitespace => BonusBoundaryWhite,
+        .non_word => BonusNonWord,
+        else => 0,
     };
-    return if (score > gap_penalty) score - gap_penalty else 1;
 }
 
-fn startsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
-    if (prefix.len > value.len) return false;
-    return std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
-}
-
-fn containsIgnoreCase(value: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > value.len) return false;
-    var index: usize = 0;
-    while (index + needle.len <= value.len) : (index += 1) {
-        if (std.ascii.eqlIgnoreCase(value[index .. index + needle.len], needle)) return true;
-    }
-    return false;
+fn charClass(byte: u8) CharClass {
+    if (byte >= 'a' and byte <= 'z') return .lower;
+    if (byte >= 'A' and byte <= 'Z') return .upper;
+    if (byte >= '0' and byte <= '9') return .number;
+    if (std.ascii.isWhitespace(byte)) return .whitespace;
+    if (byte == '/') return .delimiter;
+    return .non_word;
 }
 
 fn matchLessThan(_: void, left: Match, right: Match) bool {
@@ -250,4 +378,23 @@ test "fuzzy match finds subsequence indices in relative path" {
     const matched = (try fuzzyMatchPath(allocator, "sub/abce", "abe")).?;
     defer allocator.free(matched.indices);
     try std.testing.expectEqualSlices(u32, &.{ 4, 5, 7 }, matched.indices);
+}
+
+test "fuzzy match uses Rust path scoring constants" {
+    const allocator = std.testing.allocator;
+
+    const prefix = (try fuzzyMatchPath(allocator, "abexy", "abe")).?;
+    defer allocator.free(prefix.indices);
+    try std.testing.expectEqual(@as(u32, 84), prefix.score);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, prefix.indices);
+
+    const nested = (try fuzzyMatchPath(allocator, "sub/abce", "abe")).?;
+    defer allocator.free(nested.indices);
+    try std.testing.expectEqual(@as(u32, 72), nested.score);
+    try std.testing.expectEqualSlices(u32, &.{ 4, 5, 7 }, nested.indices);
+
+    const spread = (try fuzzyMatchPath(allocator, "abcde", "abe")).?;
+    defer allocator.free(spread.indices);
+    try std.testing.expectEqual(@as(u32, 71), spread.score);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4 }, spread.indices);
 }
