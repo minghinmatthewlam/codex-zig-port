@@ -19,6 +19,13 @@ The `e2e` step launches the rebuilt `codex-zig` binary through the local smoke
 harness. For auth, app-server, or config work, use a temporary `CODEX_HOME`
 instead of your real `~/.codex` directory.
 
+## Public Hygiene
+
+Review `docs/oss-readiness.md` before changing repository metadata,
+distribution files, security guidance, or packaging. Keep `build.zig.zon`
+package paths limited to source, tests, scripts, and public documentation.
+Generated outputs and local work plans should stay ignored.
+
 ## Change Guidelines
 
 - Keep commits small and focused.
