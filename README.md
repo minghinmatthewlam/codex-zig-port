@@ -291,7 +291,8 @@ notifications for in-process file mutations, direct external file mutations,
 and unwatch cleanup,
 verifies app-server buffered `command/exec` for stdout/stderr capture, cwd and
 environment overrides, nonzero exit responses, supported `permissionProfile`
-execution shapes, managed permission-profile network enabled/restricted
+execution shapes using Rust-shaped `fileSystem` / `network.enabled` payloads,
+managed permission-profile network enabled/restricted
 behavior, sandbox-policy `networkAccess` enforcement, explicit unsupported
 streaming mode, workspace-write sandbox-policy temp-root defaults and exclude
 flags, implicit workspace-write temp-root defaults, required streaming

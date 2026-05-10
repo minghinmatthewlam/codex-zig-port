@@ -65,7 +65,8 @@ artifacts. Full Rust generator parity remains planned.
 Current app-server `command/exec` coverage includes buffered command execution
 plus Rust-shaped validation for streaming `processId` requirements and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
-accepts supported `permissionProfile` shapes for disabled, root-read-only,
+accepts supported Rust-shaped `permissionProfile` payloads using `fileSystem`,
+`network.enabled`, and `globScanMaxDepth` for disabled, root-read-only,
 managed-unrestricted, project-roots workspace-write, and absolute writable-root
 profiles, with command-cwd sandbox rooting for project roots. Unsupported
 profile entries return explicit not-implemented errors rather than weakening
