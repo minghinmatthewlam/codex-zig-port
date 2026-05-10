@@ -5074,7 +5074,8 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     defer io_instance.deinit();
 
     const run_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
-    const stdout_limit: std.Io.Limit = if (stream_output or disable_output_cap) .unlimited else .limited(output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP);
+    const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
+    const stdout_limit: std.Io.Limit = .unlimited;
     const stderr_limit: std.Io.Limit = stdout_limit;
     const timeout: std.Io.Timeout = if (disable_timeout)
         .none
@@ -5107,12 +5108,12 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
             process_id.?,
             result.stdout,
             result.stderr,
-            if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP,
+            effective_output_cap,
         );
     }
 
-    const stdout_response = if (stream_output) "" else result.stdout;
-    const stderr_response = if (stream_output) "" else result.stderr;
+    const stdout_response = if (stream_output) "" else commandExecCappedOutput(result.stdout, effective_output_cap);
+    const stderr_response = if (stream_output) "" else commandExecCappedOutput(result.stderr, effective_output_cap);
     const stdout_json = try std.json.Stringify.valueAlloc(allocator, stdout_response, .{});
     defer allocator.free(stdout_json);
     const stderr_json = try std.json.Stringify.valueAlloc(allocator, stderr_response, .{});
