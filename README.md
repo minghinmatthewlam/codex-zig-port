@@ -57,7 +57,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - handle app-server filesystem JSON-RPC methods for read, write, mkdir,
   metadata, directory listing, remove, and copy
 - answer app-server model catalog and provider-capability JSON-RPC methods
-- list app-server experimental feature metadata and effective enablement
+- list app-server experimental feature metadata and patch process-local runtime
+  feature enablement
 - proxy stdio JSON-RPC to the app-server Unix control socket with
   `app-server proxy`
 - accept Rust-compatible app-server `--analytics-default-enabled` and websocket
@@ -130,9 +131,9 @@ hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
 directory listing, copy, and remove behavior against a temporary directory,
 checks app-server model catalog and provider-capability RPCs against temporary
-config homes, checks app-server experimental feature listing against temporary
-config homes, and checks app-server flag compatibility for analytics defaults
-plus websocket auth parsing. Run
+config homes, checks app-server experimental feature listing and runtime
+enablement patching against temporary config homes, and checks app-server flag
+compatibility for analytics defaults plus websocket auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
