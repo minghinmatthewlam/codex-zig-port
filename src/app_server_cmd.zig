@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const account_nudge = @import("account_nudge.zig");
 const account_rate_limits = @import("account_rate_limits.zig");
 const auth_mod = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
@@ -1339,6 +1340,7 @@ fn isAccountMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "account/login/cancel") or
         std.mem.eql(u8, method, "account/login/start") or
         std.mem.eql(u8, method, "account/rateLimits/read") or
+        std.mem.eql(u8, method, "account/sendAddCreditsNudgeEmail") or
         std.mem.eql(u8, method, "account/logout");
 }
 
@@ -1359,6 +1361,9 @@ fn handleAccountMethod(
     }
     if (std.mem.eql(u8, method, "account/rateLimits/read")) {
         return handleAccountRateLimitsRead(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "account/sendAddCreditsNudgeEmail")) {
+        return handleSendAddCreditsNudgeEmail(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "account/logout")) {
         return handleAccountLogout(allocator, id_value, params_value);
@@ -1472,6 +1477,41 @@ fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.
     const result = account_rate_limits.fetchJson(allocator, cfg.chatgpt_base_url, credentials) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/rateLimits/read failed to fetch codex rate limits", err);
     };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "account/sendAddCreditsNudgeEmail params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "account/sendAddCreditsNudgeEmail params must be an object");
+
+    const credit_type_value = params.object.get("creditType") orelse return renderJsonRpcError(allocator, id_value, -32602, "creditType must be credits or usage_limit");
+    if (credit_type_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "creditType must be credits or usage_limit");
+    const credit_type = credit_type_value.string;
+    if (!std.mem.eql(u8, credit_type, "credits") and !std.mem.eql(u8, credit_type, "usage_limit")) {
+        return renderJsonRpcError(allocator, id_value, -32602, "creditType must be credits or usage_limit");
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/sendAddCreditsNudgeEmail failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "codex account authentication required to notify workspace owner"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/sendAddCreditsNudgeEmail failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+
+    switch (credentials.mode) {
+        .chatgpt, .agent_identity => {},
+        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to notify workspace owner"),
+    }
+
+    const status = account_nudge.sendAddCreditsNudgeEmail(allocator, cfg.chatgpt_base_url, credentials, credit_type) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/sendAddCreditsNudgeEmail failed to notify workspace owner", err);
+    };
+    const result = try std.fmt.allocPrint(allocator, "{{\"status\":\"{s}\"}}", .{status.jsonLabel()});
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
