@@ -350,6 +350,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
             continue;
         }
+        if (!end_options and std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
+            continue;
+        }
         if (!end_options and std.mem.eql(u8, arg, "--sandbox")) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
@@ -396,6 +400,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
                 parsed.last_message_file = null;
             }
             parsed.last_message_file = try allocator.dupe(u8, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--output-last-message=")) {
+            if (parsed.last_message_file) |existing| {
+                allocator.free(existing);
+                parsed.last_message_file = null;
+            }
+            parsed.last_message_file = try allocator.dupe(u8, arg["--output-last-message=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--output-schema")) {
@@ -725,12 +737,13 @@ test "exec args keep review literal after end options" {
 
 test "exec args parse approval and sandbox options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--approval-policy", "never", "--sandbox", "read-only", "say", "hello" };
+    const argv = [_][]const u8{ "--approval-policy=never", "--sandbox", "read-only", "--output-last-message=last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(config.ApprovalPolicy.never, parsed.approval_policy.?);
     try std.testing.expectEqual(config.SandboxMode.read_only, parsed.sandbox_mode.?);
+    try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 
