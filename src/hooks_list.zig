@@ -16,6 +16,20 @@ pub const Source = enum {
     }
 };
 
+const TrustStatus = enum {
+    untrusted,
+    trusted,
+    modified,
+
+    fn label(self: TrustStatus) []const u8 {
+        return switch (self) {
+            .untrusted => "untrusted",
+            .trusted => "trusted",
+            .modified => "modified",
+        };
+    }
+};
+
 pub const HookEvent = enum {
     pre_tool_use,
     permission_request,
@@ -89,7 +103,9 @@ pub const Hook = struct {
     source_path: []const u8,
     source: Source,
     display_order: i64,
+    enabled: bool,
     current_hash: []const u8,
+    trust_status: TrustStatus,
 
     fn deinit(self: Hook, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
@@ -98,6 +114,33 @@ pub const Hook = struct {
         if (self.status_message) |value| allocator.free(value);
         allocator.free(self.source_path);
         allocator.free(self.current_hash);
+    }
+};
+
+const HookState = struct {
+    key: []const u8,
+    enabled: ?bool = null,
+    trusted_hash: ?[]const u8 = null,
+
+    fn deinit(self: HookState, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        if (self.trusted_hash) |value| allocator.free(value);
+    }
+};
+
+const HookStates = struct {
+    entries: []HookState = &.{},
+
+    fn deinit(self: HookStates, allocator: std.mem.Allocator) void {
+        for (self.entries) |entry| entry.deinit(allocator);
+        allocator.free(self.entries);
+    }
+
+    fn find(self: HookStates, key: []const u8) ?HookState {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key, key)) return entry;
+        }
+        return null;
     }
 };
 
@@ -205,11 +248,13 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
 
     const user_config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(user_config_path);
-    try appendHooksFromConfig(allocator, user_config_path, .user, &hooks, &warnings, &errors, &display_order);
+    const hook_states = try loadHookStatesFromConfigFile(allocator, user_config_path);
+    defer hook_states.deinit(allocator);
+    try appendHooksFromConfig(allocator, user_config_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
 
     const project_config_path = try std.fs.path.join(allocator, &.{ cwd, ".codex", "config.toml" });
     defer allocator.free(project_config_path);
-    try appendHooksFromConfig(allocator, project_config_path, .project, &hooks, &warnings, &errors, &display_order);
+    try appendHooksFromConfig(allocator, project_config_path, .project, hook_states, &hooks, &warnings, &errors, &display_order);
 
     const owned_cwd = try allocator.dupe(u8, cwd);
     errdefer allocator.free(owned_cwd);
@@ -241,6 +286,7 @@ fn appendHooksFromConfig(
     allocator: std.mem.Allocator,
     path: []const u8,
     source: Source,
+    hook_states: HookStates,
     hooks: *std.ArrayList(Hook),
     warnings: *std.ArrayList([]const u8),
     errors: *std.ArrayList(HookError),
@@ -256,7 +302,7 @@ fn appendHooksFromConfig(
 
     const source_path = try canonicalPathOrCopy(allocator, path);
     defer allocator.free(source_path);
-    try parseConfigHooks(allocator, contents, source_path, source, hooks, warnings, display_order);
+    try parseConfigHooks(allocator, contents, source_path, source, hook_states, hooks, warnings, display_order);
 }
 
 fn parseConfigHooks(
@@ -264,6 +310,7 @@ fn parseConfigHooks(
     bytes: []const u8,
     source_path: []const u8,
     source: Source,
+    hook_states: HookStates,
     hooks: *std.ArrayList(Hook),
     warnings: *std.ArrayList([]const u8),
     display_order: *i64,
@@ -281,7 +328,7 @@ fn parseConfigHooks(
         if (line.len == 0 or line[0] == '#') continue;
 
         if (parseHookHeader(line)) |header| {
-            try flushPartialHook(allocator, source_path, source, &current_group, &current_hook, hooks, warnings, display_order);
+            try flushPartialHook(allocator, source_path, source, hook_states, &current_group, &current_hook, hooks, warnings, display_order);
             if (header.kind == .group) {
                 if (current_group) |*group| group.deinit(allocator);
                 current_group = startGroup(header.event_name, &event_group_counts);
@@ -298,7 +345,7 @@ fn parseConfigHooks(
         }
 
         if (isTomlHeader(line)) {
-            try flushPartialHook(allocator, source_path, source, &current_group, &current_hook, hooks, warnings, display_order);
+            try flushPartialHook(allocator, source_path, source, hook_states, &current_group, &current_hook, hooks, warnings, display_order);
             if (current_group) |*group| group.deinit(allocator);
             current_group = null;
             section = .none;
@@ -319,7 +366,7 @@ fn parseConfigHooks(
         }
     }
 
-    try flushPartialHook(allocator, source_path, source, &current_group, &current_hook, hooks, warnings, display_order);
+    try flushPartialHook(allocator, source_path, source, hook_states, &current_group, &current_hook, hooks, warnings, display_order);
 }
 
 const HookHeader = struct {
@@ -385,6 +432,7 @@ fn flushPartialHook(
     allocator: std.mem.Allocator,
     source_path: []const u8,
     source: Source,
+    hook_states: HookStates,
     current_group: *?PartialGroup,
     current_hook: *?PartialHook,
     hooks: *std.ArrayList(Hook),
@@ -427,6 +475,9 @@ fn flushPartialHook(
     errdefer allocator.free(key);
     const current_hash = try commandHookHash(allocator, group.event_name, group.matcher, command, timeout_sec, hook.status_message);
     errdefer allocator.free(current_hash);
+    const hook_state = hook_states.find(key);
+    const enabled = if (hook_state) |state| state.enabled orelse true else true;
+    const trust_status = hookTrustStatus(current_hash, if (hook_state) |state| state.trusted_hash else null);
     const owned_matcher = if (group.matcher) |matcher| try allocator.dupe(u8, matcher) else null;
     errdefer if (owned_matcher) |matcher| allocator.free(matcher);
     const owned_command = try allocator.dupe(u8, command);
@@ -446,7 +497,9 @@ fn flushPartialHook(
         .source_path = owned_source_path,
         .source = source,
         .display_order = display_order.*,
+        .enabled = enabled,
         .current_hash = current_hash,
+        .trust_status = trust_status,
     };
     errdefer owned.deinit(allocator);
     try hooks.append(allocator, owned);
@@ -475,6 +528,113 @@ fn commandHookHash(
     try appendJsonStringOrNull(allocator, &canonical, matcher);
     try canonical.append(allocator, '}');
     return sha256VersionAlloc(allocator, canonical.items);
+}
+
+fn hookTrustStatus(current_hash: []const u8, trusted_hash: ?[]const u8) TrustStatus {
+    const trusted = trusted_hash orelse return .untrusted;
+    if (std.mem.eql(u8, trusted, current_hash)) return .trusted;
+    return .modified;
+}
+
+fn loadHookStatesFromConfigFile(allocator: std.mem.Allocator, path: []const u8) !HookStates {
+    const bytes = config.readConfigTomlFile(allocator, path) catch return .{};
+    defer if (bytes) |value| allocator.free(value);
+    return try parseHookStates(allocator, bytes orelse "");
+}
+
+fn parseHookStates(allocator: std.mem.Allocator, bytes: []const u8) !HookStates {
+    var states = std.ArrayList(HookState).empty;
+    errdefer {
+        for (states.items) |state| state.deinit(allocator);
+        states.deinit(allocator);
+    }
+
+    var in_hooks = false;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_hooks = std.mem.eql(u8, line, "[hooks]");
+            continue;
+        }
+        if (!in_hooks) continue;
+        if (tomlRawValueForKey(line, "state")) |raw_state| {
+            try appendInlineHookStates(allocator, &states, raw_state);
+        }
+    }
+
+    return .{ .entries = try states.toOwnedSlice(allocator) };
+}
+
+fn appendInlineHookStates(allocator: std.mem.Allocator, states: *std.ArrayList(HookState), raw: []const u8) !void {
+    var index: usize = 0;
+    skipTomlWhitespace(raw, &index);
+    if (index >= raw.len or raw[index] != '{') return;
+    index += 1;
+
+    while (index < raw.len) {
+        skipTomlWhitespaceAndCommas(raw, &index);
+        if (index >= raw.len or raw[index] == '}') return;
+
+        const key = (try parseTomlStringAt(allocator, raw, &index)) orelse return;
+        errdefer allocator.free(key);
+        skipTomlWhitespace(raw, &index);
+        if (index >= raw.len or raw[index] != '=') {
+            allocator.free(key);
+            return;
+        }
+        index += 1;
+
+        var state = try parseInlineHookStateValue(allocator, raw, &index);
+        errdefer state.deinit(allocator);
+        if (state.enabled == null and state.trusted_hash == null) {
+            state.deinit(allocator);
+            allocator.free(key);
+            continue;
+        }
+        state.key = key;
+        try states.append(allocator, state);
+    }
+}
+
+fn parseInlineHookStateValue(allocator: std.mem.Allocator, raw: []const u8, index: *usize) !HookState {
+    var state = HookState{ .key = &.{} };
+    errdefer state.deinit(allocator);
+    skipTomlWhitespace(raw, index);
+    if (index.* >= raw.len or raw[index.*] != '{') return state;
+    index.* += 1;
+
+    while (index.* < raw.len) {
+        skipTomlWhitespaceAndCommas(raw, index);
+        if (index.* >= raw.len) return state;
+        if (raw[index.*] == '}') {
+            index.* += 1;
+            return state;
+        }
+
+        const field = (try parseTomlStringAt(allocator, raw, index)) orelse return state;
+        defer allocator.free(field);
+        skipTomlWhitespace(raw, index);
+        if (index.* >= raw.len or raw[index.*] != '=') return state;
+        index.* += 1;
+        skipTomlWhitespace(raw, index);
+
+        if (std.mem.eql(u8, field, "enabled")) {
+            if (parseTomlBoolAt(raw, index)) |enabled| state.enabled = enabled else skipTomlInlineValue(raw, index);
+        } else if (std.mem.eql(u8, field, "trusted_hash") or std.mem.eql(u8, field, "trustedHash")) {
+            const trusted_hash = (try parseTomlStringAt(allocator, raw, index)) orelse {
+                skipTomlInlineValue(raw, index);
+                continue;
+            };
+            if (state.trusted_hash) |previous| allocator.free(previous);
+            state.trusted_hash = trusted_hash;
+        } else {
+            skipTomlInlineValue(raw, index);
+        }
+    }
+
+    return state;
 }
 
 pub fn renderResponse(allocator: std.mem.Allocator, result: Result) ![]const u8 {
@@ -529,9 +689,13 @@ fn appendHookJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), hook: H
     try appendJsonString(allocator, out, hook.source.label());
     try out.appendSlice(allocator, ",\"pluginId\":null,\"displayOrder\":");
     try appendDecimal(allocator, out, hook.display_order);
-    try out.appendSlice(allocator, ",\"enabled\":true,\"isManaged\":false,\"currentHash\":");
+    try out.appendSlice(allocator, ",\"enabled\":");
+    try out.appendSlice(allocator, if (hook.enabled) "true" else "false");
+    try out.appendSlice(allocator, ",\"isManaged\":false,\"currentHash\":");
     try appendJsonString(allocator, out, hook.current_hash);
-    try out.appendSlice(allocator, ",\"trustStatus\":\"untrusted\"}");
+    try out.appendSlice(allocator, ",\"trustStatus\":");
+    try appendJsonString(allocator, out, hook.trust_status.label());
+    try out.append(allocator, '}');
 }
 
 fn appendErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), err: HookError) !void {
@@ -563,11 +727,15 @@ fn isTomlHeader(line: []const u8) bool {
 }
 
 fn tomlStringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
+    const rhs = tomlRawValueForKey(line, key) orelse return null;
+    return parseTomlStringLiteral(allocator, rhs);
+}
+
+fn tomlRawValueForKey(line: []const u8, key: []const u8) ?[]const u8 {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
-    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
-    return parseTomlStringLiteral(allocator, rhs);
+    return std.mem.trim(u8, line[eq + 1 ..], " \t");
 }
 
 fn tomlBoolValueForKey(line: []const u8, key: []const u8) ?bool {
@@ -597,24 +765,31 @@ fn tomlUnsignedValueForKey(line: []const u8, key: []const u8) ?u64 {
 }
 
 fn parseTomlStringLiteral(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
-    const rhs = std.mem.trim(u8, raw, " \t\r");
-    if (rhs.len < 2 or rhs[0] != '"') return null;
+    var index: usize = 0;
+    return parseTomlStringAt(allocator, raw, &index);
+}
 
+fn parseTomlStringAt(allocator: std.mem.Allocator, raw: []const u8, index: *usize) !?[]const u8 {
+    skipTomlWhitespace(raw, index);
+    if (index.* >= raw.len or raw[index.*] != '"') return null;
+    index.* += 1;
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    var index: usize = 1;
-    while (index < rhs.len) : (index += 1) {
-        const byte = rhs[index];
-        if (byte == '"') return try output.toOwnedSlice(allocator);
+    while (index.* < raw.len) : (index.* += 1) {
+        const byte = raw[index.*];
+        if (byte == '"') {
+            index.* += 1;
+            return try output.toOwnedSlice(allocator);
+        }
         if (byte != '\\') {
             try output.append(allocator, byte);
             continue;
         }
 
-        index += 1;
-        if (index >= rhs.len) return error.InvalidTomlString;
-        const escaped: u8 = switch (rhs[index]) {
+        index.* += 1;
+        if (index.* >= raw.len) return error.InvalidTomlString;
+        const escaped: u8 = switch (raw[index.*]) {
             '"' => '"',
             '\\' => '\\',
             'n' => '\n',
@@ -626,6 +801,53 @@ fn parseTomlStringLiteral(allocator: std.mem.Allocator, raw: []const u8) !?[]con
     }
 
     return error.InvalidTomlString;
+}
+
+fn parseTomlBoolAt(raw: []const u8, index: *usize) ?bool {
+    skipTomlWhitespace(raw, index);
+    if (std.mem.startsWith(u8, raw[index.*..], "true")) {
+        index.* += "true".len;
+        return true;
+    }
+    if (std.mem.startsWith(u8, raw[index.*..], "false")) {
+        index.* += "false".len;
+        return false;
+    }
+    return null;
+}
+
+fn skipTomlInlineValue(raw: []const u8, index: *usize) void {
+    var depth: usize = 0;
+    var in_string = false;
+    while (index.* < raw.len) : (index.* += 1) {
+        const byte = raw[index.*];
+        if (in_string) {
+            if (byte == '\\' and index.* + 1 < raw.len) {
+                index.* += 1;
+            } else if (byte == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (byte) {
+            '"' => in_string = true,
+            '{', '[' => depth += 1,
+            '}', ']' => {
+                if (depth == 0) return;
+                depth -= 1;
+            },
+            ',' => if (depth == 0) return,
+            else => {},
+        }
+    }
+}
+
+fn skipTomlWhitespace(raw: []const u8, index: *usize) void {
+    while (index.* < raw.len and (raw[index.*] == ' ' or raw[index.*] == '\t' or raw[index.*] == '\r' or raw[index.*] == '\n')) : (index.* += 1) {}
+}
+
+fn skipTomlWhitespaceAndCommas(raw: []const u8, index: *usize) void {
+    while (index.* < raw.len and (raw[index.*] == ' ' or raw[index.*] == '\t' or raw[index.*] == '\r' or raw[index.*] == '\n' or raw[index.*] == ',')) : (index.* += 1) {}
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
@@ -807,4 +1029,53 @@ test "hooks list honors disabled hooks feature" {
     defer result.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), result.entries.len);
     try std.testing.expectEqual(@as(usize, 0), result.entries[0].hooks.len);
+}
+
+test "hooks list applies user hook state" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "codex-home");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "repo");
+
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    defer allocator.free(config_path);
+    const cwd = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(cwd);
+    const hook_key = try std.fmt.allocPrint(allocator, "{s}:pre_tool_use:0:0", .{config_path});
+    defer allocator.free(hook_key);
+    const current_hash = try commandHookHash(allocator, .pre_tool_use, "Bash", "echo stateful", 5, null);
+    defer allocator.free(current_hash);
+    const config_bytes = try std.fmt.allocPrint(
+        allocator,
+        \\[hooks]
+        \\state = {{"{s}" = {{"enabled" = false, "trusted_hash" = "{s}"}}}}
+        \\
+        \\[[hooks.PreToolUse]]
+        \\matcher = "Bash"
+        \\
+        \\[[hooks.PreToolUse.hooks]]
+        \\type = "command"
+        \\command = "echo stateful"
+        \\timeout = 5
+        \\
+    ,
+        .{ hook_key, current_hash },
+    );
+    defer allocator.free(config_bytes);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/config.toml",
+        .data = config_bytes,
+    });
+
+    var result = try list(allocator, codex_home, &.{cwd});
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.entries[0].hooks.len);
+    const hook = result.entries[0].hooks[0];
+    try std.testing.expectEqual(false, hook.enabled);
+    try std.testing.expectEqual(TrustStatus.trusted, hook.trust_status);
 }
