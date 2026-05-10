@@ -80,23 +80,37 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
+    var sandbox_profile: ?config.SandboxPermissionProfile = null;
+    defer if (sandbox_profile) |*profile| profile.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (parsed.mode) |mode| cfg.sandbox_mode = mode;
     if (parsed.permissions_profile) |profile| {
-        cfg.sandbox_mode = try resolveBuiltInPermissionProfile(profile);
+        sandbox_profile = try config.loadSandboxPermissionProfile(allocator, profile);
+        cfg.sandbox_mode = sandbox_profile.?.mode;
     }
 
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
 
-    const additional_writable_roots = try cli_utils.mergeStringSlices(
+    const profile_writable_roots = if (sandbox_profile) |profile|
+        profile.additional_writable_roots.items
+    else
+        &.{};
+    const option_and_profile_roots = try cli_utils.mergeStringSlices(
         allocator,
         options.additional_writable_roots,
+        profile_writable_roots,
+    );
+    defer allocator.free(option_and_profile_roots);
+    const additional_writable_roots = try cli_utils.mergeStringSlices(
+        allocator,
+        option_and_profile_roots,
         parsed.additional_writable_roots.items,
     );
     defer allocator.free(additional_writable_roots);
 
-    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots);
+    const include_cwd_write_root = if (sandbox_profile) |profile| profile.include_cwd_write_root else true;
+    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root);
 }
 
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
@@ -207,6 +221,7 @@ fn runCommand(
     argv: []const []const u8,
     mode: config.SandboxMode,
     additional_writable_roots: []const []const u8,
+    include_cwd_write_root: bool,
 ) !void {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -214,7 +229,7 @@ fn runCommand(
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox.shouldSandbox(mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgv(allocator, mode, argv, additional_writable_roots);
+        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(allocator, mode, argv, additional_writable_roots, null, include_cwd_write_root);
         break :blk sandboxed_argv.?.argv;
     } else argv;
 
@@ -233,13 +248,6 @@ fn runCommand(
         .exited => |code| if (code != 0) std.process.exit(@intCast(@min(code, 255))),
         else => return error.SandboxedCommandTerminated,
     }
-}
-
-fn resolveBuiltInPermissionProfile(profile: []const u8) !config.SandboxMode {
-    if (std.mem.eql(u8, profile, ":read-only")) return .read_only;
-    if (std.mem.eql(u8, profile, ":workspace")) return .workspace_write;
-    if (std.mem.eql(u8, profile, ":danger-no-sandbox")) return .danger_full_access;
-    return error.SandboxPermissionProfileUnsupported;
 }
 
 fn dupeRemaining(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
@@ -274,7 +282,7 @@ fn printMacosHelp() void {
         \\
         \\Options:
         \\  --permissions-profile NAME
-        \\                      Apply a Rust built-in profile: :read-only, :workspace, or :danger-no-sandbox
+        \\                      Apply :read-only, :workspace, :danger-no-sandbox, or a supported custom [permissions] profile
         \\  --include-managed-config
         \\                      Recognize managed config with --permissions-profile
         \\  --allow-unix-socket PATH
@@ -336,10 +344,17 @@ test "sandbox args require permission profile for profile controls" {
 }
 
 test "sandbox permission profile resolver supports Rust built-ins" {
-    try std.testing.expectEqual(config.SandboxMode.read_only, try resolveBuiltInPermissionProfile(":read-only"));
-    try std.testing.expectEqual(config.SandboxMode.workspace_write, try resolveBuiltInPermissionProfile(":workspace"));
-    try std.testing.expectEqual(config.SandboxMode.danger_full_access, try resolveBuiltInPermissionProfile(":danger-no-sandbox"));
-    try std.testing.expectError(error.SandboxPermissionProfileUnsupported, resolveBuiltInPermissionProfile("custom-profile"));
+    const allocator = std.testing.allocator;
+    var read_only = (try config.loadSandboxPermissionProfile(allocator, ":read-only"));
+    defer read_only.deinit(allocator);
+    var workspace = (try config.loadSandboxPermissionProfile(allocator, ":workspace"));
+    defer workspace.deinit(allocator);
+    var danger = (try config.loadSandboxPermissionProfile(allocator, ":danger-no-sandbox"));
+    defer danger.deinit(allocator);
+
+    try std.testing.expectEqual(config.SandboxMode.read_only, read_only.mode);
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, workspace.mode);
+    try std.testing.expectEqual(config.SandboxMode.danger_full_access, danger.mode);
 }
 
 test "sandbox macos args parse help" {

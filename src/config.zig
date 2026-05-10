@@ -161,6 +161,16 @@ pub const RuntimeOverrides = struct {
     tui_alternate_screen: ?AltScreenMode = null,
 };
 
+pub const SandboxPermissionProfile = struct {
+    mode: SandboxMode,
+    additional_writable_roots: StringList,
+    include_cwd_write_root: bool = true,
+
+    pub fn deinit(self: *SandboxPermissionProfile, allocator: std.mem.Allocator) void {
+        self.additional_writable_roots.deinit(allocator);
+    }
+};
+
 pub const AltScreenMode = enum {
     auto,
     always,
@@ -300,6 +310,34 @@ pub fn applyRawConfigOverride(
     } else if (std.mem.eql(u8, key, "tui.alternate_screen") or std.mem.eql(u8, key, "tui_alternate_screen")) {
         runtime_overrides.tui_alternate_screen = try AltScreenMode.parse(value);
     }
+}
+
+pub fn loadSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []const u8) !SandboxPermissionProfile {
+    if (try resolveBuiltInSandboxPermissionProfile(allocator, profile)) |builtin_profile| return builtin_profile;
+
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const bytes = config_bytes orelse return error.SandboxPermissionProfileUnsupported;
+
+    return (ConfigView{ .bytes = bytes }).resolveCustomSandboxPermissionProfile(allocator, profile);
+}
+
+fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []const u8) !?SandboxPermissionProfile {
+    const mode: SandboxMode = if (std.mem.eql(u8, profile, ":read-only"))
+        .read_only
+    else if (std.mem.eql(u8, profile, ":workspace"))
+        .workspace_write
+    else if (std.mem.eql(u8, profile, ":danger-no-sandbox"))
+        .danger_full_access
+    else
+        return null;
+
+    return .{
+        .mode = mode,
+        .additional_writable_roots = .{ .items = try allocator.alloc([]const u8, 0) },
+    };
 }
 
 fn trimConfigOverrideValue(raw: []const u8) []const u8 {
@@ -1598,6 +1636,50 @@ const ConfigView = struct {
         return null;
     }
 
+    fn resolveCustomSandboxPermissionProfile(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        profile: []const u8,
+    ) !SandboxPermissionProfile {
+        var state = CustomSandboxPermissionProfileState{};
+        errdefer state.deinit(allocator);
+
+        var saw_filesystem = false;
+        var saw_network = false;
+        var network_enabled = false;
+        var network_unsupported = false;
+        var in_filesystem = false;
+        var in_network = false;
+
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_filesystem = isPermissionsProfileSection(line, profile, "filesystem");
+                in_network = isPermissionsProfileSection(line, profile, "network");
+                saw_filesystem = saw_filesystem or in_filesystem;
+                saw_network = saw_network or in_network;
+                continue;
+            }
+
+            if (in_filesystem) {
+                try recordSandboxFilesystemLine(allocator, &state, line);
+            } else if (in_network) {
+                if (boolValueForKey(line, "enabled")) |enabled| {
+                    network_enabled = enabled;
+                } else if (tomlAssignmentKey(line) != null) {
+                    network_unsupported = true;
+                }
+            }
+        }
+
+        if (!saw_filesystem or !saw_network or !network_enabled or network_unsupported) {
+            return error.SandboxPermissionProfileUnsupported;
+        }
+        return state.toSandboxPermissionProfile(allocator);
+    }
+
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
@@ -1608,6 +1690,205 @@ const ConfigView = struct {
         return false;
     }
 };
+
+const SandboxFilesystemAccess = enum {
+    read,
+    write,
+    none,
+};
+
+const CustomSandboxPermissionProfileState = struct {
+    root_read: bool = false,
+    project_roots_write: bool = false,
+    unsupported: bool = false,
+    additional_writable_roots: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *CustomSandboxPermissionProfileState, allocator: std.mem.Allocator) void {
+        for (self.additional_writable_roots.items) |root| allocator.free(root);
+        self.additional_writable_roots.deinit(allocator);
+    }
+
+    fn toSandboxPermissionProfile(
+        self: *CustomSandboxPermissionProfileState,
+        allocator: std.mem.Allocator,
+    ) !SandboxPermissionProfile {
+        if (self.unsupported or !self.root_read) return error.SandboxPermissionProfileUnsupported;
+
+        const mode: SandboxMode = if (self.project_roots_write or self.additional_writable_roots.items.len > 0)
+            .workspace_write
+        else
+            .read_only;
+        return .{
+            .mode = mode,
+            .additional_writable_roots = .{ .items = try self.additional_writable_roots.toOwnedSlice(allocator) },
+            .include_cwd_write_root = self.project_roots_write,
+        };
+    }
+};
+
+fn recordSandboxFilesystemLine(
+    allocator: std.mem.Allocator,
+    state: *CustomSandboxPermissionProfileState,
+    line: []const u8,
+) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const raw_key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (raw_key.len == 0) return;
+
+    const path = try parseTomlKey(allocator, raw_key);
+    defer allocator.free(path);
+
+    if (try parseTomlString(allocator, rhs)) |raw_access| {
+        defer allocator.free(raw_access);
+        const access = parseSandboxFilesystemAccess(raw_access) orelse {
+            state.unsupported = true;
+            return;
+        };
+        try recordSandboxFilesystemAccess(allocator, state, path, null, access);
+        return;
+    }
+
+    const inline_contents = try parseInlineTableContents(allocator, rhs) orelse {
+        state.unsupported = true;
+        return;
+    };
+    defer allocator.free(inline_contents);
+    var scoped = (try parseStringMapInlineTable(allocator, inline_contents)) orelse {
+        state.unsupported = true;
+        return;
+    };
+    defer scoped.deinit(allocator);
+    for (scoped.entries) |entry| {
+        const access = parseSandboxFilesystemAccess(entry.value) orelse {
+            state.unsupported = true;
+            continue;
+        };
+        try recordSandboxFilesystemAccess(allocator, state, path, entry.key, access);
+    }
+}
+
+fn recordSandboxFilesystemAccess(
+    allocator: std.mem.Allocator,
+    state: *CustomSandboxPermissionProfileState,
+    path: []const u8,
+    subpath: ?[]const u8,
+    access: SandboxFilesystemAccess,
+) !void {
+    switch (access) {
+        .none => {
+            state.unsupported = true;
+        },
+        .read => {
+            if (subpath == null and std.mem.eql(u8, path, ":root")) {
+                state.root_read = true;
+            }
+        },
+        .write => {
+            if (subpath) |child| {
+                try recordScopedSandboxWrite(allocator, state, path, child);
+            } else if (std.mem.eql(u8, path, ":root")) {
+                state.unsupported = true;
+            } else if (std.mem.eql(u8, path, ":project_roots")) {
+                state.project_roots_write = true;
+            } else if (std.fs.path.isAbsolute(path)) {
+                try appendWritableRoot(allocator, state, path);
+            } else {
+                state.unsupported = true;
+            }
+        },
+    }
+}
+
+fn recordScopedSandboxWrite(
+    allocator: std.mem.Allocator,
+    state: *CustomSandboxPermissionProfileState,
+    path: []const u8,
+    subpath: []const u8,
+) !void {
+    if (!isSafeRelativeTomlSubpath(subpath)) {
+        state.unsupported = true;
+        return;
+    }
+    if (std.mem.eql(u8, path, ":project_roots")) {
+        if (std.mem.eql(u8, subpath, ".")) {
+            state.project_roots_write = true;
+        } else {
+            try appendWritableRoot(allocator, state, subpath);
+        }
+        return;
+    }
+    if (std.fs.path.isAbsolute(path)) {
+        const root = if (std.mem.eql(u8, subpath, "."))
+            try allocator.dupe(u8, path)
+        else
+            try std.fs.path.join(allocator, &.{ path, subpath });
+        errdefer allocator.free(root);
+        try state.additional_writable_roots.append(allocator, root);
+        return;
+    }
+    state.unsupported = true;
+}
+
+fn appendWritableRoot(
+    allocator: std.mem.Allocator,
+    state: *CustomSandboxPermissionProfileState,
+    root: []const u8,
+) !void {
+    const owned = try allocator.dupe(u8, root);
+    errdefer allocator.free(owned);
+    try state.additional_writable_roots.append(allocator, owned);
+}
+
+fn parseSandboxFilesystemAccess(value: []const u8) ?SandboxFilesystemAccess {
+    if (std.mem.eql(u8, value, "read")) return .read;
+    if (std.mem.eql(u8, value, "write")) return .write;
+    if (std.mem.eql(u8, value, "none")) return .none;
+    return null;
+}
+
+fn parseInlineTableContents(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
+    if (rhs.len < 2 or rhs[0] != '{') return null;
+    const end = std.mem.lastIndexOfScalar(u8, rhs, '}') orelse return error.InvalidTomlInlineTable;
+    return try allocator.dupe(u8, std.mem.trim(u8, rhs[1..end], " \t\r\n"));
+}
+
+fn isSafeRelativeTomlSubpath(subpath: []const u8) bool {
+    if (std.mem.eql(u8, subpath, ".")) return true;
+    if (subpath.len == 0 or std.fs.path.isAbsolute(subpath)) return false;
+    var iter = std.mem.splitScalar(u8, subpath, '/');
+    while (iter.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
+}
+
+fn tomlAssignmentKey(line: []const u8) ?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (lhs.len == 0) return null;
+    return lhs;
+}
+
+fn isPermissionsProfileSection(line: []const u8, profile: []const u8, subsection: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "permissions.";
+    if (!std.mem.startsWith(u8, section, prefix)) return false;
+    const remainder = section[prefix.len..];
+
+    if (remainder.len >= 2 and remainder[0] == '"') {
+        const close = std.mem.indexOfScalarPos(u8, remainder, 1, '"') orelse return false;
+        if (!std.mem.eql(u8, remainder[1..close], profile)) return false;
+        const suffix = remainder[close + 1 ..];
+        return suffix.len == subsection.len + 1 and suffix[0] == '.' and std.mem.eql(u8, suffix[1..], subsection);
+    }
+
+    return remainder.len == profile.len + subsection.len + 1 and
+        std.mem.startsWith(u8, remainder, profile) and
+        remainder[profile.len] == '.' and
+        std.mem.eql(u8, remainder[profile.len + 1 ..], subsection);
+}
 
 fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
@@ -1988,6 +2269,57 @@ test "approval and sandbox labels parse config strings" {
     try std.testing.expectEqual(WebSearchMode.live, try WebSearchMode.parse("live"));
     try std.testing.expectEqualStrings("cached", WebSearchMode.cached.label());
     try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, null)).?);
+}
+
+test "sandbox permission profile resolves supported custom workspace shape" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\":project_roots" = "write"
+        \\"/tmp/codex-extra" = "write"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        ,
+    };
+
+    var profile = try view.resolveCustomSandboxPermissionProfile(allocator, "demo");
+    defer profile.deinit(allocator);
+
+    try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
+    try std.testing.expect(profile.include_cwd_write_root);
+    try std.testing.expectEqual(@as(usize, 1), profile.additional_writable_roots.items.len);
+    try std.testing.expectEqualStrings("/tmp/codex-extra", profile.additional_writable_roots.items[0]);
+}
+
+test "sandbox permission profile rejects narrow read and restricted network shapes" {
+    const allocator = std.testing.allocator;
+    const narrow_read = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":minimal" = "read"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        ,
+    };
+    try std.testing.expectError(error.SandboxPermissionProfileUnsupported, narrow_read.resolveCustomSandboxPermissionProfile(allocator, "demo"));
+
+    const restricted_network = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = false
+        \\
+        ,
+    };
+    try std.testing.expectError(error.SandboxPermissionProfileUnsupported, restricted_network.resolveCustomSandboxPermissionProfile(allocator, "demo"));
 }
 
 test "profile values override top-level config values" {
