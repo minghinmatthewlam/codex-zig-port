@@ -297,7 +297,7 @@ fn mainInner(init: std.process.Init) !void {
                     overrides.remote_auth_token_env,
                     overrides.local_remote_control,
                     overrides.remote_control_bind,
-                    appServerRemoteRejectionLabel(remaining.items),
+                    app_server_cmd.remoteRejectionLabel(remaining.items),
                 );
             }
             try rejectRemoteModeForSubcommand(
@@ -606,56 +606,6 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mock-sandbox-demo") or
         isExecCommand(cmd) or
         isApplyCommand(cmd);
-}
-
-fn appServerRemoteRejectionLabel(args: []const []const u8) []const u8 {
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (isHelpFlag(arg)) return "app-server";
-        if (appServerOptionConsumesValue(arg)) {
-            if (index + 1 >= args.len) return "app-server";
-            index += 1;
-            continue;
-        }
-        if (appServerOptionHasInlineValue(arg) or std.mem.eql(u8, arg, "--analytics-default-enabled")) {
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "-")) return "app-server";
-        if (appServerSubcommandLabel(arg)) |label| return label;
-        return "app-server";
-    }
-    return "app-server";
-}
-
-fn appServerOptionConsumesValue(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "--listen") or
-        std.mem.eql(u8, arg, "--ws-auth") or
-        std.mem.eql(u8, arg, "--ws-token-file") or
-        std.mem.eql(u8, arg, "--ws-token-sha256") or
-        std.mem.eql(u8, arg, "--ws-shared-secret-file") or
-        std.mem.eql(u8, arg, "--ws-issuer") or
-        std.mem.eql(u8, arg, "--ws-audience") or
-        std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds");
-}
-
-fn appServerOptionHasInlineValue(arg: []const u8) bool {
-    return std.mem.startsWith(u8, arg, "--listen=") or
-        std.mem.startsWith(u8, arg, "--ws-auth=") or
-        std.mem.startsWith(u8, arg, "--ws-token-file=") or
-        std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
-        std.mem.startsWith(u8, arg, "--ws-shared-secret-file=") or
-        std.mem.startsWith(u8, arg, "--ws-issuer=") or
-        std.mem.startsWith(u8, arg, "--ws-audience=") or
-        std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=");
-}
-
-fn appServerSubcommandLabel(arg: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, arg, "proxy")) return "app-server proxy";
-    if (std.mem.eql(u8, arg, "generate-ts")) return "app-server generate-ts";
-    if (std.mem.eql(u8, arg, "generate-json-schema")) return "app-server generate-json-schema";
-    if (std.mem.eql(u8, arg, "generate-internal-json-schema")) return "app-server generate-internal-json-schema";
-    return null;
 }
 
 fn isKnownUnimplementedCommand(cmd: []const u8) bool {
@@ -1611,24 +1561,6 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
-}
-
-test "app-server remote rejection labels known subcommands" {
-    try std.testing.expectEqualStrings("app-server", appServerRemoteRejectionLabel(&.{}));
-    try std.testing.expectEqualStrings("app-server proxy", appServerRemoteRejectionLabel(&.{"proxy"}));
-    try std.testing.expectEqualStrings(
-        "app-server proxy",
-        appServerRemoteRejectionLabel(&.{ "--listen", "off", "proxy" }),
-    );
-    try std.testing.expectEqualStrings(
-        "app-server generate-internal-json-schema",
-        appServerRemoteRejectionLabel(&.{ "--listen=off", "generate-internal-json-schema" }),
-    );
-    try std.testing.expectEqualStrings(
-        "app-server generate-ts",
-        appServerRemoteRejectionLabel(&.{ "--ws-auth", "capability-token", "generate-ts" }),
-    );
-    try std.testing.expectEqualStrings("app-server", appServerRemoteRejectionLabel(&.{"--help"}));
 }
 
 test "known unimplemented Rust commands are recognized" {

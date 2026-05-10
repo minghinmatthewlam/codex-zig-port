@@ -4853,6 +4853,56 @@ fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
+pub fn remoteRejectionLabel(args: []const []const u8) []const u8 {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return "app-server";
+        if (optionConsumesValue(arg)) {
+            if (index + 1 >= args.len) return "app-server";
+            index += 1;
+            continue;
+        }
+        if (optionHasInlineValue(arg) or std.mem.eql(u8, arg, "--analytics-default-enabled")) {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return "app-server";
+        if (subcommandLabel(arg)) |label| return label;
+        return "app-server";
+    }
+    return "app-server";
+}
+
+fn optionConsumesValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--listen") or
+        std.mem.eql(u8, arg, "--ws-auth") or
+        std.mem.eql(u8, arg, "--ws-token-file") or
+        std.mem.eql(u8, arg, "--ws-token-sha256") or
+        std.mem.eql(u8, arg, "--ws-shared-secret-file") or
+        std.mem.eql(u8, arg, "--ws-issuer") or
+        std.mem.eql(u8, arg, "--ws-audience") or
+        std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds");
+}
+
+fn optionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--listen=") or
+        std.mem.startsWith(u8, arg, "--ws-auth=") or
+        std.mem.startsWith(u8, arg, "--ws-token-file=") or
+        std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
+        std.mem.startsWith(u8, arg, "--ws-shared-secret-file=") or
+        std.mem.startsWith(u8, arg, "--ws-issuer=") or
+        std.mem.startsWith(u8, arg, "--ws-audience=") or
+        std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=");
+}
+
+fn subcommandLabel(arg: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, arg, "proxy")) return "app-server proxy";
+    if (std.mem.eql(u8, arg, "generate-ts")) return "app-server generate-ts";
+    if (std.mem.eql(u8, arg, "generate-json-schema")) return "app-server generate-json-schema";
+    if (std.mem.eql(u8, arg, "generate-internal-json-schema")) return "app-server generate-internal-json-schema";
+    return null;
+}
+
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
@@ -4900,6 +4950,24 @@ fn printProxyHelp() void {
         \\CODEX_HOME/app-server-control/app-server-control.sock path is used.
         \\
     , .{});
+}
+
+test "app-server remote rejection labels known subcommands" {
+    try std.testing.expectEqualStrings("app-server", remoteRejectionLabel(&.{}));
+    try std.testing.expectEqualStrings("app-server proxy", remoteRejectionLabel(&.{"proxy"}));
+    try std.testing.expectEqualStrings(
+        "app-server proxy",
+        remoteRejectionLabel(&.{ "--listen", "off", "proxy" }),
+    );
+    try std.testing.expectEqualStrings(
+        "app-server generate-internal-json-schema",
+        remoteRejectionLabel(&.{ "--listen=off", "generate-internal-json-schema" }),
+    );
+    try std.testing.expectEqualStrings(
+        "app-server generate-ts",
+        remoteRejectionLabel(&.{ "--ws-auth", "capability-token", "generate-ts" }),
+    );
+    try std.testing.expectEqualStrings("app-server", remoteRejectionLabel(&.{"--help"}));
 }
 
 test "app-server transport parser accepts Rust listen URL forms" {
