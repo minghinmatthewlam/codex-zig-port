@@ -431,6 +431,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, id_value.?);
     }
+    if (isMarketplaceMethod(method)) {
+        return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
+    }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
     defer allocator.free(message);
@@ -465,6 +468,86 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
     };
     return try renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn isMarketplaceMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "marketplace/add") or
+        std.mem.eql(u8, method, "marketplace/remove") or
+        std.mem.eql(u8, method, "marketplace/upgrade");
+}
+
+fn handleMarketplaceMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "marketplace/add")) {
+        if (validateMarketplaceAddParams(params_value)) |message| {
+            return try renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+    } else if (std.mem.eql(u8, method, "marketplace/remove")) {
+        if (validateMarketplaceRemoveParams(params_value)) |message| {
+            return try renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+    } else if (std.mem.eql(u8, method, "marketplace/upgrade")) {
+        if (validateMarketplaceUpgradeParams(params_value)) |message| {
+            return try renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+    }
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "app-server method {s} is parsed but not implemented yet",
+        .{method},
+    );
+    defer allocator.free(message);
+    return try renderJsonRpcError(allocator, id_value, -32603, message);
+}
+
+fn validateMarketplaceAddParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "marketplace/add params must be an object";
+    if (params != .object) return "marketplace/add params must be an object";
+    const object = params.object;
+    if (requireStringField(object, "source")) |message| return message;
+    if (validateOptionalStringField(object, "refName")) |message| return message;
+    if (validateOptionalStringArrayField(object, "sparsePaths")) |message| return message;
+    return null;
+}
+
+fn validateMarketplaceRemoveParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "marketplace/remove params must be an object";
+    if (params != .object) return "marketplace/remove params must be an object";
+    return requireStringField(params.object, "marketplaceName");
+}
+
+fn validateMarketplaceUpgradeParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params != .object) return "marketplace/upgrade params must be an object";
+    return validateOptionalStringField(params.object, "marketplaceName");
+}
+
+fn requireStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return "required string field is missing";
+    if (value != .string) return "required field must be a string";
+    return null;
+}
+
+fn validateOptionalStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return "optional field must be a string or null";
+    return null;
+}
+
+fn validateOptionalStringArrayField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    if (value != .array) return "optional field must be an array of strings or null";
+    for (value.array.items) |item| {
+        if (item != .string) return "optional field must be an array of strings or null";
+    }
+    return null;
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
@@ -728,6 +811,38 @@ test "app-server initialize result exposes server info" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "\"name\":\"codex-zig-app-server\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"capabilities\":{}") != null);
+}
+
+test "app-server marketplace methods validate params and return not implemented" {
+    const allocator = std.testing.allocator;
+    const valid_add = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"add\",\"method\":\"marketplace/add\",\"params\":{\"source\":\"owner/repo\",\"refName\":\"main\",\"sparsePaths\":[\"plugins/foo\"]}}",
+    );
+    defer allocator.free(valid_add.?);
+    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "\"code\":-32603") != null);
+    try std.testing.expect(std.mem.indexOf(u8, valid_add.?, "marketplace/add is parsed but not implemented yet") != null);
+
+    const valid_remove = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"remove\",\"method\":\"marketplace/remove\",\"params\":{\"marketplaceName\":\"debug\"}}",
+    );
+    defer allocator.free(valid_remove.?);
+    try std.testing.expect(std.mem.indexOf(u8, valid_remove.?, "\"code\":-32603") != null);
+
+    const valid_upgrade = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"upgrade\",\"method\":\"marketplace/upgrade\",\"params\":{\"marketplaceName\":null}}",
+    );
+    defer allocator.free(valid_upgrade.?);
+    try std.testing.expect(std.mem.indexOf(u8, valid_upgrade.?, "\"code\":-32603") != null);
+
+    const invalid_add = try handleJsonRpcLine(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-add\",\"method\":\"marketplace/add\",\"params\":{\"refName\":\"main\"}}",
+    );
+    defer allocator.free(invalid_add.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_add.?, "\"code\":-32602") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
