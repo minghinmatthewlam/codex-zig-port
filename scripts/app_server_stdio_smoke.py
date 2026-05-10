@@ -6636,6 +6636,54 @@ def run_unix_refuses_regular_file_smoke(binary: Path) -> None:
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 
+def run_internal_json_schema_smoke(binary: Path) -> None:
+    out_dir = Path(tempfile.mkdtemp(prefix="codex-zig-internal-schema-", dir="/tmp"))
+    try:
+        proc = subprocess.run(
+            [
+                str(binary),
+                "app-server",
+                "generate-internal-json-schema",
+                "-o",
+                str(out_dir),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        schema_path = out_dir / "RolloutLine.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        assert schema["title"] == "RolloutLine"
+        assert schema["required"] == ["timestamp", "type", "payload"]
+        assert schema["properties"]["timestamp"]["type"] == "string"
+        assert schema["properties"]["payload"]["type"] == "object"
+        assert schema["properties"]["type"]["enum"] == [
+            "session_meta",
+            "response_item",
+            "compacted",
+            "turn_context",
+            "event_msg",
+        ]
+
+        missing_out = subprocess.run(
+            [str(binary), "app-server", "generate-internal-json-schema"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert missing_out.returncode != 0
+        assert "MissingAppServerGenerateInternalJsonSchemaOutDir" in missing_out.stderr
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
 def run_flag_compat_smoke(binary: Path) -> None:
     analytics = subprocess.run(
         [str(binary), "app-server", "--analytics-default-enabled", "--listen", "off"],
@@ -6812,6 +6860,8 @@ def main() -> None:
     print("stdio-to-uds-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
+    run_internal_json_schema_smoke(binary)
+    print("app-server-internal-json-schema-e2e: ok")
     run_flag_compat_smoke(binary)
     print("app-server-flag-compat-e2e: ok")
 
