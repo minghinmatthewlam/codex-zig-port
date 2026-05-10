@@ -374,6 +374,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer if (model_provider_bearer_token) |value| allocator.free(value);
     var model_provider_auth_command = if (source.model_provider_auth_command) |value| try value.clone(allocator) else null;
     errdefer if (model_provider_auth_command) |*value| value.deinit(allocator);
+    var model_provider_query_params = if (source.model_provider_query_params) |value| try value.clone(allocator) else null;
+    errdefer if (model_provider_query_params) |*value| value.deinit(allocator);
     var model_provider_http_headers = if (source.model_provider_http_headers) |value| try value.clone(allocator) else null;
     errdefer if (model_provider_http_headers) |*value| value.deinit(allocator);
     var model_provider_env_http_headers = if (source.model_provider_env_http_headers) |value| try value.clone(allocator) else null;
@@ -401,6 +403,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .model_provider_env_key = model_provider_env_key,
         .model_provider_bearer_token = model_provider_bearer_token,
         .model_provider_auth_command = model_provider_auth_command,
+        .model_provider_query_params = model_provider_query_params,
         .model_provider_http_headers = model_provider_http_headers,
         .model_provider_env_http_headers = model_provider_env_http_headers,
         .oss_provider = oss_provider,

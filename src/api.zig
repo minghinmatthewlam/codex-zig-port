@@ -162,10 +162,7 @@ pub fn createTurnWithOptions(
     const wire_path = switch (cfg.model_provider_wire_api) {
         .responses => "responses",
     };
-    const url = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
-        std.mem.trimEnd(u8, base_url, "/"),
-        wire_path,
-    });
+    const url = try buildProviderUrl(allocator, base_url, wire_path, cfg.model_provider_query_params);
     defer allocator.free(url);
 
     var headers = std.ArrayList(std.http.Header).empty;
@@ -221,6 +218,38 @@ pub fn createTurnWithOptions(
     }
 
     return parseSseResponse(allocator, bytes);
+}
+
+fn buildProviderUrl(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    path: []const u8,
+    query_params: ?config.StringMap,
+) ![]const u8 {
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+
+    try url.appendSlice(allocator, std.mem.trimEnd(u8, base_url, "/"));
+    var path_start: usize = 0;
+    while (path_start < path.len and path[path_start] == '/') : (path_start += 1) {}
+    const trimmed_path = path[path_start..];
+    if (trimmed_path.len > 0) {
+        try url.append(allocator, '/');
+        try url.appendSlice(allocator, trimmed_path);
+    }
+    if (query_params) |params| {
+        if (params.entries.len > 0) {
+            try url.append(allocator, '?');
+            for (params.entries, 0..) |entry, index| {
+                if (index > 0) try url.append(allocator, '&');
+                try url.appendSlice(allocator, entry.key);
+                try url.append(allocator, '=');
+                try url.appendSlice(allocator, entry.value);
+            }
+        }
+    }
+
+    return url.toOwnedSlice(allocator);
 }
 
 fn appendProviderHeaders(
@@ -1062,4 +1091,21 @@ test "personality config adds personality instructions" {
     const instructions = parsed.value.object.get("instructions").?.string;
     try std.testing.expect(std.mem.indexOf(u8, instructions, "<personality_spec>") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, friendlyPersonalityInstructions) != null);
+}
+
+test "provider url appends configured query params" {
+    const allocator = std.testing.allocator;
+    var entries = [_]config.StringMapEntry{
+        .{ .key = "api-version", .value = "2025-04-01-preview" },
+        .{ .key = "deployment", .value = "codex" },
+    };
+    const query_params = config.StringMap{ .entries = entries[0..] };
+
+    const url = try buildProviderUrl(allocator, "https://proxy.example/v1/", "/responses", query_params);
+    defer allocator.free(url);
+
+    try std.testing.expectEqualStrings(
+        "https://proxy.example/v1/responses?api-version=2025-04-01-preview&deployment=codex",
+        url,
+    );
 }

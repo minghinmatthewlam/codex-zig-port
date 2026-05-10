@@ -12,6 +12,7 @@ pub const Config = struct {
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
     model_provider_auth_command: ?ProviderAuthCommand = null,
+    model_provider_query_params: ?StringMap = null,
     model_provider_http_headers: ?StringMap = null,
     model_provider_env_http_headers: ?StringMap = null,
     oss_provider: ?[]const u8,
@@ -36,6 +37,7 @@ pub const Config = struct {
         if (self.model_provider_env_key) |value| allocator.free(value);
         if (self.model_provider_bearer_token) |value| allocator.free(value);
         if (self.model_provider_auth_command) |*value| value.deinit(allocator);
+        if (self.model_provider_query_params) |*value| value.deinit(allocator);
         if (self.model_provider_http_headers) |*value| value.deinit(allocator);
         if (self.model_provider_env_http_headers) |*value| value.deinit(allocator);
         if (self.oss_provider) |value| allocator.free(value);
@@ -569,6 +571,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     var model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
     errdefer model_provider_auth.deinit(allocator);
+    var model_provider_query_params = try resolveModelProviderQueryParams(allocator, config_view, active_profile);
+    errdefer if (model_provider_query_params) |*value| value.deinit(allocator);
     var provider_headers = try resolveModelProviderHeaders(allocator, config_view, active_profile);
     errdefer provider_headers.deinit(allocator);
 
@@ -603,6 +607,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model_provider_env_key = model_provider_auth.env_key,
         .model_provider_bearer_token = model_provider_auth.bearer_token,
         .model_provider_auth_command = model_provider_auth.command,
+        .model_provider_query_params = model_provider_query_params,
         .model_provider_http_headers = provider_headers.http_headers,
         .model_provider_env_http_headers = provider_headers.env_http_headers,
         .oss_provider = oss_provider,
@@ -774,6 +779,14 @@ fn resolveModelProviderHeaders(allocator: std.mem.Allocator, config_view: Config
         .http_headers = http_headers,
         .env_http_headers = env_http_headers,
     };
+}
+
+fn resolveModelProviderQueryParams(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?StringMap {
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    const provider = model_provider orelse return null;
+
+    return config_view.getModelProviderStringMap(allocator, provider, "query_params");
 }
 
 fn resolveOssProvider(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
@@ -2413,6 +2426,32 @@ test "model provider headers resolve from provider tables and inline maps" {
     try std.testing.expectEqual(@as(usize, 1), headers.env_http_headers.?.entries.len);
     try std.testing.expectEqualStrings("X-Env-Token", headers.env_http_headers.?.entries[0].key);
     try std.testing.expectEqualStrings("CORP_HEADER_TOKEN", headers.env_http_headers.?.entries[0].value);
+}
+
+test "model provider query params resolve from provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "query-provider"
+        \\
+        \\[model_providers.query-provider]
+        \\base_url = "https://proxy.example/v1"
+        \\
+        \\[model_providers.query-provider.query_params]
+        \\api-version = "2025-04-01-preview"
+        \\"deployment-name" = "codex-test"
+        \\
+        ,
+    };
+
+    var query_params = try resolveModelProviderQueryParams(allocator, view, null);
+    defer query_params.?.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), query_params.?.entries.len);
+    try std.testing.expectEqualStrings("api-version", query_params.?.entries[0].key);
+    try std.testing.expectEqualStrings("2025-04-01-preview", query_params.?.entries[0].value);
+    try std.testing.expectEqualStrings("deployment-name", query_params.?.entries[1].key);
+    try std.testing.expectEqualStrings("codex-test", query_params.?.entries[1].value);
 }
 
 test "profile model provider overrides top-level provider" {
