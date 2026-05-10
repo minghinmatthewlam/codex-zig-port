@@ -520,7 +520,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
     }
     if (isPluginMethod(method)) {
-        return try handlePluginMethod(allocator, id_value.?, method, object.get("params"));
+        return try handlePluginMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (std.mem.eql(u8, method, "hooks/list")) {
         return try handleHooksList(allocator, id_value.?, object.get("params"));
@@ -985,6 +985,7 @@ fn isPluginMethod(method: []const u8) bool {
 
 fn handlePluginMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
@@ -999,7 +1000,7 @@ fn handlePluginMethod(
         return handlePluginSkillRead(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "plugin/uninstall")) {
-        return handlePluginUninstall(allocator, id_value, params_value);
+        return handlePluginUninstall(allocator, state, id_value, params_value);
     }
 
     if (validatePluginParams(method, params_value)) |message| {
@@ -1145,23 +1146,21 @@ fn parsePluginSkillReadParams(params_value: ?std.json.Value) !ParsedPluginSkillR
     };
 }
 
-fn handlePluginUninstall(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = parsePluginUninstallParams(params_value) catch |err| switch (err) {
         error.InvalidPluginUninstallParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/uninstall params must be an object"),
         error.InvalidPluginUninstallPluginId => return renderJsonRpcError(allocator, id_value, -32602, "pluginId must be a string"),
     };
     const remote_plugin_id = remote_plugin.isValidRemotePluginId(params.plugin_id);
-    if (!remote_plugin_id and !isValidLocalPluginId(params.plugin_id)) {
+    if (!remote_plugin_id and !plugin_config.isValidPluginId(params.plugin_id)) {
         return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
     }
     if (!remote_plugin_id) {
-        const message = try std.fmt.allocPrint(
-            allocator,
-            "app-server method {s} is parsed but not implemented yet",
-            .{"plugin/uninstall"},
-        );
-        defer allocator.free(message);
-        return renderJsonRpcError(allocator, id_value, -32603, message);
+        handleLocalPluginUninstall(allocator, params.plugin_id) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to uninstall plugin", err);
+        };
+        clearSkillsListCache(allocator, state);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
 
     var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
@@ -1194,7 +1193,39 @@ fn handlePluginUninstall(allocator: std.mem.Allocator, id_value: std.json.Value,
     remote_plugin.uninstall(allocator, cfg.chatgpt_base_url, credentials, cfg.codex_home, params.plugin_id) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to uninstall remote plugin", err);
     };
+    clearSkillsListCache(allocator, state);
     return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleLocalPluginUninstall(allocator: std.mem.Allocator, plugin_id: []const u8) !void {
+    var cfg = try config.loadWithOptions(allocator, .{});
+    defer cfg.deinit(allocator);
+
+    const plugin_base_root = (try plugin_config.localPluginBaseRoot(allocator, cfg.codex_home, plugin_id)) orelse return error.InvalidPluginId;
+    defer allocator.free(plugin_base_root);
+    try deletePathIfPresent(allocator, plugin_base_root);
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const updated_config = try plugin_config.removePluginConfig(allocator, config_bytes orelse "", plugin_id);
+    defer allocator.free(updated_config);
+    if (!std.mem.eql(u8, updated_config, config_bytes orelse "")) {
+        try config.writeConfigTomlFile(config_path, updated_config);
+    }
+}
+
+fn deletePathIfPresent(allocator: std.mem.Allocator, path: []const u8) !void {
+    const metadata = (try statPathNoFollow(allocator, path)) orelse return;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const mode: u32 = @intCast(metadata.mode);
+    if (std.c.S.ISDIR(mode)) {
+        try std.Io.Dir.cwd().deleteTree(io, path);
+    } else {
+        try std.Io.Dir.deleteFileAbsolute(io, path);
+    }
 }
 
 const ParsedPluginUninstallParams = struct {
@@ -1206,20 +1237,6 @@ fn parsePluginUninstallParams(params_value: ?std.json.Value) !ParsedPluginUninst
     if (params != .object) return error.InvalidPluginUninstallParams;
     const plugin_id = stringFieldForPluginParams(params.object, "pluginId") orelse return error.InvalidPluginUninstallPluginId;
     return .{ .plugin_id = plugin_id };
-}
-
-fn isValidLocalPluginId(plugin_id: []const u8) bool {
-    const parts = plugin_config.splitPluginId(plugin_id) orelse return false;
-    return isValidPluginIdSegment(parts.name) and isValidPluginIdSegment(parts.marketplace);
-}
-
-fn isValidPluginIdSegment(value: []const u8) bool {
-    if (value.len == 0) return false;
-    for (value) |byte| {
-        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_') continue;
-        return false;
-    }
-    return true;
 }
 
 fn validatePluginShareSaveParams(params_value: ?std.json.Value) ?[]const u8 {
@@ -4437,7 +4454,6 @@ test "app-server plugin methods validate params and return not implemented" {
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-list\",\"method\":\"plugin/share/list\",\"params\":{}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-delete\",\"method\":\"plugin/share/delete\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"gmail\"}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-uninstall\",\"method\":\"plugin/uninstall\",\"params\":{\"pluginId\":\"gmail@openai-curated\"}}",
     };
 
     for (cases) |line| {

@@ -76,9 +76,59 @@ pub fn splitPluginId(plugin_id: []const u8) ?PluginIdParts {
     };
 }
 
+pub fn isValidPluginId(plugin_id: []const u8) bool {
+    const parts = splitPluginId(plugin_id) orelse return false;
+    return isValidPluginSegment(parts.name) and isValidPluginSegment(parts.marketplace);
+}
+
+pub fn isValidPluginSegment(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_') continue;
+        return false;
+    }
+    return true;
+}
+
 pub fn localPluginRoot(allocator: std.mem.Allocator, codex_home: []const u8, plugin_id: []const u8) !?[]const u8 {
     const parts = splitPluginId(plugin_id) orelse return null;
     return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", parts.marketplace, parts.name, "local" });
+}
+
+pub fn localPluginBaseRoot(allocator: std.mem.Allocator, codex_home: []const u8, plugin_id: []const u8) !?[]const u8 {
+    const parts = splitPluginId(plugin_id) orelse return null;
+    return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", parts.marketplace, parts.name });
+}
+
+pub fn removePluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var skipping_plugin_table = false;
+    var removed_plugin_table = false;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (isTomlTableHeader(trimmed)) {
+            skipping_plugin_table = try tableHeaderBelongsToPlugin(allocator, trimmed, plugin_id);
+            removed_plugin_table = removed_plugin_table or skipping_plugin_table;
+        }
+        if (skipping_plugin_table) continue;
+
+        try output.appendSlice(allocator, line_raw);
+        try output.append(allocator, '\n');
+    }
+
+    if (!removed_plugin_table) {
+        output.deinit(allocator);
+        return allocator.dupe(u8, bytes);
+    }
+    return output.toOwnedSlice(allocator);
 }
 
 fn flushEnabledPluginId(
@@ -110,6 +160,26 @@ fn parsePluginTableHeader(allocator: std.mem.Allocator, line: []const u8) !?[]co
         return null;
     }
     return plugin_id;
+}
+
+fn isTomlTableHeader(line: []const u8) bool {
+    return line.len >= 2 and line[0] == '[' and line[line.len - 1] == ']';
+}
+
+fn tableHeaderBelongsToPlugin(allocator: std.mem.Allocator, line: []const u8, plugin_id: []const u8) !bool {
+    if (!isTomlTableHeader(line)) return false;
+    if (line.len >= 4 and line[1] == '[') return false;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    const prefix = "plugins.";
+    if (!std.mem.startsWith(u8, inner, prefix)) return false;
+
+    var index: usize = prefix.len;
+    const table_plugin_id = (try parseTomlStringAt(allocator, inner, &index)) orelse return false;
+    defer allocator.free(table_plugin_id);
+    if (!std.mem.eql(u8, table_plugin_id, plugin_id)) return false;
+
+    skipTomlWhitespace(inner, &index);
+    return index == inner.len or inner[index] == '.';
 }
 
 fn tomlBoolValueForKey(line: []const u8, key: []const u8) ?bool {
@@ -191,4 +261,35 @@ test "plugin config parses enabled plugin ids and feature flags" {
     const parts = splitPluginId(ids[0]).?;
     try std.testing.expectEqualStrings("demo", parts.name);
     try std.testing.expectEqualStrings("test", parts.marketplace);
+    try std.testing.expect(isValidPluginId("demo@test"));
+    try std.testing.expect(!isValidPluginId("demo/../../oops@test"));
+}
+
+test "plugin config removal drops plugin table and child tables" {
+    const allocator = std.testing.allocator;
+    const bytes =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."demo@test"]
+        \\enabled = true
+        \\source = "/tmp/demo"
+        \\
+        \\[plugins."demo@test".mcp_servers.sample]
+        \\command = "demo-mcp"
+        \\
+        \\[plugins."other@test"]
+        \\enabled = true
+    ;
+
+    const updated = try removePluginConfig(allocator, bytes, "demo@test");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\".mcp_servers.sample]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"other@test\"]") != null);
+
+    const unchanged = try removePluginConfig(allocator, "profile = \"work\"", "missing@test");
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("profile = \"work\"", unchanged);
 }
