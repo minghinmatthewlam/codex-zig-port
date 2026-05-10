@@ -172,6 +172,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
   `exec-server`, and `update` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
+- generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
 Long-term exact parity is tracked in `docs/parity.md`.
 
@@ -203,7 +204,9 @@ The `e2e` step starts a local mock Responses server, launches the real
 `-i/--image` initial-prompt attachment on the interactive path, verifies
 runtime feature toggles through `features list`, profile-scoped feature
 persistence, Rust legacy feature aliases, direct under-development enable
-warnings, and root default-off feature clearing, checks `help [COMMAND]`, verifies
+warnings, and root default-off feature clearing, checks `help [COMMAND]`,
+verifies exact generated shell completion output for bash, elvish, fish,
+powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
 `network_rule` validation, and resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
