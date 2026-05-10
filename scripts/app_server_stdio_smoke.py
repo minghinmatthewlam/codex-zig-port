@@ -628,11 +628,15 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
     codex_home = root / "codex-home"
     config_path = codex_home / "config.toml"
     user_hooks_json = codex_home / "hooks.json"
+    plugin_root = codex_home / "plugins" / "cache" / "test" / "demo" / "local"
+    plugin_hooks_json = plugin_root / "hooks" / "hooks.json"
     cwd = root / "repo"
     project_config = cwd / ".codex" / "config.toml"
     project_hooks_json = cwd / ".codex" / "hooks.json"
     try:
         codex_home.mkdir()
+        (plugin_root / ".codex-plugin").mkdir(parents=True)
+        (plugin_root / "hooks").mkdir()
         project_config.parent.mkdir(parents=True)
         user_hooks_json.write_text(
             json.dumps(
@@ -659,6 +663,14 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         config_path.write_text(
             "\n".join(
                 [
+                    "[features]",
+                    "hooks = true",
+                    "plugins = true",
+                    "plugin_hooks = true",
+                    "",
+                    '[plugins."demo@test"]',
+                    "enabled = true",
+                    "",
                     "[hooks]",
                     "",
                     "[[hooks.PreToolUse]]",
@@ -671,6 +683,32 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
                     'statusMessage = "running listed hook"',
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps({"name": "demo"}),
+            encoding="utf-8",
+        )
+        plugin_hooks_json.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo plugin hook",
+                                        "timeout": 7,
+                                        "statusMessage": "running plugin hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
             ),
             encoding="utf-8",
         )
@@ -739,7 +777,7 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert str(project_config.resolve()) in entry["warnings"][1]
         assert "prefer a single representation" in entry["warnings"][1]
         assert entry["errors"] == []
-        assert len(entry["hooks"]) == 4
+        assert len(entry["hooks"]) == 5
 
         user_json_hook = entry["hooks"][0]
         assert user_json_hook["eventName"] == "preToolUse"
@@ -794,6 +832,24 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert project_hook["sourcePath"] == str(project_config.resolve())
         assert project_hook["source"] == "project"
         assert project_hook["displayOrder"] == 3
+
+        plugin_hook = entry["hooks"][4]
+        assert plugin_hook["key"] == "demo@test:hooks/hooks.json:pre_tool_use:0:0"
+        assert plugin_hook["eventName"] == "preToolUse"
+        assert plugin_hook["handlerType"] == "command"
+        assert plugin_hook["matcher"] == "Bash"
+        assert plugin_hook["command"] == "echo plugin hook"
+        assert plugin_hook["timeoutSec"] == 7
+        assert plugin_hook["statusMessage"] == "running plugin hook"
+        assert plugin_hook["sourcePath"] == str(plugin_hooks_json.resolve())
+        assert plugin_hook["source"] == "plugin"
+        assert plugin_hook["pluginId"] == "demo@test"
+        assert plugin_hook["displayOrder"] == 4
+        assert plugin_hook["enabled"] is True
+        assert plugin_hook["isManaged"] is False
+        assert plugin_hook["trustStatus"] == "untrusted"
+        assert plugin_hook["currentHash"].startswith("sha256:")
+        assert len(plugin_hook["currentHash"]) == len("sha256:") + 64
 
         def write_hook_state(request_id: str, state: dict[str, object]) -> None:
             response = request_stdio_app_server(

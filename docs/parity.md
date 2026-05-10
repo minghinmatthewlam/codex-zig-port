@@ -12,8 +12,9 @@ Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 default command timeouts, source metadata, user `hooks.state` enable/trust
 metadata from inline and table TOML shapes, malformed `hooks.json` warnings, and
 mixed `hooks.json` / TOML representation warnings, plus `[features].hooks`
-gating. Plugin hooks, managed hooks, and full config-layer parity remain
-planned.
+gating. Enabled local plugin-cache command hooks are listed when `[features]`
+enables `plugins` and `plugin_hooks`. Managed hooks and full config-layer parity
+remain planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
