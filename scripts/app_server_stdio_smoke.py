@@ -3683,8 +3683,14 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         )
         cwd = root / "cwd"
         cwd.mkdir()
+        command_tmpdir = root / "command-tmpdir"
+        command_tmpdir.mkdir()
+        slash_tmp_target = Path("/tmp") / f"{root.name}-slash-tmp.txt"
+        if slash_tmp_target.exists():
+            slash_tmp_target.unlink()
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["TMPDIR"] = str(command_tmpdir)
         network_server, network_url = start_command_exec_network_backend()
         network_probe = (
             "import sys, urllib.request; "
@@ -3729,6 +3735,107 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert cwd_env["result"]["exitCode"] == 0
         assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
         assert cwd_env["result"]["stderr"] == ""
+
+        sandbox_policy_tmpdir_default = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-tmpdir-default",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        'printf tmpdir > "$TMPDIR/tmpdir-ok.txt" && printf tmpdir-ok',
+                    ],
+                    "cwd": str(cwd),
+                    "env": {},
+                    "sandboxPolicy": {"type": "workspaceWrite"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_tmpdir_default["id"] == "command-exec-sandbox-policy-tmpdir-default"
+        assert sandbox_policy_tmpdir_default["result"] == {
+            "exitCode": 0,
+            "stdout": "tmpdir-ok",
+            "stderr": "",
+        }
+        assert command_tmpdir.joinpath("tmpdir-ok.txt").read_text(encoding="utf-8") == "tmpdir"
+
+        sandbox_policy_slash_tmp_default = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-slash-tmp-default",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf slash-tmp > {slash_tmp_target} && printf slash-tmp-ok",
+                    ],
+                    "cwd": str(cwd),
+                    "sandboxPolicy": {"type": "workspaceWrite"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_slash_tmp_default["id"] == "command-exec-sandbox-policy-slash-tmp-default"
+        assert sandbox_policy_slash_tmp_default["result"] == {
+            "exitCode": 0,
+            "stdout": "slash-tmp-ok",
+            "stderr": "",
+        }
+        assert slash_tmp_target.read_text(encoding="utf-8") == "slash-tmp"
+        slash_tmp_target.unlink()
+
+        sandbox_policy_tmpdir_excluded = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-tmpdir-excluded",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        'printf blocked > "$TMPDIR/tmpdir-blocked.txt"',
+                    ],
+                    "cwd": str(cwd),
+                    "env": {},
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "excludeTmpdirEnvVar": True,
+                        "excludeSlashTmp": True,
+                    },
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_tmpdir_excluded["id"] == "command-exec-sandbox-policy-tmpdir-excluded"
+        assert sandbox_policy_tmpdir_excluded["result"]["exitCode"] != 0
+        assert sandbox_policy_tmpdir_excluded["result"]["stdout"] == ""
+        assert not command_tmpdir.joinpath("tmpdir-blocked.txt").exists()
+
+        sandbox_policy_slash_tmp_excluded = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-slash-tmp-excluded",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", f"printf blocked > {slash_tmp_target}"],
+                    "cwd": str(cwd),
+                    "sandboxPolicy": {"type": "workspaceWrite", "excludeSlashTmp": True},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_slash_tmp_excluded["id"] == "command-exec-sandbox-policy-slash-tmp-excluded"
+        assert sandbox_policy_slash_tmp_excluded["result"]["exitCode"] != 0
+        assert sandbox_policy_slash_tmp_excluded["result"]["stdout"] == ""
+        assert not slash_tmp_target.exists()
 
         sandbox_policy_network_enabled = request_stdio_app_server(
             binary,
@@ -4210,6 +4317,8 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         if network_server is not None:
             network_server.shutdown()
             network_server.server_close()
+        if "slash_tmp_target" in locals() and slash_tmp_target.exists():
+            slash_tmp_target.unlink()
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
 
