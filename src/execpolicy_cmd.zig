@@ -182,17 +182,43 @@ fn parseRules(
 
 fn findPrefixRuleOpen(contents: []const u8, start: usize) ?usize {
     var pos = start;
+    var quote: ?u8 = null;
+    var escaped = false;
     while (pos < contents.len) {
-        const found = std.mem.indexOfPos(u8, contents, pos, "prefix_rule") orelse return null;
-        const before_ok = found == 0 or !isIdentifierChar(contents[found - 1]);
-        const after_name = found + "prefix_rule".len;
-        const after_ok = after_name >= contents.len or !isIdentifierChar(contents[after_name]);
-        if (before_ok and after_ok) {
+        const c = contents[pos];
+        if (quote) |active_quote| {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == active_quote) {
+                quote = null;
+            }
+            pos += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            quote = c;
+            pos += 1;
+            continue;
+        }
+        if (c == '#') {
+            while (pos < contents.len and contents[pos] != '\n') : (pos += 1) {}
+            continue;
+        }
+        if (std.mem.startsWith(u8, contents[pos..], "prefix_rule")) {
+            const before_ok = pos == 0 or !isIdentifierChar(contents[pos - 1]);
+            const after_name = pos + "prefix_rule".len;
+            const after_ok = after_name >= contents.len or !isIdentifierChar(contents[after_name]);
+            if (!before_ok or !after_ok) {
+                pos += 1;
+                continue;
+            }
             var next = after_name;
             skipWhitespace(contents, &next);
             if (next < contents.len and contents[next] == '(') return next;
         }
-        pos = after_name;
+        pos += 1;
     }
     return null;
 }
@@ -784,4 +810,24 @@ test "execpolicy check supports pattern alternatives and strictest decision" {
         "{\"decision\":\"prompt\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"bash\",\"-c\"],\"decision\":\"allow\"}},{\"prefixRuleMatch\":{\"matchedPrefix\":[\"bash\",\"-c\"],\"decision\":\"prompt\"}}]}",
         rendered,
     );
+}
+
+test "execpolicy parser ignores comments and quoted prefix rule text" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\# prefix_rule(pattern = ["git", "push"], decision = "forbidden")
+        \\message = "prefix_rule(pattern = [\"rm\"], decision = \"forbidden\")"
+        \\prefix_rule(pattern = ["git", "status"], decision = "allow")
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    try parseRules(allocator, rules_bytes, &rules);
+
+    try std.testing.expectEqual(@as(usize, 1), rules.items.len);
+    const command = [_][]const u8{ "git", "push" };
+    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
 }
