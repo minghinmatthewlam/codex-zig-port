@@ -3739,17 +3739,20 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
     try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer, system_layer));
     const system_web_search_mode = if (system_layer) |layer| layer.web_search_mode else null;
-    const web_search_mode = project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
+    const managed_web_search_mode = if (managed_layer) |layer| layer.web_search_mode else null;
+    const web_search_mode = managed_web_search_mode orelse project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
     var apps = try effectiveConfigReadApps(allocator, managed_layer, project_layers, user_layer, system_layer);
     defer if (apps) |*value| value.deinit(allocator);
     try appendConfigReadAppsField(allocator, &result, &first, apps);
     const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
-    const model_reasoning_effort = project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
+    const managed_model_reasoning_effort = if (managed_layer) |layer| layer.model_reasoning_effort else null;
+    const model_reasoning_effort = managed_model_reasoning_effort orelse project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
     const system_service_tier = if (system_layer) |layer| layer.service_tier else null;
-    const service_tier = project_layers.serviceTier() orelse configReadUserOrSystemMaybeString(cfg.service_tier, user_layer, "service_tier", system_service_tier);
+    const managed_service_tier = if (managed_layer) |layer| layer.service_tier else null;
+    const service_tier = managed_service_tier orelse project_layers.serviceTier() orelse configReadUserOrSystemMaybeString(cfg.service_tier, user_layer, "service_tier", system_service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
@@ -3771,6 +3774,9 @@ const ConfigReadManagedLayer = struct {
     model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
+    web_search_mode: ?config.WebSearchMode = null,
+    model_reasoning_effort: ?config.ReasoningEffort = null,
+    service_tier: ?[]const u8 = null,
     tools: ConfigReadTools = .{},
     apps: ConfigReadApps = ConfigReadApps.empty(),
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -3779,6 +3785,7 @@ const ConfigReadManagedLayer = struct {
         allocator.free(self.file_path);
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
+        if (self.service_tier) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
@@ -4793,6 +4800,10 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     errdefer if (model) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
+    var web_search_mode: ?config.WebSearchMode = null;
+    var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var service_tier: ?[]const u8 = null;
+    errdefer if (service_tier) |value| allocator.free(value);
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
     var apps = ConfigReadApps.empty();
@@ -4811,6 +4822,21 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         defer allocator.free(value);
         sandbox_mode = try config.SandboxMode.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "sandbox_mode");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "web_search")) |value| {
+        defer allocator.free(value);
+        web_search_mode = try config.WebSearchMode.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "web_search");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_reasoning_effort")) |value| {
+        defer allocator.free(value);
+        model_reasoning_effort = try config.ReasoningEffort.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "service_tier")) |value| {
+        defer allocator.free(value);
+        service_tier = try config.normalizeServiceTier(allocator, value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
     }
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
@@ -4832,6 +4858,9 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .model = model,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
+        .web_search_mode = web_search_mode,
+        .model_reasoning_effort = model_reasoning_effort,
+        .service_tier = service_tier,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -6195,6 +6224,9 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.model) |value| try appendJsonStringField(allocator, result, &first, "model", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
+    if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, "web_search", mode.label());
+    if (layer.model_reasoning_effort) |effort| try appendJsonStringField(allocator, result, &first, "model_reasoning_effort", effort.label());
+    if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, "service_tier", value);
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
         try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
