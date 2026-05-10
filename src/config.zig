@@ -112,6 +112,23 @@ pub fn loadModelProviderId(allocator: std.mem.Allocator, profile: ?[]const u8) !
     return resolveModelProviderId(allocator, config_view, active_profile);
 }
 
+pub fn loadModelProviderRequiresOpenAiAuth(allocator: std.mem.Allocator, profile: ?[]const u8) !bool {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+    const active_profile = try resolveActiveProfile(allocator, config_view, profile);
+    defer if (active_profile) |value| allocator.free(value);
+
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+
+    return resolveModelProviderRequiresOpenAiAuth(config_view, model_provider);
+}
+
 pub fn applyRuntimeOverrides(
     cfg: *Config,
     allocator: std.mem.Allocator,
@@ -534,6 +551,15 @@ fn resolveModelProviderId(allocator: std.mem.Allocator, config_view: ConfigView,
         return value;
     }
     return config_view.getScopedString(allocator, active_profile, "model_provider");
+}
+
+fn resolveModelProviderRequiresOpenAiAuth(config_view: ConfigView, model_provider: ?[]const u8) bool {
+    const provider = model_provider orelse return true;
+    if (config_view.getModelProviderBool(provider, "requires_openai_auth")) |requires_openai_auth| {
+        return requires_openai_auth;
+    }
+    if (std.mem.eql(u8, provider, "openai")) return true;
+    return false;
 }
 
 fn resolveOssProvider(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
@@ -973,6 +999,26 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getModelProviderBool(
+        self: ConfigView,
+        provider: []const u8,
+        key: []const u8,
+    ) ?bool {
+        var in_provider = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_provider = isNamedSection(line, "model_providers.", provider);
+                continue;
+            }
+            if (!in_provider) continue;
+            if (boolValueForKey(line, key)) |value| return value;
+        }
+        return null;
+    }
+
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
@@ -998,6 +1044,16 @@ fn stringArrayValueForKey(allocator: std.mem.Allocator, line: []const u8, key: [
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
     return parseTomlStringArray(allocator, rhs);
+}
+
+fn boolValueForKey(line: []const u8, key: []const u8) ?bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (std.mem.eql(u8, rhs, "true")) return true;
+    if (std.mem.eql(u8, rhs, "false")) return false;
+    return null;
 }
 
 fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
@@ -1333,6 +1389,29 @@ test "model provider base url resolves from active provider table" {
 
     try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.openai);
     try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.chatgpt);
+}
+
+test "model provider auth requirement follows provider config" {
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "openai-custom"
+        \\
+        \\[model_providers.openai-custom]
+        \\base_url = "https://proxy.example/v1"
+        \\wire_api = "responses"
+        \\
+        \\[model_providers.openai-required]
+        \\base_url = "https://api.example/v1"
+        \\requires_openai_auth = true
+        \\
+        ,
+    };
+
+    try std.testing.expect(resolveModelProviderRequiresOpenAiAuth(view, null));
+    try std.testing.expect(resolveModelProviderRequiresOpenAiAuth(view, "openai"));
+    try std.testing.expect(!resolveModelProviderRequiresOpenAiAuth(view, "amazon-bedrock"));
+    try std.testing.expect(!resolveModelProviderRequiresOpenAiAuth(view, "openai-custom"));
+    try std.testing.expect(resolveModelProviderRequiresOpenAiAuth(view, "openai-required"));
 }
 
 test "profile model provider overrides top-level provider" {
