@@ -3656,6 +3656,144 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_command_exec_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-", dir="/tmp"))
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "danger-full-access"\n',
+            encoding="utf-8",
+        )
+        cwd = root / "cwd"
+        cwd.mkdir()
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        success = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-success",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "printf stdout; printf stderr >&2"],
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                },
+            },
+            env,
+        )
+        assert success["id"] == "command-exec-success"
+        assert success["result"] == {
+            "exitCode": 0,
+            "stdout": "stdout",
+            "stderr": "stderr",
+        }
+
+        cwd_env = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-cwd-env",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", 'printf "%s|%s" "$PWD" "$COMMAND_EXEC_TOKEN"'],
+                    "cwd": str(cwd),
+                    "env": {"COMMAND_EXEC_TOKEN": "token-value"},
+                },
+            },
+            env,
+        )
+        assert cwd_env["id"] == "command-exec-cwd-env"
+        assert cwd_env["result"]["exitCode"] == 0
+        assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
+        assert cwd_env["result"]["stderr"] == ""
+
+        nonzero = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-nonzero",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "printf failure >&2; exit 7"],
+                },
+            },
+            env,
+        )
+        assert nonzero["id"] == "command-exec-nonzero"
+        assert nonzero["result"] == {
+            "exitCode": 7,
+            "stdout": "",
+            "stderr": "failure",
+        }
+
+        empty_command = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-empty",
+                "method": "command/exec",
+                "params": {"command": []},
+            },
+            env,
+        )
+        assert empty_command["id"] == "command-exec-empty"
+        assert empty_command["error"]["code"] == -32600
+        assert "command must not be empty" in empty_command["error"]["message"]
+
+        bad_env = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-bad-env",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "env": {"COMMAND_EXEC_TOKEN": 1},
+                },
+            },
+            env,
+        )
+        assert bad_env["id"] == "command-exec-bad-env"
+        assert bad_env["error"]["code"] == -32602
+        assert "env values must be strings or null" in bad_env["error"]["message"]
+
+        streaming = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-streaming",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "streamStdoutStderr": True,
+                    "processId": "proc-1",
+                },
+            },
+            env,
+        )
+        assert streaming["id"] == "command-exec-streaming"
+        assert streaming["error"]["code"] == -32603
+        assert "streaming and tty modes" in streaming["error"]["message"]
+
+        followup = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-write",
+                "method": "command/exec/write",
+                "params": {"processId": "proc-1", "deltaBase64": "", "closeStdin": True},
+            },
+            env,
+        )
+        assert followup["id"] == "command-exec-write"
+        assert followup["error"]["code"] == -32603
+        assert "parsed but not implemented yet" in followup["error"]["message"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_model_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
 
@@ -6939,6 +7077,8 @@ def main() -> None:
     print("app-server-filesystem-rpc-e2e: ok")
     run_filesystem_watch_rpc_smoke(binary)
     print("app-server-filesystem-watch-rpc-e2e: ok")
+    run_command_exec_rpc_smoke(binary)
+    print("app-server-command-exec-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
     run_collaboration_mode_rpc_smoke(binary)
