@@ -3708,6 +3708,194 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
         assert cwd_env["result"]["stderr"] == ""
 
+        root_read_only_permission_profile = {
+            "type": "managed",
+            "file_system": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    }
+                ],
+            },
+            "network": "restricted",
+        }
+        disabled_permission_profile = {
+            "type": "disabled",
+        }
+        project_roots_write_permission_profile = {
+            "type": "managed",
+            "file_system": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "project_roots"}},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": "restricted",
+        }
+        absolute_writable_root = root / "absolute-writable"
+        absolute_writable_root.mkdir()
+        absolute_write_permission_profile = {
+            "type": "managed",
+            "file_system": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(absolute_writable_root)},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": "restricted",
+        }
+
+        permission_profile_disabled = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-disabled",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "printf profile-disabled"],
+                    "permissionProfile": disabled_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_disabled["id"] == "command-exec-permission-profile-disabled"
+        assert permission_profile_disabled["result"] == {
+            "exitCode": 0,
+            "stdout": "profile-disabled",
+            "stderr": "",
+        }
+
+        read_only_target = root / "readonly-blocked.txt"
+        permission_profile_read_only = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-read-only",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", f"printf nope > {read_only_target}"],
+                    "permissionProfile": root_read_only_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_read_only["id"] == "command-exec-permission-profile-read-only"
+        assert permission_profile_read_only["result"]["exitCode"] != 0
+        assert not read_only_target.exists()
+
+        child_cwd = cwd / "child"
+        child_cwd.mkdir()
+        permission_profile_project_roots = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-project-roots",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf child > child.txt && ! printf parent > ../parent.txt && printf project-roots",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": project_roots_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_project_roots["id"] == "command-exec-permission-profile-project-roots"
+        assert permission_profile_project_roots["result"]["exitCode"] == 0
+        assert permission_profile_project_roots["result"]["stdout"] == "project-roots"
+        assert child_cwd.joinpath("child.txt").read_text(encoding="utf-8") == "child"
+        assert not cwd.joinpath("parent.txt").exists()
+
+        permission_profile_absolute_root = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-absolute-root",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf absolute > {absolute_writable_root / 'ok.txt'} && ! printf child > child-denied.txt && printf absolute-root",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": absolute_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_absolute_root["id"] == "command-exec-permission-profile-absolute-root"
+        assert permission_profile_absolute_root["result"]["exitCode"] == 0
+        assert permission_profile_absolute_root["result"]["stdout"] == "absolute-root"
+        assert absolute_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "absolute"
+        assert not child_cwd.joinpath("child-denied.txt").exists()
+
+        permission_profile_with_sandbox_policy = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-conflict",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "permissionProfile": root_read_only_permission_profile,
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                },
+            },
+            env,
+        )
+        assert permission_profile_with_sandbox_policy["id"] == "command-exec-permission-profile-conflict"
+        assert permission_profile_with_sandbox_policy["error"]["code"] == -32600
+        assert "cannot be combined" in permission_profile_with_sandbox_policy["error"]["message"]
+
+        unsupported_permission_profile = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unsupported",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "permissionProfile": {
+                        "type": "managed",
+                        "file_system": {
+                            "type": "restricted",
+                            "entries": [
+                                {
+                                    "path": {"type": "glob_pattern", "pattern": "**/*.env"},
+                                    "access": "none",
+                                }
+                            ],
+                        },
+                        "network": "restricted",
+                    },
+                },
+            },
+            env,
+        )
+        assert unsupported_permission_profile["id"] == "command-exec-permission-profile-unsupported"
+        assert unsupported_permission_profile["error"]["code"] == -32603
+        assert "permissionProfile shape" in unsupported_permission_profile["error"]["message"]
+
         null_env = request_stdio_app_server(
             binary,
             {
@@ -6969,6 +7157,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert command_exec["required"] == ["command"]
         assert command_exec["properties"]["command"]["items"]["type"] == "string"
         assert command_exec["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"] == "SandboxPolicy.json"
+        assert command_exec["properties"]["permissionProfile"]["oneOf"][0]["$ref"] == "PermissionProfile.json"
+        permission_profile = json.loads((out_dir / "PermissionProfile.json").read_text(encoding="utf-8"))
+        assert permission_profile["title"] == "PermissionProfile"
+        assert permission_profile["oneOf"][0]["properties"]["network"]["enum"] == [
+            "restricted",
+            "enabled",
+        ]
         command_exec_output_delta = json.loads(
             (out_dir / "CommandExecOutputDeltaNotification.json").read_text(
                 encoding="utf-8"
@@ -7057,6 +7252,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface CommandExecParams" in command_exec
         assert "command: string[]" in command_exec
         assert "sandboxPolicy?: SandboxPolicy | null;" in command_exec
+        assert "permissionProfile?: PermissionProfile | null;" in command_exec
+        permission_profile = (out_dir / "v2" / "PermissionProfile.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'type: "managed"' in permission_profile
+        assert 'type: "disabled"' in permission_profile
+        assert 'type: "external"' in permission_profile
+        filesystem_entry = (out_dir / "v2" / "FileSystemSandboxEntry.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface FileSystemSandboxEntry" in filesystem_entry
         sandbox_policy = (out_dir / "v2" / "SandboxPolicy.ts").read_text(encoding="utf-8")
         assert 'type: "workspaceWrite"' in sandbox_policy
         assert "networkAccess?: boolean;" in sandbox_policy
@@ -7077,6 +7283,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
+        assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
