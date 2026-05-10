@@ -78,9 +78,31 @@ const AppServerState = struct {
 const FsWatchEntry = struct {
     watch_id: []const u8,
     path: []const u8,
+    snapshot: std.ArrayList(FsWatchSnapshotEntry) = .empty,
 
     fn deinit(self: *FsWatchEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.watch_id);
+        allocator.free(self.path);
+        deinitFsWatchSnapshot(allocator, &self.snapshot);
+    }
+};
+
+const FsWatchSnapshotKind = enum {
+    missing,
+    file,
+    directory,
+    symlink,
+    other,
+};
+
+const FsWatchSnapshotEntry = struct {
+    path: []const u8,
+    kind: FsWatchSnapshotKind,
+    mode: u32,
+    size: i64,
+    modified_at_ns: i64,
+
+    fn deinit(self: *FsWatchSnapshotEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
     }
 };
@@ -434,6 +456,7 @@ const StdioServer = struct {
                 defer self.allocator.free(payload);
                 try writeStdoutLine(payload);
             }
+            try queueExternalFsWatchNotifications(self.allocator, &state);
             try writePendingNotificationsStdout(self.allocator, &state);
         }
     }
@@ -482,6 +505,7 @@ const UnixServer = struct {
                 defer self.allocator.free(payload);
                 try writeStreamLine(&writer.interface, payload);
             }
+            try queueExternalFsWatchNotifications(self.allocator, &state);
             try writePendingNotificationsStream(self.allocator, &state, &writer.interface);
         }
     }
@@ -2951,9 +2975,12 @@ fn handleFsWatch(allocator: std.mem.Allocator, state: *AppServerState, id_value:
     errdefer allocator.free(watch_id_owned);
     const path_owned = try allocator.dupe(u8, path);
     errdefer allocator.free(path_owned);
+    var snapshot = try captureFsWatchSnapshot(allocator, path);
+    errdefer deinitFsWatchSnapshot(allocator, &snapshot);
     try state.fs_watches.append(allocator, .{
         .watch_id = watch_id_owned,
         .path = path_owned,
+        .snapshot = snapshot,
     });
     return response;
 }
@@ -2982,11 +3009,36 @@ fn findFsWatchIndex(state: *const AppServerState, watch_id: []const u8) ?usize {
 }
 
 fn queueFsChangedNotifications(allocator: std.mem.Allocator, state: *AppServerState, changed_path: []const u8) !void {
-    for (state.fs_watches.items) |watch| {
+    for (state.fs_watches.items) |*watch| {
         if (!fsWatchMatches(allocator, watch.path, changed_path)) continue;
         const notification = try renderFsChangedNotification(allocator, watch.watch_id, changed_path);
         errdefer allocator.free(notification);
+        var next_snapshot = try captureFsWatchSnapshot(allocator, watch.path);
+        errdefer deinitFsWatchSnapshot(allocator, &next_snapshot);
         try state.pending_notifications.append(allocator, notification);
+        deinitFsWatchSnapshot(allocator, &watch.snapshot);
+        watch.snapshot = next_snapshot;
+    }
+}
+
+fn queueExternalFsWatchNotifications(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    if (state.fs_watches.items.len == 0) return;
+    for (state.fs_watches.items) |*watch| {
+        var next_snapshot = try captureFsWatchSnapshot(allocator, watch.path);
+        errdefer deinitFsWatchSnapshot(allocator, &next_snapshot);
+
+        var changed_paths = std.ArrayList([]const u8).empty;
+        defer changed_paths.deinit(allocator);
+        try collectFsWatchSnapshotChanges(allocator, &changed_paths, watch.snapshot.items, next_snapshot.items);
+
+        if (changed_paths.items.len > 0) {
+            const notification = try renderFsChangedNotificationForPaths(allocator, watch.watch_id, changed_paths.items);
+            errdefer allocator.free(notification);
+            try state.pending_notifications.append(allocator, notification);
+        }
+
+        deinitFsWatchSnapshot(allocator, &watch.snapshot);
+        watch.snapshot = next_snapshot;
     }
 }
 
@@ -2999,15 +3051,140 @@ fn fsWatchMatches(allocator: std.mem.Allocator, watch_path: []const u8, changed_
 }
 
 fn renderFsChangedNotification(allocator: std.mem.Allocator, watch_id: []const u8, changed_path: []const u8) ![]const u8 {
+    const changed_paths = [_][]const u8{changed_path};
+    return renderFsChangedNotificationForPaths(allocator, watch_id, &changed_paths);
+}
+
+fn renderFsChangedNotificationForPaths(
+    allocator: std.mem.Allocator,
+    watch_id: []const u8,
+    changed_paths: []const []const u8,
+) ![]const u8 {
     const watch_id_json = try std.json.Stringify.valueAlloc(allocator, watch_id, .{});
     defer allocator.free(watch_id_json);
-    const changed_path_json = try std.json.Stringify.valueAlloc(allocator, changed_path, .{});
-    defer allocator.free(changed_path_json);
+
+    var paths_json = std.ArrayList(u8).empty;
+    defer paths_json.deinit(allocator);
+    try paths_json.append(allocator, '[');
+    for (changed_paths, 0..) |changed_path, index| {
+        if (index > 0) try paths_json.append(allocator, ',');
+        const changed_path_json = try std.json.Stringify.valueAlloc(allocator, changed_path, .{});
+        defer allocator.free(changed_path_json);
+        try paths_json.appendSlice(allocator, changed_path_json);
+    }
+    try paths_json.append(allocator, ']');
+
     return std.fmt.allocPrint(
         allocator,
-        "{{\"jsonrpc\":\"2.0\",\"method\":\"fs/changed\",\"params\":{{\"watchId\":{s},\"changedPaths\":[{s}]}}}}",
-        .{ watch_id_json, changed_path_json },
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"fs/changed\",\"params\":{{\"watchId\":{s},\"changedPaths\":{s}}}}}",
+        .{ watch_id_json, paths_json.items },
     );
+}
+
+fn captureFsWatchSnapshot(allocator: std.mem.Allocator, path: []const u8) !std.ArrayList(FsWatchSnapshotEntry) {
+    var snapshot = std.ArrayList(FsWatchSnapshotEntry).empty;
+    errdefer deinitFsWatchSnapshot(allocator, &snapshot);
+    try appendFsWatchSnapshotEntry(allocator, &snapshot, path);
+    return snapshot;
+}
+
+fn appendFsWatchSnapshotEntry(
+    allocator: std.mem.Allocator,
+    snapshot: *std.ArrayList(FsWatchSnapshotEntry),
+    path: []const u8,
+) !void {
+    const metadata = try statPathNoFollowForWatch(allocator, path);
+
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    if (metadata) |stat| {
+        const mode: u32 = @intCast(stat.mode);
+        try snapshot.append(allocator, .{
+            .path = owned_path,
+            .kind = fsWatchSnapshotKindFromMode(mode),
+            .mode = mode,
+            .size = @intCast(stat.size),
+            .modified_at_ns = timespecToUnixNs(stat.mtime()),
+        });
+        if (!std.c.S.ISDIR(mode)) return;
+    } else {
+        try snapshot.append(allocator, .{
+            .path = owned_path,
+            .kind = .missing,
+            .mode = 0,
+            .size = 0,
+            .modified_at_ns = 0,
+        });
+        return;
+    }
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (true) {
+        const entry = (iter.next(io) catch return) orelse break;
+        const child_path = try std.fs.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(child_path);
+        try appendFsWatchSnapshotEntry(allocator, snapshot, child_path);
+    }
+}
+
+fn statPathNoFollowForWatch(allocator: std.mem.Allocator, path: []const u8) !?std.c.Stat {
+    return statPathNoFollow(allocator, path) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+}
+
+fn fsWatchSnapshotKindFromMode(mode: u32) FsWatchSnapshotKind {
+    if (std.c.S.ISDIR(mode)) return .directory;
+    if (std.c.S.ISREG(mode)) return .file;
+    if (std.c.S.ISLNK(mode)) return .symlink;
+    return .other;
+}
+
+fn collectFsWatchSnapshotChanges(
+    allocator: std.mem.Allocator,
+    changed_paths: *std.ArrayList([]const u8),
+    previous: []const FsWatchSnapshotEntry,
+    current: []const FsWatchSnapshotEntry,
+) !void {
+    for (current) |current_entry| {
+        const previous_entry = findFsWatchSnapshotEntry(previous, current_entry.path) orelse {
+            try changed_paths.append(allocator, current_entry.path);
+            continue;
+        };
+        if (!fsWatchSnapshotMetadataEqual(previous_entry, current_entry)) {
+            try changed_paths.append(allocator, current_entry.path);
+        }
+    }
+    for (previous) |previous_entry| {
+        if (findFsWatchSnapshotEntry(current, previous_entry.path) == null) {
+            try changed_paths.append(allocator, previous_entry.path);
+        }
+    }
+}
+
+fn findFsWatchSnapshotEntry(entries: []const FsWatchSnapshotEntry, path: []const u8) ?FsWatchSnapshotEntry {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.path, path)) return entry;
+    }
+    return null;
+}
+
+fn fsWatchSnapshotMetadataEqual(left: FsWatchSnapshotEntry, right: FsWatchSnapshotEntry) bool {
+    return left.kind == right.kind and
+        left.mode == right.mode and
+        left.size == right.size and
+        left.modified_at_ns == right.modified_at_ns;
+}
+
+fn deinitFsWatchSnapshot(allocator: std.mem.Allocator, snapshot: *std.ArrayList(FsWatchSnapshotEntry)) void {
+    for (snapshot.items) |*entry| entry.deinit(allocator);
+    snapshot.deinit(allocator);
+    snapshot.* = .empty;
 }
 
 fn fsObjectParams(params_value: ?std.json.Value, method: []const u8) FsObjectParams {
@@ -3117,6 +3294,10 @@ fn statCreatedAtMs(stat: std.c.Stat) i64 {
 
 fn timespecToUnixMs(value: std.c.timespec) i64 {
     return @as(i64, @intCast(value.sec)) * 1000 + @divTrunc(@as(i64, @intCast(value.nsec)), 1_000_000);
+}
+
+fn timespecToUnixNs(value: std.c.timespec) i64 {
+    return @as(i64, @intCast(value.sec)) * std.time.ns_per_s + @as(i64, @intCast(value.nsec));
 }
 
 fn isConfigMethod(method: []const u8) bool {
