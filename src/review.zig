@@ -277,6 +277,7 @@ pub fn printHelp() void {
         \\  codex-zig review --base BRANCH
         \\  codex-zig review --commit SHA [--title TITLE]
         \\  codex-zig review PROMPT
+        \\  codex-zig review -
         \\
         \\Options:
         \\  --uncommitted     Review staged, unstaged, and untracked changes
