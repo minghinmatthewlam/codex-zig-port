@@ -1334,6 +1334,93 @@ description: Summarize plugin smoke threads
         config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
         assert '[plugins."installable-plugin@local-market"]' in config_text
         assert "enabled = true" in config_text
+
+        git_remote = root / "git-plugin-source"
+        git_plugin_root = git_remote / "plugins" / "git-installable"
+        git_plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        git_plugin_root.joinpath("skills", "git-installer").mkdir(parents=True)
+        git_plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "git-installable",
+                    "version": "2.3.4",
+                    "interface": {"displayName": "Git Installable"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        git_plugin_root.joinpath("skills", "git-installer", "SKILL.md").write_text(
+            "# Git Installer\n",
+            encoding="utf-8",
+        )
+        git(git_remote, "init")
+        git(git_remote, "config", "user.email", "codex-test@example.com")
+        git(git_remote, "config", "user.name", "Codex Test")
+        git(git_remote, "add", ".")
+        git(git_remote, "commit", "-m", "initial")
+        git_sha = git_output(git_remote, "rev-parse", "HEAD")
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "plugins": [
+                        {
+                            "name": "git-installable",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": str(git_remote),
+                                "path": "plugins/git-installable",
+                                "sha": git_sha,
+                            },
+                            "policy": {"authentication": "ON_USE"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        git_plugin_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-install-git",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(
+                        repo / ".agents" / "plugins" / "marketplace.json"
+                    ),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "git-installable",
+                },
+            },
+            env,
+        )
+        assert git_plugin_install["id"] == "plugin-install-git"
+        assert git_plugin_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        installed_git_plugin = (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "local-market"
+            / "git-installable"
+            / "2.3.4"
+        )
+        assert installed_git_plugin.joinpath(".codex-plugin", "plugin.json").is_file()
+        assert installed_git_plugin.joinpath(
+            "skills", "git-installer", "SKILL.md"
+        ).is_file()
+        assert not (
+            codex_home
+            / "plugins"
+            / ".marketplace-plugin-source-staging"
+            / "local-market"
+            / "git-installable"
+        ).exists()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert '[plugins."git-installable@local-market"]' in config_text
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
