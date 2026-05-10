@@ -335,6 +335,7 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
             [
                 str(binary.resolve()),
                 "exec",
+                "--skip-git-repo-check",
                 "--approval-policy=never",
                 "--output-last-message=last.txt",
                 "say",
@@ -365,7 +366,7 @@ def run_exec_stdin_smoke(binary: Path) -> None:
         env = make_exec_mock_env(temp_root, base_url)
 
         stdin_only = subprocess.run(
-            [str(binary.resolve()), "exec"],
+            [str(binary.resolve()), "exec", "--skip-git-repo-check"],
             cwd=temp_root,
             env=env,
             input="stdin only prompt",
@@ -380,7 +381,7 @@ def run_exec_stdin_smoke(binary: Path) -> None:
         assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "stdin only prompt"
 
         prompt_with_context = subprocess.run(
-            [str(binary.resolve()), "exec", "summarize"],
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "summarize"],
             cwd=temp_root,
             env=env,
             input="extra context",
