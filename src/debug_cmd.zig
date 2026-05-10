@@ -31,6 +31,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try runModels(allocator, args, options);
         return;
     }
+    if (std.mem.eql(u8, subcommand, "app-server")) {
+        try runAppServerDebug(args);
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "trace-reduce")) {
+        try runTraceReduce(allocator, args);
+        return;
+    }
     if (std.mem.eql(u8, subcommand, "clear-memories")) {
         try runClearMemories(allocator, args, options);
         return;
@@ -100,6 +108,76 @@ fn runModels(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, opt
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
     try cli_utils.writeStdout("\n");
+}
+
+fn runAppServerDebug(args: *std.process.Args.Iterator) !void {
+    const subcommand = args.next() orelse {
+        printDebugAppServerHelp();
+        return error.MissingDebugAppServerSubcommand;
+    };
+    if (isHelpFlag(subcommand)) {
+        printDebugAppServerHelp();
+        return;
+    }
+    if (!std.mem.eql(u8, subcommand, "send-message-v2")) {
+        return error.UnknownDebugAppServerSubcommand;
+    }
+
+    const user_message = args.next() orelse {
+        printDebugAppServerSendMessageV2Help();
+        return error.MissingDebugAppServerSendMessage;
+    };
+    if (isHelpFlag(user_message)) {
+        printDebugAppServerSendMessageV2Help();
+        return;
+    }
+    if (args.next() != null) return error.UnexpectedDebugAppServerArgument;
+
+    try cli_utils.writeStderr("codex-zig debug app-server send-message-v2 is parsed but not implemented yet\n");
+    return error.DebugAppServerSendMessageV2NotImplemented;
+}
+
+fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var trace_bundle: ?[]const u8 = null;
+    var output: ?[]const u8 = null;
+
+    while (args.next()) |arg| {
+        if (isHelpFlag(arg)) {
+            printTraceReduceHelp();
+            return;
+        }
+        if (std.mem.eql(u8, arg, "--output") or std.mem.eql(u8, arg, "-o")) {
+            output = args.next() orelse return error.MissingDebugTraceReduceOutput;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--output=")) {
+            output = arg["--output=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownDebugTraceReduceOption;
+        if (trace_bundle != null) return error.UnexpectedDebugTraceReduceArgument;
+        trace_bundle = arg;
+    }
+
+    const bundle = trace_bundle orelse {
+        printTraceReduceHelp();
+        return error.MissingDebugTraceBundle;
+    };
+    const message = if (output) |path|
+        try std.fmt.allocPrint(
+            allocator,
+            "codex-zig debug trace-reduce is parsed but not implemented yet: {s} -> {s}\n",
+            .{ bundle, path },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "codex-zig debug trace-reduce is parsed but not implemented yet: {s}\n",
+            .{bundle},
+        );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.DebugTraceReduceNotImplemented;
 }
 
 fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -237,11 +315,13 @@ pub fn printHelp() void {
         \\Usage:
         \\  codex-zig debug prompt-input [OPTIONS] [PROMPT]
         \\  codex-zig debug models [--bundled]
+        \\  codex-zig debug app-server <COMMAND>
         \\  codex-zig debug clear-memories
         \\
         \\Subcommands:
         \\  prompt-input       Render the model-visible input list as JSON
         \\  models             Render the raw model catalog as JSON
+        \\  app-server         App-server debugging helpers
         \\  clear-memories     Clear local memory directories
         \\
     , .{});
@@ -269,6 +349,42 @@ fn printModelsHelp() void {
         \\
         \\Options:
         \\  --bundled              Skip config and dump the bundled Zig catalog
+        \\
+    , .{});
+}
+
+fn printDebugAppServerHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig debug app-server send-message-v2 USER_MESSAGE
+        \\
+        \\Subcommands:
+        \\  send-message-v2    Send a V2 debug message through the Rust app-server test client
+        \\
+    , .{});
+}
+
+fn printDebugAppServerSendMessageV2Help() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig debug app-server send-message-v2 USER_MESSAGE
+        \\
+        \\Parses the Rust debug app-server helper shape. The app-server test
+        \\client transport is not implemented in the Zig port yet.
+        \\
+    , .{});
+}
+
+fn printTraceReduceHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE
+        \\
+        \\Parses the hidden Rust rollout trace reducer command. Rollout trace
+        \\replay is not implemented in the Zig port yet.
+        \\
+        \\Options:
+        \\  -o, --output FILE      Output path for reduced state JSON
         \\
     , .{});
 }

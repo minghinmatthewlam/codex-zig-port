@@ -808,6 +808,75 @@ def run_debug_clear_memories_smoke(
             raise AssertionError("symlink rejection modified the target directory")
 
 
+def run_debug_stub_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    app_server_help = subprocess.run(
+        [str(binary), "debug", "app-server", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig debug app-server send-message-v2" not in app_server_help.stderr:
+        raise AssertionError(
+            f"expected debug app-server help output:\n{app_server_help.stderr}"
+        )
+
+    send_message = subprocess.run(
+        [str(binary), "debug", "app-server", "send-message-v2", "hello"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if send_message.returncode == 0:
+        raise AssertionError("debug app-server send-message-v2 unexpectedly succeeded")
+    if "parsed but not implemented yet" not in send_message.stderr:
+        raise AssertionError(
+            f"expected send-message-v2 not-implemented output:\n{send_message.stderr}"
+        )
+
+    trace_help = subprocess.run(
+        [str(binary), "debug", "trace-reduce", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig debug trace-reduce" not in trace_help.stderr:
+        raise AssertionError(
+            f"expected debug trace-reduce help output:\n{trace_help.stderr}"
+        )
+
+    trace_result = subprocess.run(
+        [
+            str(binary),
+            "debug",
+            "trace-reduce",
+            "--output",
+            str(workspace / "state.json"),
+            str(workspace / "trace-bundle"),
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if trace_result.returncode == 0:
+        raise AssertionError("debug trace-reduce unexpectedly succeeded")
+    if "parsed but not implemented yet" not in trace_result.stderr:
+        raise AssertionError(
+            f"expected trace-reduce not-implemented output:\n{trace_result.stderr}"
+        )
+
+
 def run_remote_flag_smoke(
     binary: Path,
     env: dict[str, str],
@@ -1039,6 +1108,7 @@ def run_e2e(binary: Path) -> str:
             run_remote_flag_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
             run_debug_clear_memories_smoke(binary, env, workspace)
+            run_debug_stub_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
 
