@@ -250,11 +250,15 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
     defer allocator.free(user_config_path);
     const hook_states = try loadHookStatesFromConfigFile(allocator, user_config_path);
     defer hook_states.deinit(allocator);
-    try appendHooksFromConfig(allocator, user_config_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
+    const user_hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "hooks.json" });
+    defer allocator.free(user_hooks_json_path);
+    try appendHooksFromLayer(allocator, user_config_path, user_hooks_json_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
 
     const project_config_path = try std.fs.path.join(allocator, &.{ cwd, ".codex", "config.toml" });
     defer allocator.free(project_config_path);
-    try appendHooksFromConfig(allocator, project_config_path, .project, hook_states, &hooks, &warnings, &errors, &display_order);
+    const project_hooks_json_path = try std.fs.path.join(allocator, &.{ cwd, ".codex", "hooks.json" });
+    defer allocator.free(project_hooks_json_path);
+    try appendHooksFromLayer(allocator, project_config_path, project_hooks_json_path, .project, hook_states, &hooks, &warnings, &errors, &display_order);
 
     const owned_cwd = try allocator.dupe(u8, cwd);
     errdefer allocator.free(owned_cwd);
@@ -282,6 +286,36 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
     };
 }
 
+fn appendHooksFromLayer(
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+    hooks_json_path: []const u8,
+    source: Source,
+    hook_states: HookStates,
+    hooks: *std.ArrayList(Hook),
+    warnings: *std.ArrayList([]const u8),
+    errors: *std.ArrayList(HookError),
+    display_order: *i64,
+) !void {
+    if (!try hooksFeatureEnabledFromConfigFile(allocator, config_path, errors)) return;
+    try appendHooksFromJsonFile(allocator, hooks_json_path, source, hook_states, hooks, warnings, display_order);
+    try appendHooksFromConfig(allocator, config_path, source, hook_states, hooks, warnings, errors, display_order);
+}
+
+fn hooksFeatureEnabledFromConfigFile(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    errors: *std.ArrayList(HookError),
+) !bool {
+    const bytes = config.readConfigTomlFile(allocator, path) catch |err| {
+        try appendError(allocator, errors, path, @errorName(err));
+        return false;
+    };
+    defer if (bytes) |value| allocator.free(value);
+    const contents = bytes orelse return true;
+    return hooksFeatureEnabled(contents);
+}
+
 fn appendHooksFromConfig(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -303,6 +337,129 @@ fn appendHooksFromConfig(
     const source_path = try canonicalPathOrCopy(allocator, path);
     defer allocator.free(source_path);
     try parseConfigHooks(allocator, contents, source_path, source, hook_states, hooks, warnings, display_order);
+}
+
+fn appendHooksFromJsonFile(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    source: Source,
+    hook_states: HookStates,
+    hooks: *std.ArrayList(Hook),
+    warnings: *std.ArrayList([]const u8),
+    display_order: *i64,
+) !void {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => {
+            const warning = try std.fmt.allocPrint(allocator, "failed to read hooks config {s}: {s}", .{ path, @errorName(err) });
+            try warnings.append(allocator, warning);
+            return;
+        },
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch |err| {
+        const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s}", .{ path, @errorName(err) });
+        try warnings.append(allocator, warning);
+        return;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: expected object", .{path});
+        try warnings.append(allocator, warning);
+        return;
+    }
+    const events_value = parsed.value.object.get("hooks") orelse return;
+    if (events_value != .object) {
+        const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: expected hooks object", .{path});
+        try warnings.append(allocator, warning);
+        return;
+    }
+
+    const source_path = try canonicalPathOrCopy(allocator, path);
+    defer allocator.free(source_path);
+    try appendJsonHookEvents(allocator, events_value.object, source_path, source, hook_states, hooks, warnings, display_order);
+}
+
+fn appendJsonHookEvents(
+    allocator: std.mem.Allocator,
+    events: std.json.ObjectMap,
+    source_path: []const u8,
+    source: Source,
+    hook_states: HookStates,
+    hooks: *std.ArrayList(Hook),
+    warnings: *std.ArrayList([]const u8),
+    display_order: *i64,
+) !void {
+    const event_order = [_]HookEvent{
+        .pre_tool_use,
+        .permission_request,
+        .post_tool_use,
+        .pre_compact,
+        .post_compact,
+        .session_start,
+        .user_prompt_submit,
+        .stop,
+    };
+    for (event_order) |event_name| {
+        const groups_value = events.get(event_name.configLabel()) orelse continue;
+        if (groups_value != .array) {
+            const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s} must be an array", .{ source_path, event_name.configLabel() });
+            try warnings.append(allocator, warning);
+            continue;
+        }
+
+        for (groups_value.array.items, 0..) |group_value, group_index| {
+            if (group_value != .object) {
+                const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s} group must be an object", .{ source_path, event_name.configLabel() });
+                try warnings.append(allocator, warning);
+                continue;
+            }
+            const matcher = jsonStringField(group_value.object, "matcher");
+            const handlers_value = group_value.object.get("hooks") orelse continue;
+            if (handlers_value != .array) {
+                const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: {s} hooks must be an array", .{ source_path, event_name.configLabel() });
+                try warnings.append(allocator, warning);
+                continue;
+            }
+            for (handlers_value.array.items, 0..) |handler_value, handler_index| {
+                if (handler_value != .object) {
+                    const warning = try std.fmt.allocPrint(allocator, "failed to parse hooks config {s}: hook handler must be an object", .{source_path});
+                    try warnings.append(allocator, warning);
+                    continue;
+                }
+                const handler_type = jsonStringField(handler_value.object, "type") orelse continue;
+                if (!std.mem.eql(u8, handler_type, "command")) {
+                    const warning = try std.fmt.allocPrint(allocator, "skipping {s} hook in {s}: {s} hooks are not supported yet", .{ handler_type, source_path, handler_type });
+                    try warnings.append(allocator, warning);
+                    continue;
+                }
+                if (jsonBoolField(handler_value.object, "async") orelse false) {
+                    const warning = try std.fmt.allocPrint(allocator, "skipping async hook in {s}: async hooks are not supported yet", .{source_path});
+                    try warnings.append(allocator, warning);
+                    continue;
+                }
+                const command = jsonStringField(handler_value.object, "command") orelse continue;
+                try appendCommandHook(
+                    allocator,
+                    source_path,
+                    source,
+                    hook_states,
+                    event_name,
+                    matcher,
+                    group_index,
+                    handler_index,
+                    command,
+                    jsonUnsignedField(handler_value.object, "timeout"),
+                    jsonStringField(handler_value.object, "statusMessage"),
+                    hooks,
+                    warnings,
+                    display_order,
+                );
+            }
+        }
+    }
 }
 
 fn parseConfigHooks(
@@ -460,36 +617,70 @@ fn flushPartialHook(
         return;
     }
     const command = hook.command orelse return;
+    try appendCommandHook(
+        allocator,
+        source_path,
+        source,
+        hook_states,
+        group.event_name,
+        group.matcher,
+        group.group_index,
+        handler_index,
+        command,
+        hook.timeout_sec,
+        hook.status_message,
+        hooks,
+        warnings,
+        display_order,
+    );
+}
+
+fn appendCommandHook(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    source: Source,
+    hook_states: HookStates,
+    event_name: HookEvent,
+    matcher: ?[]const u8,
+    group_index: usize,
+    handler_index: usize,
+    command: []const u8,
+    timeout_sec_opt: ?u64,
+    status_message: ?[]const u8,
+    hooks: *std.ArrayList(Hook),
+    warnings: *std.ArrayList([]const u8),
+    display_order: *i64,
+) !void {
     if (std.mem.trim(u8, command, " \t\r\n").len == 0) {
         const warning = try std.fmt.allocPrint(allocator, "skipping empty hook command in {s}", .{source_path});
         try warnings.append(allocator, warning);
         return;
     }
 
-    const timeout_sec = @max(hook.timeout_sec orelse DEFAULT_TIMEOUT_SEC, 1);
+    const timeout_sec = @max(timeout_sec_opt orelse DEFAULT_TIMEOUT_SEC, 1);
     const key = try std.fmt.allocPrint(
         allocator,
         "{s}:{s}:{d}:{d}",
-        .{ source_path, group.event_name.keyLabel(), group.group_index, handler_index },
+        .{ source_path, event_name.keyLabel(), group_index, handler_index },
     );
     errdefer allocator.free(key);
-    const current_hash = try commandHookHash(allocator, group.event_name, group.matcher, command, timeout_sec, hook.status_message);
+    const current_hash = try commandHookHash(allocator, event_name, matcher, command, timeout_sec, status_message);
     errdefer allocator.free(current_hash);
     const hook_state = hook_states.find(key);
     const enabled = if (hook_state) |state| state.enabled orelse true else true;
     const trust_status = hookTrustStatus(current_hash, if (hook_state) |state| state.trusted_hash else null);
-    const owned_matcher = if (group.matcher) |matcher| try allocator.dupe(u8, matcher) else null;
-    errdefer if (owned_matcher) |matcher| allocator.free(matcher);
+    const owned_matcher = if (matcher) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_matcher) |value| allocator.free(value);
     const owned_command = try allocator.dupe(u8, command);
     errdefer allocator.free(owned_command);
-    const owned_status_message = if (hook.status_message) |status| try allocator.dupe(u8, status) else null;
+    const owned_status_message = if (status_message) |status| try allocator.dupe(u8, status) else null;
     errdefer if (owned_status_message) |status| allocator.free(status);
     const owned_source_path = try allocator.dupe(u8, source_path);
     errdefer allocator.free(owned_source_path);
 
     const owned = Hook{
         .key = key,
-        .event_name = group.event_name,
+        .event_name = event_name,
         .matcher = owned_matcher,
         .command = owned_command,
         .timeout_sec = timeout_sec,
@@ -764,6 +955,31 @@ fn tomlUnsignedValueForKey(line: []const u8, key: []const u8) ?u64 {
     return std.fmt.parseUnsigned(u64, rhs, 10) catch null;
 }
 
+fn jsonStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .string => |string| string,
+        else => null,
+    };
+}
+
+fn jsonBoolField(object: std.json.ObjectMap, field: []const u8) ?bool {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .bool => |boolean| boolean,
+        else => null,
+    };
+}
+
+fn jsonUnsignedField(object: std.json.ObjectMap, field: []const u8) ?u64 {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .integer => |integer| if (integer >= 0) @intCast(integer) else null,
+        .number_string => |number| std.fmt.parseUnsigned(u64, number, 10) catch null,
+        else => null,
+    };
+}
+
 fn parseTomlStringLiteral(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
     var index: usize = 0;
     return parseTomlStringAt(allocator, raw, &index);
@@ -1019,6 +1235,25 @@ test "hooks list honors disabled hooks feature" {
         \\command = "echo skipped"
         ,
     });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/hooks.json",
+        .data =
+        \\{
+        \\  "hooks": {
+        \\    "PreToolUse": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo skipped json"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+        ,
+    });
 
     const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
     defer allocator.free(codex_home);
@@ -1029,6 +1264,85 @@ test "hooks list honors disabled hooks feature" {
     defer result.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), result.entries.len);
     try std.testing.expectEqual(@as(usize, 0), result.entries[0].hooks.len);
+}
+
+test "hooks list loads user and project hooks json" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "codex-home");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "repo/.codex");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/hooks.json",
+        .data =
+        \\{
+        \\  "hooks": {
+        \\    "PreToolUse": [
+        \\      {
+        \\        "matcher": "Bash",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo user json",
+        \\            "timeout": 7,
+        \\            "statusMessage": "running user json"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+        ,
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "repo/.codex/hooks.json",
+        .data =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo project json"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+        ,
+    });
+
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const cwd = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(cwd);
+
+    var result = try list(allocator, codex_home, &.{cwd});
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.entries.len);
+    try std.testing.expectEqual(@as(usize, 2), result.entries[0].hooks.len);
+
+    const user_hook = result.entries[0].hooks[0];
+    try std.testing.expectEqualStrings("preToolUse", user_hook.event_name.jsonLabel());
+    try std.testing.expectEqualStrings("Bash", user_hook.matcher.?);
+    try std.testing.expectEqualStrings("echo user json", user_hook.command);
+    try std.testing.expectEqual(@as(u64, 7), user_hook.timeout_sec);
+    try std.testing.expectEqualStrings("running user json", user_hook.status_message.?);
+    try std.testing.expectEqual(Source.user, user_hook.source);
+    try std.testing.expect(std.mem.endsWith(u8, user_hook.source_path, "codex-home/hooks.json"));
+    try std.testing.expect(std.mem.endsWith(u8, user_hook.key, "hooks.json:pre_tool_use:0:0"));
+
+    const project_hook = result.entries[0].hooks[1];
+    try std.testing.expectEqualStrings("userPromptSubmit", project_hook.event_name.jsonLabel());
+    try std.testing.expectEqualStrings("echo project json", project_hook.command);
+    try std.testing.expectEqual(@as(u64, DEFAULT_TIMEOUT_SEC), project_hook.timeout_sec);
+    try std.testing.expectEqual(Source.project, project_hook.source);
+    try std.testing.expect(std.mem.endsWith(u8, project_hook.source_path, "repo/.codex/hooks.json"));
+    try std.testing.expect(std.mem.endsWith(u8, project_hook.key, "hooks.json:user_prompt_submit:0:0"));
 }
 
 test "hooks list applies user hook state" {
