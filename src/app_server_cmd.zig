@@ -1011,6 +1011,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/share/delete")) {
         return handlePluginShareDelete(allocator, state, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/install")) {
+        return handlePluginInstall(allocator, state, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "plugin/uninstall")) {
         return handlePluginUninstall(allocator, state, id_value, params_value);
     }
@@ -1354,6 +1357,90 @@ fn parsePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ParsedPlug
 
 fn parsePluginShareDeleteParams(params_value: ?std.json.Value) []const u8 {
     return params_value.?.object.get("remotePluginId").?.string;
+}
+
+fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginReadParams(params_value) catch |err| switch (err) {
+        error.InvalidPluginReadParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/install params must be an object"),
+        error.InvalidPluginReadPluginName => return renderJsonRpcError(allocator, id_value, -32602, "pluginName must be a string"),
+        error.InvalidPluginReadSource => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin/install requires exactly one of marketplacePath or remoteMarketplaceName"),
+        error.InvalidPluginReadMarketplacePath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplacePath must be an absolute path"),
+    };
+
+    if (params.remote_marketplace_name) |remote_marketplace_name| {
+        if (!remote_plugin.isValidRemotePluginId(params.plugin_name)) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "invalid remote plugin id: {s}; only ASCII letters, digits, `_`, `-`, and `~` are allowed",
+                .{params.plugin_name},
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+
+        var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const config_path = config.configTomlPath(allocator, cfg.codex_home) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to load config", err);
+        };
+        defer allocator.free(config_path);
+        const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to load config", err);
+        };
+        defer if (config_bytes) |bytes| allocator.free(bytes);
+        if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "remote plugin install is not enabled for marketplace {s}",
+                .{remote_marketplace_name},
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+
+        return renderJsonRpcError(allocator, id_value, -32603, "plugin/install remote marketplace is parsed but not implemented yet");
+    }
+
+    const marketplace_path = params.marketplace_path.?;
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const install = plugin_list.installLocalPlugin(allocator, codex_home, config_bytes orelse "", marketplace_path, params.plugin_name) catch |err| switch (err) {
+        plugin_list.InstallError.InvalidMarketplaceFile => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace file"),
+        plugin_list.InstallError.PluginNotFound => {
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: plugin `{s}` was not found", .{params.plugin_name});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        plugin_list.InstallError.MissingPluginManifest => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing or invalid plugin.json"),
+        plugin_list.InstallError.PluginsDisabled => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugins are disabled"),
+        plugin_list.InstallError.UnsupportedInstallSource => return renderJsonRpcError(allocator, id_value, -32603, "plugin/install source is parsed but not implemented yet"),
+        plugin_list.InstallError.PluginNotAvailable => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin is not available for install"),
+        plugin_list.InstallError.InvalidPluginId => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid plugin id"),
+        plugin_list.InstallError.PluginNameMismatch => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin.json name does not match marketplace plugin name"),
+        plugin_list.InstallError.InvalidPluginVersion => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid plugin version"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed", err),
+    };
+    defer install.deinit(allocator);
+
+    config.writeConfigTomlFile(config_path, install.updated_config) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to write config", err);
+    };
+    clearSkillsListCache(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, install.response_json);
 }
 
 fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
