@@ -3686,6 +3686,10 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         network_server, network_url = start_command_exec_network_backend()
+        network_probe = (
+            "import sys, urllib.request; "
+            "sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=2).read().decode())"
+        )
 
         success = request_stdio_app_server(
             binary,
@@ -3725,6 +3729,63 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert cwd_env["result"]["exitCode"] == 0
         assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
         assert cwd_env["result"]["stderr"] == ""
+
+        sandbox_policy_network_enabled = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-network-enabled",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "sandboxPolicy": {"type": "readOnly", "networkAccess": True},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_network_enabled["id"] == "command-exec-sandbox-policy-network-enabled"
+        assert sandbox_policy_network_enabled["result"] == {
+            "exitCode": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+        }
+        assert CommandExecNetworkHandler.requests == ["/"]
+
+        sandbox_policy_network_default = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-network-default",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "sandboxPolicy": {"type": "readOnly"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_network_default["id"] == "command-exec-sandbox-policy-network-default"
+        assert sandbox_policy_network_default["result"]["exitCode"] != 0
+        assert sandbox_policy_network_default["result"]["stdout"] == ""
+        assert CommandExecNetworkHandler.requests == ["/"]
+
+        sandbox_policy_network_restricted = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-network-restricted",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "sandboxPolicy": {"type": "workspaceWrite", "networkAccess": False},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_network_restricted["id"] == "command-exec-sandbox-policy-network-restricted"
+        assert sandbox_policy_network_restricted["result"]["exitCode"] != 0
+        assert sandbox_policy_network_restricted["result"]["stdout"] == ""
+        assert CommandExecNetworkHandler.requests == ["/"]
 
         root_read_only_permission_profile = {
             "type": "managed",
@@ -3871,10 +3932,6 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert absolute_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "absolute"
         assert not child_cwd.joinpath("child-denied.txt").exists()
 
-        network_probe = (
-            "import sys, urllib.request; "
-            "sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=2).read().decode())"
-        )
         permission_profile_network_enabled = request_stdio_app_server(
             binary,
             {
@@ -3894,7 +3951,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stdout": "ok\n",
             "stderr": "",
         }
-        assert CommandExecNetworkHandler.requests == ["/"]
+        assert CommandExecNetworkHandler.requests == ["/", "/"]
 
         permission_profile_network_restricted = request_stdio_app_server(
             binary,
@@ -3912,7 +3969,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_network_restricted["id"] == "command-exec-permission-profile-network-restricted"
         assert permission_profile_network_restricted["result"]["exitCode"] != 0
         assert permission_profile_network_restricted["result"]["stdout"] == ""
-        assert CommandExecNetworkHandler.requests == ["/"]
+        assert CommandExecNetworkHandler.requests == ["/", "/"]
 
         permission_profile_with_sandbox_policy = request_stdio_app_server(
             binary,
