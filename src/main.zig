@@ -57,6 +57,8 @@ fn mainInner(init: std.process.Init) !void {
         for (initial_image_files.items) |path| allocator.free(path);
         initial_image_files.deinit(allocator);
     }
+    var runtime_feature_overrides = features_cmd.FeatureOverrides{};
+    defer runtime_feature_overrides.deinit(allocator);
 
     var overrides = CliOverrides{};
     var cmd_opt: ?[]const u8 = null;
@@ -117,6 +119,22 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.startsWith(u8, arg, "--image=")) {
             try input_images.appendFiles(allocator, &initial_image_files, arg["--image=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enable")) {
+            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, args.next() orelse return error.MissingFeatureName, true);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--disable")) {
+            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, args.next() orelse return error.MissingFeatureName, false);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (std.mem.eql(u8, arg, "--oss")) {
@@ -266,6 +284,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "features")) {
             try features_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
+                .runtime_overrides = runtime_feature_overrides,
             });
             return;
         }
@@ -585,6 +604,10 @@ fn printHelp() !void {
         \\                          Override model for the command
         \\  codex-zig -i FILE ...
         \\                          Attach image file(s) to the first interactive prompt
+        \\  codex-zig --enable FEATURE ...
+        \\                          Enable a feature for this invocation
+        \\  codex-zig --disable FEATURE ...
+        \\                          Disable a feature for this invocation
         \\  codex-zig --oss --local-provider lmstudio ...
         \\                          Use a local OSS provider
         \\  codex-zig -a MODE ...

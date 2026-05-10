@@ -9,20 +9,20 @@ const FeatureSpec = struct {
     default_enabled: bool,
 };
 
-const FeatureOverride = struct {
+pub const FeatureOverride = struct {
     key: []const u8,
     enabled: bool,
 };
 
-const FeatureOverrides = struct {
+pub const FeatureOverrides = struct {
     items: std.ArrayList(FeatureOverride) = .empty,
 
-    fn deinit(self: *FeatureOverrides, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *FeatureOverrides, allocator: std.mem.Allocator) void {
         for (self.items.items) |item| allocator.free(item.key);
         self.items.deinit(allocator);
     }
 
-    fn put(self: *FeatureOverrides, allocator: std.mem.Allocator, key: []const u8, enabled: bool) !void {
+    pub fn put(self: *FeatureOverrides, allocator: std.mem.Allocator, key: []const u8, enabled: bool) !void {
         for (self.items.items) |*item| {
             if (std.mem.eql(u8, item.key, key)) {
                 item.enabled = enabled;
@@ -35,16 +35,26 @@ const FeatureOverrides = struct {
         });
     }
 
-    fn get(self: FeatureOverrides, key: []const u8) ?bool {
+    pub fn get(self: FeatureOverrides, key: []const u8) ?bool {
         for (self.items.items) |item| {
             if (std.mem.eql(u8, item.key, key)) return item.enabled;
         }
         return null;
     }
+
+    pub fn clone(self: FeatureOverrides, allocator: std.mem.Allocator) !FeatureOverrides {
+        var cloned = FeatureOverrides{};
+        errdefer cloned.deinit(allocator);
+        for (self.items.items) |item| {
+            try cloned.put(allocator, item.key, item.enabled);
+        }
+        return cloned;
+    }
 };
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    runtime_overrides: FeatureOverrides = .{},
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -57,14 +67,31 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (std.mem.eql(u8, subcommand, "list")) {
+        var runtime_overrides = try options.runtime_overrides.clone(allocator);
+        defer runtime_overrides.deinit(allocator);
         if (args.next()) |extra| {
             if (isHelpFlag(extra)) {
                 printListHelp();
                 return;
             }
-            return error.UnknownFeaturesOption;
+            try parseRuntimeToggle(allocator, extra, args, &runtime_overrides);
+            while (args.next()) |arg| {
+                if (isHelpFlag(arg)) {
+                    printListHelp();
+                    return;
+                }
+                try parseRuntimeToggle(allocator, arg, args, &runtime_overrides);
+            }
+            try listFeatures(allocator, .{
+                .profile = options.profile,
+                .runtime_overrides = runtime_overrides,
+            });
+            return;
         }
-        try listFeatures(allocator, options);
+        try listFeatures(allocator, .{
+            .profile = options.profile,
+            .runtime_overrides = runtime_overrides,
+        });
         return;
     }
     if (std.mem.eql(u8, subcommand, "enable") or std.mem.eql(u8, subcommand, "disable")) {
@@ -80,6 +107,41 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     return error.UnknownFeaturesSubcommand;
 }
 
+fn parseRuntimeToggle(
+    allocator: std.mem.Allocator,
+    arg: []const u8,
+    args: *std.process.Args.Iterator,
+    overrides: *FeatureOverrides,
+) !void {
+    if (std.mem.eql(u8, arg, "--enable")) {
+        try putRuntimeToggle(allocator, overrides, args.next() orelse return error.MissingFeatureName, true);
+        return;
+    }
+    if (std.mem.startsWith(u8, arg, "--enable=")) {
+        try putRuntimeToggle(allocator, overrides, arg["--enable=".len..], true);
+        return;
+    }
+    if (std.mem.eql(u8, arg, "--disable")) {
+        try putRuntimeToggle(allocator, overrides, args.next() orelse return error.MissingFeatureName, false);
+        return;
+    }
+    if (std.mem.startsWith(u8, arg, "--disable=")) {
+        try putRuntimeToggle(allocator, overrides, arg["--disable=".len..], false);
+        return;
+    }
+    return error.UnknownFeaturesOption;
+}
+
+pub fn putRuntimeToggle(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    feature: []const u8,
+    enabled: bool,
+) !void {
+    if (!isKnownFeature(feature)) return error.UnknownFeature;
+    try overrides.put(allocator, feature, enabled);
+}
+
 fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -87,8 +149,8 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
     const config_bytes = try readConfigToml(allocator, cfg.codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    var overrides = try parseFeatureOverrides(allocator, config_bytes orelse "");
-    defer overrides.deinit(allocator);
+    var config_overrides = try parseFeatureOverrides(allocator, config_bytes orelse "");
+    defer config_overrides.deinit(allocator);
 
     var name_width: usize = 0;
     var stage_width: usize = 0;
@@ -97,13 +159,13 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
         stage_width = @max(stage_width, feature.stage.len);
     }
 
-    const rendered = try renderFeaturesList(allocator, overrides, name_width, stage_width);
+    const rendered = try renderFeaturesList(allocator, config_overrides, options.runtime_overrides, name_width, stage_width);
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
 }
 
 fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u8, enabled: bool) !void {
-    if (!knownFeature(feature)) return error.UnknownFeature;
+    if (!isKnownFeature(feature)) return error.UnknownFeature;
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -167,7 +229,7 @@ fn parseFeatureOverrides(allocator: std.mem.Allocator, bytes: []const u8) !Featu
             false
         else
             continue;
-        if (knownFeature(key)) try overrides.put(allocator, key, enabled);
+        if (isKnownFeature(key)) try overrides.put(allocator, key, enabled);
     }
 
     return overrides;
@@ -247,7 +309,7 @@ fn appendFeatureLine(
     try output.append(allocator, '\n');
 }
 
-fn knownFeature(key: []const u8) bool {
+pub fn isKnownFeature(key: []const u8) bool {
     for (features) |feature| {
         if (std.mem.eql(u8, feature.key, key)) return true;
     }
@@ -256,7 +318,8 @@ fn knownFeature(key: []const u8) bool {
 
 fn renderFeaturesList(
     allocator: std.mem.Allocator,
-    overrides: FeatureOverrides,
+    config_overrides: FeatureOverrides,
+    runtime_overrides: FeatureOverrides,
     name_width: usize,
     stage_width: usize,
 ) ![]const u8 {
@@ -264,7 +327,9 @@ fn renderFeaturesList(
     errdefer output.deinit(allocator);
 
     for (features) |feature| {
-        const enabled = overrides.get(feature.key) orelse feature.default_enabled;
+        const enabled = runtime_overrides.get(feature.key) orelse
+            config_overrides.get(feature.key) orelse
+            feature.default_enabled;
         try appendPadded(allocator, &output, feature.key, name_width);
         try output.appendSlice(allocator, "  ");
         try appendPadded(allocator, &output, feature.stage, stage_width);
@@ -289,11 +354,12 @@ fn isHelpFlag(arg: []const u8) bool {
 fn printHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig features list
+        \\  codex-zig features list [--enable FEATURE] [--disable FEATURE]
         \\  codex-zig features enable FEATURE
         \\  codex-zig features disable FEATURE
         \\
         \\Writes update the top-level [features] table in CODEX_HOME/config.toml.
+        \\Root --enable/--disable flags apply only to the current invocation.
         \\
     , .{});
 }
@@ -301,9 +367,10 @@ fn printHelp() void {
 fn printListHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig features list
+        \\  codex-zig features list [--enable FEATURE] [--disable FEATURE]
         \\
         \\Lists known feature flags with stage and effective state.
+        \\Runtime --enable/--disable overrides take precedence over config.toml.
         \\
     , .{});
 }
@@ -419,16 +486,39 @@ test "features table is sorted by key" {
     }
 }
 
-test "feature list renderer includes overrides" {
+test "feature list renderer includes config overrides" {
     const allocator = std.testing.allocator;
     var overrides = FeatureOverrides{};
     defer overrides.deinit(allocator);
     try overrides.put(allocator, "goals", true);
 
-    const rendered = try renderFeaturesList(allocator, overrides, "goals".len, "experimental".len);
+    const rendered = try renderFeaturesList(allocator, overrides, .{}, "goals".len, "experimental".len);
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "goals  experimental  true\n") != null);
+}
+
+test "feature list renderer lets runtime overrides win" {
+    const allocator = std.testing.allocator;
+    var config_overrides = FeatureOverrides{};
+    defer config_overrides.deinit(allocator);
+    try config_overrides.put(allocator, "goals", false);
+    var runtime_overrides = FeatureOverrides{};
+    defer runtime_overrides.deinit(allocator);
+    try runtime_overrides.put(allocator, "goals", true);
+
+    const rendered = try renderFeaturesList(allocator, config_overrides, runtime_overrides, "goals".len, "experimental".len);
+    defer allocator.free(rendered);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "goals  experimental  true\n") != null);
+}
+
+test "runtime feature toggles reject unknown keys" {
+    const allocator = std.testing.allocator;
+    var overrides = FeatureOverrides{};
+    defer overrides.deinit(allocator);
+
+    try std.testing.expectError(error.UnknownFeature, putRuntimeToggle(allocator, &overrides, "not_real", true));
 }
 
 test "feature config update creates features table" {

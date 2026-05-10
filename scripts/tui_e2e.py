@@ -484,6 +484,68 @@ def run_initial_image_smoke(
         raise AssertionError(f"expected one PNG input_image, saw {images!r}")
 
 
+def feature_state(output: str, key: str) -> str | None:
+    for line in output.splitlines():
+        parts = line.split()
+        if parts and parts[0] == key:
+            return parts[-1]
+    return None
+
+
+def run_feature_toggle_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    root_result = subprocess.run(
+        [
+            str(binary),
+            "--enable",
+            "goals",
+            "--disable=shell_tool",
+            "features",
+            "list",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if feature_state(root_result.stdout, "goals") != "true":
+        raise AssertionError(
+            f"expected root --enable goals in feature list:\n{root_result.stdout}"
+        )
+    if feature_state(root_result.stdout, "shell_tool") != "false":
+        raise AssertionError(
+            f"expected root --disable shell_tool in feature list:\n{root_result.stdout}"
+        )
+
+    list_result = subprocess.run(
+        [
+            str(binary),
+            "features",
+            "list",
+            "--enable=goals",
+            "--disable",
+            "shell_tool",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if feature_state(list_result.stdout, "goals") != "true":
+        raise AssertionError(
+            f"expected list --enable goals in feature list:\n{list_result.stdout}"
+        )
+    if feature_state(list_result.stdout, "shell_tool") != "false":
+        raise AssertionError(
+            f"expected list --disable shell_tool in feature list:\n{list_result.stdout}"
+        )
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -553,6 +615,7 @@ def run_e2e(binary: Path) -> str:
             env.pop("ZELLIJ", None)
             env.pop("ZELLIJ_SESSION_NAME", None)
 
+            run_feature_toggle_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
 
             master_fd, slave_fd = pty.openpty()
