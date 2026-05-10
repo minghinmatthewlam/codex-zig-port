@@ -498,6 +498,51 @@ def run_exec_git_repo_check_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_yolo_approval_conflict_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-yolo-conflict-", dir="/tmp"))
+    try:
+        root = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ask-for-approval",
+                "never",
+                "--help",
+            ],
+            cwd=temp_root,
+            env=os.environ.copy(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert root.returncode != 0
+        assert "error: ConflictingCliOptions" in root.stderr
+
+        exec_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--approval-policy=never",
+                "say",
+                "hi",
+            ],
+            cwd=temp_root,
+            env=os.environ.copy(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert exec_result.returncode != 0
+        assert "error: ConflictingExecOptions" in exec_result.stderr
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -506,12 +551,14 @@ def main() -> None:
     run_exec_equals_options_smoke(binary)
     run_exec_stdin_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
+    run_yolo_approval_conflict_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
     print("cli-exec-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
+    print("cli-yolo-approval-conflict-e2e: ok")
 
 
 if __name__ == "__main__":
