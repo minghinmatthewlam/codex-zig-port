@@ -44,6 +44,7 @@ const modules = .{
     @import("theme.zig"),
     @import("titleline.zig"),
     @import("tools.zig"),
+    @import("trace_reduce.zig"),
     @import("tui.zig"),
     @import("workdir.zig"),
 };

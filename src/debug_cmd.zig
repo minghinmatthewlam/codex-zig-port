@@ -7,6 +7,7 @@ const input_images = @import("input_images.zig");
 const memory_reset = @import("memory_reset.zig");
 const model_catalog = @import("model_catalog.zig");
 const session = @import("session.zig");
+const trace_reduce = @import("trace_reduce.zig");
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
@@ -164,21 +165,10 @@ fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         printTraceReduceHelp();
         return error.MissingDebugTraceBundle;
     };
-    const message = if (output) |path|
-        try std.fmt.allocPrint(
-            allocator,
-            "codex-zig debug trace-reduce is parsed but not implemented yet: {s} -> {s}\n",
-            .{ bundle, path },
-        )
-    else
-        try std.fmt.allocPrint(
-            allocator,
-            "codex-zig debug trace-reduce is parsed but not implemented yet: {s}\n",
-            .{bundle},
-        );
-    defer allocator.free(message);
-    try cli_utils.writeStderr(message);
-    return error.DebugTraceReduceNotImplemented;
+    const output_path = try trace_reduce.reduceBundleToFile(allocator, bundle, output);
+    defer allocator.free(output_path);
+    try cli_utils.writeStdout(output_path);
+    try cli_utils.writeStdout("\n");
 }
 
 fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -340,8 +330,7 @@ fn printTraceReduceHelp() void {
         \\Usage:
         \\  codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE
         \\
-        \\Parses the hidden Rust rollout trace reducer command. Rollout trace
-        \\replay is not implemented in the Zig port yet.
+        \\Replays stable rollout trace bundle lifecycle events into state JSON.
         \\
         \\Options:
         \\  -o, --output FILE      Output path for reduced state JSON
