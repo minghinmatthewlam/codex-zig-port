@@ -431,6 +431,15 @@ pub fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json:
     });
 }
 
+pub fn saveApiKeyAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, api_key: []const u8) !void {
+    const json = try std.json.Stringify.valueAlloc(allocator, .{
+        .auth_mode = "apikey",
+        .OPENAI_API_KEY = api_key,
+    }, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    try writeAuthJson(allocator, codex_home, json);
+}
+
 pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);

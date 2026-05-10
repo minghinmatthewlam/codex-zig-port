@@ -111,7 +111,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     if (parsed.with_api_key) {
         const api_key = try readSecretFromStdin(allocator, "No API key provided via stdin.");
         defer allocator.free(api_key);
-        try saveApiKey(allocator, cfg.codex_home, api_key);
+        try auth.saveApiKeyAuthJson(allocator, cfg.codex_home, api_key);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
@@ -697,15 +697,6 @@ fn post(allocator: std.mem.Allocator, url: []const u8, content_type: []const u8,
     return .{ .status = result.status, .body = try response_body.toOwnedSlice() };
 }
 
-fn saveApiKey(allocator: std.mem.Allocator, codex_home: []const u8, api_key: []const u8) !void {
-    const json = try std.json.Stringify.valueAlloc(allocator, .{
-        .auth_mode = "apikey",
-        .OPENAI_API_KEY = api_key,
-    }, .{ .whitespace = .indent_2 });
-    defer allocator.free(json);
-    try auth.writeAuthJson(allocator, codex_home, json);
-}
-
 fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, tokens: Tokens) !void {
     var claims = try auth.parseChatGptClaims(allocator, tokens.id_token);
     defer claims.deinit(allocator);
@@ -926,11 +917,11 @@ test "api key login writes auth json load can reuse" {
     const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(root);
 
-    try saveApiKey(allocator, root, "sk-test");
+    try auth.saveApiKeyAuthJson(allocator, root, "test-api-key");
     var credentials = try auth.load(allocator, root);
     defer credentials.deinit(allocator);
     try std.testing.expectEqual(auth.Credentials.Mode.api_key, credentials.mode);
-    try std.testing.expectEqualStrings("sk-test", credentials.token);
+    try std.testing.expectEqualStrings("test-api-key", credentials.token);
 }
 
 test "access token login writes agent identity auth json load can reuse" {
