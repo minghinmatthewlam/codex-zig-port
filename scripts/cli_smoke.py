@@ -33,6 +33,15 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
         self.server.request_paths.append(self.path)
         self.server.request_bodies.append(json.loads(body))
         self.server.request_headers.append(dict(self.headers.items()))
+        status = self.server.response_statuses.pop(0) if self.server.response_statuses else 200
+        if status == 401:
+            payload = b"unauthorized"
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         payload = (
             b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
             b"data: [DONE]\n\n"
@@ -51,6 +60,7 @@ class ExecResponsesServer(ThreadingHTTPServer):
     request_paths: list[str]
     request_bodies: list[dict]
     request_headers: list[dict[str, str]]
+    response_statuses: list[int]
 
 
 def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
@@ -58,6 +68,7 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.request_paths = []
     server.request_bodies = []
     server.request_headers = []
+    server.response_statuses = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -240,6 +251,57 @@ def make_exec_provider_command_auth_env(
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     env["CORP_API_KEY"] = "conflicting-token"
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
+def make_exec_provider_command_auth_refresh_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    auth_dir = temp_root / "provider-auth-refresh"
+    auth_dir.mkdir()
+    counter_file = auth_dir / "counter"
+    token_script = auth_dir / "refresh-token.sh"
+    token_script.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                'if [ -f "$1" ]; then',
+                "  printf '%s\\n' second-token",
+                "else",
+                "  printf '%s\\n' first-token",
+                "  touch \"$1\"",
+                "fi",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    token_script.chmod(0o755)
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-command-refresh"',
+                'model_provider = "corp"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}"',
+                'wire_api = "responses"',
+                'requires_openai_auth = false',
+                "",
+                "[model_providers.corp.auth]",
+                'command = "./refresh-token.sh"',
+                f'args = ["{counter_file}"]',
+                f'cwd = "{auth_dir}"',
+                "timeout_ms = 5000",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     env.pop("OPENAI_API_KEY", None)
     env.pop("CODEX_ACCESS_TOKEN", None)
     return env
@@ -1067,6 +1129,37 @@ def run_exec_provider_command_auth_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_provider_command_auth_refresh_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-command-refresh-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    server.response_statuses = [401, 200]
+    try:
+        env = make_exec_provider_command_auth_refresh_env(temp_root, base_url)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "refresh", "command", "auth"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_paths == ["/responses", "/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-provider-command-refresh"
+        assert server.request_bodies[1]["model"] == "gpt-provider-command-refresh"
+        assert server.request_bodies[1]["input"][-1]["content"][0]["text"] == "refresh command auth"
+        assert server.request_headers[0]["Authorization"] == "Bearer first-token"
+        assert server.request_headers[1]["Authorization"] == "Bearer second-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1687,6 +1780,7 @@ def main() -> None:
     run_exec_provider_headers_smoke(binary)
     run_exec_provider_query_params_smoke(binary)
     run_exec_provider_command_auth_smoke(binary)
+    run_exec_provider_command_auth_refresh_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1706,6 +1800,7 @@ def main() -> None:
     print("cli-exec-provider-headers-e2e: ok")
     print("cli-exec-provider-query-params-e2e: ok")
     print("cli-exec-provider-command-auth-e2e: ok")
+    print("cli-exec-provider-command-auth-refresh-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
