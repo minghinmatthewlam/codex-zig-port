@@ -46,8 +46,7 @@ const Reducer = struct {
     }
 
     fn applyEvent(self: *Reducer, event: std.json.ObjectMap) !void {
-        const seq_i64 = try integerField(event, "seq");
-        const seq: u64 = @intCast(seq_i64);
+        const seq = try unsignedField(event, "seq");
         const wall_time_unix_ms = try integerField(event, "wall_time_unix_ms");
         const payload = try objectField(event, "payload");
         try self.collectRawPayloadRefs(.{ .object = payload });
@@ -137,12 +136,7 @@ const Reducer = struct {
         const thread_id = try stringField(payload, "thread_id");
         const status = rolloutStatusToExecution(try statusString(payload, "status"));
         const thread = self.threads.getPtr(thread_id) orelse return error.UnknownTraceThread;
-        const object = objectValuePtr(thread) orelse return error.InvalidTraceThread;
-        const execution = object.getPtr("execution") orelse return error.InvalidTraceThread;
-        const execution_object = objectValuePtr(execution) orelse return error.InvalidTraceThread;
-        try execution_object.put(self.allocator, "ended_at_unix_ms", .{ .integer = wall_time_unix_ms });
-        try execution_object.put(self.allocator, "ended_seq", .{ .integer = @intCast(seq) });
-        try putString(self.allocator, execution_object, "status", status);
+        try self.finishExecution(thread, seq, wall_time_unix_ms, status);
     }
 
     fn startCodexTurn(self: *Reducer, seq: u64, wall_time_unix_ms: i64, payload: std.json.ObjectMap) !void {
@@ -161,12 +155,7 @@ const Reducer = struct {
         const turn_id = try stringField(payload, "codex_turn_id");
         const status = try statusString(payload, "status");
         const turn = self.codex_turns.getPtr(turn_id) orelse return error.UnknownTraceTurn;
-        const object = objectValuePtr(turn) orelse return error.InvalidTraceTurn;
-        const execution = object.getPtr("execution") orelse return error.InvalidTraceTurn;
-        const execution_object = objectValuePtr(execution) orelse return error.InvalidTraceTurn;
-        try execution_object.put(self.allocator, "ended_at_unix_ms", .{ .integer = wall_time_unix_ms });
-        try execution_object.put(self.allocator, "ended_seq", .{ .integer = @intCast(seq) });
-        try putString(self.allocator, execution_object, "status", status);
+        try self.finishExecution(turn, seq, wall_time_unix_ms, status);
     }
 
     fn startInference(self: *Reducer, seq: u64, wall_time_unix_ms: i64, payload: std.json.ObjectMap) !void {
@@ -204,11 +193,7 @@ const Reducer = struct {
         const inference_id = try stringField(payload, "inference_call_id");
         const inference = self.inference_calls.getPtr(inference_id) orelse return error.UnknownTraceInference;
         const object = objectValuePtr(inference) orelse return error.InvalidTraceInference;
-        const execution = object.getPtr("execution") orelse return error.InvalidTraceInference;
-        const execution_object = objectValuePtr(execution) orelse return error.InvalidTraceInference;
-        try execution_object.put(self.allocator, "ended_at_unix_ms", .{ .integer = wall_time_unix_ms });
-        try execution_object.put(self.allocator, "ended_seq", .{ .integer = @intCast(seq) });
-        try putString(self.allocator, execution_object, "status", status);
+        try self.finishExecution(inference, seq, wall_time_unix_ms, status);
         if (optionalStringField(payload, "response_id")) |response_id| {
             try putString(self.allocator, object, "response_id", response_id);
         }
@@ -224,6 +209,21 @@ const Reducer = struct {
                 try putString(self.allocator, object, "raw_response_payload_id", try stringField(partial_response_payload.object, "raw_payload_id"));
             }
         }
+    }
+
+    fn finishExecution(
+        self: *Reducer,
+        item: *std.json.Value,
+        seq: u64,
+        wall_time_unix_ms: i64,
+        status: []const u8,
+    ) !void {
+        const object = objectValuePtr(item) orelse return error.InvalidTraceExecution;
+        const execution = object.getPtr("execution") orelse return error.InvalidTraceExecution;
+        const execution_object = objectValuePtr(execution) orelse return error.InvalidTraceExecution;
+        try execution_object.put(self.allocator, "ended_at_unix_ms", .{ .integer = wall_time_unix_ms });
+        try execution_object.put(self.allocator, "ended_seq", .{ .integer = @intCast(seq) });
+        try putString(self.allocator, execution_object, "status", status);
     }
 
     fn threadOrigin(
@@ -492,6 +492,12 @@ fn integerField(object: std.json.ObjectMap, field: []const u8) !i64 {
         .integer => |number| number,
         else => error.InvalidTraceField,
     };
+}
+
+fn unsignedField(object: std.json.ObjectMap, field: []const u8) !u64 {
+    const number = try integerField(object, field);
+    if (number < 0) return error.InvalidTraceField;
+    return @intCast(number);
 }
 
 fn statusString(object: std.json.ObjectMap, field: []const u8) ![]const u8 {
