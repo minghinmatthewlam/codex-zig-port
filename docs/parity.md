@@ -45,8 +45,9 @@ Current app-server `config/read` coverage also includes user
 `writable_roots`, `network_access`, `exclude_tmpdir_env_var`, and
 `exclude_slash_tmp`, including user origins/layers and post-`config/batchWrite`
 reads. Legacy managed config reads now cover top-level `model`,
-`approval_policy`, and `sandbox_mode`, plus managed `sandbox_workspace_write`
-leaf precedence over user roots and booleans. Trusted project
+`approval_policy`, `sandbox_mode`, `web_search`, `model_reasoning_effort`, and
+`service_tier`, plus managed `sandbox_workspace_write` leaf precedence over
+user roots and booleans. Trusted project
 `sandbox_workspace_write` reads now cover table and inline-object TOML shapes
 with project-over-user leaf precedence across nested project stacks. System
 config reads now cover the same supported scalar fields as trusted project
