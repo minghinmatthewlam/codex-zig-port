@@ -739,6 +739,10 @@ pub fn topLevelStringValue(allocator: std.mem.Allocator, bytes: []const u8, key:
     return (ConfigView{ .bytes = bytes }).getTopLevelString(allocator, key);
 }
 
+pub fn topLevelStringArrayValue(allocator: std.mem.Allocator, bytes: []const u8, key: []const u8) !?StringList {
+    return (ConfigView{ .bytes = bytes }).getTopLevelStringArray(allocator, key);
+}
+
 pub fn namedSectionStringValue(
     allocator: std.mem.Allocator,
     bytes: []const u8,
@@ -1190,6 +1194,17 @@ const ConfigView = struct {
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
             if (try stringValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
+    fn getTopLevelStringArray(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?StringList {
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') break;
+            if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
         }
         return null;
     }
