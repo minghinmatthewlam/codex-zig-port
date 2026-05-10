@@ -102,6 +102,44 @@ prefix_rule(
             ],
         }
 
+        resolved_rules_path = temp_root / "resolved.rules"
+        resolved_rules_path.write_text(
+            """
+prefix_rule(pattern = ["git", "status"], decision = "prompt")
+host_executable(name = "git", paths = ["/usr/bin/git"])
+""",
+            encoding="utf-8",
+        )
+        resolved_result = subprocess.run(
+            [
+                str(binary),
+                "execpolicy",
+                "check",
+                "--rules",
+                str(resolved_rules_path),
+                "--resolve-host-executables",
+                "/usr/bin/git",
+                "status",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert json.loads(resolved_result.stdout) == {
+            "decision": "prompt",
+            "matchedRules": [
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["git", "status"],
+                        "decision": "prompt",
+                        "resolvedProgram": "/usr/bin/git",
+                    }
+                }
+            ],
+        }
+
         help_result = subprocess.run(
             [str(binary), "help", "execpolicy"],
             text=True,
