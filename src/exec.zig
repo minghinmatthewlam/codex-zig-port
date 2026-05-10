@@ -187,7 +187,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         }
     }
 
-    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
+    const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .auto_approve = parsed.auto_approve,
         .prompt_for_approval = false,
         .json_events = parsed.json,

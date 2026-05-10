@@ -283,7 +283,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images) catch |err| {
+            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             pending_input_images = &.{};
@@ -306,7 +306,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             };
             continue;
         }
-        const slash_action = handleSlashCommand(allocator, &cfg, credentials, &transcript, &session_path, cwd, prompt, &state, options.additional_writable_roots) catch |err| {
+        const slash_action = handleSlashCommand(allocator, &cfg, &credentials, &transcript, &session_path, cwd, prompt, &state, options.additional_writable_roots) catch |err| {
             std.debug.print("error: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -319,7 +319,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
 
         const input_images = pending_input_images;
         pending_input_images = &.{};
-        runUserPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state, input_images) catch |err| {
+        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state, input_images) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -355,7 +355,7 @@ fn isZellij() bool {
 fn runPrompt(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: []const u8,
     prompt: []const u8,
@@ -368,7 +368,7 @@ fn runPrompt(
 fn runPromptWithToolMode(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: []const u8,
     prompt: []const u8,
@@ -400,7 +400,7 @@ fn runPromptWithToolMode(
 fn runUserPrompt(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: []const u8,
     prompt: []const u8,
@@ -426,7 +426,7 @@ fn runUserPrompt(
 fn runSidePrompt(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *const session.Transcript,
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
@@ -623,7 +623,7 @@ const TuiState = struct {
 fn handleSlashCommand(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: *[]const u8,
     cwd: []const u8,
@@ -660,12 +660,12 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
-        try printStatus(allocator, cfg.*, credentials, transcript, session_path.*, cwd, state.*);
+        try printStatus(allocator, cfg.*, credentials.*, transcript, session_path.*, cwd, state.*);
         return .handled;
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "debug-config")) {
-        try printDebugConfig(allocator, cfg.*, credentials);
+        try printDebugConfig(allocator, cfg.*, credentials.*);
         return .handled;
     }
 
@@ -794,7 +794,7 @@ fn handleSlashCommand(
         try refreshTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state);
         if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
             std.debug.print("\x1b[2J\x1b[H", .{});
-            printHeader(cfg.*, credentials, cwd);
+            printHeader(cfg.*, credentials.*, cwd);
         } else {
             std.debug.print("started a new chat\n", .{});
         }
@@ -965,7 +965,7 @@ fn agentsFileExists(allocator: std.mem.Allocator, cwd: []const u8) !bool {
 fn runCompact(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: []const u8,
     additional_writable_roots: []const []const u8,

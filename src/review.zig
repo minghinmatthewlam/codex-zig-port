@@ -83,7 +83,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     const session_path = try session_store.createSessionPath(allocator, cfg.codex_home);
     defer allocator.free(session_path);
 
-    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &transcript, prompt, .{
+    const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .prompt_for_approval = false,
     });
     defer allocator.free(answer);

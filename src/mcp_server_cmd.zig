@@ -169,7 +169,7 @@ const Server = struct {
         const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
         defer restoreCallCwd(self.allocator, restore_cwd);
 
-        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, self.credentials, &transcript, prompt, .{
+        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, &self.credentials, &transcript, prompt, .{
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,
@@ -208,7 +208,7 @@ const Server = struct {
         const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
         defer restoreCallCwd(self.allocator, restore_cwd);
 
-        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, self.credentials, &saved.transcript, prompt, .{
+        const answer = session.runTurnWithOptions(self.allocator, turn_cfg, &self.credentials, &saved.transcript, prompt, .{
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,

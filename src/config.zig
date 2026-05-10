@@ -78,6 +78,7 @@ pub const ProviderAuthCommand = struct {
     args: StringList,
     cwd: ?[]const u8 = null,
     timeout_ms: u64 = 5000,
+    refresh_interval_ms: u64 = 300_000,
 
     pub fn deinit(self: *ProviderAuthCommand, allocator: std.mem.Allocator) void {
         allocator.free(self.command);
@@ -97,6 +98,7 @@ pub const ProviderAuthCommand = struct {
             .args = args,
             .cwd = cwd,
             .timeout_ms = self.timeout_ms,
+            .refresh_interval_ms = self.refresh_interval_ms,
         };
     }
 };
@@ -1515,12 +1517,14 @@ const ConfigView = struct {
         errdefer if (cwd) |value| allocator.free(value);
         const timeout_ms = (try self.getSectionU64(section_name, "timeout_ms")) orelse 5000;
         if (timeout_ms == 0) return error.InvalidModelProviderAuthTimeout;
+        const refresh_interval_ms = (try self.getSectionU64(section_name, "refresh_interval_ms")) orelse 300_000;
 
         return .{
             .command = command,
             .args = args,
             .cwd = cwd,
             .timeout_ms = timeout_ms,
+            .refresh_interval_ms = refresh_interval_ms,
         };
     }
 
@@ -1961,6 +1965,7 @@ fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const 
     var cwd: ?[]const u8 = null;
     errdefer if (cwd) |value| allocator.free(value);
     var timeout_ms: ?u64 = null;
+    var refresh_interval_ms: ?u64 = null;
 
     var start: usize = 0;
     var index: usize = 0;
@@ -2019,6 +2024,10 @@ fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const 
             timeout_ms = value;
             continue;
         }
+        if (try u64ValueForKey(entry, "refresh_interval_ms")) |value| {
+            refresh_interval_ms = value;
+            continue;
+        }
     }
     if (in_string or array_depth != 0) return error.InvalidTomlInlineTable;
 
@@ -2039,12 +2048,14 @@ fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const 
     errdefer if (owned_cwd) |value| allocator.free(value);
     const resolved_timeout = timeout_ms orelse 5000;
     if (resolved_timeout == 0) return error.InvalidModelProviderAuthTimeout;
+    const resolved_refresh_interval = refresh_interval_ms orelse 300_000;
 
     return .{
         .command = owned_command,
         .args = owned_args,
         .cwd = owned_cwd,
         .timeout_ms = resolved_timeout,
+        .refresh_interval_ms = resolved_refresh_interval,
     };
 }
 
@@ -2658,6 +2669,7 @@ test "model provider command auth resolves from active provider table" {
         \\args = ["--scope", "codex"]
         \\cwd = "/tmp/provider-auth"
         \\timeout_ms = 1234
+        \\refresh_interval_ms = 0
         \\
         ,
     };
@@ -2672,6 +2684,7 @@ test "model provider command auth resolves from active provider table" {
     try std.testing.expectEqualStrings("codex", command.args.items[1]);
     try std.testing.expectEqualStrings("/tmp/provider-auth", command.cwd.?);
     try std.testing.expectEqual(@as(u64, 1234), command.timeout_ms);
+    try std.testing.expectEqual(@as(u64, 0), command.refresh_interval_ms);
 }
 
 test "model provider command auth resolves from inline provider table" {
@@ -2682,7 +2695,7 @@ test "model provider command auth resolves from inline provider table" {
         \\
         \\[model_providers.command-provider]
         \\base_url = "https://proxy.example/v1"
-        \\auth = { command = "./print-token", args = ["--scope", "codex"], cwd = "/tmp/provider-auth", timeout_ms = 1234 }
+        \\auth = { command = "./print-token", args = ["--scope", "codex"], cwd = "/tmp/provider-auth", timeout_ms = 1234, refresh_interval_ms = 4321 }
         \\
         ,
     };
@@ -2697,6 +2710,27 @@ test "model provider command auth resolves from inline provider table" {
     try std.testing.expectEqualStrings("codex", command.args.items[1]);
     try std.testing.expectEqualStrings("/tmp/provider-auth", command.cwd.?);
     try std.testing.expectEqual(@as(u64, 1234), command.timeout_ms);
+    try std.testing.expectEqual(@as(u64, 4321), command.refresh_interval_ms);
+}
+
+test "model provider command auth defaults refresh interval" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "command-provider"
+        \\
+        \\[model_providers.command-provider.auth]
+        \\command = "./print-token"
+        \\
+        ,
+    };
+
+    var provider_auth = try resolveModelProviderAuth(allocator, view, null);
+    defer provider_auth.deinit(allocator);
+
+    const command = provider_auth.command.?;
+    try std.testing.expectEqual(@as(u64, 5000), command.timeout_ms);
+    try std.testing.expectEqual(@as(u64, 300_000), command.refresh_interval_ms);
 }
 
 test "model provider command auth rejects empty command" {

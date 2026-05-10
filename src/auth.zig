@@ -13,6 +13,7 @@ pub const Credentials = struct {
     token: []const u8,
     account_id: ?[]const u8 = null,
     fedramp: bool = false,
+    provider_auth_fetched_ms: ?i64 = null,
 
     pub const Mode = enum {
         chatgpt,
@@ -164,6 +165,14 @@ pub fn loadProviderCommandCredentials(
     allocator: std.mem.Allocator,
     provider_auth_command: config.ProviderAuthCommand,
 ) !Credentials {
+    return loadProviderCommandCredentialsAt(allocator, provider_auth_command, currentAwakeMillis());
+}
+
+fn loadProviderCommandCredentialsAt(
+    allocator: std.mem.Allocator,
+    provider_auth_command: config.ProviderAuthCommand,
+    fetched_at_ms: i64,
+) !Credentials {
     const argv = try allocator.alloc([]const u8, provider_auth_command.args.items.len + 1);
     defer allocator.free(argv);
     argv[0] = provider_auth_command.command;
@@ -192,7 +201,53 @@ pub fn loadProviderCommandCredentials(
     if (!providerAuthCommandSucceeded(result.term)) return error.ModelProviderAuthCommandFailed;
     const token = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (token.len == 0) return error.ModelProviderAuthCommandEmptyToken;
-    return .{ .mode = .api_key, .token = try allocator.dupe(u8, token) };
+    return .{
+        .mode = .api_key,
+        .token = try allocator.dupe(u8, token),
+        .provider_auth_fetched_ms = fetched_at_ms,
+    };
+}
+
+pub fn refreshProviderCommandCredentialsIfExpired(
+    allocator: std.mem.Allocator,
+    credentials: *Credentials,
+    provider_auth_command: config.ProviderAuthCommand,
+) !void {
+    return refreshProviderCommandCredentialsIfExpiredAt(allocator, credentials, provider_auth_command, currentAwakeMillis());
+}
+
+fn refreshProviderCommandCredentialsIfExpiredAt(
+    allocator: std.mem.Allocator,
+    credentials: *Credentials,
+    provider_auth_command: config.ProviderAuthCommand,
+    now_ms: i64,
+) !void {
+    if (provider_auth_command.refresh_interval_ms == 0) return;
+    const fetched_at_ms = credentials.provider_auth_fetched_ms orelse return;
+    if (now_ms <= fetched_at_ms) return;
+    const elapsed_ms: u64 = @intCast(now_ms - fetched_at_ms);
+    if (elapsed_ms >= provider_auth_command.refresh_interval_ms) {
+        try refreshProviderCommandCredentialsAt(allocator, credentials, provider_auth_command, now_ms);
+    }
+}
+
+pub fn refreshProviderCommandCredentials(
+    allocator: std.mem.Allocator,
+    credentials: *Credentials,
+    provider_auth_command: config.ProviderAuthCommand,
+) !void {
+    return refreshProviderCommandCredentialsAt(allocator, credentials, provider_auth_command, currentAwakeMillis());
+}
+
+fn refreshProviderCommandCredentialsAt(
+    allocator: std.mem.Allocator,
+    credentials: *Credentials,
+    provider_auth_command: config.ProviderAuthCommand,
+    fetched_at_ms: i64,
+) !void {
+    const refreshed = try loadProviderCommandCredentialsAt(allocator, provider_auth_command, fetched_at_ms);
+    credentials.deinit(allocator);
+    credentials.* = refreshed;
 }
 
 fn providerAuthCommandSucceeded(term: std.process.Child.Term) bool {
@@ -643,6 +698,11 @@ fn currentEpochSeconds() u64 {
     return @as(u64, @intCast(now.toSeconds()));
 }
 
+fn currentAwakeMillis() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .awake).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+}
+
 pub fn currentRfc3339(allocator: std.mem.Allocator) ![]const u8 {
     const seconds = currentEpochSeconds();
     return rfc3339FromSeconds(allocator, seconds);
@@ -852,4 +912,93 @@ test "chatgpt refresh decision falls back to stale last_refresh" {
         .access_token = "not-a-jwt",
         .refresh_token = "refresh-token",
     }, "2026-01-02T00:00:00Z", now));
+}
+
+test "provider command credentials refresh when interval expires" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var command = try testCounterProviderAuthCommand(allocator, root, 1000);
+    defer command.deinit(allocator);
+
+    var creds = try loadProviderCommandCredentialsAt(allocator, command, 1000);
+    defer creds.deinit(allocator);
+    try std.testing.expectEqualStrings("token-1", creds.token);
+    try std.testing.expectEqual(@as(?i64, 1000), creds.provider_auth_fetched_ms);
+
+    try refreshProviderCommandCredentialsIfExpiredAt(allocator, &creds, command, 1999);
+    try std.testing.expectEqualStrings("token-1", creds.token);
+    try std.testing.expectEqual(@as(?i64, 1000), creds.provider_auth_fetched_ms);
+
+    try refreshProviderCommandCredentialsIfExpiredAt(allocator, &creds, command, 2000);
+    try std.testing.expectEqualStrings("token-2", creds.token);
+    try std.testing.expectEqual(@as(?i64, 2000), creds.provider_auth_fetched_ms);
+}
+
+test "provider command credentials disable automatic interval refresh at zero" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var command = try testCounterProviderAuthCommand(allocator, root, 0);
+    defer command.deinit(allocator);
+
+    var creds = try loadProviderCommandCredentialsAt(allocator, command, 1000);
+    defer creds.deinit(allocator);
+    try std.testing.expectEqualStrings("token-1", creds.token);
+
+    try refreshProviderCommandCredentialsIfExpiredAt(allocator, &creds, command, 100_000);
+    try std.testing.expectEqualStrings("token-1", creds.token);
+
+    try refreshProviderCommandCredentialsAt(allocator, &creds, command, 100_000);
+    try std.testing.expectEqualStrings("token-2", creds.token);
+    try std.testing.expectEqual(@as(?i64, 100_000), creds.provider_auth_fetched_ms);
+}
+
+fn testCounterProviderAuthCommand(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    refresh_interval_ms: u64,
+) !config.ProviderAuthCommand {
+    const script =
+        \\counter="$0"
+        \\if [ -f "$counter" ]; then
+        \\  value=$(cat "$counter")
+        \\else
+        \\  value=0
+        \\fi
+        \\value=$((value + 1))
+        \\printf 'token-%s\n' "$value"
+        \\printf '%s\n' "$value" > "$counter"
+    ;
+
+    const command_name = try allocator.dupe(u8, "/bin/sh");
+    errdefer allocator.free(command_name);
+    const owned_cwd = try allocator.dupe(u8, cwd);
+    errdefer allocator.free(owned_cwd);
+
+    const args_items = try allocator.alloc([]const u8, 3);
+    var copied: usize = 0;
+    errdefer {
+        for (args_items[0..copied]) |item| allocator.free(item);
+        allocator.free(args_items);
+    }
+    args_items[0] = try allocator.dupe(u8, "-c");
+    copied += 1;
+    args_items[1] = try allocator.dupe(u8, script);
+    copied += 1;
+    args_items[2] = try allocator.dupe(u8, "counter");
+    copied += 1;
+
+    return .{
+        .command = command_name,
+        .args = .{ .items = args_items },
+        .cwd = owned_cwd,
+        .refresh_interval_ms = refresh_interval_ms,
+    };
 }

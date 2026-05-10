@@ -157,7 +157,7 @@ pub const TurnOptions = struct {
 pub fn runTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *Transcript,
     prompt: []const u8,
 ) ![]const u8 {
@@ -167,7 +167,7 @@ pub fn runTurn(
 pub fn runTurnWithOptions(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     transcript: *Transcript,
     prompt: []const u8,
     options: TurnOptions,

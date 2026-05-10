@@ -134,7 +134,7 @@ const TextFormat = struct {
 pub fn createTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     history: []const HistoryItem,
 ) !ParsedResponse {
     return createTurnWithOptions(allocator, cfg, credentials, history, .{});
@@ -143,7 +143,7 @@ pub fn createTurn(
 pub fn createTurnWithOptions(
     allocator: std.mem.Allocator,
     cfg: config.Config,
-    credentials: auth.Credentials,
+    credentials: *auth.Credentials,
     history: []const HistoryItem,
     options: CreateTurnOptions,
 ) !ParsedResponse {
@@ -154,6 +154,10 @@ pub fn createTurnWithOptions(
         .include_tools = options.include_tools,
     });
     defer allocator.free(body);
+
+    if (cfg.model_provider_auth_command) |command| {
+        try auth.refreshProviderCommandCredentialsIfExpired(allocator, credentials, command);
+    }
 
     const base_url = switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
@@ -171,14 +175,13 @@ pub fn createTurnWithOptions(
     var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
     defer client.deinit();
 
-    var response = try fetchTurn(allocator, &client, url, body, cfg, credentials, options.stream_callback);
+    var response = try fetchTurn(allocator, &client, url, body, cfg, credentials.*, options.stream_callback);
     defer response.deinit(allocator);
 
     if (response.status == .unauthorized) {
         if (cfg.model_provider_auth_command) |command| {
-            var refreshed_credentials = try auth.loadProviderCommandCredentials(allocator, command);
-            defer refreshed_credentials.deinit(allocator);
-            var retry_response = try fetchTurn(allocator, &client, url, body, cfg, refreshed_credentials, options.stream_callback);
+            try auth.refreshProviderCommandCredentials(allocator, credentials, command);
+            var retry_response = try fetchTurn(allocator, &client, url, body, cfg, credentials.*, options.stream_callback);
             defer retry_response.deinit(allocator);
             if (@intFromEnum(retry_response.status) < 200 or @intFromEnum(retry_response.status) >= 300) {
                 std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
