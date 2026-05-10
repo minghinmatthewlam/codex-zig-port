@@ -66,8 +66,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `--enable/--disable`
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
-- recognize planned Rust top-level commands like `plugin`, `remote-control`,
-  `cloud`, `exec-server`, and `update` without treating them as prompt text
+- parse Rust-compatible `plugin marketplace add|upgrade|remove` command shapes
+  with explicit not-implemented errors
+- recognize planned Rust top-level commands like `remote-control`, `cloud`,
+  `exec-server`, and `update` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
 
 Long-term exact parity is tracked in `docs/parity.md`.
@@ -96,10 +98,11 @@ The `e2e` step starts a local mock Responses server, launches the real
 `-i/--image` initial-prompt attachment on the interactive path, verifies
 runtime feature toggles through `features list`, checks `help [COMMAND]`, verifies
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
-Rust top-level command stubs, verifies `debug clear-memories` against temporary
-memory roots with symlink-root and state-db partial-reset rejection, checks
-planned debug app-server and trace-reducer stubs, runs the top-level `apply`
-command against a mock ChatGPT task backend and temporary git repository, then drives
+Rust top-level command stubs, verifies `plugin marketplace` parser stubs,
+verifies `debug clear-memories` against temporary memory roots with symlink-root
+and state-db partial-reset rejection, checks planned debug app-server and
+trace-reducer stubs, runs the top-level `apply` command against a mock ChatGPT
+task backend and temporary git repository, then drives
 `/help`, `/status`,
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
@@ -113,8 +116,9 @@ over stdio, verifies `memory/reset` against temporary memory roots plus
 partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
-hidden `stdio-to-uds` relay command, and checks app-server flag compatibility
-for analytics defaults plus websocket auth parsing. Run
+hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
+stubs, and checks app-server flag compatibility for analytics defaults plus
+websocket auth parsing. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
