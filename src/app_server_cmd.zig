@@ -1025,7 +1025,7 @@ fn handleFsWatch(allocator: std.mem.Allocator, id_value: std.json.Value, params_
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    return renderFsParsedButNotImplemented(allocator, id_value, "fs/watch");
+    return renderParsedButNotImplemented(allocator, id_value, "fs/watch");
 }
 
 fn handleFsUnwatch(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -1037,7 +1037,7 @@ fn handleFsUnwatch(allocator: std.mem.Allocator, id_value: std.json.Value, param
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    return renderFsParsedButNotImplemented(allocator, id_value, "fs/unwatch");
+    return renderParsedButNotImplemented(allocator, id_value, "fs/unwatch");
 }
 
 fn fsObjectParams(params_value: ?std.json.Value, method: []const u8) FsObjectParams {
@@ -1082,7 +1082,7 @@ fn renderFsInvalidBase64(allocator: std.mem.Allocator, id_value: std.json.Value,
     return renderJsonRpcError(allocator, id_value, -32602, message);
 }
 
-fn renderFsParsedButNotImplemented(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
+fn renderParsedButNotImplemented(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
     const message = try std.fmt.allocPrint(
         allocator,
         "app-server method {s} is parsed but not implemented yet",
@@ -1450,7 +1450,7 @@ fn handleExperimentalFeatureEnablementSet(allocator: std.mem.Allocator, id_value
     for (enablement.object.values()) |value| {
         if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "enablement values must be booleans");
     }
-    return renderFsParsedButNotImplemented(allocator, id_value, "experimentalFeature/enablement/set");
+    return renderParsedButNotImplemented(allocator, id_value, "experimentalFeature/enablement/set");
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
