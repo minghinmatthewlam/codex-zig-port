@@ -3172,6 +3172,7 @@ const ConfigRequirementsReadRequirements = struct {
     allowed_sandbox_modes: ?config.StringList = null,
     allowed_web_search_modes: ?config.StringList = null,
     feature_requirements: ?FeatureRequirementList = null,
+    enforce_residency: ?[]const u8 = null,
 
     fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
         if (self.allowed_approval_policies) |*value| value.deinit(allocator);
@@ -3179,6 +3180,7 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.allowed_sandbox_modes) |*value| value.deinit(allocator);
         if (self.allowed_web_search_modes) |*value| value.deinit(allocator);
         if (self.feature_requirements) |*value| value.deinit(allocator);
+        if (self.enforce_residency) |value| allocator.free(value);
         self.* = .{};
     }
 
@@ -3187,7 +3189,8 @@ const ConfigRequirementsReadRequirements = struct {
             self.allowed_approvals_reviewers == null and
             self.allowed_sandbox_modes == null and
             self.allowed_web_search_modes == null and
-            self.feature_requirements == null;
+            self.feature_requirements == null and
+            self.enforce_residency == null;
     }
 
     fn mergeUnset(self: *ConfigRequirementsReadRequirements, other: *ConfigRequirementsReadRequirements) void {
@@ -3210,6 +3213,10 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.feature_requirements == null) {
             self.feature_requirements = other.feature_requirements;
             other.feature_requirements = null;
+        }
+        if (self.enforce_residency == null) {
+            self.enforce_residency = other.enforce_residency;
+            other.enforce_residency = null;
         }
     }
 };
@@ -3274,6 +3281,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.allowed_sandbox_modes = try parseAllowedRequirementList(allocator, payload, "allowed_sandbox_modes", .sandbox_mode);
     requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
     requirements.feature_requirements = try parseFeatureRequirements(allocator, payload);
+    requirements.enforce_residency = try parseResidencyRequirement(allocator, payload);
 
     return requirements;
 }
@@ -3446,6 +3454,13 @@ fn deinitFeatureRequirementItems(allocator: std.mem.Allocator, items: []FeatureR
     for (items) |item| allocator.free(item.name);
 }
 
+fn parseResidencyRequirement(allocator: std.mem.Allocator, payload: []const u8) !?[]const u8 {
+    const value = try config.topLevelStringValue(allocator, payload, "enforce_residency") orelse return null;
+    errdefer allocator.free(value);
+    if (!std.mem.eql(u8, value, "us")) return error.InvalidResidencyRequirement;
+    return value;
+}
+
 fn stringListFromLabels(allocator: std.mem.Allocator, labels: []const []const u8) !config.StringList {
     const items = try allocator.alloc([]const u8, labels.len);
     var copied: usize = 0;
@@ -3525,6 +3540,10 @@ fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requiremen
     if (requirements.feature_requirements) |feature_requirements| {
         try appendJsonFieldName(allocator, &result, &first, "featureRequirements");
         try appendFeatureRequirementsObject(allocator, &result, feature_requirements);
+    }
+    if (requirements.enforce_residency) |enforce_residency| {
+        try appendJsonFieldName(allocator, &result, &first, "enforceResidency");
+        try appendJsonString(allocator, &result, enforce_residency);
     }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
