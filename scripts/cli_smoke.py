@@ -54,6 +54,26 @@ def make_exec_mock_env(temp_root: Path, base_url: str) -> dict[str, str]:
     return env
 
 
+def clean_git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env=clean_git_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+
+
 def run_features_profile_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-cli-features-", dir="/tmp"))
     try:
@@ -292,12 +312,10 @@ prefix_rule(pattern = ["git"], not_match = ["git status"])
 
 
 def run_exec_review_smoke(binary: Path) -> None:
-    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-review-", dir="/tmp"))
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-review-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
     try:
-        env = os.environ.copy()
-        env.pop("OPENAI_API_KEY", None)
-        env.pop("CODEX_ACCESS_TOKEN", None)
-        env["CODEX_HOME"] = str(codex_home)
+        env = make_exec_mock_env(temp_root, base_url)
 
         help_result = subprocess.run(
             [str(binary), "exec", "review", "--help"],
@@ -321,8 +339,46 @@ def run_exec_review_smoke(binary: Path) -> None:
             check=True,
         )
         assert "codex-zig exec [OPTIONS] review [REVIEW_OPTIONS]" in exec_help_result.stderr
+
+        rejected = subprocess.run(
+            [str(binary.resolve()), "exec", "review", "--uncommitted"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "Not inside a trusted directory and --skip-git-repo-check was not specified." in rejected.stderr
+        assert server.request_bodies == []
+
+        repo = temp_root / "repo"
+        repo.mkdir()
+        git(repo, "init", "--quiet")
+        (repo / "review.txt").write_text("new review target\n", encoding="utf-8")
+
+        reviewed = subprocess.run(
+            [str(binary.resolve()), "exec", "--cd", str(repo), "review", "--uncommitted"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert reviewed.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
+        assert "Review the uncommitted changes below." in prompt
+        assert "diff --git a/review.txt b/review.txt" in prompt
+        assert "+new review target" in prompt
     finally:
-        shutil.rmtree(codex_home, ignore_errors=True)
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def run_exec_equals_options_smoke(binary: Path) -> None:
