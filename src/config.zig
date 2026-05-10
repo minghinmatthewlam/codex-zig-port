@@ -1366,11 +1366,17 @@ const ConfigView = struct {
         allocator: std.mem.Allocator,
         provider: []const u8,
     ) !?ProviderAuthCommand {
-        const section_name = try std.fmt.allocPrint(allocator, "model_providers.{s}.auth", .{provider});
+        const section_name = try modelProviderAuthSectionName(allocator, provider);
         defer allocator.free(section_name);
 
         const command_opt = try self.getSectionString(allocator, section_name, "command");
-        const command = command_opt orelse return null;
+        if (command_opt == null) {
+            const inline_auth = try self.getModelProviderInlineTable(allocator, provider, "auth");
+            defer if (inline_auth) |value| allocator.free(value);
+            if (inline_auth) |value| return try parseProviderAuthInlineTable(allocator, value);
+            return null;
+        }
+        const command = command_opt.?;
         errdefer allocator.free(command);
         if (std.mem.trim(u8, command, " \t\r\n").len == 0) return error.ModelProviderAuthCommandEmpty;
 
@@ -1387,6 +1393,27 @@ const ConfigView = struct {
             .cwd = cwd,
             .timeout_ms = timeout_ms,
         };
+    }
+
+    fn getModelProviderInlineTable(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        provider: []const u8,
+        key: []const u8,
+    ) !?[]const u8 {
+        var in_provider = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_provider = isNamedSection(line, "model_providers.", provider);
+                continue;
+            }
+            if (!in_provider) continue;
+            if (try inlineTableValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
     }
 
     fn getNamedSectionString(
@@ -1450,6 +1477,16 @@ fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []cons
     return parseTomlString(allocator, rhs);
 }
 
+fn inlineTableValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (rhs.len < 2 or rhs[0] != '{') return null;
+    const end = std.mem.lastIndexOfScalar(u8, rhs, '}') orelse return error.InvalidTomlInlineTable;
+    return try allocator.dupe(u8, std.mem.trim(u8, rhs[1..end], " \t\r\n"));
+}
+
 fn stringArrayValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?StringList {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
@@ -1474,6 +1511,101 @@ fn u64ValueForKey(line: []const u8, key: []const u8) !?u64 {
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
     return std.fmt.parseUnsigned(u64, rhs, 10) catch error.InvalidTomlInteger;
+}
+
+fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const u8) !?ProviderAuthCommand {
+    var command: ?[]const u8 = null;
+    errdefer if (command) |value| allocator.free(value);
+    var args: ?StringList = null;
+    errdefer if (args) |*value| value.deinit(allocator);
+    var cwd: ?[]const u8 = null;
+    errdefer if (cwd) |value| allocator.free(value);
+    var timeout_ms: ?u64 = null;
+
+    var start: usize = 0;
+    var index: usize = 0;
+    var in_string = false;
+    var escaped = false;
+    var array_depth: usize = 0;
+    while (index <= contents.len) : (index += 1) {
+        const at_end = index == contents.len;
+        if (!at_end) {
+            const byte = contents[index];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (byte == '\\') {
+                    escaped = true;
+                } else if (byte == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (byte == '"') {
+                in_string = true;
+                continue;
+            }
+            if (byte == '[') {
+                array_depth += 1;
+                continue;
+            }
+            if (byte == ']') {
+                if (array_depth == 0) return error.InvalidTomlInlineTable;
+                array_depth -= 1;
+                continue;
+            }
+            if (byte != ',' or array_depth != 0) continue;
+        }
+
+        const entry = std.mem.trim(u8, contents[start..index], " \t\r\n");
+        start = index + 1;
+        if (entry.len == 0) continue;
+        if (try stringValueForKey(allocator, entry, "command")) |value| {
+            if (command) |existing| allocator.free(existing);
+            command = value;
+            continue;
+        }
+        if (try stringArrayValueForKey(allocator, entry, "args")) |value| {
+            if (args) |*existing| existing.deinit(allocator);
+            args = value;
+            continue;
+        }
+        if (try stringValueForKey(allocator, entry, "cwd")) |value| {
+            if (cwd) |existing| allocator.free(existing);
+            cwd = value;
+            continue;
+        }
+        if (try u64ValueForKey(entry, "timeout_ms")) |value| {
+            timeout_ms = value;
+            continue;
+        }
+    }
+    if (in_string or array_depth != 0) return error.InvalidTomlInlineTable;
+
+    const owned_command = command orelse return null;
+    command = null;
+    errdefer allocator.free(owned_command);
+    if (std.mem.trim(u8, owned_command, " \t\r\n").len == 0) return error.ModelProviderAuthCommandEmpty;
+    const owned_args = if (args) |value| args: {
+        args = null;
+        break :args value;
+    } else StringList{ .items = try allocator.alloc([]const u8, 0) };
+    errdefer {
+        var mutable_args = owned_args;
+        mutable_args.deinit(allocator);
+    }
+    const owned_cwd = cwd;
+    cwd = null;
+    errdefer if (owned_cwd) |value| allocator.free(value);
+    const resolved_timeout = timeout_ms orelse 5000;
+    if (resolved_timeout == 0) return error.InvalidModelProviderAuthTimeout;
+
+    return .{
+        .command = owned_command,
+        .args = owned_args,
+        .cwd = owned_cwd,
+        .timeout_ms = resolved_timeout,
+    };
 }
 
 pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
@@ -1600,6 +1732,10 @@ fn isNamedSection(line: []const u8, prefix: []const u8, name: []const u8) bool {
         return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], name);
     }
     return std.mem.eql(u8, raw_name, name);
+}
+
+fn modelProviderAuthSectionName(allocator: std.mem.Allocator, provider: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "model_providers.{s}.auth", .{provider});
 }
 
 fn readOptionalFileTrimmed(
@@ -1984,6 +2120,31 @@ test "model provider command auth resolves from active provider table" {
         \\args = ["--scope", "codex"]
         \\cwd = "/tmp/provider-auth"
         \\timeout_ms = 1234
+        \\
+        ,
+    };
+
+    var provider_auth = try resolveModelProviderAuth(allocator, view, null);
+    defer provider_auth.deinit(allocator);
+
+    const command = provider_auth.command.?;
+    try std.testing.expectEqualStrings("./print-token", command.command);
+    try std.testing.expectEqual(@as(usize, 2), command.args.items.len);
+    try std.testing.expectEqualStrings("--scope", command.args.items[0]);
+    try std.testing.expectEqualStrings("codex", command.args.items[1]);
+    try std.testing.expectEqualStrings("/tmp/provider-auth", command.cwd.?);
+    try std.testing.expectEqual(@as(u64, 1234), command.timeout_ms);
+}
+
+test "model provider command auth resolves from inline provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "command-provider"
+        \\
+        \\[model_providers.command-provider]
+        \\base_url = "https://proxy.example/v1"
+        \\auth = { command = "./print-token", args = ["--scope", "codex"], cwd = "/tmp/provider-auth", timeout_ms = 1234 }
         \\
         ,
     };
