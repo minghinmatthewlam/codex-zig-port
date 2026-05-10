@@ -11,6 +11,8 @@ import tempfile
 import time
 from pathlib import Path
 
+_OMIT = object()
+
 
 def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
     selector = selectors.DefaultSelector()
@@ -637,6 +639,116 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def encode_unsigned_jwt(payload: dict) -> str:
+    def encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+    header = encode(json.dumps({"alg": "none", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
+    body = encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = encode(b"signature")
+    return f"{header}.{body}.{signature}"
+
+
+def run_account_read_rpc_smoke(binary: Path) -> None:
+    def request(codex_home: Path, request_id: str, params_marker: object, extra_env: dict[str, str] | None = None) -> dict:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        if extra_env:
+            env.update(extra_env)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "account/read"}
+        if params_marker is not _OMIT:
+            payload["params"] = params_marker
+        return request_stdio_app_server(binary, payload, env)
+
+    no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-none-", dir="/tmp"))
+    api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-api-", dir="/tmp"))
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-chatgpt-", dir="/tmp"))
+    bedrock_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-bedrock-", dir="/tmp"))
+    custom_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-custom-", dir="/tmp"))
+    oss_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-oss-", dir="/tmp"))
+    try:
+        no_auth = request(no_auth_home, "account-no-auth", _OMIT)
+        assert no_auth["id"] == "account-no-auth"
+        assert no_auth["result"] == {"account": None, "requiresOpenaiAuth": True}
+
+        api_key = request(api_key_home, "account-api-key", {}, {"OPENAI_API_KEY": "sk-test-key"})
+        assert api_key["id"] == "account-api-key"
+        assert api_key["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
+
+        id_token = encode_unsigned_jwt(
+            {
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "pro",
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        (chatgpt_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": "chatgpt-access-token",
+                        "refresh_token": "chatgpt-refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        chatgpt = request(chatgpt_home, "account-chatgpt", {"refreshToken": False})
+        assert chatgpt["id"] == "account-chatgpt"
+        assert chatgpt["result"] == {
+            "account": {"type": "chatgpt", "email": "user@example.com", "planType": "pro"},
+            "requiresOpenaiAuth": True,
+        }
+
+        (bedrock_home / "config.toml").write_text('model_provider = "amazon-bedrock"\n', encoding="utf-8")
+        bedrock = request(bedrock_home, "account-bedrock", None)
+        assert bedrock["id"] == "account-bedrock"
+        assert bedrock["result"] == {
+            "account": {"type": "amazonBedrock"},
+            "requiresOpenaiAuth": False,
+        }
+
+        (custom_home / "config.toml").write_text(
+            '\n'.join(
+                [
+                    'model_provider = "custom-provider"',
+                    "",
+                    "[model_providers.custom-provider]",
+                    'base_url = "https://proxy.example/v1"',
+                    'wire_api = "responses"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        custom = request(custom_home, "account-custom", {})
+        assert custom["id"] == "account-custom"
+        assert custom["result"] == {"account": None, "requiresOpenaiAuth": False}
+
+        (oss_home / "config.toml").write_text('oss_provider = "ollama"\n', encoding="utf-8")
+        oss = request(oss_home, "account-oss", {})
+        assert oss["id"] == "account-oss"
+        assert oss["result"] == {"account": None, "requiresOpenaiAuth": False}
+
+        invalid = request(no_auth_home, "account-invalid", {"refreshToken": "yes"})
+        assert invalid["id"] == "account-invalid"
+        assert invalid["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(no_auth_home, ignore_errors=True)
+        shutil.rmtree(api_key_home, ignore_errors=True)
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(bedrock_home, ignore_errors=True)
+        shutil.rmtree(custom_home, ignore_errors=True)
+        shutil.rmtree(oss_home, ignore_errors=True)
+
+
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
     env = os.environ.copy()
@@ -1016,6 +1128,8 @@ def main() -> None:
     print("app-server-model-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
+    run_account_read_rpc_smoke(binary)
+    print("app-server-account-read-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
