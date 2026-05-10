@@ -196,24 +196,26 @@ fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     const state_path = try memory_reset.resolveStateDbPath(allocator, cfg.codex_home);
     defer allocator.free(state_path);
     const state_exists = try memory_reset.stateDbExists(allocator, state_path);
+    var cleared_state_db = false;
     if (state_exists) {
-        const message = try std.fmt.allocPrint(
-            allocator,
-            "State db found at {s}; Zig memory-state clearing is not implemented yet. Refusing partial memory reset.\n",
-            .{state_path},
-        );
-        defer allocator.free(message);
-        try cli_utils.writeStderr(message);
-        return error.MemoryStateDbClearNotImplemented;
+        try memory_reset.clearMemoryStateDb(allocator, state_path);
+        cleared_state_db = true;
     }
 
     try memory_reset.clearMemoryRootsContents(allocator, cfg.codex_home);
 
-    const message = try std.fmt.allocPrint(
-        allocator,
-        "No state db found at {s}. Cleared memory directories under {s}.\n",
-        .{ state_path, cfg.codex_home },
-    );
+    const message = if (cleared_state_db)
+        try std.fmt.allocPrint(
+            allocator,
+            "Cleared memory state from {s}. Cleared memory directories under {s}.\n",
+            .{ state_path, cfg.codex_home },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "No state db found at {s}. Cleared memory directories under {s}.\n",
+            .{ state_path, cfg.codex_home },
+        );
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
 }

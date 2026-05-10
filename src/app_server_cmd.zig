@@ -574,13 +574,9 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to inspect state db", err);
     };
     if (state_exists) {
-        const message = try std.fmt.allocPrint(
-            allocator,
-            "state db found at {s}; Zig memory-state clearing is not implemented yet",
-            .{state_path},
-        );
-        defer allocator.free(message);
-        return try renderJsonRpcError(allocator, id_value, -32603, message);
+        memory_reset.clearMemoryStateDb(allocator, state_path) catch |err| {
+            return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory state db", err);
+        };
     }
 
     memory_reset.clearMemoryRootsContents(allocator, codex_home) catch |err| {

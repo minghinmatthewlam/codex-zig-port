@@ -15,6 +15,32 @@ pub fn stateDbExists(allocator: std.mem.Allocator, state_path: []const u8) !bool
     return (try statPathNoFollow(allocator, state_path)) != null;
 }
 
+pub fn clearMemoryStateDb(allocator: std.mem.Allocator, state_path: []const u8) !void {
+    const sql =
+        \\BEGIN IMMEDIATE;
+        \\DELETE FROM stage1_outputs;
+        \\DELETE FROM jobs
+        \\WHERE kind = 'memory_stage1' OR kind = 'memory_consolidate_global';
+        \\COMMIT;
+    ;
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = &.{ "sqlite3", state_path, sql },
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.MemoryStateDbClearFailed,
+        else => return error.MemoryStateDbClearFailed,
+    }
+}
+
 pub fn clearMemoryRootsContents(allocator: std.mem.Allocator, codex_home: []const u8) !void {
     const roots = [_][]const u8{ "memories", "memories_extensions" };
     for (roots) |root_name| {
