@@ -14,6 +14,7 @@ const modules = .{
     @import("debug_cmd.zig"),
     @import("exec.zig"),
     @import("features_cmd.zig"),
+    @import("fuzzy_file_search.zig"),
     @import("git_diff.zig"),
     @import("git_remote_diff.zig"),
     @import("input_images.zig"),

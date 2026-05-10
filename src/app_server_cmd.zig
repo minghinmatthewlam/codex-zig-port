@@ -7,6 +7,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
+const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const memory_reset = @import("memory_reset.zig");
 
@@ -454,6 +455,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "gitDiffToRemote")) {
         return try handleGitDiffToRemote(allocator, id_value.?, object.get("params"));
     }
+    if (std.mem.eql(u8, method, "fuzzyFileSearch")) {
+        return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
+    }
     if (isMarketplaceMethod(method)) {
         return try handleMarketplaceMethod(allocator, id_value.?, method, object.get("params"));
     }
@@ -537,6 +541,92 @@ fn handleGitDiffToRemote(allocator: std.mem.Allocator, id_value: std.json.Value,
     const result = try std.fmt.allocPrint(allocator, "{{\"sha\":{s},\"diff\":{s}}}", .{ sha_json, diff_json });
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleFuzzyFileSearch(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch params must be an object");
+
+    const query_value = params.object.get("query") orelse return renderJsonRpcError(allocator, id_value, -32602, "query must be a string");
+    if (query_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "query must be a string");
+
+    const roots = parseFuzzyFileSearchRoots(allocator, params.object.get("roots")) catch |err| switch (err) {
+        error.InvalidFuzzyFileSearchRoots => return renderJsonRpcError(allocator, id_value, -32602, "roots must be an array of strings"),
+        else => return err,
+    };
+    defer allocator.free(roots);
+
+    if (params.object.get("cancellationToken")) |value| {
+        if (value != .null and value != .string) {
+            return renderJsonRpcError(allocator, id_value, -32602, "cancellationToken must be a string or null");
+        }
+    }
+
+    var files = try fuzzy_file_search.search(allocator, query_value.string, roots);
+    defer files.deinit(allocator);
+
+    const result = try renderFuzzyFileSearchResult(allocator, files);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn parseFuzzyFileSearchRoots(allocator: std.mem.Allocator, roots_value: ?std.json.Value) ![]const []const u8 {
+    const value = roots_value orelse return error.InvalidFuzzyFileSearchRoots;
+    if (value != .array) return error.InvalidFuzzyFileSearchRoots;
+    const roots = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(roots);
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string) return error.InvalidFuzzyFileSearchRoots;
+        roots[index] = item.string;
+    }
+    return roots;
+}
+
+fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file_search.Results) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"files\":[");
+    for (results.files, 0..) |file, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendFuzzyFileSearchMatch(allocator, &out, file);
+    }
+    try out.appendSlice(allocator, "]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendFuzzyFileSearchMatch(allocator: std.mem.Allocator, out: *std.ArrayList(u8), file: fuzzy_file_search.Match) !void {
+    const root_json = try std.json.Stringify.valueAlloc(allocator, file.root, .{});
+    defer allocator.free(root_json);
+    const path_json = try std.json.Stringify.valueAlloc(allocator, file.path, .{});
+    defer allocator.free(path_json);
+    const match_type_json = try std.json.Stringify.valueAlloc(allocator, file.match_type.jsonLabel(), .{});
+    defer allocator.free(match_type_json);
+    const file_name_json = try std.json.Stringify.valueAlloc(allocator, file.file_name, .{});
+    defer allocator.free(file_name_json);
+
+    try out.appendSlice(allocator, "{\"root\":");
+    try out.appendSlice(allocator, root_json);
+    try out.appendSlice(allocator, ",\"path\":");
+    try out.appendSlice(allocator, path_json);
+    try out.appendSlice(allocator, ",\"match_type\":");
+    try out.appendSlice(allocator, match_type_json);
+    try out.appendSlice(allocator, ",\"file_name\":");
+    try out.appendSlice(allocator, file_name_json);
+    try out.appendSlice(allocator, ",\"score\":");
+    try appendInt(allocator, out, file.score);
+    try out.appendSlice(allocator, ",\"indices\":[");
+    for (file.indices, 0..) |value, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendInt(allocator, out, value);
+    }
+    try out.appendSlice(allocator, "]}");
+}
+
+fn appendInt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: anytype) !void {
+    const rendered = try std.fmt.allocPrint(allocator, "{}", .{value});
+    defer allocator.free(rendered);
+    try out.appendSlice(allocator, rendered);
 }
 
 fn isMarketplaceMethod(method: []const u8) bool {
