@@ -5354,18 +5354,36 @@ fn configReadUserLayerHasOriginKey(layer: ConfigReadUserLayer, key: []const u8) 
     if (std.mem.eql(u8, key, "sandbox_workspace_write.network_access")) return layer.sandbox_workspace_write.network_access_present;
     if (std.mem.eql(u8, key, "sandbox_workspace_write.exclude_tmpdir_env_var")) return layer.sandbox_workspace_write.exclude_tmpdir_env_var_present;
     if (std.mem.eql(u8, key, "sandbox_workspace_write.exclude_slash_tmp")) return layer.sandbox_workspace_write.exclude_slash_tmp_present;
-    if (std.mem.eql(u8, key, "tools.web_search.context_size")) return if (layer.tools.web_search) |web_search| web_search.context_size != null else false;
-    if (isConfigReadToolsAllowedDomainsOriginKey(key)) return configReadUserLayerHasToolsAllowedDomains(layer);
-    if (std.mem.eql(u8, key, "tools.web_search.location.country")) return if (layer.tools.web_search) |web_search| if (web_search.location) |location| location.country != null else false else false;
-    if (std.mem.eql(u8, key, "tools.web_search.location.region")) return if (layer.tools.web_search) |web_search| if (web_search.location) |location| location.region != null else false else false;
-    if (std.mem.eql(u8, key, "tools.web_search.location.city")) return if (layer.tools.web_search) |web_search| if (web_search.location) |location| location.city != null else false else false;
-    if (std.mem.eql(u8, key, "tools.web_search.location.timezone")) return if (layer.tools.web_search) |web_search| if (web_search.location) |location| location.timezone != null else false else false;
-    if (std.mem.eql(u8, key, "tools.view_image")) return layer.tools.view_image != null;
+    return configReadToolsHasOriginKey(layer.tools, key);
+}
+
+fn configReadToolsHasOriginKey(tools: ConfigReadTools, key: []const u8) bool {
+    if (std.mem.eql(u8, key, "tools.web_search.context_size")) {
+        return if (tools.web_search) |web_search| web_search.context_size != null else false;
+    }
+    if (isConfigReadToolsAllowedDomainsOriginKey(key)) return configReadToolsHasAllowedDomains(tools);
+    if (std.mem.eql(u8, key, "tools.web_search.location.country")) {
+        return if (tools.web_search) |web_search| if (web_search.location) |location| location.country != null else false else false;
+    }
+    if (std.mem.eql(u8, key, "tools.web_search.location.region")) {
+        return if (tools.web_search) |web_search| if (web_search.location) |location| location.region != null else false else false;
+    }
+    if (std.mem.eql(u8, key, "tools.web_search.location.city")) {
+        return if (tools.web_search) |web_search| if (web_search.location) |location| location.city != null else false else false;
+    }
+    if (std.mem.eql(u8, key, "tools.web_search.location.timezone")) {
+        return if (tools.web_search) |web_search| if (web_search.location) |location| location.timezone != null else false else false;
+    }
+    if (std.mem.eql(u8, key, "tools.view_image")) return tools.view_image != null;
     return false;
 }
 
 fn configReadUserLayerHasToolsAllowedDomains(layer: ConfigReadUserLayer) bool {
-    if (layer.tools.web_search) |web_search| {
+    return configReadToolsHasAllowedDomains(layer.tools);
+}
+
+fn configReadToolsHasAllowedDomains(tools: ConfigReadTools) bool {
+    if (tools.web_search) |web_search| {
         return web_search.allowed_domains != null;
     }
     return false;
