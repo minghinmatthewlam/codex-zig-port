@@ -3182,7 +3182,6 @@ const ApprovalsReviewer = enum {
         if (std.mem.eql(u8, value, "auto_review") or std.mem.eql(u8, value, "guardian_subagent")) return .auto_review;
         return error.InvalidApprovalsReviewer;
     }
-
 };
 
 fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !LegacyManagedConfigRequirements {
