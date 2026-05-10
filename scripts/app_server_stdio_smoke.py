@@ -530,6 +530,86 @@ def run_model_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_config_read_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-", dir="/tmp"))
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-config"',
+                'approval_policy = "never"',
+                'sandbox_mode = "danger-full-access"',
+                'web_search = "live"',
+                'service_tier = "flex"',
+                "",
+                "[features]",
+                "apps = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        config_read = rpc("config-read", "config/read", {"includeLayers": True, "cwd": str(codex_home)})
+        assert config_read["id"] == "config-read"
+        config_body = config_read["result"]["config"]
+        assert config_body["model"] == "gpt-config"
+        assert config_body["approval_policy"] == "never"
+        assert config_body["sandbox_mode"] == "danger-full-access"
+        assert config_body["web_search"] == "live"
+        assert config_body["service_tier"] == "flex"
+        assert config_body["features"]["apps"] is False
+        assert config_body["features"]["memories"] is False
+        assert config_read["result"]["origins"] == {}
+        assert config_read["result"]["layers"] == []
+
+        feature_enablement = rpc(
+            "config-feature-enable",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"apps": True, "memories": True}},
+        )
+        assert feature_enablement["id"] == "config-feature-enable"
+        assert feature_enablement["result"]["enablement"] == {"apps": True, "memories": True}
+
+        after_enablement = rpc("config-read-after-enable", "config/read", {})
+        after_features = after_enablement["result"]["config"]["features"]
+        assert after_features["apps"] is False
+        assert after_features["memories"] is True
+        assert after_enablement["result"]["layers"] is None
+
+        invalid_params = rpc("config-read-invalid", "config/read", {"includeLayers": "yes"})
+        assert invalid_params["id"] == "config-read-invalid"
+        assert invalid_params["error"]["code"] == -32602
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
     env = os.environ.copy()
@@ -544,7 +624,10 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     )
 
     def rpc(request_id: str, method: str, params: dict) -> dict:
-        write_json_line(proc, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
         return read_json_line(proc, 5)
 
     try:
@@ -904,6 +987,8 @@ def main() -> None:
     print("app-server-filesystem-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
+    run_config_read_rpc_smoke(binary)
+    print("app-server-config-read-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
