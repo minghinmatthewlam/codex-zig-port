@@ -71,8 +71,10 @@ profiles, with command-cwd sandbox rooting for project roots. Unsupported
 profile entries return explicit not-implemented errors rather than weakening
 sandbox behavior. Permission-profile network policy is enforced for supported
 macOS sandbox-backed managed profiles, including enabled and restricted network
-smoke coverage. Follow-up calls return inactive-process errors until true async
-command sessions are implemented.
+smoke coverage; `sandboxPolicy.networkAccess` is enforced for supported
+read-only/workspace-write policies, including the Rust-shaped default network
+deny. Follow-up calls return inactive-process errors until true async command
+sessions are implemented.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |

@@ -292,8 +292,9 @@ and unwatch cleanup,
 verifies app-server buffered `command/exec` for stdout/stderr capture, cwd and
 environment overrides, nonzero exit responses, supported `permissionProfile`
 execution shapes, managed permission-profile network enabled/restricted
-behavior, explicit unsupported streaming mode, required streaming `processId`
-validation, and follow-up command session validation/inactive-process errors,
+behavior, sandbox-policy `networkAccess` enforcement, explicit unsupported
+streaming mode, required streaming `processId` validation, and follow-up command
+session validation/inactive-process errors,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
