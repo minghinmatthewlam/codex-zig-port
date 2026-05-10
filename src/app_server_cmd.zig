@@ -561,20 +561,176 @@ const INITIALIZE_RESPONSE_TS =
     \\
     ;
 
+const COMMAND_EXEC_TERMINAL_SIZE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandExecTerminalSize {
+    \\  rows: number;
+    \\  cols: number;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_OUTPUT_STREAM_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecOutputStream = "stdout" | "stderr";
+    \\
+    ;
+
+const NETWORK_ACCESS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NetworkAccess = "restricted" | "enabled";
+    \\
+    ;
+
+const SANDBOX_POLICY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { NetworkAccess } from "./NetworkAccess";
+    \\
+    \\export type SandboxPolicy =
+    \\  | { type: "dangerFullAccess" }
+    \\  | { type: "readOnly"; networkAccess?: boolean }
+    \\  | { type: "externalSandbox"; networkAccess?: NetworkAccess }
+    \\  | {
+    \\      type: "workspaceWrite";
+    \\      writableRoots?: string[];
+    \\      networkAccess?: boolean;
+    \\      excludeTmpdirEnvVar?: boolean;
+    \\      excludeSlashTmp?: boolean;
+    \\    };
+    \\
+    ;
+
+const COMMAND_EXEC_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+    \\import type { SandboxPolicy } from "./SandboxPolicy";
+    \\
+    \\export interface CommandExecParams {
+    \\  command: string[];
+    \\  processId?: string | null;
+    \\  tty?: boolean;
+    \\  streamStdin?: boolean;
+    \\  streamStdoutStderr?: boolean;
+    \\  outputBytesCap?: number | null;
+    \\  disableOutputCap?: boolean;
+    \\  disableTimeout?: boolean;
+    \\  timeoutMs?: number | null;
+    \\  cwd?: string | null;
+    \\  env?: Record<string, string | null> | null;
+    \\  size?: CommandExecTerminalSize | null;
+    \\  sandboxPolicy?: SandboxPolicy | null;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandExecResponse {
+    \\  exitCode: number;
+    \\  stdout: string;
+    \\  stderr: string;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_WRITE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandExecWriteParams {
+    \\  processId: string;
+    \\  deltaBase64?: string | null;
+    \\  closeStdin?: boolean;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_WRITE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecWriteResponse = Record<string, never>;
+    \\
+    ;
+
+const COMMAND_EXEC_TERMINATE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecTerminateResponse = Record<string, never>;
+    \\
+    ;
+
+const COMMAND_EXEC_RESIZE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecResizeResponse = Record<string, never>;
+    \\
+    ;
+
+const COMMAND_EXEC_TERMINATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandExecTerminateParams {
+    \\  processId: string;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_RESIZE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+    \\
+    \\export interface CommandExecResizeParams {
+    \\  processId: string;
+    \\  size: CommandExecTerminalSize;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CommandExecOutputStream } from "./CommandExecOutputStream";
+    \\
+    \\export interface CommandExecOutputDeltaNotification {
+    \\  processId: string;
+    \\  stream: CommandExecOutputStream;
+    \\  deltaBase64: string;
+    \\  capReached: boolean;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
+    \\import type { CommandExecParams } from "./v2/CommandExecParams";
+    \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
+    \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
+    \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
     \\export type ClientRequest =
     \\  | {
     \\      method: "initialize";
     \\      params: InitializeParams;
+    \\    }
+    \\  | {
+    \\      method: "command/exec";
+    \\      params: CommandExecParams;
+    \\    }
+    \\  | {
+    \\      method: "command/exec/write";
+    \\      params: CommandExecWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "command/exec/terminate";
+    \\      params: CommandExecTerminateParams;
+    \\    }
+    \\  | {
+    \\      method: "command/exec/resize";
+    \\      params: CommandExecResizeParams;
     \\    };
     \\
     ;
 
 const CLIENT_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { CommandExecResponse } from "./v2/CommandExecResponse";
+    \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
+    \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
+    \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
     \\
@@ -583,6 +739,38 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "initialize";
     \\      result: InitializeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "command/exec";
+    \\      result: CommandExecResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "command/exec/write";
+    \\      result: CommandExecWriteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "command/exec/terminate";
+    \\      result: CommandExecTerminateResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "command/exec/resize";
+    \\      result: CommandExecResizeResponse;
+    \\    };
+    \\
+    ;
+
+const SERVER_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\
+    \\export type ServerNotification =
+    \\  | {
+    \\      method: "command/exec/outputDelta";
+    \\      params: CommandExecOutputDeltaNotification;
     \\    };
     \\
     ;
@@ -600,13 +788,26 @@ const INDEX_TS =
     \\export type { JSONRPCRequest } from "./JSONRPCRequest";
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { RequestId } from "./RequestId";
+    \\export type { ServerNotification } from "./ServerNotification";
     \\export * as v2 from "./v2";
     \\
     ;
 
 const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
-    \\export {};
+    \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
+    \\export type { CommandExecOutputStream } from "./CommandExecOutputStream";
+    \\export type { CommandExecParams } from "./CommandExecParams";
+    \\export type { CommandExecResizeParams } from "./CommandExecResizeParams";
+    \\export type { CommandExecResizeResponse } from "./CommandExecResizeResponse";
+    \\export type { CommandExecResponse } from "./CommandExecResponse";
+    \\export type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+    \\export type { CommandExecTerminateParams } from "./CommandExecTerminateParams";
+    \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
+    \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
+    \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { NetworkAccess } from "./NetworkAccess";
+    \\export type { SandboxPolicy } from "./SandboxPolicy";
     \\
     ;
 
@@ -771,6 +972,220 @@ const INITIALIZE_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecTerminalSize",
+    \\  "type": "object",
+    \\  "required": ["rows", "cols"],
+    \\  "properties": {
+    \\    "rows": { "type": "integer", "minimum": 1 },
+    \\    "cols": { "type": "integer", "minimum": 1 }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SANDBOX_POLICY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SandboxPolicy",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "const": "dangerFullAccess" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "readOnly" },
+    \\        "networkAccess": { "type": "boolean", "default": false }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "workspaceWrite" },
+    \\        "writableRoots": {
+    \\          "type": "array",
+    \\          "items": { "type": "string" }
+    \\        },
+    \\        "networkAccess": { "type": "boolean", "default": false },
+    \\        "excludeTmpdirEnvVar": { "type": "boolean", "default": false },
+    \\        "excludeSlashTmp": { "type": "boolean", "default": false }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "externalSandbox" },
+    \\        "networkAccess": { "enum": ["restricted", "enabled"], "default": "restricted" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecParams",
+    \\  "type": "object",
+    \\  "required": ["command"],
+    \\  "properties": {
+    \\    "command": {
+    \\      "type": "array",
+    \\      "items": { "type": "string" }
+    \\    },
+    \\    "processId": { "type": ["string", "null"] },
+    \\    "tty": { "type": "boolean" },
+    \\    "streamStdin": { "type": "boolean" },
+    \\    "streamStdoutStderr": { "type": "boolean" },
+    \\    "outputBytesCap": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "disableOutputCap": { "type": "boolean" },
+    \\    "disableTimeout": { "type": "boolean" },
+    \\    "timeoutMs": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "env": {
+    \\      "type": ["object", "null"],
+    \\      "additionalProperties": { "type": ["string", "null"] }
+    \\    },
+    \\    "size": {
+    \\      "oneOf": [
+    \\        { "$ref": "CommandExecTerminalSize.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "sandboxPolicy": {
+    \\      "oneOf": [
+    \\        { "$ref": "SandboxPolicy.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecResponse",
+    \\  "type": "object",
+    \\  "required": ["exitCode", "stdout", "stderr"],
+    \\  "properties": {
+    \\    "exitCode": { "type": "integer" },
+    \\    "stdout": { "type": "string" },
+    \\    "stderr": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_WRITE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecWriteParams",
+    \\  "type": "object",
+    \\  "required": ["processId"],
+    \\  "properties": {
+    \\    "processId": { "type": "string" },
+    \\    "deltaBase64": { "type": ["string", "null"] },
+    \\    "closeStdin": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_TERMINATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecTerminateParams",
+    \\  "type": "object",
+    \\  "required": ["processId"],
+    \\  "properties": {
+    \\    "processId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_RESIZE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecResizeParams",
+    \\  "type": "object",
+    \\  "required": ["processId", "size"],
+    \\  "properties": {
+    \\    "processId": { "type": "string" },
+    \\    "size": { "$ref": "CommandExecTerminalSize.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_WRITE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecWriteResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_TERMINATE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecTerminateResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_RESIZE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecResizeResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecOutputDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["processId", "stream", "deltaBase64", "capReached"],
+    \\  "properties": {
+    \\    "processId": { "type": "string" },
+    \\    "stream": { "enum": ["stdout", "stderr"] },
+    \\    "deltaBase64": { "type": "string" },
+    \\    "capReached": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -855,6 +1270,38 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "capabilities": { "type": "object" }
     \\      },
     \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecParams": {
+    \\      "type": "object",
+    \\      "required": ["command"],
+    \\      "properties": {
+    \\        "command": { "type": "array", "items": { "type": "string" } },
+    \\        "processId": { "type": ["string", "null"] },
+    \\        "streamStdin": { "type": "boolean" },
+    \\        "streamStdoutStderr": { "type": "boolean" },
+    \\        "tty": { "type": "boolean" },
+    \\        "sandboxPolicy": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecResponse": {
+    \\      "type": "object",
+    \\      "required": ["exitCode", "stdout", "stderr"],
+    \\      "properties": {
+    \\        "exitCode": { "type": "integer" },
+    \\        "stdout": { "type": "string" },
+    \\        "stderr": { "type": "string" }
+    \\      }
+    \\    },
+    \\    "CommandExecOutputDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["processId", "stream", "deltaBase64", "capReached"],
+    \\      "properties": {
+    \\        "processId": { "type": "string" },
+    \\        "stream": { "enum": ["stdout", "stderr"] },
+    \\        "deltaBase64": { "type": "string" },
+    \\        "capReached": { "type": "boolean" }
+    \\      }
     \\    }
     \\  }
     \\}
@@ -894,6 +1341,17 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
+    .{ .name = "SandboxPolicy.json", .contents = SANDBOX_POLICY_JSON_SCHEMA },
+    .{ .name = "CommandExecParams.json", .contents = COMMAND_EXEC_PARAMS_JSON_SCHEMA },
+    .{ .name = "CommandExecResponse.json", .contents = COMMAND_EXEC_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecWriteParams.json", .contents = COMMAND_EXEC_WRITE_PARAMS_JSON_SCHEMA },
+    .{ .name = "CommandExecWriteResponse.json", .contents = COMMAND_EXEC_WRITE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecTerminateParams.json", .contents = COMMAND_EXEC_TERMINATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "CommandExecTerminateResponse.json", .contents = COMMAND_EXEC_TERMINATE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecResizeParams.json", .contents = COMMAND_EXEC_RESIZE_PARAMS_JSON_SCHEMA },
+    .{ .name = "CommandExecResizeResponse.json", .contents = COMMAND_EXEC_RESIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecOutputDeltaNotification.json", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -910,8 +1368,22 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "InitializeResponse.ts", .contents = INITIALIZE_RESPONSE_TS },
     .{ .name = "ClientRequest.ts", .contents = CLIENT_REQUEST_TS },
     .{ .name = "ClientResponse.ts", .contents = CLIENT_RESPONSE_TS },
+    .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
+    .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
+    .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
+    .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
+    .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
+    .{ .name = "v2/CommandExecParams.ts", .contents = COMMAND_EXEC_PARAMS_TS },
+    .{ .name = "v2/CommandExecResponse.ts", .contents = COMMAND_EXEC_RESPONSE_TS },
+    .{ .name = "v2/CommandExecWriteParams.ts", .contents = COMMAND_EXEC_WRITE_PARAMS_TS },
+    .{ .name = "v2/CommandExecWriteResponse.ts", .contents = COMMAND_EXEC_WRITE_RESPONSE_TS },
+    .{ .name = "v2/CommandExecTerminateParams.ts", .contents = COMMAND_EXEC_TERMINATE_PARAMS_TS },
+    .{ .name = "v2/CommandExecTerminateResponse.ts", .contents = COMMAND_EXEC_TERMINATE_RESPONSE_TS },
+    .{ .name = "v2/CommandExecResizeParams.ts", .contents = COMMAND_EXEC_RESIZE_PARAMS_TS },
+    .{ .name = "v2/CommandExecResizeResponse.ts", .contents = COMMAND_EXEC_RESIZE_RESPONSE_TS },
+    .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
