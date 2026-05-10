@@ -11,6 +11,7 @@ pub const Config = struct {
     model_provider_wire_api: ModelProviderWireApi = .responses,
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
+    model_provider_auth_command: ?ProviderAuthCommand = null,
     oss_provider: ?[]const u8,
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
@@ -32,6 +33,7 @@ pub const Config = struct {
         allocator.free(self.chatgpt_base_url);
         if (self.model_provider_env_key) |value| allocator.free(value);
         if (self.model_provider_bearer_token) |value| allocator.free(value);
+        if (self.model_provider_auth_command) |*value| value.deinit(allocator);
         if (self.oss_provider) |value| allocator.free(value);
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
@@ -62,6 +64,34 @@ pub const StringList = struct {
             copied += 1;
         }
         return .{ .items = items };
+    }
+};
+
+pub const ProviderAuthCommand = struct {
+    command: []const u8,
+    args: StringList,
+    cwd: ?[]const u8 = null,
+    timeout_ms: u64 = 5000,
+
+    pub fn deinit(self: *ProviderAuthCommand, allocator: std.mem.Allocator) void {
+        allocator.free(self.command);
+        self.args.deinit(allocator);
+        if (self.cwd) |value| allocator.free(value);
+    }
+
+    pub fn clone(self: ProviderAuthCommand, allocator: std.mem.Allocator) !ProviderAuthCommand {
+        const command = try allocator.dupe(u8, self.command);
+        errdefer allocator.free(command);
+        var args = try self.args.clone(allocator);
+        errdefer args.deinit(allocator);
+        const cwd = if (self.cwd) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (cwd) |value| allocator.free(value);
+        return .{
+            .command = command,
+            .args = args,
+            .cwd = cwd,
+            .timeout_ms = self.timeout_ms,
+        };
     }
 };
 
@@ -492,7 +522,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     const model_provider_wire_api = try resolveModelProviderWireApi(allocator, config_view, active_profile);
 
-    const model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
+    var model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
     errdefer model_provider_auth.deinit(allocator);
 
     const oss_provider = try resolveOssProvider(allocator, config_view, active_profile);
@@ -525,6 +555,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model_provider_wire_api = model_provider_wire_api,
         .model_provider_env_key = model_provider_auth.env_key,
         .model_provider_bearer_token = model_provider_auth.bearer_token,
+        .model_provider_auth_command = model_provider_auth.command,
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = approval_policy,
@@ -639,10 +670,12 @@ fn resolveModelProviderWireApi(allocator: std.mem.Allocator, config_view: Config
 const ModelProviderAuth = struct {
     env_key: ?[]const u8 = null,
     bearer_token: ?[]const u8 = null,
+    command: ?ProviderAuthCommand = null,
 
-    fn deinit(self: ModelProviderAuth, allocator: std.mem.Allocator) void {
+    fn deinit(self: *ModelProviderAuth, allocator: std.mem.Allocator) void {
         if (self.env_key) |value| allocator.free(value);
         if (self.bearer_token) |value| allocator.free(value);
+        if (self.command) |*value| value.deinit(allocator);
     }
 };
 
@@ -655,10 +688,13 @@ fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigVie
     errdefer if (env_key) |value| allocator.free(value);
     const bearer_token = try config_view.getModelProviderString(allocator, provider, "experimental_bearer_token");
     errdefer if (bearer_token) |value| allocator.free(value);
+    var command = try config_view.getModelProviderAuthCommand(allocator, provider);
+    errdefer if (command) |*value| value.deinit(allocator);
 
     return .{
         .env_key = env_key,
         .bearer_token = bearer_token,
+        .command = command,
     };
 }
 
@@ -1253,6 +1289,26 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getSectionU64(
+        self: ConfigView,
+        section_name: []const u8,
+        key: []const u8,
+    ) !?u64 {
+        var in_section = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_section = isExactSection(line, section_name);
+                continue;
+            }
+            if (!in_section) continue;
+            if (try u64ValueForKey(line, key)) |value| return value;
+        }
+        return null;
+    }
+
     fn getTopLevelString(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
@@ -1303,6 +1359,34 @@ const ConfigView = struct {
         key: []const u8,
     ) !?[]const u8 {
         return self.getNamedSectionString(allocator, "model_providers.", provider, key);
+    }
+
+    fn getModelProviderAuthCommand(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        provider: []const u8,
+    ) !?ProviderAuthCommand {
+        const section_name = try std.fmt.allocPrint(allocator, "model_providers.{s}.auth", .{provider});
+        defer allocator.free(section_name);
+
+        const command_opt = try self.getSectionString(allocator, section_name, "command");
+        const command = command_opt orelse return null;
+        errdefer allocator.free(command);
+        if (std.mem.trim(u8, command, " \t\r\n").len == 0) return error.ModelProviderAuthCommandEmpty;
+
+        var args = (try self.getSectionStringArray(allocator, section_name, "args")) orelse StringList{ .items = try allocator.alloc([]const u8, 0) };
+        errdefer args.deinit(allocator);
+        const cwd = try self.getSectionString(allocator, section_name, "cwd");
+        errdefer if (cwd) |value| allocator.free(value);
+        const timeout_ms = (try self.getSectionU64(section_name, "timeout_ms")) orelse 5000;
+        if (timeout_ms == 0) return error.InvalidModelProviderAuthTimeout;
+
+        return .{
+            .command = command,
+            .args = args,
+            .cwd = cwd,
+            .timeout_ms = timeout_ms,
+        };
     }
 
     fn getNamedSectionString(
@@ -1382,6 +1466,14 @@ fn boolValueForKey(line: []const u8, key: []const u8) ?bool {
     if (std.mem.eql(u8, rhs, "true")) return true;
     if (std.mem.eql(u8, rhs, "false")) return false;
     return null;
+}
+
+fn u64ValueForKey(line: []const u8, key: []const u8) !?u64 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    return std.fmt.parseUnsigned(u64, rhs, 10) catch error.InvalidTomlInteger;
 }
 
 pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
@@ -1871,11 +1963,56 @@ test "model provider auth fields resolve from active provider table" {
         ,
     };
 
-    const provider_auth = try resolveModelProviderAuth(allocator, view, null);
+    var provider_auth = try resolveModelProviderAuth(allocator, view, null);
     defer provider_auth.deinit(allocator);
 
     try std.testing.expectEqualStrings("CORP_API_KEY", provider_auth.env_key.?);
     try std.testing.expectEqualStrings("configured-token", provider_auth.bearer_token.?);
+}
+
+test "model provider command auth resolves from active provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "command-provider"
+        \\
+        \\[model_providers.command-provider]
+        \\base_url = "https://proxy.example/v1"
+        \\
+        \\[model_providers.command-provider.auth]
+        \\command = "./print-token"
+        \\args = ["--scope", "codex"]
+        \\cwd = "/tmp/provider-auth"
+        \\timeout_ms = 1234
+        \\
+        ,
+    };
+
+    var provider_auth = try resolveModelProviderAuth(allocator, view, null);
+    defer provider_auth.deinit(allocator);
+
+    const command = provider_auth.command.?;
+    try std.testing.expectEqualStrings("./print-token", command.command);
+    try std.testing.expectEqual(@as(usize, 2), command.args.items.len);
+    try std.testing.expectEqualStrings("--scope", command.args.items[0]);
+    try std.testing.expectEqualStrings("codex", command.args.items[1]);
+    try std.testing.expectEqualStrings("/tmp/provider-auth", command.cwd.?);
+    try std.testing.expectEqual(@as(u64, 1234), command.timeout_ms);
+}
+
+test "model provider command auth rejects empty command" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "command-provider"
+        \\
+        \\[model_providers.command-provider.auth]
+        \\command = ""
+        \\
+        ,
+    };
+
+    try std.testing.expectError(error.ModelProviderAuthCommandEmpty, resolveModelProviderAuth(allocator, view, null));
 }
 
 test "profile model provider overrides top-level provider" {

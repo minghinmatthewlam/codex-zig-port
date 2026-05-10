@@ -101,7 +101,7 @@ const HttpResponse = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    return loadWithProviderAuth(allocator, codex_home, null, null, true);
+    return loadWithProviderAuth(allocator, codex_home, null, null, null, true);
 }
 
 pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
@@ -110,12 +110,13 @@ pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !C
         cfg.codex_home,
         cfg.model_provider_env_key,
         cfg.model_provider_bearer_token,
+        cfg.model_provider_auth_command,
         true,
     );
 }
 
 pub fn loadNoRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    return loadWithProviderAuth(allocator, codex_home, null, null, false);
+    return loadWithProviderAuth(allocator, codex_home, null, null, null, false);
 }
 
 fn loadWithProviderAuth(
@@ -123,6 +124,7 @@ fn loadWithProviderAuth(
     codex_home: []const u8,
     provider_env_key: ?[]const u8,
     provider_bearer_token: ?[]const u8,
+    provider_auth_command: ?config.ProviderAuthCommand,
     refresh_chatgpt: bool,
 ) !Credentials {
     if (provider_env_key) |key| {
@@ -136,6 +138,9 @@ fn loadWithProviderAuth(
     }
     if (provider_bearer_token) |token| {
         return .{ .mode = .api_key, .token = try allocator.dupe(u8, token) };
+    }
+    if (provider_auth_command) |command| {
+        return loadProviderCommandCredentials(allocator, command);
     }
 
     if (try loadStoredWithOptions(allocator, codex_home, .{ .refresh_chatgpt = refresh_chatgpt })) |credentials| {
@@ -153,6 +158,48 @@ fn loadWithProviderAuth(
     }
 
     return error.NoUsableAuth;
+}
+
+fn loadProviderCommandCredentials(
+    allocator: std.mem.Allocator,
+    provider_auth_command: config.ProviderAuthCommand,
+) !Credentials {
+    const argv = try allocator.alloc([]const u8, provider_auth_command.args.items.len + 1);
+    defer allocator.free(argv);
+    argv[0] = provider_auth_command.command;
+    for (provider_auth_command.args.items, 0..) |arg, index| {
+        argv[index + 1] = arg;
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const cwd: std.process.Child.Cwd = if (provider_auth_command.cwd) |path| .{ .path = path } else .inherit;
+    const timeout_ms = std.math.cast(i64, provider_auth_command.timeout_ms) orelse return error.InvalidModelProviderAuthTimeout;
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv,
+        .cwd = cwd,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(timeout_ms),
+            .clock = .awake,
+        } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (!providerAuthCommandSucceeded(result.term)) return error.ModelProviderAuthCommandFailed;
+    const token = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (token.len == 0) return error.ModelProviderAuthCommandEmptyToken;
+    return .{ .mode = .api_key, .token = try allocator.dupe(u8, token) };
+}
+
+fn providerAuthCommandSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }
 
 pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Credentials {
