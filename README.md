@@ -7,6 +7,17 @@ original implementation.
 
 This is an unofficial project and is not affiliated with or endorsed by OpenAI.
 
+## Open Source Status
+
+This repository is public under the MIT License. It is pre-release software:
+many surfaces are intentionally marked partial until they are implemented and
+verified against the real CLI, TUI, or app-server behavior.
+
+Contributions should follow `CONTRIBUTING.md`, security reports should follow
+`SECURITY.md`, and conduct expectations are in `.github/CODE_OF_CONDUCT.md`.
+Do not include real credentials, `auth.json`, private prompts, or local session
+transcripts in public issues or pull requests.
+
 ## First Milestone
 
 The first demo slice targets macOS and focuses on the interactive CLI surface:
