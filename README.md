@@ -59,6 +59,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - read local app-server plugin details with `plugin/read` for marketplace-backed
   local plugins, including summary metadata, manifest description, skills,
   hooks, app ids, and MCP server names
+- read remote app-server plugin skill Markdown with `plugin/skill/read`
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
@@ -167,9 +168,10 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
-stubs, local app-server `plugin/list` marketplace discovery, and remaining
-plugin RPC behavior including local `plugin/read` details for skills, hooks,
-apps, and MCP servers, verifies app-server hooks-list discovery for user and
+stubs, local app-server `plugin/list` marketplace discovery, remote
+`plugin/skill/read` Markdown fetching, and remaining plugin RPC behavior
+including local `plugin/read` details for skills, hooks, apps, and MCP servers,
+verifies app-server hooks-list discovery for user and
 project `config.toml` / `hooks.json` command hooks, enabled local plugin-cache
 command hooks, persisted user hook state, and malformed JSON warnings, verifies
 app-server

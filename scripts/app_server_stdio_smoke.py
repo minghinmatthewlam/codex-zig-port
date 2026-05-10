@@ -103,6 +103,45 @@ class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class PluginSkillBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def do_GET(self) -> None:
+        PluginSkillBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+            }
+        )
+        expected_path = (
+            "/backend-api/ps/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+            "/skills/plan-work"
+        )
+        if self.path != expected_path:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "plugin_id": "plugins~Plugin_00000000000000000000000000000000",
+                "name": "plan-work",
+                "skill_md_contents": "# Plan Work\n\nUse Linear issues to create a plan.",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
     try:
         assert proc.stdout is not None
@@ -827,17 +866,95 @@ description: Summarize plugin smoke threads
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-    cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-skill-read",
-            "method": "plugin/skill/read",
-            "params": {
-                "remoteMarketplaceName": "chatgpt-global",
-                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
-                "skillName": "plan-work",
+    server, base_url = start_plugin_skill_backend()
+    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-skill-", dir="/tmp"))
+    try:
+        remote_home.joinpath("config.toml").write_text(
+            f"""chatgpt_base_url = "{base_url}/backend-api"
+
+[features]
+plugins = true
+""",
+            encoding="utf-8",
+        )
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        remote_home.joinpath("auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        remote_env = os.environ.copy()
+        remote_env.pop("OPENAI_API_KEY", None)
+        remote_env.pop("CODEX_ACCESS_TOKEN", None)
+        remote_env["CODEX_HOME"] = str(remote_home)
+        plugin_skill_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-skill-read",
+                "method": "plugin/skill/read",
+                "params": {
+                    "remoteMarketplaceName": "chatgpt-global",
+                    "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                    "skillName": "plan-work",
+                },
             },
-        },
+            remote_env,
+        )
+        assert plugin_skill_read["id"] == "plugin-skill-read"
+        assert plugin_skill_read["result"] == {
+            "contents": "# Plan Work\n\nUse Linear issues to create a plan."
+        }
+        assert PluginSkillBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                    "/skills/plan-work"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            }
+        ]
+
+        invalid_skill = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-skill-read-invalid",
+                "method": "plugin/skill/read",
+                "params": {
+                    "remoteMarketplaceName": "chatgpt-global",
+                    "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                    "skillName": "",
+                },
+            },
+            remote_env,
+        )
+        assert invalid_skill["id"] == "plugin-skill-read-invalid"
+        assert invalid_skill["error"]["code"] == -32600
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(remote_home, ignore_errors=True)
+
+    cases = [
         {
             "jsonrpc": "2.0",
             "id": "plugin-share-save",
@@ -2715,6 +2832,13 @@ def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHT
     AddCreditsNudgeBackendHandler.requests = []
     AddCreditsNudgeBackendHandler.status_code = status_code
     server = ThreadingHTTPServer(("127.0.0.1", 0), AddCreditsNudgeBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_plugin_skill_backend() -> tuple[ThreadingHTTPServer, str]:
+    PluginSkillBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PluginSkillBackendHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
