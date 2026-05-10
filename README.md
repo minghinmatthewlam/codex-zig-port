@@ -56,6 +56,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
+- list remote app-server plugin marketplaces with `plugin/list`, including
+  ChatGPT global, workspace directory, and shared-with-me catalog sources
 - read local app-server plugin details with `plugin/read` for marketplace-backed
   local plugins, including summary metadata, manifest description, skills,
   hooks, app ids, and MCP server names
@@ -172,7 +174,8 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 stubs, local app-server `plugin/list` marketplace discovery, remote
-`plugin/read` detail fetching, remote `plugin/skill/read` Markdown fetching,
+`plugin/list` catalog fetching, remote `plugin/read` detail fetching, remote
+`plugin/skill/read` Markdown fetching,
 and remaining plugin RPC behavior including local `plugin/read` details for
 skills, hooks, apps, and MCP servers,
 verifies app-server hooks-list discovery for user and
