@@ -240,6 +240,110 @@ def run_marketplace_rpc_smoke(binary: Path) -> None:
     assert invalid["error"]["code"] == -32602
 
 
+def run_plugin_rpc_smoke(binary: Path) -> None:
+    env = os.environ.copy()
+    cases = [
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-list",
+            "method": "plugin/list",
+            "params": {
+                "cwds": ["/tmp/repo"],
+                "marketplaceKinds": ["local", "workspace-directory", "shared-with-me"],
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-read",
+            "method": "plugin/read",
+            "params": {
+                "marketplacePath": "/tmp/marketplace.json",
+                "remoteMarketplaceName": None,
+                "pluginName": "gmail",
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-skill-read",
+            "method": "plugin/skill/read",
+            "params": {
+                "remoteMarketplaceName": "chatgpt-global",
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                "skillName": "plan-work",
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-share-save",
+            "method": "plugin/share/save",
+            "params": {
+                "pluginPath": "/tmp/plugins/gmail",
+                "remotePluginId": None,
+                "discoverability": "PRIVATE",
+                "shareTargets": [{"principalType": "user", "principalId": "user-1"}],
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-share-update",
+            "method": "plugin/share/updateTargets",
+            "params": {
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                "shareTargets": [
+                    {"principalType": "workspace", "principalId": "workspace-1"}
+                ],
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-share-list",
+            "method": "plugin/share/list",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-share-delete",
+            "method": "plugin/share/delete",
+            "params": {
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000"
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-install",
+            "method": "plugin/install",
+            "params": {"remoteMarketplaceName": "openai-curated", "pluginName": "gmail"},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-uninstall",
+            "method": "plugin/uninstall",
+            "params": {"pluginId": "gmail@openai-curated"},
+        },
+    ]
+    for payload in cases:
+        response = request_stdio_app_server(binary, payload, env)
+        assert response["id"] == payload["id"]
+        assert response["error"]["code"] == -32603
+        assert (
+            f"app-server method {payload['method']} is parsed but not implemented yet"
+            in response["error"]["message"]
+        )
+
+    invalid_read = request_stdio_app_server(
+        binary,
+        {
+            "jsonrpc": "2.0",
+            "id": "plugin-read-invalid",
+            "method": "plugin/read",
+            "params": {"marketplacePath": "/tmp/marketplace.json"},
+        },
+        env,
+    )
+    assert invalid_read["id"] == "plugin-read-invalid"
+    assert invalid_read["error"]["code"] == -32602
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -477,6 +581,8 @@ def main() -> None:
     print("app-server-memory-reset-e2e: ok")
     run_marketplace_rpc_smoke(binary)
     print("app-server-marketplace-rpc-e2e: ok")
+    run_plugin_rpc_smoke(binary)
+    print("app-server-plugin-rpc-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
