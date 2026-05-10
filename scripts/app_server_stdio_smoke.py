@@ -3863,6 +3863,20 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
     env["CODEX_HOME"] = str(codex_home)
     managed_config_path = codex_home / "managed_config.toml"
     env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
+    system_config_path = codex_home / "system_config.toml"
+    system_config_path.write_text(
+        "\n".join(
+            [
+                "[sandbox_workspace_write]",
+                'writable_roots = ["/tmp/codex-zig-system-root"]',
+                "network_access = false",
+                "exclude_tmpdir_env_var = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["CODEX_APP_SERVER_SYSTEM_CONFIG_PATH"] = str(system_config_path)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -3893,7 +3907,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-user-root"],
             "network_access": True,
-            "exclude_tmpdir_env_var": False,
+            "exclude_tmpdir_env_var": True,
             "exclude_slash_tmp": True,
         }
         assert config_body["web_search"] == "live"
@@ -3965,8 +3979,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         ]:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
+        system_source = {"type": "system", "file": str(system_config_path)}
+        assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == system_source
+        assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"].startswith("sha256:")
         layers = config_read["result"]["layers"]
-        assert len(layers) == 1
+        assert len(layers) == 2
         assert layers[0]["name"] == {"type": "user", "file": config_path}
         assert layers[0]["version"] == origins["model"]["version"]
         assert layers[0]["config"] == {
@@ -4016,6 +4033,16 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 },
             },
         }
+        assert layers[1]["name"] == system_source
+        assert layers[1]["version"] == origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"]
+        assert layers[1]["config"] == {
+            "sandbox_workspace_write": {
+                "writable_roots": ["/tmp/codex-zig-system-root"],
+                "network_access": False,
+                "exclude_tmpdir_env_var": True,
+                "exclude_slash_tmp": False,
+            },
+        }
 
         project_config_read = rpc(
             "config-read-project",
@@ -4033,7 +4060,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-project-root"],
             "network_access": False,
-            "exclude_tmpdir_env_var": False,
+            "exclude_tmpdir_env_var": True,
             "exclude_slash_tmp": True,
         }
         assert project_config_body["profile"] == "work"
@@ -4059,8 +4086,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "type": "user",
             "file": config_path,
         }
+        assert project_origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == system_source
         project_layers = project_config_read["result"]["layers"]
-        assert len(project_layers) == 2
+        assert len(project_layers) == 3
         assert project_layers[0]["name"] == project_source
         assert project_layers[0]["version"] == project_origins["model_reasoning_effort"]["version"]
         assert project_layers[0]["config"] == {
@@ -4078,6 +4106,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
+        assert project_layers[2]["name"] == system_source
 
         nested_project_config_read = rpc(
             "config-read-nested-project",
@@ -4119,7 +4148,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         assert nested_origins["profile"]["name"] == {"type": "user", "file": config_path}
         nested_layers = nested_project_config_read["result"]["layers"]
-        assert len(nested_layers) == 3
+        assert len(nested_layers) == 4
         assert nested_layers[0]["name"] == child_project_source
         assert nested_layers[0]["config"] == {
             "model": "gpt-child",
@@ -4149,6 +4178,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
+        assert nested_layers[3]["name"] == system_source
 
         managed_config_path.write_text(
             "\n".join(
@@ -4205,7 +4235,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
             assert managed_origins[key]["version"].startswith("sha256:")
         managed_layers = managed_config_read["result"]["layers"]
-        assert len(managed_layers) == 2
+        assert len(managed_layers) == 3
         assert managed_layers[0]["name"] == managed_source
         assert managed_layers[0]["version"] == managed_origins["model"]["version"]
         assert managed_layers[0]["config"] == {
@@ -4227,6 +4257,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "exclude_tmpdir_env_var": False,
             "exclude_slash_tmp": True,
         }
+        assert managed_layers[2]["name"] == system_source
         managed_config_path.unlink()
 
         config_requirements = rpc_without_params(
