@@ -3558,12 +3558,12 @@ fn handleConfigRead(
         };
     }
 
-    var project_layer = loadConfigReadProjectLayer(allocator, cwd, config_bytes) catch |err| {
+    var project_layers = loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, config_bytes) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read project config", err);
     };
-    defer if (project_layer) |*layer| layer.deinit(allocator);
+    defer project_layers.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, project_layer, user_layer);
+    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, project_layers, user_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -3704,7 +3704,7 @@ fn renderConfigReadResponse(
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
     include_layers: bool,
-    project_layer: ?ConfigReadProjectLayer,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
 ) ![]const u8 {
     var result = std.ArrayList(u8).empty;
@@ -3717,7 +3717,7 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "approval_policy", cfg.approval_policy.label());
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", cfg.sandbox_mode.label());
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (cfg.web_search_mode) |mode| mode.label() else null);
-    const model_reasoning_effort = if (project_layer) |layer| layer.model_reasoning_effort else cfg.model_reasoning_effort;
+    const model_reasoning_effort = project_layers.modelReasoningEffort() orelse cfg.model_reasoning_effort;
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
     try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", cfg.service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
@@ -3725,9 +3725,9 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
     try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
     try result.appendSlice(allocator, "},\"origins\":");
-    try appendConfigReadOrigins(allocator, &result, project_layer, user_layer);
+    try appendConfigReadOrigins(allocator, &result, project_layers, user_layer);
     try result.appendSlice(allocator, ",\"layers\":");
-    try appendConfigReadLayers(allocator, &result, cfg, include_layers, project_layer, user_layer);
+    try appendConfigReadLayers(allocator, &result, cfg, include_layers, project_layers, user_layer);
     try result.appendSlice(allocator, "}");
 
     return result.toOwnedSlice(allocator);
@@ -3737,13 +3737,37 @@ const ConfigReadProjectLayer = struct {
     dot_codex_folder: []const u8,
     version: []const u8,
     origin_keys: []const []const u8,
-    model_reasoning_effort: config.ReasoningEffort,
+    model_reasoning_effort: ?config.ReasoningEffort,
 
     fn deinit(self: *ConfigReadProjectLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.dot_codex_folder);
         allocator.free(self.version);
         for (self.origin_keys) |key| allocator.free(key);
-        allocator.free(self.origin_keys);
+        if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+    }
+};
+
+const ConfigReadProjectLayers = struct {
+    items: []ConfigReadProjectLayer,
+
+    fn empty() ConfigReadProjectLayers {
+        return .{ .items = &.{} };
+    }
+
+    fn deinit(self: *ConfigReadProjectLayers, allocator: std.mem.Allocator) void {
+        for (self.items) |*layer| layer.deinit(allocator);
+        if (self.items.len > 0) allocator.free(self.items);
+    }
+
+    fn modelReasoningEffort(self: ConfigReadProjectLayers) ?config.ReasoningEffort {
+        for (self.items) |layer| {
+            if (layer.model_reasoning_effort) |effort| return effort;
+        }
+        return null;
+    }
+
+    fn hasOriginKey(self: ConfigReadProjectLayers, key: []const u8) bool {
+        return configReadProjectSliceHasOriginKey(self.items, key);
     }
 };
 
@@ -3802,43 +3826,105 @@ fn collectConfigReadUserOriginKeys(
     return keys.toOwnedSlice(allocator);
 }
 
-fn loadConfigReadProjectLayer(
+fn loadConfigReadProjectLayers(
     allocator: std.mem.Allocator,
     cwd: ?[]const u8,
+    codex_home: []const u8,
     user_config_bytes: ?[]const u8,
-) !?ConfigReadProjectLayer {
-    const project_cwd = cwd orelse return null;
-    const user_bytes = user_config_bytes orelse return null;
-    if (!try configReadProjectTrusted(allocator, user_bytes, project_cwd)) return null;
+) !ConfigReadProjectLayers {
+    const project_cwd = cwd orelse return ConfigReadProjectLayers.empty();
+    const user_bytes = user_config_bytes orelse return ConfigReadProjectLayers.empty();
+    var trusted_ancestors = try configReadTrustedProjectAncestors(allocator, project_cwd, user_bytes);
+    defer trusted_ancestors.deinit(allocator);
+    if (trusted_ancestors.items.len == 0) return ConfigReadProjectLayers.empty();
 
-    const dot_codex_folder = try std.fs.path.join(allocator, &.{ project_cwd, ".codex" });
+    var layers = std.ArrayList(ConfigReadProjectLayer).empty;
+    errdefer {
+        for (layers.items) |*layer| layer.deinit(allocator);
+        layers.deinit(allocator);
+    }
+
+    for (trusted_ancestors.items) |ancestor| {
+        if (try loadConfigReadProjectLayer(allocator, ancestor, codex_home)) |layer| {
+            try layers.append(allocator, layer);
+        }
+    }
+    if (layers.items.len == 0) return ConfigReadProjectLayers.empty();
+    return .{ .items = try layers.toOwnedSlice(allocator) };
+}
+
+fn configReadTrustedProjectAncestors(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    user_config_bytes: []const u8,
+) !std.ArrayList([]const u8) {
+    var ancestors = std.ArrayList([]const u8).empty;
+    errdefer ancestors.deinit(allocator);
+
+    var current = cwd;
+    while (true) {
+        try ancestors.append(allocator, current);
+        if (try configReadProjectTrusted(allocator, user_config_bytes, current)) return ancestors;
+        current = std.fs.path.dirname(current) orelse break;
+    }
+
+    ancestors.clearRetainingCapacity();
+    return ancestors;
+}
+
+fn loadConfigReadProjectLayer(
+    allocator: std.mem.Allocator,
+    layer_cwd: []const u8,
+    codex_home: []const u8,
+) !?ConfigReadProjectLayer {
+    const dot_codex_folder = try std.fs.path.join(allocator, &.{ layer_cwd, ".codex" });
     errdefer allocator.free(dot_codex_folder);
+    if (std.mem.eql(u8, dot_codex_folder, codex_home)) {
+        allocator.free(dot_codex_folder);
+        return null;
+    }
+
+    var dot_codex_dir = std.Io.Dir.cwd().openDir(std.Io.Threaded.global_single_threaded.io(), dot_codex_folder, .{}) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => {
+            allocator.free(dot_codex_folder);
+            return null;
+        },
+        else => return err,
+    };
+    dot_codex_dir.close(std.Io.Threaded.global_single_threaded.io());
+
     const project_config_path = try std.fs.path.join(allocator, &.{ dot_codex_folder, "config.toml" });
     defer allocator.free(project_config_path);
 
     const project_config_bytes = try config.readConfigTomlFile(allocator, project_config_path);
     defer if (project_config_bytes) |bytes| allocator.free(bytes);
-    const bytes = project_config_bytes orelse {
-        allocator.free(dot_codex_folder);
-        return null;
-    };
+    const bytes = project_config_bytes orelse "";
+    const version = try configVersionAlloc(allocator, bytes);
+    errdefer allocator.free(version);
 
-    const effort_value = try config.topLevelStringValue(allocator, bytes, "model_reasoning_effort");
-    defer if (effort_value) |value| allocator.free(value);
-    const model_reasoning_effort = try config.ReasoningEffort.parse(effort_value orelse {
-        allocator.free(dot_codex_folder);
-        return null;
-    });
-
-    const origin_keys = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(origin_keys);
-    origin_keys[0] = try allocator.dupe(u8, "model_reasoning_effort");
-    errdefer allocator.free(origin_keys[0]);
+    var origin_keys = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (origin_keys.items) |key| allocator.free(key);
+        origin_keys.deinit(allocator);
+    }
+    var model_reasoning_effort: ?config.ReasoningEffort = null;
+    if (project_config_bytes) |config_bytes| {
+        const effort_value = try config.topLevelStringValue(allocator, config_bytes, "model_reasoning_effort");
+        defer if (effort_value) |value| allocator.free(value);
+        if (effort_value) |value| {
+            model_reasoning_effort = try config.ReasoningEffort.parse(value);
+            try origin_keys.append(allocator, try allocator.dupe(u8, "model_reasoning_effort"));
+        }
+    }
+    const owned_origin_keys = if (origin_keys.items.len > 0)
+        try origin_keys.toOwnedSlice(allocator)
+    else
+        &.{};
 
     return .{
         .dot_codex_folder = dot_codex_folder,
-        .version = try configVersionAlloc(allocator, bytes),
-        .origin_keys = origin_keys,
+        .version = version,
+        .origin_keys = owned_origin_keys,
         .model_reasoning_effort = model_reasoning_effort,
     };
 }
@@ -3897,29 +3983,31 @@ fn appendUniqueOriginKey(
 fn appendConfigReadOrigins(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
-    project_layer: ?ConfigReadProjectLayer,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
 ) !void {
     try result.append(allocator, '{');
     var first = true;
-    if (project_layer) |layer| {
+    for (project_layers.items, 0..) |layer, index| {
         for (layer.origin_keys) |key| {
+            if (configReadProjectSliceHasOriginKey(project_layers.items[0..index], key)) continue;
             try appendConfigReadProjectOrigin(allocator, result, &first, layer, key);
         }
     }
     if (user_layer) |layer| {
         for (layer.origin_keys) |key| {
-            if (configReadProjectHasOriginKey(project_layer, key)) continue;
+            if (project_layers.hasOriginKey(key)) continue;
             try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
         }
     }
     try result.append(allocator, '}');
 }
 
-fn configReadProjectHasOriginKey(project_layer: ?ConfigReadProjectLayer, key: []const u8) bool {
-    const layer = project_layer orelse return false;
-    for (layer.origin_keys) |project_key| {
-        if (std.mem.eql(u8, project_key, key)) return true;
+fn configReadProjectSliceHasOriginKey(layers: []const ConfigReadProjectLayer, key: []const u8) bool {
+    for (layers) |layer| {
+        for (layer.origin_keys) |project_key| {
+            if (std.mem.eql(u8, project_key, key)) return true;
+        }
     }
     return false;
 }
@@ -3982,7 +4070,7 @@ fn appendConfigReadLayers(
     result: *std.ArrayList(u8),
     cfg: config.Config,
     include_layers: bool,
-    project_layer: ?ConfigReadProjectLayer,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
 ) !void {
     if (!include_layers) {
@@ -3992,7 +4080,7 @@ fn appendConfigReadLayers(
 
     try result.append(allocator, '[');
     var first = true;
-    if (project_layer) |layer| {
+    for (project_layers.items) |layer| {
         try appendConfigReadProjectLayer(allocator, result, &first, layer);
     }
     if (user_layer) |layer| {
@@ -4082,7 +4170,7 @@ fn appendConfigReadProjectLayerConfig(
     var first = true;
     for (layer.origin_keys) |key| {
         if (std.mem.eql(u8, key, "model_reasoning_effort")) {
-            try appendJsonStringField(allocator, result, &first, key, layer.model_reasoning_effort.label());
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_reasoning_effort) |effort| effort.label() else null);
         }
     }
     try result.append(allocator, '}');
