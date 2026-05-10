@@ -3929,8 +3929,8 @@ fn parseConfigReadWebSearchLocation(allocator: std.mem.Allocator, raw: []const u
     var location = ConfigReadWebSearchLocation{};
     errdefer location.deinit(allocator);
 
-    var fields = std.mem.splitScalar(u8, body, ',');
-    while (fields.next()) |field_raw| {
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
         const field = std.mem.trim(u8, field_raw, " \t\r\n");
         if (field.len == 0) continue;
         const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadWebSearchLocation;
@@ -3956,6 +3956,41 @@ fn parseConfigReadWebSearchLocation(allocator: std.mem.Allocator, raw: []const u
     }
 
     return location;
+}
+
+fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 {
+    while (start.* < body.len and (body[start.*] == ',' or body[start.*] == ' ' or body[start.*] == '\t' or body[start.*] == '\r' or body[start.*] == '\n')) {
+        start.* += 1;
+    }
+    if (start.* >= body.len) return null;
+
+    const field_start = start.*;
+    var index = start.*;
+    var in_string = false;
+    var escaped = false;
+    while (index < body.len) : (index += 1) {
+        const byte = body[index];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+        } else if (byte == ',') {
+            start.* = index + 1;
+            return body[field_start..index];
+        }
+    }
+    if (in_string or escaped) return error.InvalidConfigReadInlineTable;
+
+    start.* = index;
+    return body[field_start..index];
 }
 
 fn configReadWebSearchLocationKeySupported(key: []const u8) bool {

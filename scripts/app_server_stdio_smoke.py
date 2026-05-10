@@ -3814,7 +3814,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[tools.web_search]",
                 'context_size = "high"',
                 'allowed_domains = ["example.com"]',
-                'location = { country = "US", city = "New York", timezone = "America/New_York" }',
+                'location = { country = "US", city = "New York, NY", timezone = "America/New_York" }',
                 "",
                 "[tools]",
                 "view_image = false",
@@ -3873,7 +3873,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "location": {
                     "country": "US",
                     "region": None,
-                    "city": "New York",
+                    "city": "New York, NY",
                     "timezone": "America/New_York",
                 },
             },
@@ -3918,7 +3918,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "location": {
                         "country": "US",
                         "region": None,
-                        "city": "New York",
+                        "city": "New York, NY",
                         "timezone": "America/New_York",
                     },
                 },
