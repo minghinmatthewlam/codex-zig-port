@@ -3867,6 +3867,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
     system_config_path.write_text(
         "\n".join(
             [
+                'model = "gpt-system"',
+                'approval_policy = "on-failure"',
+                'sandbox_mode = "read-only"',
+                'web_search = "cached"',
+                'model_reasoning_effort = "medium"',
+                'service_tier = "fast"',
+                "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-system-root"]',
                 "network_access = false",
@@ -3911,6 +3918,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "exclude_slash_tmp": True,
         }
         assert config_body["web_search"] == "live"
+        assert config_body["model_reasoning_effort"] == "medium"
         assert config_body["service_tier"] == "flex"
         assert config_body["tools"] == {
             "web_search": {
@@ -3980,6 +3988,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
         system_source = {"type": "system", "file": str(system_config_path)}
+        assert origins["model_reasoning_effort"]["name"] == system_source
+        assert origins["model_reasoning_effort"]["version"].startswith("sha256:")
         assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == system_source
         assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"].startswith("sha256:")
         layers = config_read["result"]["layers"]
@@ -4036,6 +4046,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert layers[1]["name"] == system_source
         assert layers[1]["version"] == origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"]
         assert layers[1]["config"] == {
+            "model": "gpt-system",
+            "approval_policy": "on-failure",
+            "sandbox_mode": "read-only",
+            "web_search": "cached",
+            "model_reasoning_effort": "medium",
+            "service_tier": "priority",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-system-root"],
                 "network_access": False,
@@ -4205,6 +4221,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["model"] == "gpt-managed"
         assert managed_config_body["approval_policy"] == "on-request"
         assert managed_config_body["sandbox_mode"] == "danger-full-access"
+        assert managed_config_body["model_reasoning_effort"] == "medium"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
             "network_access": False,
@@ -4234,6 +4251,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         ]:
             assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
             assert managed_origins[key]["version"].startswith("sha256:")
+        assert managed_origins["model_reasoning_effort"]["name"] == system_source
+        assert managed_origins["model_reasoning_effort"]["version"].startswith("sha256:")
         managed_layers = managed_config_read["result"]["layers"]
         assert len(managed_layers) == 3
         assert managed_layers[0]["name"] == managed_source
