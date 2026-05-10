@@ -290,9 +290,9 @@ behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
 and unwatch cleanup,
 verifies app-server buffered `command/exec` for stdout/stderr capture,
-independent output-cap truncation, timeout exit-code responses with captured
-pre-timeout output, cwd and environment overrides, nonzero exit responses,
-supported `permissionProfile`
+capture-time independent output-cap truncation, timeout exit-code responses
+with captured pre-timeout output, cwd and environment overrides, nonzero exit
+responses, supported `permissionProfile`
 execution shapes using Rust-shaped `fileSystem` / `network.enabled` payloads,
 managed permission-profile network enabled/restricted behavior,
 `streamStdoutStderr` output-delta notifications, external permission-profile

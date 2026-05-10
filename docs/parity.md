@@ -64,8 +64,8 @@ filesystem-path helper, absolute-path, network-access, and output-delta
 notification artifacts. Full Rust generator parity remains planned.
 
 Current app-server `command/exec` coverage includes buffered command execution,
-independent stdout/stderr output-cap truncation, timeout exit-code responses
-with captured pre-timeout output, `streamStdoutStderr` output-delta
+capture-time independent stdout/stderr output-cap truncation, timeout exit-code
+responses with captured pre-timeout output, `streamStdoutStderr` output-delta
 notifications for commands that run to completion, plus Rust-shaped validation
 for streaming `processId` requirements and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
