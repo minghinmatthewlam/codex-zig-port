@@ -7,11 +7,13 @@ const DEFAULT_TIMEOUT_SEC: u64 = 600;
 pub const Source = enum {
     user,
     project,
+    plugin,
 
     fn label(self: Source) []const u8 {
         return switch (self) {
             .user => "user",
             .project => "project",
+            .plugin => "plugin",
         };
     }
 };
@@ -113,6 +115,7 @@ pub const Hook = struct {
     status_message: ?[]const u8,
     source_path: []const u8,
     source: Source,
+    plugin_id: ?[]const u8 = null,
     display_order: i64,
     enabled: bool,
     current_hash: []const u8,
@@ -124,6 +127,7 @@ pub const Hook = struct {
         allocator.free(self.command);
         if (self.status_message) |value| allocator.free(value);
         allocator.free(self.source_path);
+        if (self.plugin_id) |value| allocator.free(value);
         allocator.free(self.current_hash);
     }
 };
@@ -271,6 +275,8 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
     defer allocator.free(project_hooks_json_path);
     try appendHooksFromLayer(allocator, project_config_path, project_hooks_json_path, .project, hook_states, &hooks, &warnings, &errors, &display_order);
 
+    try appendPluginHooks(allocator, codex_home, user_config_path, hook_states, &hooks, &warnings, &display_order);
+
     const owned_cwd = try allocator.dupe(u8, cwd);
     errdefer allocator.free(owned_cwd);
     const owned_hooks = try hooks.toOwnedSlice(allocator);
@@ -309,7 +315,7 @@ fn appendHooksFromLayer(
     display_order: *i64,
 ) !void {
     if (!try hooksFeatureEnabledFromConfigFile(allocator, config_path, errors)) return;
-    const has_json_hooks = try appendHooksFromJsonFile(allocator, hooks_json_path, source, hook_states, hooks, warnings, display_order);
+    const has_json_hooks = try appendHooksFromJsonFile(allocator, hooks_json_path, source, null, null, hook_states, hooks, warnings, display_order);
     const has_toml_hooks = try appendHooksFromConfig(allocator, config_path, source, hook_states, hooks, warnings, errors, display_order);
     if (has_json_hooks and has_toml_hooks) {
         const json_source_path = try canonicalPathOrCopy(allocator, hooks_json_path);
@@ -318,6 +324,45 @@ fn appendHooksFromLayer(
         defer allocator.free(toml_source_path);
         const warning = try std.fmt.allocPrint(allocator, "loading hooks from both {s} and {s}; prefer a single representation for this layer", .{ json_source_path, toml_source_path });
         try warnings.append(allocator, warning);
+    }
+}
+
+fn appendPluginHooks(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    user_config_path: []const u8,
+    hook_states: HookStates,
+    hooks: *std.ArrayList(Hook),
+    warnings: *std.ArrayList([]const u8),
+    display_order: *i64,
+) !void {
+    const bytes = config.readConfigTomlFile(allocator, user_config_path) catch return;
+    defer if (bytes) |value| allocator.free(value);
+    const contents = bytes orelse return;
+    if (!hooksFeatureEnabled(contents) or !pluginsFeatureEnabled(contents) or !pluginHooksFeatureEnabled(contents)) return;
+
+    const plugin_ids = try enabledPluginIds(allocator, contents);
+    defer freeStringList(allocator, plugin_ids);
+    for (plugin_ids) |plugin_id| {
+        const at_index = std.mem.lastIndexOfScalar(u8, plugin_id, '@') orelse continue;
+        if (at_index == 0 or at_index + 1 >= plugin_id.len) continue;
+        const plugin_name = plugin_id[0..at_index];
+        const marketplace = plugin_id[at_index + 1 ..];
+        const hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace, plugin_name, "local", "hooks", "hooks.json" });
+        defer allocator.free(hooks_json_path);
+        const key_source = try std.fmt.allocPrint(allocator, "{s}:hooks/hooks.json", .{plugin_id});
+        defer allocator.free(key_source);
+        _ = try appendHooksFromJsonFile(
+            allocator,
+            hooks_json_path,
+            .plugin,
+            plugin_id,
+            key_source,
+            hook_states,
+            hooks,
+            warnings,
+            display_order,
+        );
     }
 }
 
@@ -364,6 +409,8 @@ fn appendHooksFromJsonFile(
     allocator: std.mem.Allocator,
     path: []const u8,
     source: Source,
+    plugin_id: ?[]const u8,
+    key_source_override: ?[]const u8,
     hook_states: HookStates,
     hooks: *std.ArrayList(Hook),
     warnings: *std.ArrayList([]const u8),
@@ -401,7 +448,7 @@ fn appendHooksFromJsonFile(
 
     const source_path = try canonicalPathOrCopy(allocator, path);
     defer allocator.free(source_path);
-    try appendJsonHookEvents(allocator, events_value.object, source_path, source, hook_states, hooks, warnings, display_order);
+    try appendJsonHookEvents(allocator, events_value.object, source_path, key_source_override orelse source_path, source, plugin_id, hook_states, hooks, warnings, display_order);
     return has_hooks;
 }
 
@@ -409,7 +456,9 @@ fn appendJsonHookEvents(
     allocator: std.mem.Allocator,
     events: std.json.ObjectMap,
     source_path: []const u8,
+    key_source: []const u8,
     source: Source,
+    plugin_id: ?[]const u8,
     hook_states: HookStates,
     hooks: *std.ArrayList(Hook),
     warnings: *std.ArrayList([]const u8),
@@ -457,7 +506,9 @@ fn appendJsonHookEvents(
                 try appendCommandHook(
                     allocator,
                     source_path,
+                    key_source,
                     source,
+                    plugin_id,
                     hook_states,
                     event_name,
                     matcher,
@@ -633,7 +684,9 @@ fn flushPartialHook(
     try appendCommandHook(
         allocator,
         source_path,
+        source_path,
         source,
+        null,
         hook_states,
         group.event_name,
         group.matcher,
@@ -651,7 +704,9 @@ fn flushPartialHook(
 fn appendCommandHook(
     allocator: std.mem.Allocator,
     source_path: []const u8,
+    key_source: []const u8,
     source: Source,
+    plugin_id: ?[]const u8,
     hook_states: HookStates,
     event_name: HookEvent,
     matcher: ?[]const u8,
@@ -674,7 +729,7 @@ fn appendCommandHook(
     const key = try std.fmt.allocPrint(
         allocator,
         "{s}:{s}:{d}:{d}",
-        .{ source_path, event_name.keyLabel(), group_index, handler_index },
+        .{ key_source, event_name.keyLabel(), group_index, handler_index },
     );
     errdefer allocator.free(key);
     const current_hash = try commandHookHash(allocator, event_name, matcher, command, timeout_sec, status_message);
@@ -690,6 +745,8 @@ fn appendCommandHook(
     errdefer if (owned_status_message) |status| allocator.free(status);
     const owned_source_path = try allocator.dupe(u8, source_path);
     errdefer allocator.free(owned_source_path);
+    const owned_plugin_id = if (plugin_id) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_plugin_id) |value| allocator.free(value);
 
     const owned = Hook{
         .key = key,
@@ -700,6 +757,7 @@ fn appendCommandHook(
         .status_message = owned_status_message,
         .source_path = owned_source_path,
         .source = source,
+        .plugin_id = owned_plugin_id,
         .display_order = display_order.*,
         .enabled = enabled,
         .current_hash = current_hash,
@@ -953,7 +1011,9 @@ fn appendHookJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), hook: H
     try appendJsonString(allocator, out, hook.source_path);
     try out.appendSlice(allocator, ",\"source\":");
     try appendJsonString(allocator, out, hook.source.label());
-    try out.appendSlice(allocator, ",\"pluginId\":null,\"displayOrder\":");
+    try out.appendSlice(allocator, ",\"pluginId\":");
+    try appendJsonStringOrNull(allocator, out, hook.plugin_id);
+    try out.appendSlice(allocator, ",\"displayOrder\":");
     try appendDecimal(allocator, out, hook.display_order);
     try out.appendSlice(allocator, ",\"enabled\":");
     try out.appendSlice(allocator, if (hook.enabled) "true" else "false");
@@ -973,6 +1033,18 @@ fn appendErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), err: H
 }
 
 fn hooksFeatureEnabled(bytes: []const u8) bool {
+    return featureEnabled(bytes, "hooks", true);
+}
+
+fn pluginsFeatureEnabled(bytes: []const u8) bool {
+    return featureEnabled(bytes, "plugins", true);
+}
+
+fn pluginHooksFeatureEnabled(bytes: []const u8) bool {
+    return featureEnabled(bytes, "plugin_hooks", false);
+}
+
+fn featureEnabled(bytes: []const u8, key: []const u8, default_enabled: bool) bool {
     var in_features = false;
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |raw_line| {
@@ -983,9 +1055,69 @@ fn hooksFeatureEnabled(bytes: []const u8) bool {
             continue;
         }
         if (!in_features) continue;
-        if (tomlBoolValueForKey(line, "hooks")) |value| return value;
+        if (tomlBoolValueForKey(line, key)) |value| return value;
     }
-    return true;
+    return default_enabled;
+}
+
+fn enabledPluginIds(allocator: std.mem.Allocator, bytes: []const u8) ![]const []const u8 {
+    var ids = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
+    var current_plugin_id: ?[]const u8 = null;
+    var current_enabled = false;
+    errdefer if (current_plugin_id) |id| allocator.free(id);
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            try flushEnabledPluginId(allocator, &ids, &current_plugin_id, current_enabled);
+            current_enabled = false;
+            current_plugin_id = try parsePluginTableHeader(allocator, line);
+            continue;
+        }
+        if (current_plugin_id != null) {
+            if (tomlBoolValueForKey(line, "enabled")) |enabled| current_enabled = enabled;
+        }
+    }
+    try flushEnabledPluginId(allocator, &ids, &current_plugin_id, current_enabled);
+
+    return ids.toOwnedSlice(allocator);
+}
+
+fn flushEnabledPluginId(
+    allocator: std.mem.Allocator,
+    ids: *std.ArrayList([]const u8),
+    current_plugin_id: *?[]const u8,
+    current_enabled: bool,
+) !void {
+    const plugin_id = current_plugin_id.* orelse return;
+    current_plugin_id.* = null;
+    if (current_enabled) {
+        try ids.append(allocator, plugin_id);
+    } else {
+        allocator.free(plugin_id);
+    }
+}
+
+fn parsePluginTableHeader(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    const prefix = "plugins.";
+    if (!std.mem.startsWith(u8, inner, prefix)) return null;
+    var index: usize = prefix.len;
+    const plugin_id = (try parseTomlStringAt(allocator, inner, &index)) orelse return null;
+    errdefer allocator.free(plugin_id);
+    skipTomlWhitespace(inner, &index);
+    if (index != inner.len) {
+        allocator.free(plugin_id);
+        return null;
+    }
+    return plugin_id;
 }
 
 fn configContainsHooks(bytes: []const u8) bool {
@@ -1436,6 +1568,85 @@ test "hooks list loads user and project hooks json" {
     try std.testing.expectEqual(Source.project, project_hook.source);
     try std.testing.expect(std.mem.endsWith(u8, project_hook.source_path, "repo/.codex/hooks.json"));
     try std.testing.expect(std.mem.endsWith(u8, project_hook.key, "hooks.json:user_prompt_submit:0:0"));
+}
+
+test "hooks list loads enabled plugin hooks from local cache" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "codex-home/plugins/cache/test/demo/local/.codex-plugin");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "codex-home/plugins/cache/test/demo/local/hooks");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "repo");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/config.toml",
+        .data =
+        \\[features]
+        \\hooks = true
+        \\plugins = true
+        \\plugin_hooks = true
+        \\
+        \\[plugins."demo@test"]
+        \\enabled = true
+        \\
+        \\[plugins."disabled@test"]
+        \\enabled = false
+        ,
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/plugins/cache/test/demo/local/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"demo\"}",
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/plugins/cache/test/demo/local/hooks/hooks.json",
+        .data =
+        \\{
+        \\  "hooks": {
+        \\    "PreToolUse": [
+        \\      {
+        \\        "matcher": "Bash",
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo plugin hook",
+        \\            "timeout": 7,
+        \\            "statusMessage": "running plugin hook"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+        ,
+    });
+
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const cwd = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(cwd);
+
+    var result = try list(allocator, codex_home, &.{cwd});
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.entries.len);
+    try std.testing.expectEqual(@as(usize, 1), result.entries[0].hooks.len);
+
+    const hook = result.entries[0].hooks[0];
+    try std.testing.expectEqualStrings("demo@test:hooks/hooks.json:pre_tool_use:0:0", hook.key);
+    try std.testing.expectEqualStrings("preToolUse", hook.event_name.jsonLabel());
+    try std.testing.expectEqualStrings("Bash", hook.matcher.?);
+    try std.testing.expectEqualStrings("echo plugin hook", hook.command);
+    try std.testing.expectEqual(@as(u64, 7), hook.timeout_sec);
+    try std.testing.expectEqualStrings("running plugin hook", hook.status_message.?);
+    try std.testing.expectEqual(Source.plugin, hook.source);
+    try std.testing.expectEqualStrings("demo@test", hook.plugin_id.?);
+    try std.testing.expect(std.mem.endsWith(u8, hook.source_path, "codex-home/plugins/cache/test/demo/local/hooks/hooks.json"));
+    try std.testing.expect(std.mem.startsWith(u8, hook.current_hash, "sha256:"));
+
+    const rendered = try renderResponse(allocator, result);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"source\":\"plugin\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"pluginId\":\"demo@test\"") != null);
 }
 
 test "hooks list applies user hook state" {
