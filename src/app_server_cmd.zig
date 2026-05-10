@@ -4090,6 +4090,10 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
             if (try parseConfigReadAppSectionName(allocator, line)) |name| {
                 var owned_name: ?[]const u8 = name;
                 errdefer if (owned_name) |value| allocator.free(value);
+                if (std.mem.eql(u8, name, "_default")) {
+                    allocator.free(name);
+                    continue;
+                }
                 current_app_index = findConfigReadAppIndex(apps.items, name);
                 if (current_app_index == null) {
                     try apps.append(allocator, .{ .name = name });
