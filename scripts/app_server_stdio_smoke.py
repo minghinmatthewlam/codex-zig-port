@@ -6745,6 +6745,61 @@ def run_json_schema_smoke(binary: Path) -> None:
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
+def run_typescript_generation_smoke(binary: Path) -> None:
+    out_dir = Path(tempfile.mkdtemp(prefix="codex-zig-typescript-", dir="/tmp"))
+    try:
+        proc = subprocess.run(
+            [
+                str(binary),
+                "app-server",
+                "generate-ts",
+                "--out",
+                str(out_dir),
+                "--experimental",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        request_id = (out_dir / "RequestId.ts").read_text(encoding="utf-8")
+        assert request_id.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
+        assert "export type RequestId = string | number;" in request_id
+
+        initialize = (out_dir / "InitializeParams.ts").read_text(encoding="utf-8")
+        assert "export interface InitializeParams" in initialize
+        assert "clientInfo: ClientInfo;" in initialize
+
+        client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
+        assert 'method: "initialize";' in client_request
+        assert "params: InitializeParams;" in client_request
+
+        index = (out_dir / "index.ts").read_text(encoding="utf-8")
+        assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export * as v2 from "./v2";' in index
+        assert (out_dir / "v2" / "index.ts").read_text(encoding="utf-8").startswith(
+            "// GENERATED CODE! DO NOT MODIFY BY HAND!"
+        )
+
+        missing_out = subprocess.run(
+            [str(binary), "app-server", "generate-ts"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert missing_out.returncode != 0
+        assert "MissingAppServerGenerateTsOutDir" in missing_out.stderr
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
 def run_flag_compat_smoke(binary: Path) -> None:
     analytics = subprocess.run(
         [str(binary), "app-server", "--analytics-default-enabled", "--listen", "off"],
@@ -6921,6 +6976,8 @@ def main() -> None:
     print("stdio-to-uds-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
+    run_typescript_generation_smoke(binary)
+    print("app-server-typescript-generation-e2e: ok")
     run_json_schema_smoke(binary)
     print("app-server-json-schema-e2e: ok")
     run_internal_json_schema_smoke(binary)
