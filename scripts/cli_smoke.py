@@ -679,6 +679,36 @@ def run_full_auto_compat_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_removed_top_level_command_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-removed-top-level-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        for args in (
+            ("marketplace", "add", "owner/repo"),
+            ("marketplace", "upgrade", "debug"),
+            ("marketplace", "remove", "debug"),
+        ):
+            result = subprocess.run(
+                [str(binary.resolve()), *args],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert result.returncode != 0
+            assert result.stdout == ""
+            assert "error: RemovedTopLevelCommand" in result.stderr
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -690,6 +720,7 @@ def main() -> None:
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
+    run_removed_top_level_command_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
@@ -699,6 +730,7 @@ def main() -> None:
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
+    print("cli-removed-top-level-e2e: ok")
 
 
 if __name__ == "__main__":
