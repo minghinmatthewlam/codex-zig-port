@@ -827,13 +827,44 @@ const THREAD_UNSUBSCRIBE_RESPONSE_TS =
     \\
     ;
 
+const THREAD_COMPACT_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadCompactStartParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_COMPACT_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadCompactStartResponse {}
+    \\
+    ;
+
+const THREAD_SHELL_COMMAND_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadShellCommandParams {
+    \\  threadId: string;
+    \\  command: string;
+    \\}
+    \\
+    ;
+
+const THREAD_SHELL_COMMAND_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadShellCommandResponse {}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
+    \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
@@ -865,6 +896,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/unsubscribe";
     \\      params: ThreadUnsubscribeParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/compact/start";
+    \\      params: ThreadCompactStartParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/shellCommand";
+    \\      params: ThreadShellCommandParams;
     \\    };
     \\
     ;
@@ -875,7 +914,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
+    \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
@@ -915,6 +956,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/unsubscribe";
     \\      result: ThreadUnsubscribeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/compact/start";
+    \\      result: ThreadCompactStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/shellCommand";
+    \\      result: ThreadShellCommandResponse;
     \\    };
     \\
     ;
@@ -972,8 +1023,12 @@ const V2_INDEX_TS =
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
+    \\export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
+    \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
+    \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
+    \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
@@ -1644,6 +1699,55 @@ const THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_COMPACT_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadCompactStartParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_COMPACT_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadCompactStartResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SHELL_COMMAND_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadShellCommandParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "command"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "command": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadShellCommandResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2010,6 +2114,31 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "properties": {
     \\        "status": { "$ref": "#/$defs/ThreadUnsubscribeStatus" }
     \\      }
+    \\    },
+    \\    "ThreadCompactStartParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadCompactStartResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadShellCommandParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "command"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "command": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadShellCommandResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2074,6 +2203,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadUnsubscribeParams.json", .contents = THREAD_UNSUBSCRIBE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadUnsubscribeStatus.json", .contents = THREAD_UNSUBSCRIBE_STATUS_JSON_SCHEMA },
     .{ .name = "ThreadUnsubscribeResponse.json", .contents = THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadCompactStartParams.json", .contents = THREAD_COMPACT_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadCompactStartResponse.json", .contents = THREAD_COMPACT_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadShellCommandParams.json", .contents = THREAD_SHELL_COMMAND_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadShellCommandResponse.json", .contents = THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2119,6 +2252,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadUnsubscribeParams.ts", .contents = THREAD_UNSUBSCRIBE_PARAMS_TS },
     .{ .name = "v2/ThreadUnsubscribeStatus.ts", .contents = THREAD_UNSUBSCRIBE_STATUS_TS },
     .{ .name = "v2/ThreadUnsubscribeResponse.ts", .contents = THREAD_UNSUBSCRIBE_RESPONSE_TS },
+    .{ .name = "v2/ThreadCompactStartParams.ts", .contents = THREAD_COMPACT_START_PARAMS_TS },
+    .{ .name = "v2/ThreadCompactStartResponse.ts", .contents = THREAD_COMPACT_START_RESPONSE_TS },
+    .{ .name = "v2/ThreadShellCommandParams.ts", .contents = THREAD_SHELL_COMMAND_PARAMS_TS },
+    .{ .name = "v2/ThreadShellCommandResponse.ts", .contents = THREAD_SHELL_COMMAND_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
