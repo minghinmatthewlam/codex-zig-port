@@ -368,6 +368,10 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer allocator.free(openai_base_url);
     const chatgpt_base_url = try allocator.dupe(u8, source.chatgpt_base_url);
     errdefer allocator.free(chatgpt_base_url);
+    const model_provider_env_key = if (source.model_provider_env_key) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (model_provider_env_key) |value| allocator.free(value);
+    const model_provider_bearer_token = if (source.model_provider_bearer_token) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (model_provider_bearer_token) |value| allocator.free(value);
     const oss_provider = if (source.oss_provider) |value| try allocator.dupe(u8, value) else null;
     errdefer if (oss_provider) |value| allocator.free(value);
     const installation_id = try allocator.dupe(u8, source.installation_id);
@@ -387,6 +391,9 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .model = model,
         .openai_base_url = openai_base_url,
         .chatgpt_base_url = chatgpt_base_url,
+        .model_provider_wire_api = source.model_provider_wire_api,
+        .model_provider_env_key = model_provider_env_key,
+        .model_provider_bearer_token = model_provider_bearer_token,
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = source.approval_policy,

@@ -158,7 +158,13 @@ pub fn createTurnWithOptions(
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
         .api_key, .local_oss => cfg.openai_base_url,
     };
-    const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{std.mem.trimEnd(u8, base_url, "/")});
+    const wire_path = switch (cfg.model_provider_wire_api) {
+        .responses => "responses",
+    };
+    const url = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
+        std.mem.trimEnd(u8, base_url, "/"),
+        wire_path,
+    });
     defer allocator.free(url);
 
     var headers = std.ArrayList(std.http.Header).empty;

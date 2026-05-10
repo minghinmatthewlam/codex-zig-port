@@ -8,6 +8,7 @@ pub const Config = struct {
     model: []const u8,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
+    model_provider_wire_api: ModelProviderWireApi = .responses,
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
     oss_provider: ?[]const u8,
@@ -256,6 +257,22 @@ pub const ApprovalPolicy = enum {
     }
 };
 
+pub const ModelProviderWireApi = enum {
+    responses,
+
+    pub fn label(self: ModelProviderWireApi) []const u8 {
+        return switch (self) {
+            .responses => "responses",
+        };
+    }
+
+    pub fn parse(value: []const u8) !ModelProviderWireApi {
+        if (std.mem.eql(u8, value, "responses")) return .responses;
+        if (std.mem.eql(u8, value, "chat")) return error.RemovedModelProviderChatWireApi;
+        return error.InvalidModelProviderWireApi;
+    }
+};
+
 pub const SandboxMode = enum {
     read_only,
     workspace_write,
@@ -473,6 +490,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer allocator.free(base_urls.openai);
     errdefer allocator.free(base_urls.chatgpt);
 
+    const model_provider_wire_api = try resolveModelProviderWireApi(allocator, config_view, active_profile);
+
     const model_provider_auth = try resolveModelProviderAuth(allocator, config_view, active_profile);
     errdefer model_provider_auth.deinit(allocator);
 
@@ -503,6 +522,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model = model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
+        .model_provider_wire_api = model_provider_wire_api,
         .model_provider_env_key = model_provider_auth.env_key,
         .model_provider_bearer_token = model_provider_auth.bearer_token,
         .oss_provider = oss_provider,
@@ -603,6 +623,17 @@ fn resolveModelProviderRequiresOpenAiAuth(config_view: ConfigView, model_provide
     }
     if (std.mem.eql(u8, provider, "openai")) return true;
     return false;
+}
+
+fn resolveModelProviderWireApi(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderWireApi {
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    const provider = model_provider orelse return .responses;
+
+    const wire_api = try config_view.getModelProviderString(allocator, provider, "wire_api");
+    defer if (wire_api) |value| allocator.free(value);
+    const value = wire_api orelse return .responses;
+    return ModelProviderWireApi.parse(value);
 }
 
 const ModelProviderAuth = struct {
@@ -1753,6 +1784,54 @@ test "model provider base url resolves from active provider table" {
 
     try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.openai);
     try std.testing.expectEqualStrings("https://proxy.example/v1", base_urls.chatgpt);
+}
+
+test "model provider wire api resolves from active provider table" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "openai-custom"
+        \\
+        \\[model_providers.openai-custom]
+        \\base_url = "https://proxy.example/v1"
+        \\wire_api = "responses"
+        \\
+        ,
+    };
+
+    try std.testing.expectEqual(.responses, try resolveModelProviderWireApi(allocator, view, null));
+}
+
+test "model provider wire api rejects removed chat value" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "old-chat"
+        \\
+        \\[model_providers.old-chat]
+        \\base_url = "https://proxy.example/v1"
+        \\wire_api = "chat"
+        \\
+        ,
+    };
+
+    try std.testing.expectError(error.RemovedModelProviderChatWireApi, resolveModelProviderWireApi(allocator, view, null));
+}
+
+test "model provider wire api rejects unknown value" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "unknown-wire"
+        \\
+        \\[model_providers.unknown-wire]
+        \\base_url = "https://proxy.example/v1"
+        \\wire_api = "completions"
+        \\
+        ,
+    };
+
+    try std.testing.expectError(error.InvalidModelProviderWireApi, resolveModelProviderWireApi(allocator, view, null));
 }
 
 test "model provider auth requirement follows provider config" {
