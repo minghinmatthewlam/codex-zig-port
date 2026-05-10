@@ -487,6 +487,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "skills/list")) {
         return try handleSkillsList(allocator, id_value.?, object.get("params"));
     }
+    if (std.mem.eql(u8, method, "skills/config/write")) {
+        return try handleSkillsConfigWrite(allocator, id_value.?, object.get("params"));
+    }
     if (isFsMethod(method)) {
         return try handleFsMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -1056,7 +1059,8 @@ fn appendSkillMetadataJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
     try out.appendSlice(allocator, path_json);
     try out.appendSlice(allocator, ",\"scope\":");
     try out.appendSlice(allocator, scope_json);
-    try out.appendSlice(allocator, ",\"enabled\":true}");
+    try out.appendSlice(allocator, ",\"enabled\":");
+    try out.appendSlice(allocator, if (skill.enabled) "true}" else "false}");
 }
 
 fn appendSkillErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill_error: skills_list.SkillError) !void {
@@ -1069,6 +1073,79 @@ fn appendSkillErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
     try out.appendSlice(allocator, ",\"message\":");
     try out.appendSlice(allocator, message_json);
     try out.appendSlice(allocator, "}");
+}
+
+const ParsedSkillsConfigWriteParams = struct {
+    selector: skills_list.ConfigSelector,
+    enabled: bool,
+};
+
+fn handleSkillsConfigWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "skills/config/write params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "skills/config/write params must be an object");
+
+    const parsed = parseSkillsConfigWriteParams(params.object) catch |err| switch (err) {
+        error.InvalidSkillsConfigSelector => return renderJsonRpcError(allocator, id_value, -32602, "skills/config/write requires exactly one of path or name"),
+        error.InvalidSkillsConfigPath => return renderJsonRpcError(allocator, id_value, -32602, "path must be an absolute string or null"),
+        error.InvalidSkillsConfigEnabled => return renderJsonRpcError(allocator, id_value, -32602, "enabled must be a boolean"),
+    };
+
+    const config_path = try resolveDefaultConfigWritePath(allocator);
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "skills/config/write failed to read config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const updated = skills_list.updateSkillConfigToml(
+        allocator,
+        config_bytes orelse "",
+        parsed.selector,
+        parsed.enabled,
+    ) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "skills/config/write failed to update config", err);
+    };
+    defer allocator.free(updated);
+
+    config.writeConfigTomlFile(config_path, updated) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "skills/config/write failed to write config", err);
+    };
+
+    const result = try std.fmt.allocPrint(allocator, "{{\"effectiveEnabled\":{s}}}", .{if (parsed.enabled) "true" else "false"});
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn parseSkillsConfigWriteParams(object: std.json.ObjectMap) !ParsedSkillsConfigWriteParams {
+    const enabled_value = object.get("enabled") orelse return error.InvalidSkillsConfigEnabled;
+    if (enabled_value != .bool) return error.InvalidSkillsConfigEnabled;
+
+    const path_opt = switch (optionalStringOrNull(object, "path")) {
+        .invalid => return error.InvalidSkillsConfigPath,
+        .value => |value| value,
+        .missing => null,
+    };
+    const name_opt = switch (optionalStringOrNull(object, "name")) {
+        .invalid => return error.InvalidSkillsConfigSelector,
+        .value => |value| value,
+        .missing => null,
+    };
+
+    const selector = if (path_opt) |path|
+        blk: {
+            if (name_opt != null) return error.InvalidSkillsConfigSelector;
+            if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.InvalidSkillsConfigPath;
+            break :blk skills_list.ConfigSelector{ .path = path };
+        }
+    else if (name_opt) |name|
+        blk: {
+            if (std.mem.trim(u8, name, " \t\r\n").len == 0) return error.InvalidSkillsConfigSelector;
+            break :blk skills_list.ConfigSelector{ .name = name };
+        }
+    else
+        return error.InvalidSkillsConfigSelector;
+
+    return .{ .selector = selector, .enabled = enabled_value.bool };
 }
 
 const FS_ABSOLUTE_PATH_MESSAGE = "Invalid request: AbsolutePathBuf deserialized without a base path";
