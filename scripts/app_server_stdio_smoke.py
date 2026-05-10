@@ -4311,6 +4311,54 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "failure",
         }
 
+        buffered_cap = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-buffered-cap",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf abcdef && printf uvwxyz >&2",
+                    ],
+                    "outputBytesCap": 5,
+                },
+            },
+            env,
+        )
+        assert buffered_cap["id"] == "command-exec-buffered-cap"
+        assert buffered_cap["result"] == {
+            "exitCode": 0,
+            "stdout": "abcde",
+            "stderr": "uvwxy",
+        }
+
+        buffered_zero_cap = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-buffered-zero-cap",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf stdout && printf stderr >&2",
+                    ],
+                    "outputBytesCap": 0,
+                },
+            },
+            env,
+        )
+        assert buffered_zero_cap["id"] == "command-exec-buffered-zero-cap"
+        assert buffered_zero_cap["result"] == {
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+
         empty_command = request_stdio_app_server(
             binary,
             {
