@@ -154,6 +154,22 @@ class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class CommandExecNetworkHandler(BaseHTTPRequestHandler):
+    requests: list[str] = []
+
+    def do_GET(self) -> None:
+        CommandExecNetworkHandler.requests.append(self.path)
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class PluginBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
 
@@ -3659,6 +3675,7 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
 def run_command_exec_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-", dir="/tmp"))
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-home-", dir="/tmp"))
+    network_server: ThreadingHTTPServer | None = None
     try:
         codex_home.joinpath("config.toml").write_text(
             'sandbox_mode = "danger-full-access"\n',
@@ -3668,6 +3685,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         cwd.mkdir()
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        network_server, network_url = start_command_exec_network_backend()
 
         success = request_stdio_app_server(
             binary,
@@ -3721,6 +3739,10 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             },
             "network": "restricted",
         }
+        root_read_only_network_enabled_permission_profile = dict(
+            root_read_only_permission_profile,
+            network="enabled",
+        )
         disabled_permission_profile = {
             "type": "disabled",
         }
@@ -3848,6 +3870,49 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_absolute_root["result"]["stdout"] == "absolute-root"
         assert absolute_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "absolute"
         assert not child_cwd.joinpath("child-denied.txt").exists()
+
+        network_probe = (
+            "import sys, urllib.request; "
+            "sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=2).read().decode())"
+        )
+        permission_profile_network_enabled = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-network-enabled",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "permissionProfile": root_read_only_network_enabled_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_network_enabled["id"] == "command-exec-permission-profile-network-enabled"
+        assert permission_profile_network_enabled["result"] == {
+            "exitCode": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+        }
+        assert CommandExecNetworkHandler.requests == ["/"]
+
+        permission_profile_network_restricted = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-network-restricted",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "permissionProfile": root_read_only_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_network_restricted["id"] == "command-exec-permission-profile-network-restricted"
+        assert permission_profile_network_restricted["result"]["exitCode"] != 0
+        assert permission_profile_network_restricted["result"]["stdout"] == ""
+        assert CommandExecNetworkHandler.requests == ["/"]
 
         permission_profile_with_sandbox_policy = request_stdio_app_server(
             binary,
@@ -4085,6 +4150,9 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert resize["error"]["code"] == -32600
         assert 'no active command/exec for process id "proc-1"' in resize["error"]["message"]
     finally:
+        if network_server is not None:
+            network_server.shutdown()
+            network_server.server_close()
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
 
@@ -5970,6 +6038,13 @@ def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHT
     AddCreditsNudgeBackendHandler.requests = []
     AddCreditsNudgeBackendHandler.status_code = status_code
     server = ThreadingHTTPServer(("127.0.0.1", 0), AddCreditsNudgeBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_command_exec_network_backend() -> tuple[ThreadingHTTPServer, str]:
+    CommandExecNetworkHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CommandExecNetworkHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
