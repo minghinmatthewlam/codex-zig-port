@@ -3974,12 +3974,14 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     var child_env: ?std.process.Environ.Map = null;
     defer if (child_env) |*map| map.deinit();
     if (object.get("env")) |env_value| {
-        child_env = commandExecEnvironment(allocator, env_value) catch |err| switch (err) {
-            error.InvalidCommandExecEnv => return renderJsonRpcError(allocator, id_value, -32602, "env must be an object or null"),
-            error.InvalidCommandExecEnvKey => return renderJsonRpcError(allocator, id_value, -32602, "env keys must be non-empty strings without NUL or '='"),
-            error.InvalidCommandExecEnvValue => return renderJsonRpcError(allocator, id_value, -32602, "env values must be strings or null"),
-            else => return err,
-        };
+        if (env_value != .null) {
+            child_env = commandExecEnvironment(allocator, env_value) catch |err| switch (err) {
+                error.InvalidCommandExecEnv => return renderJsonRpcError(allocator, id_value, -32602, "env must be an object or null"),
+                error.InvalidCommandExecEnvKey => return renderJsonRpcError(allocator, id_value, -32602, "env keys must be non-empty strings without NUL or '='"),
+                error.InvalidCommandExecEnvValue => return renderJsonRpcError(allocator, id_value, -32602, "env values must be strings or null"),
+                else => return err,
+            };
+        }
     }
 
     var sandboxed_argv: ?sandbox_mod.SandboxedArgv = null;

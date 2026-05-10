@@ -3708,6 +3708,26 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
         assert cwd_env["result"]["stderr"] == ""
 
+        null_env = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-null-env",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "null-env"],
+                    "env": None,
+                },
+            },
+            env,
+        )
+        assert null_env["id"] == "command-exec-null-env"
+        assert null_env["result"] == {
+            "exitCode": 0,
+            "stdout": "null-env\n",
+            "stderr": "",
+        }
+
         nonzero = request_stdio_app_server(
             binary,
             {
