@@ -5,6 +5,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const input_images = @import("input_images.zig");
 const memory_reset = @import("memory_reset.zig");
+const model_catalog = @import("model_catalog.zig");
 const session = @import("session.zig");
 
 pub const Options = struct {
@@ -246,67 +247,24 @@ fn renderPromptInput(
     return std.json.Stringify.valueAlloc(allocator, input, .{ .whitespace = .indent_2 });
 }
 
-const ReasoningLevel = struct {
-    effort: []const u8,
-    description: []const u8,
-};
-
-const ModelEntry = struct {
-    slug: []const u8,
-    display_name: []const u8,
-    description: []const u8,
-    default_reasoning_level: []const u8,
-    supported_reasoning_levels: []const ReasoningLevel,
-    input_modalities: []const []const u8,
-    supports_parallel_tool_calls: bool,
-    supported_in_api: bool,
-    visibility: []const u8,
-    priority: u32,
-};
-
 const ModelsResponse = struct {
-    models: []const ModelEntry,
+    models: []const model_catalog.Entry,
 };
-
-const default_reasoning_levels = [_]ReasoningLevel{
-    .{ .effort = "low", .description = "Fast responses with lighter reasoning" },
-    .{ .effort = "medium", .description = "Balanced reasoning depth" },
-    .{ .effort = "high", .description = "Greater reasoning depth" },
-    .{ .effort = "xhigh", .description = "Extra high reasoning depth" },
-};
-
-const text_image_modalities = [_][]const u8{ "text", "image" };
 
 fn renderModels(allocator: std.mem.Allocator, options: Options, bundled: bool) ![]const u8 {
     if (bundled) {
-        const models = [_]ModelEntry{defaultModelEntry("gpt-5.2-codex", "GPT-5.2 Codex", "Default Codex Zig coding model.")};
-        return stringifyModels(allocator, models[0..]);
+        return stringifyModels(allocator, model_catalog.bundled_models[0..]);
     }
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
 
-    const models = [_]ModelEntry{defaultModelEntry(cfg.model, cfg.model, "Configured Codex Zig model.")};
+    const models = [_]model_catalog.Entry{model_catalog.configuredModel(cfg.model, "Configured Codex Zig model.")};
     return stringifyModels(allocator, models[0..]);
 }
 
-fn defaultModelEntry(slug: []const u8, display_name: []const u8, description: []const u8) ModelEntry {
-    return .{
-        .slug = slug,
-        .display_name = display_name,
-        .description = description,
-        .default_reasoning_level = "medium",
-        .supported_reasoning_levels = default_reasoning_levels[0..],
-        .input_modalities = text_image_modalities[0..],
-        .supports_parallel_tool_calls = true,
-        .supported_in_api = true,
-        .visibility = "list",
-        .priority = 0,
-    };
-}
-
-fn stringifyModels(allocator: std.mem.Allocator, models: []const ModelEntry) ![]const u8 {
+fn stringifyModels(allocator: std.mem.Allocator, models: []const model_catalog.Entry) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{ .whitespace = .indent_2 });
 }
 
@@ -453,6 +411,6 @@ test "debug models bundled ignores configured model" {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
     defer parsed.deinit();
     const model = parsed.value.object.get("models").?.array.items[0].object;
-    try std.testing.expectEqualStrings("gpt-5.2-codex", model.get("slug").?.string);
+    try std.testing.expectEqualStrings("gpt-5.5", model.get("slug").?.string);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"slug\": \"gpt-test\"") == null);
 }

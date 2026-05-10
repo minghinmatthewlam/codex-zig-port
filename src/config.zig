@@ -1,5 +1,6 @@
 const std = @import("std");
 const env = @import("env.zig");
+const model_catalog = @import("model_catalog.zig");
 
 pub const Config = struct {
     codex_home: []const u8,
@@ -507,7 +508,7 @@ fn resolveModel(allocator: std.mem.Allocator, config_view: ConfigView, active_pr
         return model;
     }
 
-    return allocator.dupe(u8, "gpt-5.2-codex");
+    return allocator.dupe(u8, model_catalog.defaultModel().slug);
 }
 
 fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !BaseUrls {
