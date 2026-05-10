@@ -130,7 +130,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
-  `review --commit` flows
+  `review --commit` flows, including Rust-compatible `exec review` dispatch
 - inspect known feature flags with `features list`
 - enable or disable known feature flags for one invocation with root
   `--enable/--disable`
@@ -319,6 +319,7 @@ codex-zig app-server
 codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD
+codex-zig exec review --uncommitted
 ```
 
 `CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.
