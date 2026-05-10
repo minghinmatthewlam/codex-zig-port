@@ -59,6 +59,7 @@ const AppServerState = struct {
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
     skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
+    pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
@@ -71,6 +72,8 @@ const AppServerState = struct {
         self.skill_watch_roots.deinit(allocator);
         clearSkillsListCache(allocator, self);
         self.skills_list_cache.deinit(allocator);
+        for (self.pre_response_notifications.items) |payload| allocator.free(payload);
+        self.pre_response_notifications.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
     }
@@ -2080,6 +2083,7 @@ const StdioServer = struct {
                 try cli_utils.writeStderr(message);
                 continue;
             };
+            try writePreResponseNotificationsStdout(self.allocator, &state);
             if (response) |payload| {
                 defer self.allocator.free(payload);
                 try writeStdoutLine(payload);
@@ -2129,6 +2133,7 @@ const UnixServer = struct {
                 try cli_utils.writeStderr(message);
                 continue;
             };
+            try writePreResponseNotificationsStream(self.allocator, &state, &writer.interface);
             if (response) |payload| {
                 defer self.allocator.free(payload);
                 try writeStreamLine(&writer.interface, payload);
@@ -2196,7 +2201,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleFsMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isCommandExecMethod(method)) {
-        return try handleCommandExecMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleCommandExecMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isConfigMethod(method)) {
         return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -4886,12 +4891,13 @@ fn isCommandExecMethod(method: []const u8) bool {
 
 fn handleCommandExecMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "command/exec")) {
-        return handleCommandExec(allocator, id_value, params_value);
+        return handleCommandExec(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "command/exec/write")) {
         return handleCommandExecWrite(allocator, id_value, params_value);
@@ -4933,7 +4939,7 @@ const CommandExecPermissionProfileSummary = struct {
     }
 };
 
-fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
     const object = params.object;
@@ -4965,12 +4971,13 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     if (object.get("size")) |size| {
         if (size != .null and !tty) return renderJsonRpcError(allocator, id_value, -32602, "command/exec size requires tty: true");
     }
-    if (tty or stream_stdin or stream_stdout_stderr) {
-        if (process_id == null) {
-            return renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
-        }
-        return renderJsonRpcError(allocator, id_value, -32603, "command/exec streaming and tty modes are parsed but not implemented yet");
+    if ((tty or stream_stdin or stream_stdout_stderr) and process_id == null) {
+        return renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
     }
+    if (tty or stream_stdin) {
+        return renderJsonRpcError(allocator, id_value, -32603, "command/exec stdin streaming and tty modes are parsed but not implemented yet");
+    }
+    const stream_output = stream_stdout_stderr;
 
     const disable_output_cap = commandExecOptionalBool(object, "disableOutputCap", false) catch |err| {
         return commandExecBoolError(allocator, id_value, err, "disableOutputCap must be a boolean");
@@ -5067,7 +5074,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     defer io_instance.deinit();
 
     const run_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
-    const stdout_limit: std.Io.Limit = if (disable_output_cap) .unlimited else .limited(output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP);
+    const stdout_limit: std.Io.Limit = if (stream_output or disable_output_cap) .unlimited else .limited(output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP);
     const stderr_limit: std.Io.Limit = stdout_limit;
     const timeout: std.Io.Timeout = if (disable_timeout)
         .none
@@ -5093,9 +5100,22 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    const stdout_json = try std.json.Stringify.valueAlloc(allocator, result.stdout, .{});
+    if (stream_output) {
+        try queueCommandExecOutputDeltas(
+            allocator,
+            state,
+            process_id.?,
+            result.stdout,
+            result.stderr,
+            if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP,
+        );
+    }
+
+    const stdout_response = if (stream_output) "" else result.stdout;
+    const stderr_response = if (stream_output) "" else result.stderr;
+    const stdout_json = try std.json.Stringify.valueAlloc(allocator, stdout_response, .{});
     defer allocator.free(stdout_json);
-    const stderr_json = try std.json.Stringify.valueAlloc(allocator, result.stderr, .{});
+    const stderr_json = try std.json.Stringify.valueAlloc(allocator, stderr_response, .{});
     defer allocator.free(stderr_json);
     const response = try std.fmt.allocPrint(
         allocator,
@@ -5220,6 +5240,64 @@ fn renderNoActiveCommandExec(allocator: std.mem.Allocator, id_value: std.json.Va
     const message = try std.fmt.allocPrint(allocator, "no active command/exec for process id {s}", .{process_id_json});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn queueCommandExecOutputDeltas(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    process_id: []const u8,
+    stdout: []const u8,
+    stderr: []const u8,
+    output_bytes_cap: ?usize,
+) !void {
+    if (stdout.len > 0) {
+        try queueCommandExecOutputDelta(allocator, state, process_id, "stdout", stdout, output_bytes_cap);
+    }
+    if (stderr.len > 0) {
+        try queueCommandExecOutputDelta(allocator, state, process_id, "stderr", stderr, output_bytes_cap);
+    }
+}
+
+fn queueCommandExecOutputDelta(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    process_id: []const u8,
+    stream: []const u8,
+    bytes: []const u8,
+    output_bytes_cap: ?usize,
+) !void {
+    const capped = commandExecCappedOutput(bytes, output_bytes_cap);
+    const cap_reached = commandExecOutputCapReached(bytes, output_bytes_cap);
+
+    const encoded_len = std.base64.standard.Encoder.calcSize(capped.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, capped);
+
+    const process_id_json = try std.json.Stringify.valueAlloc(allocator, process_id, .{});
+    defer allocator.free(process_id_json);
+    const stream_json = try std.json.Stringify.valueAlloc(allocator, stream, .{});
+    defer allocator.free(stream_json);
+    const delta_json = try std.json.Stringify.valueAlloc(allocator, encoded, .{});
+    defer allocator.free(delta_json);
+
+    const notification = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"command/exec/outputDelta\",\"params\":{{\"processId\":{s},\"stream\":{s},\"deltaBase64\":{s},\"capReached\":{s}}}}}",
+        .{ process_id_json, stream_json, delta_json, if (cap_reached) "true" else "false" },
+    );
+    errdefer allocator.free(notification);
+    try state.pre_response_notifications.append(allocator, notification);
+}
+
+fn commandExecCappedOutput(bytes: []const u8, output_bytes_cap: ?usize) []const u8 {
+    const cap = output_bytes_cap orelse return bytes;
+    return bytes[0..@min(bytes.len, cap)];
+}
+
+fn commandExecOutputCapReached(bytes: []const u8, output_bytes_cap: ?usize) bool {
+    const cap = output_bytes_cap orelse return false;
+    return bytes.len >= cap;
 }
 
 fn commandExecExitCode(term: std.process.Child.Term) i32 {
@@ -11140,6 +11218,24 @@ fn writeStreamLine(writer: *std.Io.Writer, payload: []const u8) !void {
     try writer.writeAll(payload);
     try writer.writeAll("\n");
     try writer.flush();
+}
+
+fn writePreResponseNotificationsStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    var notifications = state.pre_response_notifications;
+    state.pre_response_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeStdoutLine(payload);
+    }
+}
+
+fn writePreResponseNotificationsStream(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    var notifications = state.pre_response_notifications;
+    state.pre_response_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeStreamLine(writer, payload);
+    }
 }
 
 fn writePendingNotificationsStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
