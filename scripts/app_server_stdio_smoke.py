@@ -19,6 +19,10 @@ from pathlib import Path
 _OMIT = object()
 
 
+def toml_quoted_key(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def seed_memory_state_db(codex_home: Path) -> Path:
     db_path = codex_home / "state_5.sqlite"
     with sqlite3.connect(db_path) as db:
@@ -3765,6 +3769,13 @@ def run_collaboration_mode_rpc_smoke(binary: Path) -> None:
 
 def run_config_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-", dir="/tmp"))
+    workspace = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-project-", dir="/tmp"))
+    project_dot_codex = workspace / ".codex"
+    project_dot_codex.mkdir(parents=True)
+    (project_dot_codex / "config.toml").write_text(
+        'model_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
     (codex_home / "config.toml").write_text(
         "\n".join(
             [
@@ -3780,6 +3791,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "",
                 "[profiles.work.features]",
                 "goals = true",
+                "",
+                "[projects]",
+                f'[projects."{toml_quoted_key(str(workspace))}"]',
+                'trust_level = "trusted"',
                 "",
             ]
         ),
@@ -3845,6 +3860,30 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "live",
             "service_tier": "flex",
         }
+
+        project_config_read = rpc(
+            "config-read-project",
+            "config/read",
+            {"includeLayers": True, "cwd": str(workspace)},
+        )
+        assert project_config_read["id"] == "config-read-project"
+        project_config_body = project_config_read["result"]["config"]
+        assert project_config_body["model"] == "gpt-config"
+        assert project_config_body["model_reasoning_effort"] == "high"
+        project_source = {
+            "type": "project",
+            "dotCodexFolder": str(project_dot_codex),
+        }
+        project_origins = project_config_read["result"]["origins"]
+        assert project_origins["model_reasoning_effort"]["name"] == project_source
+        assert project_origins["model_reasoning_effort"]["version"].startswith("sha256:")
+        assert project_origins["model"]["name"] == {"type": "user", "file": config_path}
+        project_layers = project_config_read["result"]["layers"]
+        assert len(project_layers) == 2
+        assert project_layers[0]["name"] == project_source
+        assert project_layers[0]["version"] == project_origins["model_reasoning_effort"]["version"]
+        assert project_layers[0]["config"] == {"model_reasoning_effort": "high"}
+        assert project_layers[1]["name"] == {"type": "user", "file": config_path}
 
         config_requirements = rpc_without_params(
             "config-requirements-read",
@@ -3922,6 +3961,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         if proc.returncode != 0:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def run_config_value_write_rpc_smoke(binary: Path) -> None:
