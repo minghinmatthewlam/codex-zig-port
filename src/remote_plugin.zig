@@ -287,11 +287,11 @@ fn appendRemotePluginSummaryJson(
     try out.appendSlice(allocator, ",\"enabled\":");
     try appendBool(allocator, out, if (installed_plugin) |plugin| plugin.enabled else false);
     try out.appendSlice(allocator, ",\"installPolicy\":");
-    try appendJsonString(allocator, out, normalizedInstallPolicy(detail.installation_policy));
+    try appendJsonString(allocator, out, try normalizedInstallPolicy(detail.installation_policy));
     try out.appendSlice(allocator, ",\"authPolicy\":");
-    try appendJsonString(allocator, out, normalizedAuthPolicy(detail.authentication_policy));
+    try appendJsonString(allocator, out, try normalizedAuthPolicy(detail.authentication_policy));
     try out.appendSlice(allocator, ",\"availability\":");
-    try appendJsonString(allocator, out, normalizedAvailability(detail.status));
+    try appendJsonString(allocator, out, try normalizedAvailability(detail.status));
     try out.appendSlice(allocator, ",\"interface\":");
     try appendRemotePluginInterfaceJson(allocator, out, detail.release);
     try out.appendSlice(allocator, ",\"keywords\":");
@@ -540,21 +540,25 @@ fn marketplaceName(scope: RemotePluginScope) []const u8 {
     };
 }
 
-fn normalizedInstallPolicy(value: []const u8) []const u8 {
+fn normalizedInstallPolicy(value: []const u8) ![]const u8 {
     if (std.mem.eql(u8, value, "NOT_AVAILABLE")) return "NOT_AVAILABLE";
+    if (std.mem.eql(u8, value, "AVAILABLE")) return "AVAILABLE";
     if (std.mem.eql(u8, value, "INSTALLED_BY_DEFAULT")) return "INSTALLED_BY_DEFAULT";
-    return "AVAILABLE";
+    return error.RemotePluginInvalidInstallPolicy;
 }
 
-fn normalizedAuthPolicy(value: []const u8) []const u8 {
+fn normalizedAuthPolicy(value: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, value, "ON_INSTALL")) return "ON_INSTALL";
     if (std.mem.eql(u8, value, "ON_USE")) return "ON_USE";
-    return "ON_INSTALL";
+    return error.RemotePluginInvalidAuthPolicy;
 }
 
-fn normalizedAvailability(value_opt: ?[]const u8) []const u8 {
+fn normalizedAvailability(value_opt: ?[]const u8) ![]const u8 {
     const value = value_opt orelse return "AVAILABLE";
+    if (std.mem.eql(u8, value, "AVAILABLE")) return "AVAILABLE";
+    if (std.mem.eql(u8, value, "ENABLED")) return "AVAILABLE";
     if (std.mem.eql(u8, value, "DISABLED_BY_ADMIN")) return "DISABLED_BY_ADMIN";
-    return "AVAILABLE";
+    return error.RemotePluginInvalidAvailability;
 }
 
 fn normalizedDefaultPrompt(value_opt: ?[]const u8) ?[]const u8 {
