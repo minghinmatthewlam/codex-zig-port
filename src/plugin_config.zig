@@ -131,6 +131,23 @@ pub fn removePluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugi
     return output.toOwnedSlice(allocator);
 }
 
+pub fn upsertEnabledPluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8) ![]const u8 {
+    if (!isValidPluginId(plugin_id)) return error.InvalidPluginId;
+
+    const without_plugin = try removePluginConfig(allocator, bytes, plugin_id);
+    defer allocator.free(without_plugin);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, std.mem.trimEnd(u8, without_plugin, " \t\r\n"));
+    if (output.items.len > 0) try output.appendSlice(allocator, "\n\n");
+    try output.appendSlice(allocator, "[plugins.\"");
+    try output.appendSlice(allocator, plugin_id);
+    try output.appendSlice(allocator, "\"]\n");
+    try output.appendSlice(allocator, "enabled = true\n");
+    return output.toOwnedSlice(allocator);
+}
+
 fn flushEnabledPluginId(
     allocator: std.mem.Allocator,
     ids: *std.ArrayList([]const u8),
@@ -292,4 +309,24 @@ test "plugin config removal drops plugin table and child tables" {
     const unchanged = try removePluginConfig(allocator, "profile = \"work\"", "missing@test");
     defer allocator.free(unchanged);
     try std.testing.expectEqualStrings("profile = \"work\"", unchanged);
+}
+
+test "plugin config upsert enables plugin table" {
+    const allocator = std.testing.allocator;
+    const bytes =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."demo@test"]
+        \\enabled = false
+        \\
+        \\[plugins."demo@test".mcp_servers.sample]
+        \\command = "demo-mcp"
+    ;
+
+    const updated = try upsertEnabledPluginConfig(allocator, bytes, "demo@test");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\".mcp_servers.sample]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\"]\nenabled = true") != null);
 }
