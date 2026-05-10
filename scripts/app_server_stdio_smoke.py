@@ -626,6 +626,7 @@ def run_plugin_rpc_smoke(binary: Path) -> None:
 def run_skills_list_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-skills-", dir="/tmp"))
     codex_home = root / "codex-home"
+    config_path = codex_home / "config.toml"
     cwd = root / "repo"
     repo_skill = cwd / ".codex" / "skills" / "repo-skill"
     extra_root = root / "extra-skills"
@@ -701,12 +702,115 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         assert by_name["repo-skill"]["shortDescription"] == "Repo short"
         assert by_name["repo-skill"]["scope"] == "repo"
         assert by_name["repo-skill"]["enabled"] is True
-        assert by_name["repo-skill"]["path"] == str(repo_skill / "SKILL.md")
+        assert by_name["repo-skill"]["path"] == str((repo_skill / "SKILL.md").resolve())
         assert by_name["user-skill"]["description"] == "User skill description"
         assert by_name["user-skill"]["scope"] == "user"
-        assert by_name["user-skill"]["path"] == str(user_skill / "SKILL.md")
+        assert by_name["user-skill"]["path"] == str((user_skill / "SKILL.md").resolve())
         assert any("missing description" in error["message"] for error in entry["errors"])
         assert any(error["path"] == str(invalid_skill / "SKILL.md") for error in entry["errors"])
+
+        disable_repo_skill = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-config-disable-name",
+                "method": "skills/config/write",
+                "params": {"name": "repo-skill", "enabled": False},
+            },
+            env,
+        )
+        assert disable_repo_skill["id"] == "skills-config-disable-name"
+        assert disable_repo_skill["result"]["effectiveEnabled"] is False
+        config_contents = config_path.read_text(encoding="utf-8")
+        assert 'name = "repo-skill"' in config_contents
+        assert "enabled = false" in config_contents
+
+        skills_after_name_disable = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-list-after-name-disable",
+                "method": "skills/list",
+                "params": {
+                    "cwds": [str(cwd)],
+                    "forceReload": True,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(extra_root)]}
+                    ],
+                },
+            },
+            env,
+        )
+        disabled_by_name = {
+            skill["name"]: skill
+            for skill in skills_after_name_disable["result"]["data"][0]["skills"]
+        }
+        assert disabled_by_name["repo-skill"]["enabled"] is False
+        assert disabled_by_name["user-skill"]["enabled"] is True
+
+        enable_repo_skill = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-config-enable-name",
+                "method": "skills/config/write",
+                "params": {"name": "repo-skill", "enabled": True},
+            },
+            env,
+        )
+        assert enable_repo_skill["id"] == "skills-config-enable-name"
+        assert enable_repo_skill["result"]["effectiveEnabled"] is True
+
+        disable_user_skill_path = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-config-disable-path",
+                "method": "skills/config/write",
+                "params": {"path": str(user_skill / "SKILL.md"), "enabled": False},
+            },
+            env,
+        )
+        assert disable_user_skill_path["id"] == "skills-config-disable-path"
+        assert disable_user_skill_path["result"]["effectiveEnabled"] is False
+        config_contents = config_path.read_text(encoding="utf-8")
+        assert f'path = "{(user_skill / "SKILL.md").resolve()}"' in config_contents
+
+        skills_after_path_disable = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-list-after-path-disable",
+                "method": "skills/list",
+                "params": {
+                    "cwds": [str(cwd)],
+                    "forceReload": True,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(extra_root)]}
+                    ],
+                },
+            },
+            env,
+        )
+        disabled_by_path = {
+            skill["name"]: skill
+            for skill in skills_after_path_disable["result"]["data"][0]["skills"]
+        }
+        assert disabled_by_path["repo-skill"]["enabled"] is True
+        assert disabled_by_path["user-skill"]["enabled"] is False
+
+        invalid_config_selector = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-config-invalid-selector",
+                "method": "skills/config/write",
+                "params": {"name": "repo-skill", "path": str(repo_skill / "SKILL.md"), "enabled": False},
+            },
+            env,
+        )
+        assert invalid_config_selector["id"] == "skills-config-invalid-selector"
+        assert invalid_config_selector["error"]["code"] == -32602
 
         invalid_cwds = request_stdio_app_server(
             binary,
