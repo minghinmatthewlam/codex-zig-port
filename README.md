@@ -1,5 +1,7 @@
 # Codex Zig Port
 
+[![CI](https://github.com/minghinmatthewlam/codex-zig-port/actions/workflows/ci.yml/badge.svg)](https://github.com/minghinmatthewlam/codex-zig-port/actions/workflows/ci.yml)
+
 This repository is an independent Zig reimplementation of the Codex CLI.
 A local Rust Codex checkout can be used as a behavioral reference only:
 runtime code in this repository must not import, link to, shell out to, or copy
