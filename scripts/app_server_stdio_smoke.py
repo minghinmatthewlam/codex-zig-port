@@ -6684,6 +6684,67 @@ def run_internal_json_schema_smoke(binary: Path) -> None:
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
+def run_json_schema_smoke(binary: Path) -> None:
+    out_dir = Path(tempfile.mkdtemp(prefix="codex-zig-json-schema-", dir="/tmp"))
+    try:
+        proc = subprocess.run(
+            [
+                str(binary),
+                "app-server",
+                "generate-json-schema",
+                "--out",
+                str(out_dir),
+                "--experimental",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        request_id = json.loads((out_dir / "RequestId.json").read_text(encoding="utf-8"))
+        assert request_id["title"] == "RequestId"
+        assert request_id["oneOf"][0]["type"] == "string"
+        assert request_id["oneOf"][1]["type"] == "integer"
+
+        request = json.loads((out_dir / "JSONRPCRequest.json").read_text(encoding="utf-8"))
+        assert request["title"] == "JSONRPCRequest"
+        assert request["required"] == ["id", "method"]
+        assert request["properties"]["id"]["$ref"] == "RequestId.json"
+
+        initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
+        assert initialize["title"] == "InitializeParams"
+        assert initialize["required"] == ["clientInfo"]
+
+        bundle = json.loads(
+            (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
+        )
+        assert bundle["title"] == "codex_app_server_protocol.schemas"
+        assert "JSONRPCMessage" in bundle["$defs"]
+        assert "InitializeResponse" in bundle["$defs"]
+        v2_bundle = json.loads(
+            (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
+        )
+        assert v2_bundle["$defs"]["JSONRPCMessage"] == bundle["$defs"]["JSONRPCMessage"]
+
+        missing_out = subprocess.run(
+            [str(binary), "app-server", "generate-json-schema"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert missing_out.returncode != 0
+        assert "MissingAppServerGenerateJsonSchemaOutDir" in missing_out.stderr
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
 def run_flag_compat_smoke(binary: Path) -> None:
     analytics = subprocess.run(
         [str(binary), "app-server", "--analytics-default-enabled", "--listen", "off"],
@@ -6860,6 +6921,8 @@ def main() -> None:
     print("stdio-to-uds-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
+    run_json_schema_smoke(binary)
+    print("app-server-json-schema-e2e: ok")
     run_internal_json_schema_smoke(binary)
     print("app-server-internal-json-schema-e2e: ok")
     run_flag_compat_smoke(binary)
