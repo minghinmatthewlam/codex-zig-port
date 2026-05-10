@@ -3657,7 +3657,10 @@ fn parseNetworkPermissionLine(
     errdefer allocator.free(value);
     try validateNetworkPermission(value, kind);
 
-    const key = try parseTomlKeyName(allocator, raw_key);
+    const key = parseTomlKeyName(allocator, raw_key) catch |err| switch (err) {
+        error.InvalidFeatureRequirement, error.InvalidTomlString => return error.InvalidNetworkRequirement,
+        else => return err,
+    };
     errdefer allocator.free(key);
     return .{ .key = key, .value = value };
 }
