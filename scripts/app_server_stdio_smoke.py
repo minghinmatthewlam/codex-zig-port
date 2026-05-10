@@ -3819,8 +3819,30 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["features"]["apps"] is False
         assert config_body["features"]["goals"] is True
         assert config_body["features"]["memories"] is False
-        assert config_read["result"]["origins"] == {}
-        assert config_read["result"]["layers"] == []
+        config_path = str(codex_home / "config.toml")
+        origins = config_read["result"]["origins"]
+        for key in [
+            "model",
+            "profile",
+            "approval_policy",
+            "sandbox_mode",
+            "web_search",
+            "service_tier",
+        ]:
+            assert origins[key]["name"] == {"type": "user", "file": config_path}
+            assert origins[key]["version"].startswith("sha256:")
+        layers = config_read["result"]["layers"]
+        assert len(layers) == 1
+        assert layers[0]["name"] == {"type": "user", "file": config_path}
+        assert layers[0]["version"] == origins["model"]["version"]
+        assert layers[0]["config"] == {
+            "model": "gpt-config",
+            "profile": "work",
+            "approval_policy": "never",
+            "sandbox_mode": "danger-full-access",
+            "web_search": "live",
+            "service_tier": "flex",
+        }
 
         config_requirements = rpc_without_params(
             "config-requirements-read",
