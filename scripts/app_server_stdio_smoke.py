@@ -3583,6 +3583,32 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
         assert notifications_by_watch["watch-file"]["method"] == "fs/changed"
         assert notifications_by_watch["watch-file"]["params"]["changedPaths"] == [str(watched_file)]
 
+        time.sleep(0.02)
+        watched_file.write_text("external contents changed", encoding="utf-8")
+        external_trigger = rpc(
+            "fs-watch-external-trigger",
+            "fs/getMetadata",
+            {"path": str(watched_file)},
+        )
+        assert external_trigger["id"] == "fs-watch-external-trigger"
+        assert external_trigger["result"]["isFile"] is True
+
+        external_for_dir = read_json_line(proc, 5)
+        external_for_file = read_json_line(proc, 5)
+        external_notifications_by_watch = {
+            external_for_dir["params"]["watchId"]: external_for_dir,
+            external_for_file["params"]["watchId"]: external_for_file,
+        }
+        assert sorted(external_notifications_by_watch) == ["watch-dir", "watch-file"]
+        assert external_notifications_by_watch["watch-dir"]["method"] == "fs/changed"
+        assert external_notifications_by_watch["watch-dir"]["params"]["changedPaths"] == [
+            str(watched_file)
+        ]
+        assert external_notifications_by_watch["watch-file"]["method"] == "fs/changed"
+        assert external_notifications_by_watch["watch-file"]["params"]["changedPaths"] == [
+            str(watched_file)
+        ]
+
         invalid_watch_path = rpc(
             "fs-watch-relative",
             "fs/watch",
