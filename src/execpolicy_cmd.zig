@@ -45,9 +45,21 @@ const PrefixRule = struct {
     }
 };
 
+const HostExecutable = struct {
+    name: []const u8,
+    paths: []const []const u8,
+
+    fn deinit(self: HostExecutable, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        for (self.paths) |path| allocator.free(path);
+        allocator.free(self.paths);
+    }
+};
+
 const RuleMatch = struct {
     rule: *const PrefixRule,
     matched_prefix: []const []const u8,
+    resolved_program: ?[]const u8 = null,
 };
 
 const CheckOptions = struct {
@@ -89,19 +101,29 @@ fn runCheck(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !voi
     var rules = std.ArrayList(PrefixRule).empty;
     defer rules.deinit(allocator);
     defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
 
     for (options.rule_paths.items) |path| {
         const contents = try readRulesFile(allocator, path);
         defer allocator.free(contents);
-        try parseRules(allocator, contents, &rules);
+        try parsePolicy(allocator, contents, &rules, &host_executables);
     }
 
-    const rendered = try evaluateRules(allocator, rules.items, options.command.items, options.pretty);
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        options.command.items,
+        .{
+            .pretty = options.pretty,
+            .resolve_host_executables = options.resolve_host_executables,
+        },
+    );
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
     try cli_utils.writeStdout("\n");
-
-    _ = options.resolve_host_executables;
 }
 
 fn parseCheckOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !CheckOptions {
@@ -169,18 +191,49 @@ fn parseRules(
     contents: []const u8,
     rules: *std.ArrayList(PrefixRule),
 ) !void {
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, contents, rules, &host_executables);
+}
+
+fn parsePolicy(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    rules: *std.ArrayList(PrefixRule),
+    host_executables: *std.ArrayList(HostExecutable),
+) !void {
     var pos: usize = 0;
-    while (findPrefixRuleOpen(contents, pos)) |open_index| {
-        const close_index = try findMatchingParen(contents, open_index);
-        const body = contents[open_index + 1 .. close_index];
-        const rule = try parsePrefixRule(allocator, body);
-        errdefer rule.deinit(allocator);
-        try rules.append(allocator, rule);
+    while (findPolicyCallOpen(contents, pos)) |call| {
+        const close_index = try findMatchingParen(contents, call.open_index);
+        const body = contents[call.open_index + 1 .. close_index];
+        switch (call.kind) {
+            .prefix_rule => {
+                const rule = try parsePrefixRule(allocator, body);
+                errdefer rule.deinit(allocator);
+                try rules.append(allocator, rule);
+            },
+            .host_executable => {
+                const host_executable = try parseHostExecutable(allocator, body);
+                errdefer host_executable.deinit(allocator);
+                try upsertHostExecutable(allocator, host_executables, host_executable);
+            },
+        }
         pos = close_index + 1;
     }
 }
 
-fn findPrefixRuleOpen(contents: []const u8, start: usize) ?usize {
+const PolicyCallKind = enum {
+    prefix_rule,
+    host_executable,
+};
+
+const PolicyCall = struct {
+    kind: PolicyCallKind,
+    open_index: usize,
+};
+
+fn findPolicyCallOpen(contents: []const u8, start: usize) ?PolicyCall {
     var pos = start;
     var quote: ?u8 = null;
     var escaped = false;
@@ -206,20 +259,26 @@ fn findPrefixRuleOpen(contents: []const u8, start: usize) ?usize {
             while (pos < contents.len and contents[pos] != '\n') : (pos += 1) {}
             continue;
         }
-        if (std.mem.startsWith(u8, contents[pos..], "prefix_rule")) {
-            const before_ok = pos == 0 or !isIdentifierChar(contents[pos - 1]);
-            const after_name = pos + "prefix_rule".len;
-            const after_ok = after_name >= contents.len or !isIdentifierChar(contents[after_name]);
-            if (!before_ok or !after_ok) {
-                pos += 1;
-                continue;
-            }
-            var next = after_name;
-            skipWhitespace(contents, &next);
-            if (next < contents.len and contents[next] == '(') return next;
+        if (matchPolicyCall(contents, pos, "prefix_rule")) |open_index| {
+            return .{ .kind = .prefix_rule, .open_index = open_index };
+        }
+        if (matchPolicyCall(contents, pos, "host_executable")) |open_index| {
+            return .{ .kind = .host_executable, .open_index = open_index };
         }
         pos += 1;
     }
+    return null;
+}
+
+fn matchPolicyCall(contents: []const u8, pos: usize, name: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, contents[pos..], name)) return null;
+    const before_ok = pos == 0 or !isIdentifierChar(contents[pos - 1]);
+    const after_name = pos + name.len;
+    const after_ok = after_name >= contents.len or !isIdentifierChar(contents[after_name]);
+    if (!before_ok or !after_ok) return null;
+    var next = after_name;
+    skipWhitespace(contents, &next);
+    if (next < contents.len and contents[next] == '(') return next;
     return null;
 }
 
@@ -295,6 +354,66 @@ fn parsePrefixRule(allocator: std.mem.Allocator, body: []const u8) !PrefixRule {
         .decision = decision,
         .justification = justification,
     };
+}
+
+fn parseHostExecutable(allocator: std.mem.Allocator, body: []const u8) !HostExecutable {
+    var name: ?[]const u8 = null;
+    errdefer if (name) |owned| allocator.free(owned);
+    var paths: ?[]const []const u8 = null;
+    errdefer if (paths) |owned| freeStringList(allocator, owned);
+
+    var pos: usize = 0;
+    while (try nextAssignment(body, &pos)) |assignment| {
+        if (std.mem.eql(u8, assignment.key, "name")) {
+            if (name != null) return error.DuplicateExecPolicyField;
+            const parsed = try parseOwnedString(allocator, assignment.value);
+            errdefer allocator.free(parsed);
+            try validateHostExecutableName(parsed);
+            name = parsed;
+            continue;
+        }
+        if (std.mem.eql(u8, assignment.key, "paths")) {
+            if (paths != null) return error.DuplicateExecPolicyField;
+            paths = try parseStringListValue(allocator, assignment.value, true);
+            continue;
+        }
+    }
+
+    const host_name = name orelse return error.MissingHostExecutableName;
+    const host_paths = paths orelse return error.MissingHostExecutablePaths;
+    for (host_paths) |path| {
+        try validateHostExecutablePath(host_name, path);
+    }
+    return .{
+        .name = host_name,
+        .paths = host_paths,
+    };
+}
+
+fn validateHostExecutableName(name: []const u8) !void {
+    if (name.len == 0) return error.EmptyHostExecutableName;
+    if (std.mem.indexOfScalar(u8, name, '/') != null) return error.InvalidHostExecutableName;
+    if (std.mem.indexOfScalar(u8, name, '\\') != null) return error.InvalidHostExecutableName;
+}
+
+fn validateHostExecutablePath(name: []const u8, path: []const u8) !void {
+    if (!std.fs.path.isAbsolute(path)) return error.InvalidHostExecutablePath;
+    if (!std.mem.eql(u8, std.fs.path.basename(path), name)) return error.InvalidHostExecutablePath;
+}
+
+fn upsertHostExecutable(
+    allocator: std.mem.Allocator,
+    host_executables: *std.ArrayList(HostExecutable),
+    host_executable: HostExecutable,
+) !void {
+    for (host_executables.items) |*existing| {
+        if (std.mem.eql(u8, existing.name, host_executable.name)) {
+            existing.deinit(allocator);
+            existing.* = host_executable;
+            return;
+        }
+    }
+    try host_executables.append(allocator, host_executable);
 }
 
 const Assignment = struct {
@@ -458,7 +577,7 @@ const ValueParser = struct {
     fn parsePatternToken(self: *ValueParser) !PatternToken {
         self.skipTrivia();
         if (self.pos >= self.input.len) return error.ExpectedExecPolicyPatternToken;
-        if (self.input[self.pos] == '[') return .{ .alternatives = try self.parseStringList() };
+        if (self.input[self.pos] == '[') return .{ .alternatives = try self.parseStringList(false) };
 
         const string = try self.parseString();
         errdefer self.allocator.free(string);
@@ -467,7 +586,7 @@ const ValueParser = struct {
         return .{ .alternatives = alternatives };
     }
 
-    fn parseStringList(self: *ValueParser) ![]const []const u8 {
+    fn parseStringList(self: *ValueParser, allow_empty: bool) ![]const []const u8 {
         try self.expect('[');
         var values = std.ArrayList([]const u8).empty;
         errdefer {
@@ -485,7 +604,7 @@ const ValueParser = struct {
             if (self.consume(']')) break;
             return error.ExpectedExecPolicyPatternSeparator;
         }
-        if (values.items.len == 0) return error.EmptyExecPolicyAlternative;
+        if (!allow_empty and values.items.len == 0) return error.EmptyExecPolicyAlternative;
         return values.toOwnedSlice(self.allocator);
     }
 
@@ -535,6 +654,15 @@ fn parseOwnedString(allocator: std.mem.Allocator, value: []const u8) ![]const u8
     return string;
 }
 
+fn parseStringListValue(allocator: std.mem.Allocator, value: []const u8, allow_empty: bool) ![]const []const u8 {
+    var parser = ValueParser{ .allocator = allocator, .input = value };
+    const strings = try parser.parseStringList(allow_empty);
+    errdefer freeStringList(allocator, strings);
+    parser.skipTrivia();
+    if (!parser.isEof()) return error.UnexpectedExecPolicyStringInput;
+    return strings;
+}
+
 fn parseDecision(label: []const u8) !Decision {
     if (std.mem.eql(u8, label, "allow")) return .allow;
     if (std.mem.eql(u8, label, "prompt")) return .prompt;
@@ -542,35 +670,117 @@ fn parseDecision(label: []const u8) !Decision {
     return error.UnknownExecPolicyDecision;
 }
 
+const EvaluateOptions = struct {
+    pretty: bool = false,
+    resolve_host_executables: bool = false,
+};
+
 fn evaluateRules(
     allocator: std.mem.Allocator,
     rules: []const PrefixRule,
+    host_executables: []const HostExecutable,
     command: []const []const u8,
-    pretty: bool,
+    options: EvaluateOptions,
 ) ![]const u8 {
     var matches = std.ArrayList(RuleMatch).empty;
     defer matches.deinit(allocator);
+    var owned_prefixes = std.ArrayList([]const []const u8).empty;
+    defer {
+        for (owned_prefixes.items) |prefix| allocator.free(prefix);
+        owned_prefixes.deinit(allocator);
+    }
 
-    var decision: ?Decision = null;
+    try appendExactMatches(allocator, rules, command, &matches);
+    if (matches.items.len == 0 and options.resolve_host_executables) {
+        try appendHostExecutableMatches(
+            allocator,
+            rules,
+            host_executables,
+            command,
+            &matches,
+            &owned_prefixes,
+        );
+    }
+
+    const decision = strictestDecision(matches.items);
+    if (options.pretty) return renderPretty(allocator, decision, matches.items);
+    return renderCompact(allocator, decision, matches.items);
+}
+
+fn appendExactMatches(
+    allocator: std.mem.Allocator,
+    rules: []const PrefixRule,
+    command: []const []const u8,
+    matches: *std.ArrayList(RuleMatch),
+) !void {
     for (rules) |*rule| {
-        if (!ruleMatches(rule.*, command)) continue;
+        if (!ruleMatches(rule.*, command[0..], null)) continue;
         try matches.append(allocator, .{
             .rule = rule,
             .matched_prefix = command[0..rule.pattern.len],
         });
-        if (decision == null or rule.decision.rank() > decision.?.rank()) {
-            decision = rule.decision;
-        }
     }
-
-    if (pretty) return renderPretty(allocator, decision, matches.items);
-    return renderCompact(allocator, decision, matches.items);
 }
 
-fn ruleMatches(rule: PrefixRule, command: []const []const u8) bool {
+fn appendHostExecutableMatches(
+    allocator: std.mem.Allocator,
+    rules: []const PrefixRule,
+    host_executables: []const HostExecutable,
+    command: []const []const u8,
+    matches: *std.ArrayList(RuleMatch),
+    owned_prefixes: *std.ArrayList([]const []const u8),
+) !void {
+    if (command.len == 0) return;
+    const program = command[0];
+    if (!std.fs.path.isAbsolute(program)) return;
+    const basename = std.fs.path.basename(program);
+    if (basename.len == 0) return;
+    if (!hostExecutableAllows(host_executables, basename, program)) return;
+
+    for (rules) |*rule| {
+        if (!ruleMatches(rule.*, command, basename)) continue;
+        const matched_prefix = try allocator.alloc([]const u8, rule.pattern.len);
+        errdefer allocator.free(matched_prefix);
+        matched_prefix[0] = basename;
+        for (1..rule.pattern.len) |index| {
+            matched_prefix[index] = command[index];
+        }
+        try matches.append(allocator, .{
+            .rule = rule,
+            .matched_prefix = matched_prefix,
+            .resolved_program = program,
+        });
+        try owned_prefixes.append(allocator, matched_prefix);
+    }
+}
+
+fn hostExecutableAllows(host_executables: []const HostExecutable, basename: []const u8, program: []const u8) bool {
+    for (host_executables) |host_executable| {
+        if (!std.mem.eql(u8, host_executable.name, basename)) continue;
+        for (host_executable.paths) |path| {
+            if (std.mem.eql(u8, path, program)) return true;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn strictestDecision(matches: []const RuleMatch) ?Decision {
+    var decision: ?Decision = null;
+    for (matches) |match| {
+        if (decision == null or match.rule.decision.rank() > decision.?.rank()) {
+            decision = match.rule.decision;
+        }
+    }
+    return decision;
+}
+
+fn ruleMatches(rule: PrefixRule, command: []const []const u8, resolved_first: ?[]const u8) bool {
     if (rule.pattern.len > command.len) return false;
+    if (rule.pattern.len == 0) return false;
     for (rule.pattern, 0..) |token, index| {
-        if (!tokenMatches(token, command[index])) return false;
+        const command_token = if (index == 0) resolved_first orelse command[index] else command[index];
+        if (!tokenMatches(token, command_token)) return false;
     }
     return true;
 }
@@ -609,6 +819,10 @@ fn appendCompactMatch(allocator: std.mem.Allocator, out: *std.ArrayList(u8), mat
     try appendJsonStringArray(allocator, out, match.matched_prefix);
     try out.appendSlice(allocator, ",\"decision\":");
     try appendJsonString(allocator, out, match.rule.decision.label());
+    if (match.resolved_program) |program| {
+        try out.appendSlice(allocator, ",\"resolvedProgram\":");
+        try appendJsonString(allocator, out, program);
+    }
     if (match.rule.justification) |justification| {
         try out.appendSlice(allocator, ",\"justification\":");
         try appendJsonString(allocator, out, justification);
@@ -651,6 +865,11 @@ fn appendPrettyMatch(allocator: std.mem.Allocator, out: *std.ArrayList(u8), matc
     try out.appendSlice(allocator, "],\n");
     try out.appendSlice(allocator, "        \"decision\": ");
     try appendJsonString(allocator, out, match.rule.decision.label());
+    if (match.resolved_program) |program| {
+        try out.appendSlice(allocator, ",\n");
+        try out.appendSlice(allocator, "        \"resolvedProgram\": ");
+        try appendJsonString(allocator, out, program);
+    }
     if (match.rule.justification) |justification| {
         try out.appendSlice(allocator, ",\n");
         try out.appendSlice(allocator, "        \"justification\": ");
@@ -686,6 +905,15 @@ fn deinitRules(allocator: std.mem.Allocator, rules: []PrefixRule) void {
     for (rules) |rule| rule.deinit(allocator);
 }
 
+fn deinitHostExecutables(allocator: std.mem.Allocator, host_executables: []HostExecutable) void {
+    for (host_executables) |host_executable| host_executable.deinit(allocator);
+}
+
+fn freeStringList(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
+}
+
 fn skipWhitespace(contents: []const u8, pos: *usize) void {
     while (pos.* < contents.len and std.ascii.isWhitespace(contents[pos.*])) : (pos.* += 1) {}
 }
@@ -718,8 +946,8 @@ fn printCheckHelp() void {
         \\  -r, --rules PATH       Execpolicy rules file. Can be repeated.
         \\      --pretty           Pretty-print JSON output.
         \\      --resolve-host-executables
-        \\                          Accepted for Rust CLI compatibility; full host
-        \\                          executable resolution remains planned.
+        \\                          Match absolute program paths through basename
+        \\                          rules, gated by host_executable entries.
         \\
     , .{});
 }
@@ -738,7 +966,7 @@ test "execpolicy check matches forbidden prefix rule" {
     try parseRules(allocator, rules_bytes, &rules);
 
     const command = [_][]const u8{ "git", "push", "origin", "main" };
-    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings(
@@ -762,7 +990,7 @@ test "execpolicy check includes prefix rule justification" {
     try parseRules(allocator, rules_bytes, &rules);
 
     const command = [_][]const u8{ "git", "push", "origin", "main" };
-    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings(
@@ -785,7 +1013,7 @@ test "execpolicy check omits decision without matches" {
     try parseRules(allocator, rules_bytes, &rules);
 
     const command = [_][]const u8{ "git", "status" };
-    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
@@ -803,7 +1031,7 @@ test "execpolicy check supports pattern alternatives and strictest decision" {
     try parseRules(allocator, rules_bytes, &rules);
 
     const command = [_][]const u8{ "bash", "-c", "echo hi" };
-    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings(
@@ -826,8 +1054,180 @@ test "execpolicy parser ignores comments and quoted prefix rule text" {
 
     try std.testing.expectEqual(@as(usize, 1), rules.items.len);
     const command = [_][]const u8{ "git", "push" };
-    const rendered = try evaluateRules(allocator, rules.items, command[0..], false);
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
     defer allocator.free(rendered);
 
     try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
+}
+
+test "execpolicy check resolves allowed host executable paths" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git", "status"], decision = "prompt")
+        \\host_executable(name = "git", paths = ["/usr/bin/git"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"prompt\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"git\",\"status\"],\"decision\":\"prompt\",\"resolvedProgram\":\"/usr/bin/git\"}}]}",
+        rendered,
+    );
+}
+
+test "execpolicy check allows basename fallback without host executable mapping" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git", "status"], decision = "prompt")
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"prompt\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"git\",\"status\"],\"decision\":\"prompt\",\"resolvedProgram\":\"/usr/bin/git\"}}]}",
+        rendered,
+    );
+}
+
+test "execpolicy check blocks basename fallback for explicit empty host mapping" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git", "status"], decision = "prompt")
+        \\host_executable(name = "git", paths = [])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
+}
+
+test "execpolicy check ignores host paths outside explicit allowlist" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git"], decision = "prompt")
+        \\host_executable(name = "git", paths = ["/usr/bin/git"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/opt/homebrew/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
+}
+
+test "execpolicy parser keeps the last host executable definition" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git"], decision = "prompt")
+        \\host_executable(name = "git", paths = ["/usr/bin/git"])
+        \\host_executable(name = "git", paths = ["/opt/homebrew/bin/git"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("{\"matchedRules\":[]}", rendered);
+}
+
+test "execpolicy check keeps exact absolute matches ahead of host fallback" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["/usr/bin/git"], decision = "allow")
+        \\prefix_rule(pattern = ["git"], decision = "prompt")
+        \\host_executable(name = "git", paths = ["/usr/bin/git"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    try parsePolicy(allocator, rules_bytes, &rules, &host_executables);
+
+    const command = [_][]const u8{ "/usr/bin/git", "status" };
+    const rendered = try evaluateRules(
+        allocator,
+        rules.items,
+        host_executables.items,
+        command[0..],
+        .{ .resolve_host_executables = true },
+    );
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"allow\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"/usr/bin/git\"],\"decision\":\"allow\"}}]}",
+        rendered,
+    );
 }
