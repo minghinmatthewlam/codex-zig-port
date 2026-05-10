@@ -16,6 +16,12 @@ gating. Enabled local plugin-cache command hooks are listed when `[features]`
 enables `plugins` and `plugin_hooks`. Managed hooks and full config-layer parity
 remain planned.
 
+Current app-server `config/read` coverage includes user `tools` config for
+`[tools.web_search]` `context_size`, `allowed_domains`, inline `location`, and
+`[tools]` `view_image`, including user origins/layers and the Rust-compatible
+ignored bool-only `[tools] web_search = true` shape. Project, system, and
+managed tool layers remain planned.
+
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop, accepts an optional initial prompt, rejects unknown top-level flags, supports `--` before prompt text, exposes `help [COMMAND]`, includes top-level `apply` / `a`, recognizes planned Rust top-level commands (`remote-control`, `app`, `update`, `cloud` / `cloud-tasks`, hidden `responses-api-proxy`, and `exec-server`) with explicit not-implemented errors, rejects the removed Rust top-level `marketplace` namespace, and supports global `-m/--model`, `-i/--image`, `--enable`, `--disable`, `--oss`, `--local-provider`, `-p/--profile`, `-c/--config`, `-a/--ask-for-approval`, `-s/--sandbox`, `-C/--cd`, `--add-dir`, `--search`, `--remote`, `--remote-auth-token-env`, `--remote-control`, `--remote-control-bind`, `--no-alt-screen`, `--version`, and `--yolo` overrides, including Rust-compatible rejection when dangerous bypass is combined with an explicit approval policy. Remote app-server flags and local remote-control flags are parsed and rejected for non-interactive subcommands, but remote TUI transport and the local remote-control server are not implemented yet. Full command behavior parity is planned. |
