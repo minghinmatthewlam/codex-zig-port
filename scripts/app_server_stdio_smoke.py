@@ -8064,6 +8064,18 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadShellCommandResponse.json").read_text(encoding="utf-8")
         )
         assert thread_shell_command_response["additionalProperties"] is False
+        thread_background_clean = json.loads(
+            (out_dir / "ThreadBackgroundTerminalsCleanParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_background_clean["required"] == ["threadId"]
+        thread_background_clean_response = json.loads(
+            (out_dir / "ThreadBackgroundTerminalsCleanResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_background_clean_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8077,6 +8089,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
+        assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8166,11 +8179,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadCompactStartParams;" in client_request
         assert 'method: "thread/shellCommand";' in client_request
         assert "params: ThreadShellCommandParams;" in client_request
+        assert 'method: "thread/backgroundTerminals/clean";' in client_request
+        assert "params: ThreadBackgroundTerminalsCleanParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
         assert 'method: "thread/shellCommand";' in client_response
         assert "result: ThreadShellCommandResponse;" in client_response
+        assert 'method: "thread/backgroundTerminals/clean";' in client_response
+        assert "result: ThreadBackgroundTerminalsCleanResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8252,6 +8269,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadShellCommandResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadShellCommandResponse {}" in thread_shell_command_response
+        thread_background_clean = (
+            out_dir / "v2" / "ThreadBackgroundTerminalsCleanParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_background_clean
+        thread_background_clean_response = (
+            out_dir / "v2" / "ThreadBackgroundTerminalsCleanResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadBackgroundTerminalsCleanResponse {}"
+            in thread_background_clean_response
+        )
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8266,6 +8294,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
         assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
+        assert (
+            'export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";'
+            in v2_index
+        )
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
