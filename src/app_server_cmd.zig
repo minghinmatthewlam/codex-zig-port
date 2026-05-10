@@ -5054,8 +5054,8 @@ fn parseCommandExecSandboxPolicy(
     value: ?std.json.Value,
     default_mode: config.SandboxMode,
 ) !CommandExecSandbox {
-    const policy = value orelse return .{ .mode = default_mode, .writable_roots = try allocator.alloc([]const u8, 0) };
-    if (policy == .null) return .{ .mode = default_mode, .writable_roots = try allocator.alloc([]const u8, 0) };
+    const policy = value orelse return defaultCommandExecSandbox(allocator, default_mode);
+    if (policy == .null) return defaultCommandExecSandbox(allocator, default_mode);
     if (policy != .object) return error.InvalidCommandExecSandboxPolicy;
 
     const type_value = policy.object.get("type") orelse return error.InvalidCommandExecSandboxPolicyType;
@@ -5075,6 +5075,14 @@ fn parseCommandExecSandboxPolicy(
     const writable_roots = try parseCommandExecWorkspaceWriteRoots(allocator, policy.object);
     const network_enabled = try parseCommandExecSandboxPolicyNetworkAccess(policy.object);
     return .{ .mode = .workspace_write, .writable_roots = writable_roots, .network_enabled = network_enabled };
+}
+
+fn defaultCommandExecSandbox(allocator: std.mem.Allocator, mode: config.SandboxMode) !CommandExecSandbox {
+    const writable_roots = if (mode == .workspace_write)
+        try buildCommandExecWorkspaceWriteRoots(allocator, &.{}, commandExecCurrentAbsoluteEnv("TMPDIR"), "/tmp")
+    else
+        try allocator.alloc([]const u8, 0);
+    return .{ .mode = mode, .writable_roots = writable_roots };
 }
 
 fn parseCommandExecSandboxPolicyNetworkAccess(object: std.json.ObjectMap) !bool {
@@ -5101,6 +5109,15 @@ fn parseCommandExecWorkspaceWriteRoots(allocator: std.mem.Allocator, object: std
     const tmpdir_root = if (!exclude_tmpdir) commandExecCurrentAbsoluteEnv("TMPDIR") else null;
     const slash_tmp_root: ?[]const u8 = if (!exclude_slash_tmp) "/tmp" else null;
 
+    return buildCommandExecWorkspaceWriteRoots(allocator, explicit_roots, tmpdir_root, slash_tmp_root);
+}
+
+fn buildCommandExecWorkspaceWriteRoots(
+    allocator: std.mem.Allocator,
+    explicit_roots: []const []const u8,
+    tmpdir_root: ?[]const u8,
+    slash_tmp_root: ?[]const u8,
+) ![]const []const u8 {
     var root_count = explicit_roots.len;
     if (tmpdir_root != null) root_count += 1;
     if (slash_tmp_root != null) root_count += 1;
