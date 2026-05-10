@@ -58,6 +58,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   metadata, directory listing, remove, and copy
 - answer app-server model catalog and provider-capability JSON-RPC methods
 - compute legacy app-server `gitDiffToRemote` responses against a remote branch
+- answer legacy app-server `fuzzyFileSearch` requests with local file and
+  directory matches
 - report app-server account state with `account/read` for no-auth, API-key,
   ChatGPT, Bedrock, custom no-auth provider, and local-OSS cases
 - report legacy app-server auth status with `getAuthStatus`
@@ -144,7 +146,7 @@ hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
 directory listing, copy, and remove behavior against a temporary directory,
 checks app-server model catalog, provider-capability, git-diff-to-remote,
-account-read, get-auth-status, account-logout, account-login,
+fuzzy-file-search, account-read, get-auth-status, account-logout, account-login,
 account-login-cancel, account-rate-limits, account-add-credits-nudge,
 config-read, and config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
