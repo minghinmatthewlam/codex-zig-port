@@ -64,10 +64,11 @@ filesystem-path helper, absolute-path, network-access, and output-delta
 notification artifacts. Full Rust generator parity remains planned.
 
 Current app-server `command/exec` coverage includes buffered command execution,
-`streamStdoutStderr` output-delta notifications for commands that run to
-completion, plus Rust-shaped validation for streaming `processId` requirements
-and `command/exec/write|terminate|resize` follow-up params. Buffered execution
-also accepts supported Rust-shaped `permissionProfile` payloads using
+independent stdout/stderr output-cap truncation, `streamStdoutStderr`
+output-delta notifications for commands that run to completion, plus
+Rust-shaped validation for streaming `processId` requirements and
+`command/exec/write|terminate|resize` follow-up params. Buffered execution also
+accepts supported Rust-shaped `permissionProfile` payloads using
 `fileSystem`, `network.enabled`, and `globScanMaxDepth` for disabled,
 root-read-only, managed-unrestricted, project-roots workspace-write, absolute
 writable-root, and external profiles, with command-cwd sandbox rooting for
