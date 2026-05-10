@@ -582,20 +582,27 @@ const NETWORK_ACCESS_TS =
     \\
     ;
 
+const ABSOLUTE_PATH_BUF_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AbsolutePathBuf = string;
+    \\
+    ;
+
 const SANDBOX_POLICY_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
     \\import type { NetworkAccess } from "./NetworkAccess";
     \\
     \\export type SandboxPolicy =
     \\  | { type: "dangerFullAccess" }
-    \\  | { type: "readOnly"; networkAccess?: boolean }
-    \\  | { type: "externalSandbox"; networkAccess?: NetworkAccess }
+    \\  | { type: "readOnly"; networkAccess: boolean }
+    \\  | { type: "externalSandbox"; networkAccess: NetworkAccess }
     \\  | {
     \\      type: "workspaceWrite";
-    \\      writableRoots?: string[];
-    \\      networkAccess?: boolean;
-    \\      excludeTmpdirEnvVar?: boolean;
-    \\      excludeSlashTmp?: boolean;
+    \\      writableRoots: AbsolutePathBuf[];
+    \\      networkAccess: boolean;
+    \\      excludeTmpdirEnvVar: boolean;
+    \\      excludeSlashTmp: boolean;
     \\    };
     \\
     ;
@@ -611,19 +618,20 @@ const FILE_SYSTEM_SPECIAL_PATH_TS =
     \\export type FileSystemSpecialPath =
     \\  | { kind: "root" }
     \\  | { kind: "minimal" }
-    \\  | { kind: "project_roots"; subpath?: string }
+    \\  | { kind: "project_roots"; subpath: string | null }
     \\  | { kind: "tmpdir" }
     \\  | { kind: "slash_tmp" }
-    \\  | { kind: "unknown"; path: string; subpath?: string };
+    \\  | { kind: "unknown"; path: string; subpath: string | null };
     \\
     ;
 
 const FILE_SYSTEM_PATH_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
     \\import type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
     \\
     \\export type FileSystemPath =
-    \\  | { type: "path"; path: string }
+    \\  | { type: "path"; path: AbsolutePathBuf }
     \\  | { type: "glob_pattern"; pattern: string }
     \\  | { type: "special"; value: FileSystemSpecialPath };
     \\
@@ -868,6 +876,7 @@ const INDEX_TS =
     \\export type { JSONRPCNotification } from "./JSONRPCNotification";
     \\export type { JSONRPCRequest } from "./JSONRPCRequest";
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
+    \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
     \\export type { RequestId } from "./RequestId";
     \\export type { ServerNotification } from "./ServerNotification";
     \\export * as v2 from "./v2";
@@ -1545,6 +1554,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ClientResponse.ts", .contents = CLIENT_RESPONSE_TS },
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
+    .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },

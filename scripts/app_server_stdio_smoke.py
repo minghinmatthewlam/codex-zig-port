@@ -7552,6 +7552,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface InitializeParams" in initialize
         assert "clientInfo: ClientInfo;" in initialize
 
+        absolute_path = (out_dir / "AbsolutePathBuf.ts").read_text(encoding="utf-8")
+        assert "export type AbsolutePathBuf = string;" in absolute_path
+
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
@@ -7587,10 +7590,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "export interface FileSystemSandboxEntry" in filesystem_entry
+        filesystem_path = (out_dir / "v2" / "FileSystemPath.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";' in filesystem_path
+        assert "path: AbsolutePathBuf" in filesystem_path
+        filesystem_special_path = (
+            out_dir / "v2" / "FileSystemSpecialPath.ts"
+        ).read_text(encoding="utf-8")
+        assert 'kind: "project_roots"; subpath: string | null' in filesystem_special_path
         sandbox_policy = (out_dir / "v2" / "SandboxPolicy.ts").read_text(encoding="utf-8")
         assert 'type: "workspaceWrite"' in sandbox_policy
-        assert "networkAccess?: boolean;" in sandbox_policy
-        assert "networkAccess?: NetworkAccess" in sandbox_policy
+        assert 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";' in sandbox_policy
+        assert "writableRoots: AbsolutePathBuf[]" in sandbox_policy
+        assert "networkAccess: boolean;" in sandbox_policy
+        assert "networkAccess: NetworkAccess" in sandbox_policy
         command_exec_delta = (
             out_dir / "v2" / "CommandExecOutputDeltaNotification.ts"
         ).read_text(encoding="utf-8")
@@ -7601,6 +7615,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
+        assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export * as v2 from "./v2";' in index
