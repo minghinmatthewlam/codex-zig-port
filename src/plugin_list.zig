@@ -933,20 +933,32 @@ fn readPluginManifestBytes(allocator: std.mem.Allocator, plugin_root: []const u8
 }
 
 fn installedPluginExists(allocator: std.mem.Allocator, codex_home: []const u8, marketplace_name: []const u8, plugin_name: []const u8) !bool {
-    const manifest_path = try std.fs.path.join(allocator, &.{
+    const plugin_root = try std.fs.path.join(allocator, &.{
         codex_home,
         "plugins",
         "cache",
         marketplace_name,
         plugin_name,
-        "local",
-        ".codex-plugin",
-        "plugin.json",
     });
-    defer allocator.free(manifest_path);
-    const bytes = try readFileOptional(allocator, manifest_path, 1024 * 64) orelse return false;
-    allocator.free(bytes);
-    return true;
+    defer allocator.free(plugin_root);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, plugin_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return false,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        const version_root = try std.fs.path.join(allocator, &.{ plugin_root, entry.name });
+        defer allocator.free(version_root);
+        if (try readPluginManifestBytes(allocator, version_root)) |bytes| {
+            allocator.free(bytes);
+            return true;
+        }
+    }
+    return false;
 }
 
 fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize) !?[]const u8 {
@@ -1452,6 +1464,13 @@ test "plugin install copies local source and enables config" {
     defer allocator.free(copied_skill);
     _ = try std.Io.Dir.cwd().statFile(io, copied_manifest, .{});
     _ = try std.Io.Dir.cwd().statFile(io, copied_skill, .{});
+
+    const repo_root = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo_root);
+    const listed = try renderResponse(allocator, codex_home, installed.updated_config, &.{repo_root}, true);
+    defer allocator.free(listed);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"id\":\"sample-plugin@debug\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"installed\":true") != null);
 }
 
 test "plugin install cache replacement keeps existing cache when staging fails" {
