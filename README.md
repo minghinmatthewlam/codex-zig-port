@@ -94,6 +94,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - parse Rust-compatible `plugin marketplace add|upgrade|remove` command shapes
   with explicit not-implemented errors
+- list local app-server skills from repo, user, and per-cwd extra roots with
+  `skills/list`
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
   `exec-server`, and `update` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
@@ -147,8 +149,9 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
-and plugin RPC stubs, verifies app-server filesystem read, write, metadata,
-directory listing, copy, and remove behavior against a temporary directory,
+and plugin RPC stubs, verifies app-server skills-list discovery, verifies
+app-server filesystem read, write, metadata, directory listing, copy, and remove
+behavior against a temporary directory,
 checks app-server model catalog, provider-capability, git-diff-to-remote,
 fuzzy-file-search, account-read, get-auth-status, account-logout, account-login,
 account-login-cancel, account-rate-limits, account-add-credits-nudge,
