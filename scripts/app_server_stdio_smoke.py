@@ -729,7 +729,15 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert len(hooks["result"]["data"]) == 1
         entry = hooks["result"]["data"][0]
         assert entry["cwd"] == str(cwd)
-        assert entry["warnings"] == []
+        assert len(entry["warnings"]) == 2
+        assert "loading hooks from both" in entry["warnings"][0]
+        assert str(user_hooks_json.resolve()) in entry["warnings"][0]
+        assert str(config_path.resolve()) in entry["warnings"][0]
+        assert "prefer a single representation" in entry["warnings"][0]
+        assert "loading hooks from both" in entry["warnings"][1]
+        assert str(project_hooks_json.resolve()) in entry["warnings"][1]
+        assert str(project_config.resolve()) in entry["warnings"][1]
+        assert "prefer a single representation" in entry["warnings"][1]
         assert entry["errors"] == []
         assert len(entry["hooks"]) == 4
 
@@ -901,9 +909,10 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         )
         assert json_warning["id"] == "hooks-list-json-warning"
         warnings = json_warning["result"]["data"][0]["warnings"]
-        assert len(warnings) == 1
-        assert "failed to parse hooks config" in warnings[0]
-        assert str(project_hooks_json) in warnings[0]
+        assert len(warnings) == 2
+        assert "loading hooks from both" in warnings[0]
+        assert "failed to parse hooks config" in warnings[1]
+        assert str(project_hooks_json) in warnings[1]
 
         invalid = request_stdio_app_server(
             binary,
