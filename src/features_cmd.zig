@@ -11,6 +11,11 @@ pub const FeatureSpec = struct {
     default_enabled: bool,
 };
 
+const FeatureAlias = struct {
+    alias: []const u8,
+    canonical: []const u8,
+};
+
 pub const FeatureOverride = struct {
     key: []const u8,
     enabled: bool,
@@ -140,8 +145,8 @@ pub fn putRuntimeToggle(
     feature: []const u8,
     enabled: bool,
 ) !void {
-    if (!isKnownFeature(feature)) return error.UnknownFeature;
-    try overrides.put(allocator, feature, enabled);
+    const canonical = resolveFeatureKey(feature) orelse return error.UnknownFeature;
+    try overrides.put(allocator, canonical, enabled);
 }
 
 fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
@@ -175,7 +180,11 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
     const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", options.profile, feature, enabled);
+    const update: FeatureConfigUpdate = if (!enabled and options.profile == null and isDirectDefaultFalseFeature(feature))
+        .clear
+    else
+        .{ .set = enabled };
+    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", options.profile, feature, update);
     defer allocator.free(updated);
 
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -191,6 +200,17 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
     const message = try std.fmt.allocPrint(allocator, "{s} feature `{s}` in config.toml.\n", .{ verb, feature });
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
+    if (enabled and options.profile == null and isDirectUnderDevelopmentFeature(feature)) {
+        const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+        defer allocator.free(config_path);
+        const warning = try std.fmt.allocPrint(
+            allocator,
+            "Under-development features enabled: {s}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {s}.\n",
+            .{ feature, config_path },
+        );
+        defer allocator.free(warning);
+        try cli_utils.writeStderr(warning);
+    }
 }
 
 pub fn loadFeatureOverrides(allocator: std.mem.Allocator, codex_home: []const u8) !FeatureOverrides {
@@ -255,11 +275,11 @@ fn parseFeatureOverridesForProfile(
             false
         else
             continue;
-        if (!isKnownFeature(key)) continue;
+        const canonical_key = resolveFeatureKey(key) orelse continue;
         switch (section) {
             .none => {},
-            .top_level => try base_overrides.put(allocator, key, enabled),
-            .profile => try profile_overrides.put(allocator, key, enabled),
+            .top_level => try base_overrides.put(allocator, canonical_key, enabled),
+            .profile => try profile_overrides.put(allocator, canonical_key, enabled),
         }
     }
 
@@ -277,6 +297,11 @@ const FeatureConfigSection = enum {
     profile,
 };
 
+const FeatureConfigUpdate = union(enum) {
+    set: bool,
+    clear,
+};
+
 fn featureConfigSectionForLine(line: []const u8, profile: ?[]const u8) FeatureConfigSection {
     if (std.mem.eql(u8, line, "[features]")) return .top_level;
     if (profile) |name| {
@@ -290,12 +315,11 @@ fn updateFeatureConfig(
     bytes: []const u8,
     profile: ?[]const u8,
     feature: []const u8,
-    enabled: bool,
+    update: FeatureConfigUpdate,
 ) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    const replacement = if (enabled) "true" else "false";
     const target_section = if (profile != null) FeatureConfigSection.profile else FeatureConfigSection.top_level;
     var in_target_section = false;
     var saw_target_section = false;
@@ -311,15 +335,23 @@ fn updateFeatureConfig(
         const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
         if (trimmed.len > 0 and trimmed[0] == '[') {
             if (in_target_section and !wrote_feature) {
-                try appendFeatureLine(allocator, &output, feature, replacement);
-                wrote_feature = true;
+                switch (update) {
+                    .set => |enabled| {
+                        try appendFeatureLine(allocator, &output, feature, enabled);
+                        wrote_feature = true;
+                    },
+                    .clear => {},
+                }
             }
             in_target_section = featureConfigSectionForLine(trimmed, profile) == target_section;
             saw_target_section = saw_target_section or in_target_section;
         }
 
         if (in_target_section and featureLineMatches(trimmed, feature)) {
-            try appendFeatureLine(allocator, &output, feature, replacement);
+            switch (update) {
+                .set => |enabled| try appendFeatureLine(allocator, &output, feature, enabled),
+                .clear => {},
+            }
             wrote_feature = true;
             continue;
         }
@@ -328,15 +360,20 @@ fn updateFeatureConfig(
         try output.append(allocator, '\n');
     }
 
-    if (!saw_target_section) {
-        if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') {
-            try output.append(allocator, '\n');
-        }
-        if (output.items.len > 0) try output.append(allocator, '\n');
-        try appendFeatureSectionHeader(allocator, &output, profile);
-    }
-    if (!wrote_feature) {
-        try appendFeatureLine(allocator, &output, feature, replacement);
+    switch (update) {
+        .set => |enabled| {
+            if (!saw_target_section) {
+                if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') {
+                    try output.append(allocator, '\n');
+                }
+                if (output.items.len > 0) try output.append(allocator, '\n');
+                try appendFeatureSectionHeader(allocator, &output, profile);
+            }
+            if (!wrote_feature) {
+                try appendFeatureLine(allocator, &output, feature, enabled);
+            }
+        },
+        .clear => {},
     }
 
     return output.toOwnedSlice(allocator);
@@ -392,19 +429,43 @@ fn appendFeatureLine(
     allocator: std.mem.Allocator,
     output: *std.ArrayList(u8),
     feature: []const u8,
-    value: []const u8,
+    enabled: bool,
 ) !void {
     try output.appendSlice(allocator, feature);
     try output.appendSlice(allocator, " = ");
-    try output.appendSlice(allocator, value);
+    try output.appendSlice(allocator, if (enabled) "true" else "false");
     try output.append(allocator, '\n');
 }
 
 pub fn isKnownFeature(key: []const u8) bool {
+    return resolveFeatureKey(key) != null;
+}
+
+fn resolveFeatureKey(key: []const u8) ?[]const u8 {
     for (features) |feature| {
-        if (std.mem.eql(u8, feature.key, key)) return true;
+        if (std.mem.eql(u8, feature.key, key)) return feature.key;
     }
-    return false;
+    for (feature_aliases) |alias| {
+        if (std.mem.eql(u8, alias.alias, key)) return alias.canonical;
+    }
+    return null;
+}
+
+fn directFeatureSpec(key: []const u8) ?FeatureSpec {
+    for (features) |feature| {
+        if (std.mem.eql(u8, feature.key, key)) return feature;
+    }
+    return null;
+}
+
+fn isDirectDefaultFalseFeature(key: []const u8) bool {
+    const feature = directFeatureSpec(key) orelse return false;
+    return !feature.default_enabled;
+}
+
+fn isDirectUnderDevelopmentFeature(key: []const u8) bool {
+    const feature = directFeatureSpec(key) orelse return false;
+    return std.mem.eql(u8, feature.stage, "under development");
 }
 
 fn renderFeaturesList(
@@ -555,6 +616,20 @@ const features = [_]FeatureSpec{
     .{ .key = "workspace_owner_usage_nudge", .stage = "under development", .default_enabled = false },
 };
 
+const feature_aliases = [_]FeatureAlias{
+    .{ .alias = "codex_hooks", .canonical = "hooks" },
+    .{ .alias = "collab", .canonical = "multi_agent" },
+    .{ .alias = "connectors", .canonical = "apps" },
+    .{ .alias = "enable_experimental_windows_sandbox", .canonical = "experimental_windows_sandbox" },
+    .{ .alias = "experimental_use_freeform_apply_patch", .canonical = "apply_patch_freeform" },
+    .{ .alias = "experimental_use_unified_exec_tool", .canonical = "unified_exec" },
+    .{ .alias = "include_apply_patch_tool", .canonical = "apply_patch_freeform" },
+    .{ .alias = "memory_tool", .canonical = "memories" },
+    .{ .alias = "request_permissions", .canonical = "exec_permission_approvals" },
+    .{ .alias = "telepathy", .canonical = "chronicle" },
+    .{ .alias = "web_search", .canonical = "web_search_request" },
+};
+
 test "feature overrides parse booleans from features table" {
     const allocator = std.testing.allocator;
     var overrides = try parseFeatureOverrides(allocator,
@@ -570,6 +645,21 @@ test "feature overrides parse booleans from features table" {
     try std.testing.expectEqual(true, overrides.get("goals").?);
     try std.testing.expectEqual(false, overrides.get("shell_tool").?);
     try std.testing.expect(overrides.get("unknown") == null);
+}
+
+test "feature overrides parse legacy aliases as canonical features" {
+    const allocator = std.testing.allocator;
+    var overrides = try parseFeatureOverrides(allocator,
+        \\[features]
+        \\collab = false
+        \\memory_tool = true
+        \\
+    );
+    defer overrides.deinit(allocator);
+
+    try std.testing.expectEqual(false, overrides.get("multi_agent").?);
+    try std.testing.expectEqual(true, overrides.get("memories").?);
+    try std.testing.expect(overrides.get("collab") == null);
 }
 
 test "feature overrides apply profile scoped values over base values" {
@@ -647,7 +737,7 @@ test "runtime feature toggles reject unknown keys" {
 
 test "feature config update creates features table" {
     const allocator = std.testing.allocator;
-    const updated = try updateFeatureConfig(allocator, "model = \"demo\"\n", null, "goals", true);
+    const updated = try updateFeatureConfig(allocator, "model = \"demo\"\n", null, "goals", .{ .set = true });
     defer allocator.free(updated);
 
     try std.testing.expectEqualStrings(
@@ -666,7 +756,7 @@ test "feature config update replaces existing feature" {
         \\[profiles.work]
         \\model = "work"
         \\
-    , null, "goals", true);
+    , null, "goals", .{ .set = true });
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "goals = true\n") != null);
@@ -680,7 +770,7 @@ test "feature config update appends to existing features table" {
         \\[features]
         \\shell_tool = true
         \\
-    , null, "goals", false);
+    , null, "goals", .{ .set = false });
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "shell_tool = true\n") != null);
@@ -692,7 +782,7 @@ test "feature config update creates profile feature table" {
     const updated = try updateFeatureConfig(allocator,
         \\model = "demo"
         \\
-    , "team a", "goals", true);
+    , "team a", "goals", .{ .set = true });
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.\"team a\".features]\ngoals = true\n") != null);
@@ -709,10 +799,38 @@ test "feature config update replaces profile feature value" {
         \\[profiles.other.features]
         \\goals = false
         \\
-    , "work", "goals", true);
+    , "work", "goals", .{ .set = true });
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\ngoals = false\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work.features]\ngoals = true\nshell_tool = true\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.other.features]\ngoals = false\n") != null);
+}
+
+test "feature config update clears root default false feature" {
+    const allocator = std.testing.allocator;
+    const updated = try updateFeatureConfig(allocator,
+        \\[features]
+        \\goals = true
+        \\shell_tool = false
+        \\[profiles.work.features]
+        \\goals = true
+        \\
+    , null, "goals", .clear);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\nshell_tool = false\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\ngoals =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work.features]\ngoals = true\n") != null);
+}
+
+test "runtime feature toggles accept legacy aliases" {
+    const allocator = std.testing.allocator;
+    var overrides = FeatureOverrides{};
+    defer overrides.deinit(allocator);
+
+    try putRuntimeToggle(allocator, &overrides, "collab", false);
+
+    try std.testing.expectEqual(false, overrides.get("multi_agent").?);
+    try std.testing.expect(overrides.get("collab") == null);
 }
