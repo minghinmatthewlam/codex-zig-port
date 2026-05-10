@@ -969,6 +969,75 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-login-cancel-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel-missing",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": "00000000-0000-0000-0000-000000000000"},
+                },
+            )
+            cancel = read_json_line(proc, 5)
+            assert cancel["id"] == "cancel-missing"
+            assert cancel["result"] == {"status": "notFound"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel-invalid-id",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": "not-a-uuid"},
+                },
+            )
+            invalid_id = read_json_line(proc, 5)
+            assert invalid_id["id"] == "cancel-invalid-id"
+            assert invalid_id["error"]["code"] == -32602
+            assert "invalid login id" in invalid_id["error"]["message"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel-invalid-params",
+                    "method": "account/login/cancel",
+                    "params": None,
+                },
+            )
+            invalid_params = read_json_line(proc, 5)
+            assert invalid_params["id"] == "cancel-invalid-params"
+            assert invalid_params["error"]["code"] == -32602
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_account_rate_limits_rpc_smoke(binary: Path) -> None:
     def request(codex_home: Path, request_id: str, params_marker: object) -> dict:
         env = os.environ.copy()
@@ -1449,6 +1518,8 @@ def main() -> None:
     print("app-server-account-logout-rpc-e2e: ok")
     run_account_login_rpc_smoke(binary)
     print("app-server-account-login-rpc-e2e: ok")
+    run_account_login_cancel_rpc_smoke(binary)
+    print("app-server-account-login-cancel-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
     print("app-server-account-rate-limits-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
