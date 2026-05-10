@@ -3558,31 +3558,8 @@ fn handleConfigRead(
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    var user_layer: ?ConfigReadUserLayer = null;
-    defer if (user_layer) |*layer| layer.deinit(allocator);
-    if (config_bytes) |bytes| {
-        const origin_keys = try collectConfigReadUserOriginKeys(allocator, bytes, cfg.active_profile);
-        errdefer {
-            for (origin_keys) |key| allocator.free(key);
-            allocator.free(origin_keys);
-        }
-        var tools = try loadConfigReadUserTools(allocator, bytes);
-        errdefer tools.deinit(allocator);
-        var apps = try loadConfigReadUserApps(allocator, bytes);
-        errdefer apps.deinit(allocator);
-        var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, bytes);
-        errdefer sandbox_workspace_write.deinit(allocator);
-        const version = try configVersionAlloc(allocator, bytes);
-        errdefer allocator.free(version);
-        user_layer = .{
-            .file_path = config_path,
-            .version = version,
-            .origin_keys = origin_keys,
-            .tools = tools,
-            .apps = apps,
-            .sandbox_workspace_write = sandbox_workspace_write,
-        };
-    }
+    var user_layer = try loadConfigReadUserLayer(allocator, config_path, config_bytes orelse "", cfg.active_profile);
+    defer user_layer.deinit(allocator);
 
     var managed_layer = loadConfigReadManagedLayer(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read managed config", err);
@@ -3592,7 +3569,7 @@ fn handleConfigRead(
     var system_layer = loadConfigReadSystemLayer(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read system config", err);
     };
-    defer if (system_layer) |*layer| layer.deinit(allocator);
+    defer system_layer.deinit(allocator);
 
     var project_layers = loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, config_bytes) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read project config", err);
@@ -4024,6 +4001,35 @@ const ConfigReadUserLayer = struct {
         self.sandbox_workspace_write.deinit(allocator);
     }
 };
+
+fn loadConfigReadUserLayer(
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+    bytes: []const u8,
+    active_profile: ?[]const u8,
+) !ConfigReadUserLayer {
+    const origin_keys = try collectConfigReadUserOriginKeys(allocator, bytes, active_profile);
+    errdefer {
+        for (origin_keys) |key| allocator.free(key);
+        allocator.free(origin_keys);
+    }
+    var tools = try loadConfigReadUserTools(allocator, bytes);
+    errdefer tools.deinit(allocator);
+    var apps = try loadConfigReadUserApps(allocator, bytes);
+    errdefer apps.deinit(allocator);
+    var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, bytes);
+    errdefer sandbox_workspace_write.deinit(allocator);
+    const version = try configVersionAlloc(allocator, bytes);
+    errdefer allocator.free(version);
+    return .{
+        .file_path = config_path,
+        .version = version,
+        .origin_keys = origin_keys,
+        .tools = tools,
+        .apps = apps,
+        .sandbox_workspace_write = sandbox_workspace_write,
+    };
+}
 
 const ConfigReadTools = struct {
     present: bool = false,
@@ -4600,15 +4606,12 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     };
 }
 
-fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !?ConfigReadSystemLayer {
+fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLayer {
     const file_path = try systemConfigPath(allocator);
     errdefer allocator.free(file_path);
     const bytes = try config.readConfigTomlFile(allocator, file_path);
-    const payload = bytes orelse {
-        allocator.free(file_path);
-        return null;
-    };
-    defer allocator.free(payload);
+    const payload = bytes orelse "";
+    defer if (bytes) |owned| allocator.free(owned);
 
     var origin_keys = std.ArrayList([]const u8).empty;
     errdefer {
