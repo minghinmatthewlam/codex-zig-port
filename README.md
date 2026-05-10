@@ -99,8 +99,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   an `initialize` handshake
 - handle app-server filesystem JSON-RPC methods for read, write, mkdir,
   metadata, directory listing, remove, and copy
-- watch app-server filesystem mutations with `fs/watch`, `fs/unwatch`, and
-  `fs/changed` notifications on the same JSON-RPC connection
+- watch app-server filesystem mutations and request-boundary external file
+  changes with `fs/watch`, `fs/unwatch`, and `fs/changed` notifications on the
+  same JSON-RPC connection
 - answer app-server model catalog and provider-capability JSON-RPC methods
 - compute legacy app-server `gitDiffToRemote` responses against a remote branch
 - answer legacy app-server `fuzzyFileSearch` requests with local file and
@@ -277,7 +278,8 @@ app-server MCP server status pagination, enabled local plugin-cache MCP entries,
 and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
-notifications for in-process file mutations and unwatch cleanup,
+notifications for in-process file mutations, direct external file mutations,
+and unwatch cleanup,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
