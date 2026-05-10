@@ -3811,6 +3811,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'web_search = "live"',
                 'service_tier = "flex"',
                 "",
+                "[tools.web_search]",
+                'context_size = "high"',
+                'allowed_domains = ["example.com"]',
+                'location = { country = "US", city = "New York", timezone = "America/New_York" }',
+                "",
+                "[tools]",
+                "view_image = false",
+                "",
                 "[features]",
                 "apps = false",
                 "",
@@ -3858,6 +3866,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["sandbox_mode"] == "danger-full-access"
         assert config_body["web_search"] == "live"
         assert config_body["service_tier"] == "flex"
+        assert config_body["tools"] == {
+            "web_search": {
+                "context_size": "high",
+                "allowed_domains": ["example.com"],
+                "location": {
+                    "country": "US",
+                    "region": None,
+                    "city": "New York",
+                    "timezone": "America/New_York",
+                },
+            },
+            "view_image": False,
+        }
         assert config_body["features"]["apps"] is False
         assert config_body["features"]["goals"] is True
         assert config_body["features"]["memories"] is False
@@ -3870,6 +3891,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_mode",
             "web_search",
             "service_tier",
+            "tools.web_search.context_size",
+            "tools.web_search.allowed_domains.0",
+            "tools.web_search.location.country",
+            "tools.web_search.location.city",
+            "tools.web_search.location.timezone",
+            "tools.view_image",
         ]:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
@@ -3884,6 +3911,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_mode": "danger-full-access",
             "web_search": "live",
             "service_tier": "flex",
+            "tools": {
+                "web_search": {
+                    "context_size": "high",
+                    "allowed_domains": ["example.com"],
+                    "location": {
+                        "country": "US",
+                        "region": None,
+                        "city": "New York",
+                        "timezone": "America/New_York",
+                    },
+                },
+                "view_image": False,
+            },
         }
 
         project_config_read = rpc(
@@ -4041,6 +4081,23 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_requirements_params["id"] == "config-requirements-invalid"
         assert invalid_requirements_params["error"]["code"] == -32602
+
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[tools]",
+                    "web_search = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        bool_tool_config = rpc("config-read-bool-web-search-tool", "config/read", {})
+        assert bool_tool_config["id"] == "config-read-bool-web-search-tool"
+        assert bool_tool_config["result"]["config"]["tools"] == {
+            "web_search": None,
+            "view_image": None,
+        }
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
