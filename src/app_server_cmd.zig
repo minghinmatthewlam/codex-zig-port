@@ -4642,6 +4642,8 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
             error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
             error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, or workspaceWrite"),
             error.InvalidCommandExecSandboxPolicyNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be a boolean"),
+            error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeTmpdirEnvVar must be a boolean"),
+            error.InvalidCommandExecSandboxPolicyExcludeSlashTmp => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeSlashTmp must be a boolean"),
             error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
             error.CommandExecExternalSandboxNotImplemented => return renderJsonRpcError(allocator, id_value, -32603, "command/exec external sandboxPolicy is parsed but not implemented yet"),
             else => return err,
@@ -5070,7 +5072,7 @@ fn parseCommandExecSandboxPolicy(
     }
     if (!std.mem.eql(u8, type_value.string, "workspaceWrite")) return error.InvalidCommandExecSandboxPolicyType;
 
-    const writable_roots = try parseCommandExecWritableRoots(allocator, policy.object);
+    const writable_roots = try parseCommandExecWorkspaceWriteRoots(allocator, policy.object);
     const network_enabled = try parseCommandExecSandboxPolicyNetworkAccess(policy.object);
     return .{ .mode = .workspace_write, .writable_roots = writable_roots, .network_enabled = network_enabled };
 }
@@ -5080,6 +5082,59 @@ fn parseCommandExecSandboxPolicyNetworkAccess(object: std.json.ObjectMap) !bool 
     if (value == .null) return false;
     if (value != .bool) return error.InvalidCommandExecSandboxPolicyNetworkAccess;
     return value.bool;
+}
+
+fn parseCommandExecWorkspaceWriteRoots(allocator: std.mem.Allocator, object: std.json.ObjectMap) ![]const []const u8 {
+    const explicit_roots = try parseCommandExecWritableRoots(allocator, object);
+    defer allocator.free(explicit_roots);
+
+    const exclude_tmpdir = try parseCommandExecSandboxPolicyBool(
+        object,
+        "excludeTmpdirEnvVar",
+        error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar,
+    );
+    const exclude_slash_tmp = try parseCommandExecSandboxPolicyBool(
+        object,
+        "excludeSlashTmp",
+        error.InvalidCommandExecSandboxPolicyExcludeSlashTmp,
+    );
+    const tmpdir_root = if (!exclude_tmpdir) commandExecCurrentAbsoluteEnv("TMPDIR") else null;
+    const slash_tmp_root: ?[]const u8 = if (!exclude_slash_tmp) "/tmp" else null;
+
+    var root_count = explicit_roots.len;
+    if (tmpdir_root != null) root_count += 1;
+    if (slash_tmp_root != null) root_count += 1;
+
+    const roots = try allocator.alloc([]const u8, root_count);
+    @memcpy(roots[0..explicit_roots.len], explicit_roots);
+    var index = explicit_roots.len;
+    if (tmpdir_root) |root| {
+        roots[index] = root;
+        index += 1;
+    }
+    if (slash_tmp_root) |root| {
+        roots[index] = root;
+    }
+    return roots;
+}
+
+fn parseCommandExecSandboxPolicyBool(
+    object: std.json.ObjectMap,
+    field: []const u8,
+    comptime invalid_error: anyerror,
+) !bool {
+    const value = object.get(field) orelse return false;
+    if (value == .null) return false;
+    if (value != .bool) return invalid_error;
+    return value.bool;
+}
+
+fn commandExecCurrentAbsoluteEnv(comptime name: []const u8) ?[]const u8 {
+    const c_name: [*:0]const u8 = name ++ "\x00";
+    const raw = std.c.getenv(c_name) orelse return null;
+    const value = std.mem.span(raw);
+    if (value.len == 0 or !std.fs.path.isAbsolute(value)) return null;
+    return value;
 }
 
 fn parseCommandExecWritableRoots(allocator: std.mem.Allocator, object: std.json.ObjectMap) ![]const []const u8 {
