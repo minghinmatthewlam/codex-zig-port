@@ -2,11 +2,9 @@
 zig-out/
 __pycache__/
 .DS_Store
-codex_zig_mock_demo.txt
-codex_zig_apply_patch_demo.txt
-codex_zig_cua_patch_demo.txt
-codex_zig_exec_last_message.txt
-codex_zig_exec_tool_demo.txt
-codex_zig_policy_blocked.txt
-codex_zig_sandbox_allowed.txt
+*.log
+.env
+.env.*
+auth.json
+codex_zig_*.txt
 plans/
