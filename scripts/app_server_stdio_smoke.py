@@ -159,6 +159,54 @@ def run_unix_default_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_proxy_smoke(binary: Path) -> None:
+    socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-proxy-", dir="/tmp"))
+    try:
+        socket_path = socket_dir / "app-server.sock"
+        server = subprocess.Popen(
+            [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        proxy = None
+        try:
+            wait_for_socket(socket_path, server, 5)
+            proxy = subprocess.Popen(
+                [str(binary), "app-server", "proxy", "--sock", str(socket_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            exercise_json_rpc(
+                lambda payload: write_json_line(proxy, payload),
+                lambda: read_json_line(proxy, 5),
+            )
+            assert proxy.stdin is not None
+            proxy.stdin.close()
+            proxy.wait(timeout=5)
+            if proxy.returncode != 0:
+                raise AssertionError(
+                    f"app-server proxy exited {proxy.returncode}: {proxy.stderr.read()}"
+                )
+            server.wait(timeout=5)
+            if server.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {server.returncode}: {server.stderr.read()}"
+                )
+        finally:
+            if proxy is not None and proxy.poll() is None:
+                proxy.kill()
+                proxy.wait(timeout=5)
+            if server.poll() is None:
+                server.kill()
+                server.wait(timeout=5)
+    finally:
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
 def run_unix_refuses_regular_file_smoke(binary: Path) -> None:
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-file-", dir="/tmp"))
     try:
@@ -188,6 +236,8 @@ def main() -> None:
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
     print("app-server-unix-default-e2e: ok")
+    run_proxy_smoke(binary)
+    print("app-server-proxy-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
 

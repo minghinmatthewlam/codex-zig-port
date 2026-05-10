@@ -52,6 +52,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake
+- proxy stdio JSON-RPC to the app-server Unix control socket with
+  `app-server proxy`
 - apply the latest PR diff from a Codex agent task with `apply` / `a`
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
@@ -99,7 +101,8 @@ enter/leave escape sequences, checks `tui.alternate_screen = "never"` stays
 inline, then launches `codex-zig app-server` as a subprocess and verifies
 newline-delimited JSON-RPC initialize requests and unsupported-method errors
 over stdio, an explicit Unix socket, and the default
-`CODEX_HOME/app-server-control/app-server-control.sock` socket. Run
+`CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
+script also proxies JSON-RPC over `app-server proxy --sock`. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 

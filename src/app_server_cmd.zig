@@ -24,8 +24,14 @@ const Transport = union(enum) {
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
     var listen_url: []const u8 = DEFAULT_LISTEN_URL;
     var subcommand: ?[]const u8 = null;
+    var subcommand_args = std.ArrayList([]const u8).empty;
+    defer subcommand_args.deinit(allocator);
 
     while (args.next()) |arg| {
+        if (subcommand != null) {
+            try subcommand_args.append(allocator, arg);
+            continue;
+        }
         if (isHelpFlag(arg)) {
             printHelp();
             return;
@@ -46,7 +52,10 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     }
 
     if (subcommand) |name| {
-        if (std.mem.eql(u8, name, "proxy")) return error.AppServerProxyNotImplemented;
+        if (std.mem.eql(u8, name, "proxy")) {
+            try runProxy(allocator, subcommand_args.items);
+            return;
+        }
         if (std.mem.eql(u8, name, "generate-ts")) return error.AppServerGenerateTsNotImplemented;
         if (std.mem.eql(u8, name, "generate-json-schema")) return error.AppServerGenerateJsonSchemaNotImplemented;
         return error.UnknownAppServerSubcommand;
@@ -92,6 +101,62 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             return error.AppServerListenTransportNotImplemented;
         },
     }
+}
+
+fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var socket_path_arg: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) {
+            printProxyHelp();
+            return;
+        }
+        if (std.mem.eql(u8, arg, "--sock")) {
+            if (index + 1 >= args.len) return error.MissingAppServerProxySocketPath;
+            index += 1;
+            socket_path_arg = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sock=")) {
+            socket_path_arg = arg["--sock=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownAppServerProxyOption;
+        return error.UnexpectedAppServerProxyArgument;
+    }
+
+    const owned_default_path = if (socket_path_arg == null) try defaultUnixSocketPath(allocator) else null;
+    defer if (owned_default_path) |path| allocator.free(path);
+    const socket_path = socket_path_arg orelse owned_default_path.?;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var address = try net.UnixAddress.init(socket_path);
+    var stream = try address.connect(io);
+    defer stream.close(io);
+
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var socket_in_buffer: [64 * 1024]u8 = undefined;
+    var socket_out_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
+    var socket_reader = stream.reader(io, &socket_in_buffer);
+    var socket_writer = stream.writer(io, &socket_out_buffer);
+
+    while (true) {
+        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+        const line = line_opt orelse break;
+        try writeStreamLine(&socket_writer.interface, line);
+        if (!try jsonRpcLineExpectsResponse(allocator, line)) continue;
+        const response = try socket_reader.interface.takeDelimiter('\n') orelse break;
+        try writeStdoutLine(response);
+    }
+}
+
+fn jsonRpcLineExpectsResponse(allocator: std.mem.Allocator, line: []const u8) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return true;
+    defer parsed.deinit();
+    if (parsed.value != .object) return true;
+    return parsed.value.object.get("id") != null;
 }
 
 fn parseTransport(value: []const u8) !Transport {
@@ -342,9 +407,14 @@ fn isHelpFlag(arg: []const u8) bool {
 
 pub fn printHelp() void {
     std.debug.print(
-        \\Usage: codex-zig app-server [--listen URL]
+        \\Usage:
+        \\  codex-zig app-server [--listen URL]
+        \\  codex-zig app-server proxy [--sock SOCKET_PATH]
         \\
         \\Runs the app-server JSON-RPC transport.
+        \\
+        \\Subcommands:
+        \\  proxy                  Proxy stdio to the app-server Unix socket
         \\
         \\Options:
         \\  --listen URL           Transport URL. Defaults to stdio://.
@@ -357,6 +427,18 @@ pub fn printHelp() void {
         \\  ws://IP:PORT           Parse a websocket transport address
         \\
         \\The Zig port currently implements stdio://, unix://, unix://PATH, and off.
+        \\
+    , .{});
+}
+
+fn printProxyHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig app-server proxy [--sock SOCKET_PATH]
+        \\
+        \\Relays newline-delimited JSON-RPC between stdio and the app-server
+        \\Unix control socket. If --sock is omitted, the default
+        \\CODEX_HOME/app-server-control/app-server-control.sock path is used.
         \\
     , .{});
 }
