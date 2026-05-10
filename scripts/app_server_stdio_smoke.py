@@ -3776,6 +3776,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         'model_reasoning_effort = "high"\n',
         encoding="utf-8",
     )
+    child_workspace = workspace / "child"
+    child_dot_codex = child_workspace / ".codex"
+    child_dot_codex.mkdir(parents=True)
+    (child_dot_codex / "config.toml").write_text(
+        'model_reasoning_effort = "low"\n',
+        encoding="utf-8",
+    )
     (codex_home / "config.toml").write_text(
         "\n".join(
             [
@@ -3884,6 +3891,29 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_layers[0]["version"] == project_origins["model_reasoning_effort"]["version"]
         assert project_layers[0]["config"] == {"model_reasoning_effort": "high"}
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
+
+        nested_project_config_read = rpc(
+            "config-read-nested-project",
+            "config/read",
+            {"includeLayers": True, "cwd": str(child_workspace)},
+        )
+        assert nested_project_config_read["id"] == "config-read-nested-project"
+        nested_config_body = nested_project_config_read["result"]["config"]
+        assert nested_config_body["model"] == "gpt-config"
+        assert nested_config_body["model_reasoning_effort"] == "low"
+        child_project_source = {
+            "type": "project",
+            "dotCodexFolder": str(child_dot_codex),
+        }
+        nested_origins = nested_project_config_read["result"]["origins"]
+        assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
+        nested_layers = nested_project_config_read["result"]["layers"]
+        assert len(nested_layers) == 3
+        assert nested_layers[0]["name"] == child_project_source
+        assert nested_layers[0]["config"] == {"model_reasoning_effort": "low"}
+        assert nested_layers[1]["name"] == project_source
+        assert nested_layers[1]["config"] == {"model_reasoning_effort": "high"}
+        assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
 
         config_requirements = rpc_without_params(
             "config-requirements-read",
