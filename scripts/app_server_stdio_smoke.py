@@ -3819,6 +3819,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[tools]",
                 "view_image = false",
                 "",
+                "[apps.app1]",
+                "enabled = false",
+                "destructive_enabled = false",
+                'default_tools_approval_mode = "prompt"',
+                "",
                 "[features]",
                 "apps = false",
                 "",
@@ -3879,6 +3884,17 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
             "view_image": False,
         }
+        assert config_body["apps"] == {
+            "_default": None,
+            "app1": {
+                "enabled": False,
+                "destructive_enabled": False,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": "prompt",
+                "default_tools_enabled": None,
+                "tools": None,
+            },
+        }
         assert config_body["features"]["apps"] is False
         assert config_body["features"]["goals"] is True
         assert config_body["features"]["memories"] is False
@@ -3897,6 +3913,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.location.city",
             "tools.web_search.location.timezone",
             "tools.view_image",
+            "apps.app1.enabled",
+            "apps.app1.destructive_enabled",
+            "apps.app1.default_tools_approval_mode",
         ]:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
@@ -3923,6 +3942,17 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
                 "view_image": False,
+            },
+            "apps": {
+                "_default": None,
+                "app1": {
+                    "enabled": False,
+                    "destructive_enabled": False,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": "prompt",
+                    "default_tools_enabled": None,
+                    "tools": None,
+                },
             },
         }
 
