@@ -11,6 +11,7 @@ const env = @import("env.zig");
 const exec = @import("exec.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
+const input_images = @import("input_images.zig");
 const login = @import("login.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const mcp_server_cmd = @import("mcp_server_cmd.zig");
@@ -51,6 +52,11 @@ fn mainInner(init: std.process.Init) !void {
 
     var additional_writable_roots = std.ArrayList([]const u8).empty;
     defer additional_writable_roots.deinit(allocator);
+    var initial_image_files = std.ArrayList([]const u8).empty;
+    defer {
+        for (initial_image_files.items) |path| allocator.free(path);
+        initial_image_files.deinit(allocator);
+    }
 
     var overrides = CliOverrides{};
     var cmd_opt: ?[]const u8 = null;
@@ -103,6 +109,14 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.startsWith(u8, arg, "--model=")) {
             overrides.runtime.model = arg["--model=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            try input_images.appendFiles(allocator, &initial_image_files, args.next() orelse return error.MissingImageOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            try input_images.appendFiles(allocator, &initial_image_files, arg["--image=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--oss")) {
@@ -184,7 +198,7 @@ fn mainInner(init: std.process.Init) !void {
     }
 
     if (forced_initial_prompt) |initial_prompt| {
-        try tui.runWithOptions(allocator, .{
+        try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
             .runtime_overrides = overrides.runtime,
             .oss = overrides.oss,
@@ -304,7 +318,7 @@ fn mainInner(init: std.process.Init) !void {
                 return;
             }
             if (parsed.last) {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .resume_target = "last",
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -316,7 +330,7 @@ fn mainInner(init: std.process.Init) !void {
                 return;
             }
             if (parsed.target) |target| {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .resume_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -326,7 +340,7 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                 });
             } else {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .resume_picker = true,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -347,7 +361,7 @@ fn mainInner(init: std.process.Init) !void {
                 return;
             }
             if (parsed.last) {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .fork_target = "last",
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -359,7 +373,7 @@ fn mainInner(init: std.process.Init) !void {
                 return;
             }
             if (parsed.target) |target| {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .fork_target = target,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -369,7 +383,7 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                 });
             } else {
-                try tui.runWithOptions(allocator, .{
+                try runTuiWithImages(allocator, initial_image_files.items, .{
                     .fork_picker = true,
                     .profile = overrides.profile,
                     .runtime_overrides = overrides.runtime,
@@ -410,7 +424,7 @@ fn mainInner(init: std.process.Init) !void {
         }
         const initial_prompt = try joinInitialPrompt(allocator, cmd, &args);
         defer allocator.free(initial_prompt);
-        try tui.runWithOptions(allocator, .{
+        try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
             .runtime_overrides = overrides.runtime,
             .oss = overrides.oss,
@@ -422,7 +436,7 @@ fn mainInner(init: std.process.Init) !void {
         return;
     }
 
-    try tui.runWithOptions(allocator, .{
+    try runTuiWithImages(allocator, initial_image_files.items, .{
         .profile = overrides.profile,
         .runtime_overrides = overrides.runtime,
         .oss = overrides.oss,
@@ -430,6 +444,19 @@ fn mainInner(init: std.process.Init) !void {
         .additional_writable_roots = overrides.additional_writable_roots,
         .no_alt_screen = overrides.no_alt_screen,
     });
+}
+
+fn runTuiWithImages(
+    allocator: std.mem.Allocator,
+    image_files: []const []const u8,
+    options: tui.Options,
+) !void {
+    var loaded_images = try input_images.load(allocator, image_files);
+    defer loaded_images.deinit(allocator);
+
+    var next_options = options;
+    next_options.initial_input_images = loaded_images.data_urls;
+    try tui.runWithOptions(allocator, next_options);
 }
 
 fn isHelpFlag(arg: []const u8) bool {
@@ -556,6 +583,8 @@ fn printHelp() !void {
         \\                          Override a supported config value
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
+        \\  codex-zig -i FILE ...
+        \\                          Attach image file(s) to the first interactive prompt
         \\  codex-zig --oss --local-provider lmstudio ...
         \\                          Use a local OSS provider
         \\  codex-zig -a MODE ...

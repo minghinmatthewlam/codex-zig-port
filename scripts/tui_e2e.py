@@ -53,6 +53,26 @@ def latest_user_text(items: list[object]) -> str:
     return latest
 
 
+def latest_user_images(items: list[object]) -> list[str]:
+    latest: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "message" or item.get("role") != "user":
+            continue
+        parts = item.get("content", [])
+        if not isinstance(parts, list):
+            continue
+        latest = [
+            part.get("image_url", "")
+            for part in parts
+            if isinstance(part, dict)
+            and part.get("type") == "input_image"
+            and isinstance(part.get("image_url"), str)
+        ]
+    return latest
+
+
 def has_tool_output(items: list[object], call_id: str) -> bool:
     return any(
         isinstance(item, dict)
@@ -75,7 +95,22 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         if not isinstance(items, list):
             items = []
         latest_prompt = latest_user_text(items)
-        if "summarize the mentioned file" in latest_prompt:
+        latest_images = latest_user_images(items)
+        if "describe attached image" in latest_prompt and latest_images:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "image received\n",
+                },
+            )
+        elif "describe attached image" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "image missing\n",
+                },
+            )
+        elif "summarize the mentioned file" in latest_prompt:
             payload = sse(
                 {
                     "type": "response.output_text.delta",
@@ -384,6 +419,71 @@ def run_alt_screen_never_config_smoke(
             os.close(master_fd)
 
 
+def run_initial_image_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    image_path = workspace / "tiny.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-image-smoke\n")
+    start_requests = server.request_count
+
+    image_output = bytearray()
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "--no-alt-screen",
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+            "--image",
+            str(image_path),
+            "describe attached image",
+        ],
+        cwd=workspace,
+        env=env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    try:
+        wait_for(master_fd, image_output, b"image received", 8)
+        mark = len(image_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, image_output, b"bye", 5, mark)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = image_output.decode(errors="replace")
+            raise AssertionError(
+                f"initial image smoke exited with {exit_code}\n\n{rendered}"
+            )
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        os.close(master_fd)
+
+    bodies = server.request_bodies[start_requests:]
+    matching = [
+        body
+        for body in bodies
+        if "describe attached image" in latest_user_text(body.get("input", []))
+    ]
+    if not matching:
+        raise AssertionError("initial image smoke did not send the prompt request")
+    images = latest_user_images(matching[-1].get("input", []))
+    if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
+        raise AssertionError(f"expected one PNG input_image, saw {images!r}")
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -446,13 +546,16 @@ def run_e2e(binary: Path) -> str:
             )
             copy_command.chmod(0o755)
 
-            master_fd, slave_fd = pty.openpty()
             env = os.environ.copy()
             env["CODEX_HOME"] = home
             env["CODEX_ZIG_COPY_COMMAND"] = str(copy_command)
             env.setdefault("TERM", "xterm-256color")
             env.pop("ZELLIJ", None)
             env.pop("ZELLIJ_SESSION_NAME", None)
+
+            run_initial_image_smoke(binary, env, workspace, port, server)
+
+            master_fd, slave_fd = pty.openpty()
             proc = subprocess.Popen(
                 [
                     str(binary),

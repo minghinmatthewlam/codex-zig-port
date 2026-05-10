@@ -13,6 +13,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - accept an optional initial prompt with `codex-zig [PROMPT]`
 - use alternate-screen terminal mode by default and preserve inline scrollback
   with the Rust-compatible `--no-alt-screen` flag
+- attach local image files to the first interactive prompt with `-i/--image`
 - reuse local Codex auth from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`
 - refresh expired or stale ChatGPT auth tokens from stored refresh tokens
 - manage basic auth with `login status`, `login --with-api-key`,
@@ -79,7 +80,8 @@ zig build e2e
 ```
 
 The `e2e` step starts a local mock Responses server, launches the real
-`zig-out/bin/codex-zig` binary in a pseudo-terminal, drives `/help`, `/status`,
+`zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
+`-i/--image` initial-prompt attachment on the interactive path, drives `/help`, `/status`,
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
@@ -145,6 +147,7 @@ those same fields, reads `[tui].theme`, `[tui].status_line`,
 ```sh
 codex-zig --profile work auth-status
 codex-zig -m gpt-5.5 -a never -s danger-full-access
+codex-zig -i screenshot.png "describe this"
 codex-zig --cd ~/dev/my-project
 codex-zig --add-dir ~/scratch
 codex-zig -c model=gpt-5.5

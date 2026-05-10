@@ -5,12 +5,12 @@ const cli_utils = @import("cli_utils.zig");
 const top_level_commands =
     "app-server auth-status completion debug e exec features fork login logout mcp mcp-server review resume sandbox sessions";
 const global_options =
-    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --no-alt-screen";
+    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
     "'app-server' 'auth-status' 'completion' 'debug' 'e' 'exec' 'features' 'fork' 'login' 'logout' 'mcp' 'mcp-server' 'review' 'resume' 'sandbox' 'sessions'";
 const elvish_global_options =
-    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--no-alt-screen'";
+    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
 
 const Shell = enum {
@@ -137,6 +137,7 @@ fn appendFishOptions(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !voi
         "complete -c codex-zig -l add-dir -r -d 'Add writable root'\n",
         "complete -c codex-zig -s c -l config -r -d 'Override config key'\n",
         "complete -c codex-zig -s m -l model -r -d 'Override model'\n",
+        "complete -c codex-zig -s i -l image -r -d 'Attach image to first interactive prompt'\n",
         "complete -c codex-zig -l oss -d 'Use local OSS provider'\n",
         "complete -c codex-zig -l local-provider -xa 'lmstudio ollama' -d 'Select local provider'\n",
         "complete -c codex-zig -s a -l ask-for-approval -xa 'untrusted on-failure on-request never' -d 'Approval policy'\n",
@@ -188,6 +189,7 @@ fn renderZsh(allocator: std.mem.Allocator) ![]const u8 {
         \\        '--add-dir[Add writable root]:directory:_files -/' \
         \\        '(-c --config)'{{-c,--config}}'[Override config key]:key=value:' \
         \\        '(-m --model)'{{-m,--model}}'[Override model]:model:' \
+        \\        '(-i --image)'{{-i,--image}}'[Attach image to first interactive prompt]:file:_files' \
         \\        '--oss[Use local OSS provider]' \
         \\        '--local-provider[Select local provider]:(lmstudio ollama)' \
         \\        '(-a --ask-for-approval)'{{-a,--ask-for-approval}}'[Approval policy]:(untrusted on-failure on-request never)' \

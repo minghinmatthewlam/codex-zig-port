@@ -43,6 +43,7 @@ pub const Options = struct {
     oss_provider: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     initial_prompt: ?[]const u8 = null,
+    initial_input_images: []const []const u8 = &.{},
     no_alt_screen: bool = false,
 };
 
@@ -141,12 +142,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     }
     try refreshTerminalTitle(allocator, cfg, cwd, &transcript, session_path, &state);
 
+    var pending_input_images: []const []const u8 = options.initial_input_images;
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots) catch |err| {
+            runPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
+            pending_input_images = &.{};
         }
     }
 
@@ -177,7 +180,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
-        runUserPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state) catch |err| {
+        const input_images = pending_input_images;
+        pending_input_images = &.{};
+        runUserPrompt(allocator, cfg, credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state, input_images) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -218,8 +223,9 @@ fn runPrompt(
     session_path: []const u8,
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
+    input_images: []const []const u8,
 ) !void {
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false, input_images);
 }
 
 fn runPromptWithToolMode(
@@ -232,6 +238,7 @@ fn runPromptWithToolMode(
     additional_writable_roots: []const []const u8,
     include_tools: bool,
     render_plan_blocks: bool,
+    input_images: []const []const u8,
 ) !void {
     std.debug.print("\nassistant:\n", .{});
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{
@@ -239,6 +246,7 @@ fn runPromptWithToolMode(
         .additional_writable_roots = additional_writable_roots,
         .include_tools = include_tools,
         .plan_mode = render_plan_blocks,
+        .input_images = input_images,
     });
     defer allocator.free(answer);
     if (render_plan_blocks and answer.len > 0) {
@@ -261,6 +269,7 @@ fn runUserPrompt(
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
     state: *TuiState,
+    input_images: []const []const u8,
 ) !void {
     var expanded_prompt: ?[]const u8 = null;
     defer if (expanded_prompt) |value| allocator.free(value);
@@ -273,7 +282,7 @@ fn runUserPrompt(
         break :blk value;
     };
 
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images);
     state.clearMentions(allocator);
 }
 
@@ -503,7 +512,7 @@ fn handleSlashCommand(
             std.debug.print("{s} already exists here. Skipping /init to avoid overwriting it.\n", .{agents_filename});
             return .handled;
         }
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots);
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{});
         return .handled;
     }
 
@@ -632,7 +641,7 @@ fn handleSlashCommand(
         else
             try review.buildCustomPrompt(allocator, parts.args);
         defer allocator.free(review_prompt);
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, review_prompt, additional_writable_roots);
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{});
         return .handled;
     }
 
