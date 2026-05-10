@@ -1,8 +1,12 @@
 const std = @import("std");
 
 const cli_utils = @import("cli_utils.zig");
+const env = @import("env.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
+const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
+const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
+const net = std.Io.net;
 
 const WebSocketListen = struct {
     host: []const u8,
@@ -65,7 +69,17 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             try server.run();
         },
         .off => try cli_utils.writeStdout("app-server transport: off\n"),
-        .unix_default, .unix_path, .websocket => {
+        .unix_default => {
+            const socket_path = try defaultUnixSocketPath(allocator);
+            defer allocator.free(socket_path);
+            var server = UnixServer{ .allocator = allocator, .socket_path = socket_path };
+            try server.run();
+        },
+        .unix_path => |path| {
+            var server = UnixServer{ .allocator = allocator, .socket_path = path };
+            try server.run();
+        },
+        .websocket => {
             const label = try formatTransportLabel(allocator, transport);
             defer allocator.free(label);
             const message = try std.fmt.allocPrint(
@@ -123,80 +137,95 @@ const StdioServer = struct {
             const line = line_opt orelse break;
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0) continue;
-            self.handleLine(trimmed) catch |err| {
+            const response = handleJsonRpcLine(self.allocator, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
                 defer self.allocator.free(message);
                 try cli_utils.writeStderr(message);
+                continue;
             };
+            if (response) |payload| {
+                defer self.allocator.free(payload);
+                try writeStdoutLine(payload);
+            }
         }
-    }
-
-    fn handleLine(self: *StdioServer, line: []const u8) !void {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch {
-            try self.writeError(null, -32700, "Parse error");
-            return;
-        };
-        defer parsed.deinit();
-
-        if (parsed.value != .object) {
-            try self.writeError(null, -32600, "Invalid Request");
-            return;
-        }
-
-        const object = parsed.value.object;
-        const id_value = object.get("id");
-        const method_value = object.get("method") orelse {
-            try self.writeError(id_value, -32600, "Invalid Request");
-            return;
-        };
-        if (method_value != .string) {
-            try self.writeError(id_value, -32600, "Invalid Request");
-            return;
-        }
-        if (id_value == null) return;
-
-        const method = method_value.string;
-        if (std.mem.eql(u8, method, "initialize")) {
-            const result = try renderInitializeResult(self.allocator);
-            defer self.allocator.free(result);
-            try self.writeResult(id_value.?, result);
-            return;
-        }
-
-        const message = try std.fmt.allocPrint(self.allocator, "unsupported app-server method: {s}", .{method});
-        defer self.allocator.free(message);
-        try self.writeError(id_value, -32601, message);
-    }
-
-    fn writeResult(self: *StdioServer, id_value: std.json.Value, result_json: []const u8) !void {
-        const id_json = try std.json.Stringify.valueAlloc(self.allocator, id_value, .{});
-        defer self.allocator.free(id_json);
-        const payload = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}",
-            .{ id_json, result_json },
-        );
-        defer self.allocator.free(payload);
-        try writeLine(payload);
-    }
-
-    fn writeError(self: *StdioServer, id_value: ?std.json.Value, code: i64, message: []const u8) !void {
-        const id_json = if (id_value) |value|
-            try std.json.Stringify.valueAlloc(self.allocator, value, .{})
-        else
-            try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(id_json);
-        const message_json = try std.json.Stringify.valueAlloc(self.allocator, message, .{});
-        defer self.allocator.free(message_json);
-        const payload = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
-            .{ id_json, code, message_json },
-        );
-        defer self.allocator.free(payload);
-        try writeLine(payload);
     }
 };
+
+const UnixServer = struct {
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+
+    fn run(self: *UnixServer) !void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        try ensureParentDir(io, self.socket_path);
+        try deleteSocketFileIfSocket(self.allocator, io, self.socket_path);
+
+        var address = try net.UnixAddress.init(self.socket_path);
+        var server = address.listen(io, .{}) catch |err| switch (err) {
+            error.AddressInUse, error.NotDir => return error.AppServerUnixSocketPathExists,
+            else => return err,
+        };
+        defer server.deinit(io);
+        defer deleteSocketFileIfSocket(self.allocator, io, self.socket_path) catch {};
+
+        var stream = try server.accept(io);
+        defer stream.close(io);
+
+        var input_buffer: [64 * 1024]u8 = undefined;
+        var output_buffer: [64 * 1024]u8 = undefined;
+        var reader = stream.reader(io, &input_buffer);
+        var writer = stream.writer(io, &output_buffer);
+
+        while (true) {
+            const line_opt = try reader.interface.takeDelimiter('\n');
+            const line = line_opt orelse break;
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            const response = handleJsonRpcLine(self.allocator, trimmed) catch |err| {
+                const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
+                defer self.allocator.free(message);
+                try cli_utils.writeStderr(message);
+                continue;
+            };
+            if (response) |payload| {
+                defer self.allocator.free(payload);
+                try writeStreamLine(&writer.interface, payload);
+            }
+        }
+    }
+};
+
+fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
+        return try renderJsonRpcError(allocator, null, -32700, "Parse error");
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        return try renderJsonRpcError(allocator, null, -32600, "Invalid Request");
+    }
+
+    const object = parsed.value.object;
+    const id_value = object.get("id");
+    const method_value = object.get("method") orelse {
+        return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    };
+    if (method_value != .string) {
+        return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    }
+    if (id_value == null) return null;
+
+    const method = method_value.string;
+    if (std.mem.eql(u8, method, "initialize")) {
+        const result = try renderInitializeResult(allocator);
+        defer allocator.free(result);
+        return try renderJsonRpcResult(allocator, id_value.?, result);
+    }
+
+    const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
+    defer allocator.free(message);
+    return try renderJsonRpcError(allocator, id_value, -32601, message);
+}
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(
@@ -205,9 +234,106 @@ fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
     );
 }
 
-fn writeLine(payload: []const u8) !void {
+fn renderJsonRpcResult(allocator: std.mem.Allocator, id_value: std.json.Value, result_json: []const u8) ![]const u8 {
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}",
+        .{ id_json, result_json },
+    );
+}
+
+fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, code: i64, message: []const u8) ![]const u8 {
+    const id_json = if (id_value) |value|
+        try std.json.Stringify.valueAlloc(allocator, value, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(id_json);
+    const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
+    defer allocator.free(message_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
+        .{ id_json, code, message_json },
+    );
+}
+
+fn writeStdoutLine(payload: []const u8) !void {
     try cli_utils.writeStdout(payload);
     try cli_utils.writeStdout("\n");
+}
+
+fn writeStreamLine(writer: *std.Io.Writer, payload: []const u8) !void {
+    try writer.writeAll(payload);
+    try writer.writeAll("\n");
+    try writer.flush();
+}
+
+fn defaultUnixSocketPath(allocator: std.mem.Allocator) ![]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    return std.fs.path.join(allocator, &.{ codex_home, DEFAULT_SOCKET_DIR_NAME, DEFAULT_SOCKET_FILE_NAME });
+}
+
+fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, "CODEX_HOME")) |value| return value;
+
+    const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn ensureParentDir(io: std.Io, path: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return;
+    if (parent.len == 0) return;
+    if (try dirExists(io, parent)) return;
+    try std.Io.Dir.cwd().createDirPath(io, parent);
+}
+
+fn dirExists(io: std.Io, path: []const u8) !bool {
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        }
+    else
+        std.Io.Dir.cwd().openDir(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+    defer dir.close(io);
+    return true;
+}
+
+fn deleteSocketFileIfSocket(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
+    const stat = statPathNoFollow(allocator, path) catch |err| switch (err) {
+        error.NotDir => return error.AppServerUnixSocketPathExists,
+        else => return err,
+    } orelse return;
+    if (!std.c.S.ISSOCK(@intCast(stat.mode))) return error.AppServerUnixSocketPathExists;
+    try std.Io.Dir.cwd().deleteFile(io, path);
+}
+
+fn statPathNoFollow(allocator: std.mem.Allocator, path: []const u8) !?std.c.Stat {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    var stat = std.mem.zeroes(std.c.Stat);
+    while (true) {
+        switch (std.c.errno(std.c.fstatat(std.c.AT.FDCWD, path_z.ptr, &stat, std.c.AT.SYMLINK_NOFOLLOW))) {
+            .SUCCESS => break,
+            .INTR => continue,
+            .NOENT => return null,
+            .NOTDIR => return error.NotDir,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .LOOP => return error.SymLinkLoop,
+            .NAMETOOLONG => return error.NameTooLong,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+    return stat;
 }
 
 fn isHelpFlag(arg: []const u8) bool {
@@ -226,11 +352,11 @@ fn printHelp() void {
         \\Supported URL forms:
         \\  stdio://               Read and write newline-delimited JSON-RPC on stdio
         \\  off                    Disable the app-server transport
-        \\  unix://                Parse the default Unix socket transport
-        \\  unix://PATH            Parse a Unix socket transport path
+        \\  unix://                Listen on CODEX_HOME/app-server-control/app-server-control.sock
+        \\  unix://PATH            Listen on a Unix socket transport path
         \\  ws://IP:PORT           Parse a websocket transport address
         \\
-        \\The Zig port currently implements stdio:// and off.
+        \\The Zig port currently implements stdio://, unix://, unix://PATH, and off.
         \\
     , .{});
 }
