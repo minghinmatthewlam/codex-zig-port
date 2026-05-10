@@ -385,6 +385,85 @@ def run_git_diff_to_remote_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fuzzy-search-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    search_root = root / "search-root"
+    try:
+        codex_home.mkdir()
+        search_root.mkdir()
+        (search_root / "alpha.txt").write_text("file match\n", encoding="utf-8")
+        (search_root / "beta.txt").write_text("not a match\n", encoding="utf-8")
+        (search_root / "alpha_dir").mkdir()
+
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+
+        search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "alp", "roots": [str(search_root)], "cancellationToken": "search-1"},
+            },
+            env,
+        )
+        assert search["id"] == "fuzzy-search"
+        files = search["result"]["files"]
+        by_path = {item["path"]: item for item in files}
+        assert by_path["alpha.txt"]["root"] == str(search_root)
+        assert by_path["alpha.txt"]["match_type"] == "file"
+        assert by_path["alpha.txt"]["file_name"] == "alpha.txt"
+        assert by_path["alpha.txt"]["indices"] == [0, 1, 2]
+        assert by_path["alpha_dir"]["match_type"] == "directory"
+        assert by_path["alpha_dir"]["file_name"] == "alpha_dir"
+        assert "beta.txt" not in by_path
+
+        empty_query = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-empty-query",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "", "roots": [str(search_root)], "cancellationToken": None},
+            },
+            env,
+        )
+        assert empty_query["id"] == "fuzzy-empty-query"
+        assert empty_query["result"] == {"files": []}
+
+        invalid_roots = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-invalid-roots",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "alp", "roots": "not-a-list"},
+            },
+            env,
+        )
+        assert invalid_roots["id"] == "fuzzy-invalid-roots"
+        assert invalid_roots["error"]["code"] == -32602
+
+        invalid_token = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-invalid-token",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "alp", "roots": [str(search_root)], "cancellationToken": 7},
+            },
+            env,
+        )
+        assert invalid_token["id"] == "fuzzy-invalid-token"
+        assert invalid_token["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_marketplace_rpc_smoke(binary: Path) -> None:
     env = os.environ.copy()
 
@@ -1931,6 +2010,8 @@ def main() -> None:
     print("app-server-memory-reset-e2e: ok")
     run_git_diff_to_remote_rpc_smoke(binary)
     print("app-server-git-diff-to-remote-rpc-e2e: ok")
+    run_fuzzy_file_search_rpc_smoke(binary)
+    print("app-server-fuzzy-file-search-rpc-e2e: ok")
     run_marketplace_rpc_smoke(binary)
     print("app-server-marketplace-rpc-e2e: ok")
     run_plugin_rpc_smoke(binary)
