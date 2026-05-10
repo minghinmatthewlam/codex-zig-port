@@ -94,6 +94,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
 
+    if (parsed.removed_full_auto) {
+        try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
+    }
+
     if (parsed.review_mode) {
         try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
             .profile = parsed.profile,
@@ -108,9 +112,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.prompt == null and !parsed.read_stdin) {
         std.debug.print("codex-zig exec requires a prompt or - for stdin\n", .{});
         return error.MissingExecPrompt;
-    }
-    if (parsed.removed_full_auto) {
-        try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
     }
     const effective_oss = options.oss or parsed.oss;
     const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
