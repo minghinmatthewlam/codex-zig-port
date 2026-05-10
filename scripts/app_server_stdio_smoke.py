@@ -632,6 +632,8 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
     extra_root = root / "extra-skills"
     user_skill = extra_root / "user-skill"
     invalid_skill = extra_root / "invalid-skill"
+    late_root = root / "late-extra-skills"
+    late_skill = late_root / "late-extra-skill"
     try:
         codex_home.mkdir()
         repo_skill.mkdir(parents=True)
@@ -732,6 +734,93 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
                 response = read_json_line(proc, 5)
                 assert response["id"] == request_id
                 return response
+
+            cached_initial = rpc(
+                "skills-cache-initial",
+                "skills/list",
+                {"cwds": [str(cwd)], "forceReload": True},
+            )
+            initial_names = {
+                skill["name"]
+                for skill in cached_initial["result"]["data"][0]["skills"]
+            }
+            assert "late-extra-skill" not in initial_names
+
+            late_skill.mkdir(parents=True)
+            (late_skill / "SKILL.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: late-extra-skill",
+                        "description: Late extra skill",
+                        "---",
+                        "Added after the initial cached skills/list request.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            cached_without_reload = rpc(
+                "skills-cache-without-reload",
+                "skills/list",
+                {
+                    "cwds": [str(cwd)],
+                    "forceReload": False,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(late_root)]}
+                    ],
+                },
+            )
+            cached_names = {
+                skill["name"]
+                for skill in cached_without_reload["result"]["data"][0]["skills"]
+            }
+            assert "late-extra-skill" not in cached_names
+
+            config_write_response = rpc(
+                "skills-cache-config-write",
+                "config/value/write",
+                {
+                    "keyPath": "model",
+                    "value": "gpt-cache-smoke",
+                    "mergeStrategy": "replace",
+                },
+            )
+            assert "version" in config_write_response["result"]
+
+            after_config_write = rpc(
+                "skills-cache-after-config-write",
+                "skills/list",
+                {
+                    "cwds": [str(cwd)],
+                    "forceReload": False,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(late_root)]}
+                    ],
+                },
+            )
+            after_config_write_names = {
+                skill["name"]
+                for skill in after_config_write["result"]["data"][0]["skills"]
+            }
+            assert "late-extra-skill" in after_config_write_names
+
+            reloaded = rpc(
+                "skills-cache-force-reload",
+                "skills/list",
+                {
+                    "cwds": [str(cwd)],
+                    "forceReload": True,
+                    "perCwdExtraUserRoots": [
+                        {"cwd": str(cwd), "extraUserRoots": [str(late_root)]}
+                    ],
+                },
+            )
+            reloaded_names = {
+                skill["name"]
+                for skill in reloaded["result"]["data"][0]["skills"]
+            }
+            assert "late-extra-skill" in reloaded_names
 
             watched_list = rpc(
                 "skills-list-watch-roots",
