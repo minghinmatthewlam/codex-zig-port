@@ -5,6 +5,7 @@ const plugin_config = @import("plugin_config.zig");
 
 pub const OPENAI_CURATED_MARKETPLACE_NAME = "openai-curated";
 pub const INSTALLED_MARKETPLACES_DIR = ".tmp/marketplaces";
+const INSTALLED_MARKETPLACE_METADATA_FILE = ".codex-marketplace-install.json";
 
 const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
     ".agents/plugins/marketplace.json",
@@ -29,6 +30,11 @@ pub const AddError = error{
 pub const RemoveError = error{
     InvalidMarketplaceName,
     UnknownMarketplace,
+};
+
+pub const UpgradeError = error{
+    MarketplaceNotConfiguredAsGit,
+    GitCommandFailed,
 };
 
 pub const AddResult = struct {
@@ -58,6 +64,33 @@ pub const RemoveResult = struct {
     }
 };
 
+pub const UpgradeFailure = struct {
+    marketplace_name: []const u8,
+    message: []const u8,
+
+    fn deinit(self: *UpgradeFailure, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        allocator.free(self.message);
+    }
+};
+
+pub const UpgradeResult = struct {
+    selected_marketplaces: []const []const u8,
+    upgraded_roots: []const []const u8,
+    errors: []UpgradeFailure,
+    updated_config: []const u8,
+
+    pub fn deinit(self: UpgradeResult, allocator: std.mem.Allocator) void {
+        for (self.selected_marketplaces) |name| allocator.free(name);
+        allocator.free(self.selected_marketplaces);
+        for (self.upgraded_roots) |root| allocator.free(root);
+        allocator.free(self.upgraded_roots);
+        for (self.errors) |*failure| failure.deinit(allocator);
+        allocator.free(self.errors);
+        allocator.free(self.updated_config);
+    }
+};
+
 pub const ConfiguredMarketplaceRoot = struct {
     marketplace_name: []const u8,
     root: []const u8,
@@ -70,6 +103,7 @@ pub const ConfiguredMarketplaceRoot = struct {
 
 const MarketplaceEntry = struct {
     name: []const u8,
+    last_revision: ?[]const u8 = null,
     source_type: ?[]const u8 = null,
     source: ?[]const u8 = null,
     ref_name: ?[]const u8 = null,
@@ -77,6 +111,7 @@ const MarketplaceEntry = struct {
 
     fn deinit(self: *MarketplaceEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        if (self.last_revision) |value| allocator.free(value);
         if (self.source_type) |value| allocator.free(value);
         if (self.source) |value| allocator.free(value);
         if (self.ref_name) |value| allocator.free(value);
@@ -118,6 +153,7 @@ const GitMarketplaceSource = struct {
 const MarketplaceConfigUpdate = struct {
     source_type: []const u8,
     source: []const u8,
+    last_revision: ?[]const u8 = null,
     ref_name: ?[]const u8 = null,
     sparse_paths: []const []const u8 = &.{},
 };
@@ -281,7 +317,8 @@ fn addGitMarketplace(
     defer allocator.free(staged_root);
     errdefer deleteTreeBestEffort(staged_root);
 
-    try cloneGitSource(allocator, source, staged_root);
+    const added_revision = try cloneGitSource(allocator, source, staged_root);
+    defer allocator.free(added_revision);
 
     const marketplace_name = try validateMarketplaceRoot(allocator, staged_root);
     defer allocator.free(marketplace_name);
@@ -335,6 +372,183 @@ pub fn removeMarketplace(
         .marketplace_name = try allocator.dupe(u8, marketplace_name),
         .installed_root = removed_root,
         .updated_config = removed_config.updated_config,
+    };
+}
+
+pub fn upgradeMarketplaces(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    requested_marketplace_name: ?[]const u8,
+) !UpgradeResult {
+    const entries = try marketplaceEntries(allocator, config_bytes);
+    defer {
+        for (entries) |*entry| entry.deinit(allocator);
+        allocator.free(entries);
+    }
+
+    var selected = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (selected.items) |name| allocator.free(name);
+        selected.deinit(allocator);
+    }
+    var upgraded = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (upgraded.items) |root| allocator.free(root);
+        upgraded.deinit(allocator);
+    }
+    var failures = std.ArrayList(UpgradeFailure).empty;
+    errdefer {
+        for (failures.items) |*failure| failure.deinit(allocator);
+        failures.deinit(allocator);
+    }
+
+    var updated_config: []const u8 = try allocator.dupe(u8, config_bytes);
+    errdefer allocator.free(updated_config);
+
+    for (entries) |entry| {
+        if (requested_marketplace_name) |requested| {
+            if (!std.mem.eql(u8, entry.name, requested)) continue;
+        }
+        if (!isConfiguredGitMarketplace(entry)) continue;
+
+        const selected_name = try allocator.dupe(u8, entry.name);
+        selected.append(allocator, selected_name) catch |err| {
+            allocator.free(selected_name);
+            return err;
+        };
+        const maybe_result = upgradeConfiguredGitMarketplace(allocator, codex_home, updated_config, entry) catch |err| {
+            try appendUpgradeFailure(allocator, &failures, entry.name, err);
+            continue;
+        };
+        if (maybe_result) |result| {
+            allocator.free(updated_config);
+            updated_config = result.updated_config;
+            upgraded.append(allocator, result.installed_root) catch |err| {
+                allocator.free(result.installed_root);
+                return err;
+            };
+        }
+    }
+
+    if (requested_marketplace_name != null and selected.items.len == 0) return UpgradeError.MarketplaceNotConfiguredAsGit;
+
+    const selected_slice = try selected.toOwnedSlice(allocator);
+    selected = .empty;
+    errdefer {
+        for (selected_slice) |name| allocator.free(name);
+        allocator.free(selected_slice);
+    }
+    const upgraded_slice = try upgraded.toOwnedSlice(allocator);
+    upgraded = .empty;
+    errdefer {
+        for (upgraded_slice) |root| allocator.free(root);
+        allocator.free(upgraded_slice);
+    }
+    const failure_slice = try failures.toOwnedSlice(allocator);
+    failures = .empty;
+    errdefer {
+        for (failure_slice) |*failure| failure.deinit(allocator);
+        allocator.free(failure_slice);
+    }
+
+    return .{
+        .selected_marketplaces = selected_slice,
+        .upgraded_roots = upgraded_slice,
+        .errors = failure_slice,
+        .updated_config = updated_config,
+    };
+}
+
+const OneUpgradeResult = struct {
+    installed_root: []const u8,
+    updated_config: []const u8,
+};
+
+fn upgradeConfiguredGitMarketplace(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    entry: MarketplaceEntry,
+) !?OneUpgradeResult {
+    if (!plugin_config.isValidPluginSegment(entry.name)) return AddError.InvalidMarketplaceName;
+    const source = entry.source orelse return null;
+    const remote_revision = try gitRemoteRevision(allocator, source, entry.ref_name);
+    defer allocator.free(remote_revision);
+
+    const destination = try installedMarketplaceRoot(allocator, codex_home, entry.name);
+    defer allocator.free(destination);
+    if (try installedMarketplaceIsCurrent(allocator, destination, entry, remote_revision)) return null;
+
+    const install_root = try installedMarketplacesRoot(allocator, codex_home);
+    defer allocator.free(install_root);
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), install_root);
+
+    const staged_root = try createMarketplaceStagingRoot(allocator, install_root, "marketplace-upgrade");
+    defer allocator.free(staged_root);
+    errdefer deleteTreeBestEffort(staged_root);
+
+    const source_info = GitMarketplaceSource{
+        .url = source,
+        .ref_name = entry.ref_name,
+        .sparse_paths = entry.sparse_paths,
+    };
+    const activated_revision = try cloneGitSource(allocator, source_info, staged_root);
+    defer allocator.free(activated_revision);
+
+    const upgraded_name = try validateMarketplaceRoot(allocator, staged_root);
+    defer allocator.free(upgraded_name);
+    if (!std.mem.eql(u8, upgraded_name, entry.name)) return AddError.InvalidMarketplaceName;
+
+    try writeInstalledMarketplaceMetadata(allocator, staged_root, entry, activated_revision);
+    const update = MarketplaceConfigUpdate{
+        .source_type = "git",
+        .source = source,
+        .last_revision = activated_revision,
+        .ref_name = entry.ref_name,
+        .sparse_paths = entry.sparse_paths,
+    };
+    const next_config = try upsertMarketplaceConfig(allocator, config_bytes, entry.name, update);
+    errdefer allocator.free(next_config);
+
+    if (!isPathWithinOrEqual(install_root, destination)) return AddError.InvalidMarketplaceInstallDirectory;
+    try replaceMarketplaceRoot(allocator, install_root, staged_root, destination);
+
+    return .{
+        .installed_root = try allocator.dupe(u8, destination),
+        .updated_config = next_config,
+    };
+}
+
+fn isConfiguredGitMarketplace(entry: MarketplaceEntry) bool {
+    return entry.source_type != null and
+        entry.source != null and
+        std.mem.eql(u8, entry.source_type.?, "git");
+}
+
+fn appendUpgradeFailure(
+    allocator: std.mem.Allocator,
+    failures: *std.ArrayList(UpgradeFailure),
+    marketplace_name: []const u8,
+    err: anyerror,
+) !void {
+    const name = try allocator.dupe(u8, marketplace_name);
+    errdefer allocator.free(name);
+    const message = try upgradeErrorMessage(allocator, err);
+    errdefer allocator.free(message);
+    try failures.append(allocator, .{
+        .marketplace_name = name,
+        .message = message,
+    });
+}
+
+fn upgradeErrorMessage(allocator: std.mem.Allocator, err: anyerror) ![]const u8 {
+    return switch (err) {
+        error.GitCommandFailed => allocator.dupe(u8, "failed to run git while upgrading marketplace"),
+        error.InvalidMarketplaceRoot => allocator.dupe(u8, "failed to validate upgraded marketplace root"),
+        error.InvalidMarketplaceName => allocator.dupe(u8, "upgraded marketplace name does not match configured marketplace"),
+        error.InvalidMarketplaceInstallDirectory => allocator.dupe(u8, "marketplace install destination is outside install root"),
+        else => std.fmt.allocPrint(allocator, "failed to upgrade marketplace: {s}", .{@errorName(err)}),
     };
 }
 
@@ -537,6 +751,11 @@ fn upsertMarketplaceConfig(
     try output.appendSlice(allocator, "source = ");
     try appendTomlStringLiteral(allocator, &output, update.source);
     try output.append(allocator, '\n');
+    if (update.last_revision) |last_revision| {
+        try output.appendSlice(allocator, "last_revision = ");
+        try appendTomlStringLiteral(allocator, &output, last_revision);
+        try output.append(allocator, '\n');
+    }
     if (update.ref_name) |ref_name| {
         try output.appendSlice(allocator, "ref = ");
         try appendTomlStringLiteral(allocator, &output, ref_name);
@@ -630,13 +849,13 @@ fn createMarketplaceStagingRoot(allocator: std.mem.Allocator, install_root: []co
     return std.fs.path.join(allocator, &.{ staging_parent, dir_name });
 }
 
-fn cloneGitSource(allocator: std.mem.Allocator, source: GitMarketplaceSource, destination: []const u8) !void {
+fn cloneGitSource(allocator: std.mem.Allocator, source: GitMarketplaceSource, destination: []const u8) ![]const u8 {
     if (source.sparse_paths.len == 0) {
         try runGit(allocator, null, &.{ "clone", source.url, destination });
         if (source.ref_name) |ref_name| {
             try runGit(allocator, destination, &.{ "checkout", ref_name });
         }
-        return;
+        return gitWorktreeRevision(allocator, destination);
     }
 
     try runGit(allocator, null, &.{ "clone", "--filter=blob:none", "--no-checkout", source.url, destination });
@@ -647,9 +866,15 @@ fn cloneGitSource(allocator: std.mem.Allocator, source: GitMarketplaceSource, de
     for (source.sparse_paths) |path| try sparse_args.append(allocator, path);
     try runGit(allocator, destination, sparse_args.items);
     try runGit(allocator, destination, &.{ "checkout", source.ref_name orelse "HEAD" });
+    return gitWorktreeRevision(allocator, destination);
 }
 
 fn runGit(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const u8) !void {
+    const stdout = try runGitOutput(allocator, cwd, args);
+    allocator.free(stdout);
+}
+
+fn runGitOutput(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const u8) ![]const u8 {
     var argv = try std.ArrayList([]const u8).initCapacity(allocator, args.len + 1);
     defer argv.deinit(allocator);
     try argv.append(allocator, "git");
@@ -673,18 +898,206 @@ fn runGit(allocator: std.mem.Allocator, cwd: ?[]const u8, args: []const []const 
             .clock = .awake,
         } },
     });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
     switch (result.term) {
-        .exited => |code| if (code == 0) return,
+        .exited => |code| if (code == 0) {
+            allocator.free(result.stderr);
+            return result.stdout;
+        },
         else => {},
     }
 
     std.debug.print("git command failed: git", .{});
     for (args) |arg| std.debug.print(" {s}", .{arg});
     std.debug.print("\n{s}\n{s}\n", .{ result.stdout, result.stderr });
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
     return AddError.GitCommandFailed;
+}
+
+fn gitWorktreeRevision(allocator: std.mem.Allocator, destination: []const u8) ![]const u8 {
+    const stdout = try runGitOutput(allocator, destination, &.{ "rev-parse", "HEAD" });
+    defer allocator.free(stdout);
+    const revision = std.mem.trim(u8, stdout, " \t\r\n");
+    if (revision.len == 0) return AddError.GitCommandFailed;
+    return allocator.dupe(u8, revision);
+}
+
+fn gitRemoteRevision(allocator: std.mem.Allocator, source: []const u8, ref_name: ?[]const u8) ![]const u8 {
+    if (ref_name) |value| {
+        if (isFullGitSha(value)) return allocator.dupe(u8, value);
+    }
+    const stdout = try runGitOutput(allocator, null, &.{ "ls-remote", source, ref_name orelse "HEAD" });
+    defer allocator.free(stdout);
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const tab_index = std.mem.indexOfScalar(u8, trimmed, '\t') orelse return AddError.GitCommandFailed;
+        const revision = trimmed[0..tab_index];
+        if (revision.len == 0) return AddError.GitCommandFailed;
+        return allocator.dupe(u8, revision);
+    }
+    return AddError.GitCommandFailed;
+}
+
+fn isFullGitSha(value: []const u8) bool {
+    if (value.len != 40) return false;
+    for (value) |byte| {
+        if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
+}
+
+fn installedMarketplaceIsCurrent(
+    allocator: std.mem.Allocator,
+    destination: []const u8,
+    entry: MarketplaceEntry,
+    revision: []const u8,
+) !bool {
+    const marketplace_name = (try validateMarketplaceRootOrNull(allocator, destination)) orelse return false;
+    defer allocator.free(marketplace_name);
+    if (!std.mem.eql(u8, marketplace_name, entry.name)) return false;
+    if (entry.last_revision == null) return false;
+    if (!std.mem.eql(u8, entry.last_revision.?, revision)) return false;
+    return installedMarketplaceMetadataMatches(allocator, destination, entry, revision);
+}
+
+fn installedMarketplaceMetadataMatches(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    entry: MarketplaceEntry,
+    revision: []const u8,
+) !bool {
+    const path = try installedMarketplaceMetadataPath(allocator, root);
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+    if (!jsonStringFieldEql(object, "source_type", "git")) return false;
+    if (!jsonStringFieldEql(object, "source", entry.source orelse return false)) return false;
+    if (!jsonStringFieldEql(object, "revision", revision)) return false;
+    if (!jsonOptionalStringFieldEql(object, "ref_name", entry.ref_name)) return false;
+    if (!jsonStringArrayFieldEql(object, "sparse_paths", entry.sparse_paths)) return false;
+    return true;
+}
+
+fn jsonStringFieldEql(object: std.json.ObjectMap, field: []const u8, expected: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .string and std.mem.eql(u8, value.string, expected);
+}
+
+fn jsonOptionalStringFieldEql(object: std.json.ObjectMap, field: []const u8, expected: ?[]const u8) bool {
+    const value = object.get(field) orelse return expected == null;
+    if (expected) |expected_value| {
+        return value == .string and std.mem.eql(u8, value.string, expected_value);
+    }
+    return value == .null;
+}
+
+fn jsonStringArrayFieldEql(object: std.json.ObjectMap, field: []const u8, expected: []const []const u8) bool {
+    const value = object.get(field) orelse return expected.len == 0;
+    if (value != .array) return false;
+    const items = value.array.items;
+    if (items.len != expected.len) return false;
+    for (items, expected) |item, expected_value| {
+        if (item != .string or !std.mem.eql(u8, item.string, expected_value)) return false;
+    }
+    return true;
+}
+
+fn writeInstalledMarketplaceMetadata(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    entry: MarketplaceEntry,
+    revision: []const u8,
+) !void {
+    const path = try installedMarketplaceMetadataPath(allocator, root);
+    defer allocator.free(path);
+
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+    try output.appendSlice(allocator, "{\n  \"source_type\": \"git\",\n  \"source\": ");
+    try appendJsonStringLiteral(allocator, &output, entry.source orelse return AddError.InvalidMarketplaceRoot);
+    try output.appendSlice(allocator, ",\n  \"ref_name\": ");
+    if (entry.ref_name) |ref_name| {
+        try appendJsonStringLiteral(allocator, &output, ref_name);
+    } else {
+        try output.appendSlice(allocator, "null");
+    }
+    try output.appendSlice(allocator, ",\n  \"sparse_paths\": [");
+    for (entry.sparse_paths, 0..) |sparse_path, index| {
+        if (index > 0) try output.appendSlice(allocator, ", ");
+        try appendJsonStringLiteral(allocator, &output, sparse_path);
+    }
+    try output.appendSlice(allocator, "],\n  \"revision\": ");
+    try appendJsonStringLiteral(allocator, &output, revision);
+    try output.appendSlice(allocator, "\n}\n");
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = path, .data = output.items });
+}
+
+fn installedMarketplaceMetadataPath(allocator: std.mem.Allocator, root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ root, INSTALLED_MARKETPLACE_METADATA_FILE });
+}
+
+fn appendJsonStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
+    const json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(json);
+    try output.appendSlice(allocator, json);
+}
+
+fn replaceMarketplaceRoot(allocator: std.mem.Allocator, install_root: []const u8, staged_root: []const u8, destination: []const u8) !void {
+    const parent = std.fs.path.dirname(destination) orelse return AddError.InvalidMarketplaceInstallDirectory;
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
+
+    if (!pathExists(destination)) {
+        try std.Io.Dir.rename(
+            std.Io.Dir.cwd(),
+            staged_root,
+            std.Io.Dir.cwd(),
+            destination,
+            std.Io.Threaded.global_single_threaded.io(),
+        );
+        return;
+    }
+
+    const backup_root = try createMarketplaceStagingRoot(allocator, install_root, "marketplace-backup");
+    defer allocator.free(backup_root);
+    errdefer deleteTreeBestEffort(backup_root);
+
+    try std.Io.Dir.rename(
+        std.Io.Dir.cwd(),
+        destination,
+        std.Io.Dir.cwd(),
+        backup_root,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
+    errdefer {
+        if (!pathExists(destination)) {
+            std.Io.Dir.rename(
+                std.Io.Dir.cwd(),
+                backup_root,
+                std.Io.Dir.cwd(),
+                destination,
+                std.Io.Threaded.global_single_threaded.io(),
+            ) catch {};
+        }
+    }
+
+    try std.Io.Dir.rename(
+        std.Io.Dir.cwd(),
+        staged_root,
+        std.Io.Dir.cwd(),
+        destination,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
+    deleteTreeBestEffort(backup_root);
 }
 
 fn gitChildEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
@@ -714,6 +1127,7 @@ fn gitChildEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
     try putCurrentEnvIfPresent(&child_env, "SSL_CERT_FILE");
     try putCurrentEnvIfPresent(&child_env, "SSL_CERT_DIR");
     try child_env.put("GIT_TERMINAL_PROMPT", "0");
+    try child_env.put("GIT_OPTIONAL_LOCKS", "0");
     return child_env;
 }
 
@@ -793,6 +1207,7 @@ fn marketplaceEntryForUpdate(allocator: std.mem.Allocator, bytes: []const u8, up
 fn cloneMarketplaceEntry(allocator: std.mem.Allocator, entry: MarketplaceEntry) !MarketplaceEntry {
     var cloned = MarketplaceEntry{ .name = try allocator.dupe(u8, entry.name) };
     errdefer cloned.deinit(allocator);
+    if (entry.last_revision) |value| cloned.last_revision = try allocator.dupe(u8, value);
     if (entry.source_type) |value| cloned.source_type = try allocator.dupe(u8, value);
     if (entry.source) |value| cloned.source = try allocator.dupe(u8, value);
     if (entry.ref_name) |value| cloned.ref_name = try allocator.dupe(u8, value);
@@ -845,7 +1260,13 @@ fn marketplaceEntries(allocator: std.mem.Allocator, bytes: []const u8) ![]Market
             continue;
         }
         if (current) |*entry| {
-            if (tomlStringValueForKey(allocator, trimmed, "source_type") catch |err| switch (err) {
+            if (tomlStringValueForKey(allocator, trimmed, "last_revision") catch |err| switch (err) {
+                error.InvalidTomlString => null,
+                else => return err,
+            }) |value| {
+                if (entry.last_revision) |existing| allocator.free(existing);
+                entry.last_revision = value;
+            } else if (tomlStringValueForKey(allocator, trimmed, "source_type") catch |err| switch (err) {
                 error.InvalidTomlString => null,
                 else => return err,
             }) |value| {

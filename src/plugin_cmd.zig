@@ -27,7 +27,7 @@ pub fn printHelp() void {
         \\Subcommands:
         \\  marketplace       Manage plugin marketplaces
         \\
-        \\Marketplace behavior is parsed but not implemented yet.
+        \\Use `codex-zig plugin marketplace --help` for marketplace commands.
         \\
     , .{});
 }
@@ -46,7 +46,7 @@ fn runMarketplace(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         return;
     }
     if (std.mem.eql(u8, subcommand, "upgrade")) {
-        try runMarketplaceUpgrade(args);
+        try runMarketplaceUpgrade(allocator, args);
         return;
     }
     if (std.mem.eql(u8, subcommand, "remove")) {
@@ -103,8 +103,8 @@ fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Itera
     try addMarketplaceAndPrint(allocator, source_value, ref_name, sparse_paths.items);
 }
 
-fn runMarketplaceUpgrade(args: *std.process.Args.Iterator) !void {
-    var has_marketplace_name = false;
+fn runMarketplaceUpgrade(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var marketplace_name: ?[]const u8 = null;
 
     while (args.next()) |arg| {
         if (isHelpFlag(arg)) {
@@ -112,11 +112,11 @@ fn runMarketplaceUpgrade(args: *std.process.Args.Iterator) !void {
             return;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownPluginMarketplaceUpgradeOption;
-        if (has_marketplace_name) return error.UnexpectedPluginMarketplaceArgument;
-        has_marketplace_name = true;
+        if (marketplace_name != null) return error.UnexpectedPluginMarketplaceArgument;
+        marketplace_name = arg;
     }
 
-    return notImplemented("plugin marketplace upgrade");
+    return upgradeMarketplacesAndPrint(allocator, marketplace_name);
 }
 
 fn runMarketplaceRemove(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -131,11 +131,6 @@ fn runMarketplaceRemove(allocator: std.mem.Allocator, args: *std.process.Args.It
     if (std.mem.startsWith(u8, marketplace_name, "-")) return error.MissingPluginMarketplaceName;
     if (args.next() != null) return error.UnexpectedPluginMarketplaceArgument;
     try removeMarketplaceAndPrint(allocator, marketplace_name);
-}
-
-fn notImplemented(command: []const u8) !void {
-    std.debug.print("codex-zig {s} is parsed but not implemented yet\n", .{command});
-    return error.PluginCommandNotImplemented;
 }
 
 fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_name: ?[]const u8, sparse_paths: []const []const u8) !void {
@@ -159,6 +154,53 @@ fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_
         std.debug.print("Added marketplace `{s}` from {s}.\n", .{ add.marketplace_name, add.source_display });
     }
     std.debug.print("Installed marketplace root: {s}\n", .{add.installed_root});
+}
+
+fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?[]const u8) !void {
+    const codex_home = try config.resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const upgraded = marketplace_config.upgradeMarketplaces(allocator, codex_home, config_bytes orelse "", marketplace_name) catch |err| {
+        try printUpgradeFatalError(allocator, marketplace_name, err);
+        return err;
+    };
+    defer upgraded.deinit(allocator);
+
+    if (upgraded.upgraded_roots.len > 0) {
+        try config.writeConfigTomlFile(config_path, upgraded.updated_config);
+    }
+
+    if (upgraded.errors.len > 0) {
+        for (upgraded.errors) |failure| {
+            std.debug.print("Failed to upgrade marketplace `{s}`: {s}\n", .{ failure.marketplace_name, failure.message });
+        }
+        std.debug.print("{d} upgrade failure(s) occurred.\n", .{upgraded.errors.len});
+        return error.PluginMarketplaceUpgradeFailed;
+    }
+
+    if (upgraded.upgraded_roots.len == 0) {
+        if (marketplace_name) |name| {
+            std.debug.print("Marketplace `{s}` is already up to date.\n", .{name});
+        } else if (upgraded.selected_marketplaces.len == 0) {
+            std.debug.print("No configured Git marketplaces to upgrade.\n", .{});
+        } else {
+            std.debug.print("All configured Git marketplaces are already up to date.\n", .{});
+        }
+        return;
+    }
+
+    if (marketplace_name) |name| {
+        std.debug.print("Upgraded marketplace `{s}` to the latest configured revision.\n", .{name});
+    } else {
+        std.debug.print("Upgraded {d} marketplace(s).\n", .{upgraded.upgraded_roots.len});
+    }
+    for (upgraded.upgraded_roots) |root| {
+        std.debug.print("Installed marketplace root: {s}\n", .{root});
+    }
 }
 
 fn removeMarketplaceAndPrint(allocator: std.mem.Allocator, marketplace_name: []const u8) !void {
@@ -197,6 +239,22 @@ fn printAddError(allocator: std.mem.Allocator, err: anyerror) !void {
         error.GitCommandFailed => std.debug.print("failed to clone marketplace git source\n", .{}),
         else => {
             const message = try std.fmt.allocPrint(allocator, "failed to add marketplace: {s}\n", .{@errorName(err)});
+            defer allocator.free(message);
+            std.debug.print("{s}", .{message});
+        },
+    };
+}
+
+fn printUpgradeFatalError(allocator: std.mem.Allocator, marketplace_name: ?[]const u8, err: anyerror) !void {
+    return switch (err) {
+        error.MarketplaceNotConfiguredAsGit => {
+            const name = marketplace_name orelse "";
+            const message = try std.fmt.allocPrint(allocator, "marketplace `{s}` is not configured as a Git marketplace\n", .{name});
+            defer allocator.free(message);
+            std.debug.print("{s}", .{message});
+        },
+        else => {
+            const message = try std.fmt.allocPrint(allocator, "failed to upgrade marketplace: {s}\n", .{@errorName(err)});
             defer allocator.free(message);
             std.debug.print("{s}", .{message});
         },

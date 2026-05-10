@@ -918,6 +918,7 @@ fn handleMarketplaceMethod(
         if (validateMarketplaceUpgradeParams(params_value)) |message| {
             return try renderJsonRpcError(allocator, id_value, -32602, message);
         }
+        return handleMarketplaceUpgrade(allocator, id_value, params_value);
     }
 
     const message = try std.fmt.allocPrint(
@@ -990,6 +991,36 @@ fn handleMarketplaceRemove(allocator: std.mem.Allocator, id_value: std.json.Valu
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
+fn handleMarketplaceUpgrade(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const marketplace_name = if (params_value) |value| optionalStringField(value.object, "marketplaceName") else null;
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to read config.toml", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const upgraded = marketplace_config.upgradeMarketplaces(allocator, codex_home, config_bytes orelse "", marketplace_name) catch |err| {
+        return renderMarketplaceUpgradeError(allocator, id_value, marketplace_name, err);
+    };
+    defer upgraded.deinit(allocator);
+
+    if (upgraded.upgraded_roots.len > 0) {
+        config.writeConfigTomlFile(config_path, upgraded.updated_config) catch |err| {
+            return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to write config.toml", err);
+        };
+    }
+
+    const result = try renderMarketplaceUpgradeResult(allocator, upgraded);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
 fn optionalStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const value = object.get(field) orelse return null;
     if (value == .null) return null;
@@ -1020,6 +1051,18 @@ fn renderMarketplaceAddError(allocator: std.mem.Allocator, id_value: std.json.Va
         error.MarketplaceAlreadyAddedDifferentSource => renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplace is already added from a different source; remove it before adding this source"),
         error.GitCommandFailed => renderJsonRpcError(allocator, id_value, -32603, "failed to clone marketplace git source"),
         else => renderJsonRpcErrorForFailure(allocator, id_value, "failed to add marketplace", err),
+    };
+}
+
+fn renderMarketplaceUpgradeError(allocator: std.mem.Allocator, id_value: std.json.Value, marketplace_name: ?[]const u8, err: anyerror) ![]const u8 {
+    return switch (err) {
+        error.MarketplaceNotConfiguredAsGit => blk: {
+            const name = marketplace_name orelse "";
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: marketplace `{s}` is not configured as a Git marketplace", .{name});
+            defer allocator.free(message);
+            break :blk renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        else => renderJsonRpcErrorForFailure(allocator, id_value, "failed to upgrade marketplace", err),
     };
 }
 
@@ -1060,6 +1103,26 @@ fn renderMarketplaceRemoveResult(allocator: std.mem.Allocator, marketplace_name:
         try result.appendSlice(allocator, "null");
     }
     try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderMarketplaceUpgradeResult(allocator: std.mem.Allocator, upgraded: marketplace_config.UpgradeResult) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"selectedMarketplaces\":");
+    try appendJsonStringArray(allocator, &result, upgraded.selected_marketplaces);
+    try result.appendSlice(allocator, ",\"upgradedRoots\":");
+    try appendJsonStringArray(allocator, &result, upgraded.upgraded_roots);
+    try result.appendSlice(allocator, ",\"errors\":[");
+    for (upgraded.errors, 0..) |failure, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"marketplaceName\":");
+        try appendJsonString(allocator, &result, failure.marketplace_name);
+        try result.appendSlice(allocator, ",\"message\":");
+        try appendJsonString(allocator, &result, failure.message);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "]}");
     return result.toOwnedSlice(allocator);
 }
 
@@ -4876,7 +4939,7 @@ test "app-server initialize result exposes server info" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\"capabilities\":{}") != null);
 }
 
-test "app-server marketplace methods validate params and preserve unsupported stubs" {
+test "app-server marketplace methods validate params" {
     const allocator = std.testing.allocator;
     var state = AppServerState{};
     defer state.deinit(allocator);
@@ -4901,10 +4964,11 @@ test "app-server marketplace methods validate params and preserve unsupported st
     const valid_upgrade = try handleJsonRpcLine(
         allocator,
         &state,
-        "{\"jsonrpc\":\"2.0\",\"id\":\"upgrade\",\"method\":\"marketplace/upgrade\",\"params\":{\"marketplaceName\":null}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"upgrade\",\"method\":\"marketplace/upgrade\",\"params\":{\"marketplaceName\":\"unit-missing-marketplace\"}}",
     );
     defer allocator.free(valid_upgrade.?);
-    try std.testing.expect(std.mem.indexOf(u8, valid_upgrade.?, "\"code\":-32603") != null);
+    try std.testing.expect(std.mem.indexOf(u8, valid_upgrade.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, valid_upgrade.?, "is not configured as a Git marketplace") != null);
 
     const invalid_add = try handleJsonRpcLine(
         allocator,
