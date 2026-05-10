@@ -990,6 +990,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/list")) {
         return handlePluginList(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/read")) {
+        return handlePluginRead(allocator, id_value, params_value);
+    }
 
     if (validatePluginParams(method, params_value)) |message| {
         return try renderJsonRpcError(allocator, id_value, -32602, message);
@@ -1205,6 +1208,87 @@ fn parsePluginListIncludeLocal(value_opt: ?std.json.Value) !bool {
         if (std.mem.eql(u8, item.string, "local")) include_local = true;
     }
     return include_local;
+}
+
+fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginReadParams(params_value) catch |err| switch (err) {
+        error.InvalidPluginReadParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/read params must be an object"),
+        error.InvalidPluginReadPluginName => return renderJsonRpcError(allocator, id_value, -32602, "pluginName must be a string"),
+        error.InvalidPluginReadSource => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin/read requires exactly one of marketplacePath or remoteMarketplaceName"),
+        error.InvalidPluginReadMarketplacePath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplacePath must be an absolute path"),
+    };
+
+    if (params.remote_marketplace_name != null) {
+        return renderJsonRpcError(allocator, id_value, -32603, "app-server remote plugin/read is parsed but not implemented yet");
+    }
+    const marketplace_path = params.marketplace_path.?;
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const result = plugin_list.renderReadResponse(allocator, codex_home, config_bytes orelse "", marketplace_path, params.plugin_name) catch |err| switch (err) {
+        plugin_list.ReadError.InvalidMarketplaceFile => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace file"),
+        plugin_list.ReadError.PluginNotFound => {
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: plugin `{s}` was not found", .{params.plugin_name});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        plugin_list.ReadError.MissingPluginManifest => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing or invalid plugin.json"),
+        plugin_list.ReadError.PluginsDisabled => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugins are disabled"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed", err),
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+const ParsedPluginReadParams = struct {
+    plugin_name: []const u8,
+    marketplace_path: ?[]const u8,
+    remote_marketplace_name: ?[]const u8,
+};
+
+fn parsePluginReadParams(params_value: ?std.json.Value) !ParsedPluginReadParams {
+    const params = params_value orelse return error.InvalidPluginReadParams;
+    if (params != .object) return error.InvalidPluginReadParams;
+    const object = params.object;
+    const plugin_name = stringFieldForPluginParams(object, "pluginName") orelse return error.InvalidPluginReadPluginName;
+    const marketplace_path = optionalStringForPluginParams(object, "marketplacePath") catch return error.InvalidPluginReadParams;
+    const remote_marketplace_name = optionalStringForPluginParams(object, "remoteMarketplaceName") catch return error.InvalidPluginReadParams;
+    if ((marketplace_path == null and remote_marketplace_name == null) or (marketplace_path != null and remote_marketplace_name != null)) {
+        return error.InvalidPluginReadSource;
+    }
+    if (marketplace_path) |path| {
+        if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.InvalidPluginReadMarketplacePath;
+    }
+    return .{
+        .plugin_name = plugin_name,
+        .marketplace_path = marketplace_path,
+        .remote_marketplace_name = remote_marketplace_name,
+    };
+}
+
+fn stringFieldForPluginParams(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn optionalStringForPluginParams(object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidOptionalPluginString;
+    return value.string;
 }
 
 const ParsedPluginListParams = struct {
@@ -4084,7 +4168,6 @@ test "app-server plugin methods validate params and return not implemented" {
     defer state.deinit(allocator);
 
     const cases = [_][]const u8{
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\",\"remoteMarketplaceName\":null,\"pluginName\":\"gmail\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-skill-read\",\"method\":\"plugin/skill/read\",\"params\":{\"remoteMarketplaceName\":\"chatgpt-global\",\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"skillName\":\"plan-work\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-update\",\"method\":\"plugin/share/updateTargets\",\"params\":{\"remotePluginId\":\"plugins~Plugin_00000000000000000000000000000000\",\"shareTargets\":[{\"principalType\":\"workspace\",\"principalId\":\"workspace-1\"}]}}",
@@ -4104,10 +4187,18 @@ test "app-server plugin methods validate params and return not implemented" {
     const invalid_read = try handleJsonRpcLine(
         allocator,
         &state,
-        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-read\",\"method\":\"plugin/read\",\"params\":{\"pluginName\":\"gmail\"}}",
     );
     defer allocator.free(invalid_read.?);
-    try std.testing.expect(std.mem.indexOf(u8, invalid_read.?, "\"code\":-32602") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_read.?, "\"code\":-32600") != null);
+
+    const invalid_read_sources = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-read-sources\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\",\"remoteMarketplaceName\":\"debug\",\"pluginName\":\"gmail\"}}",
+    );
+    defer allocator.free(invalid_read_sources.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_read_sources.?, "\"code\":-32600") != null);
 
     const invalid_kind = try handleJsonRpcLine(
         allocator,
