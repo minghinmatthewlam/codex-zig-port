@@ -106,6 +106,37 @@ class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
 class PluginBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
 
+    def do_POST(self) -> None:
+        PluginBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+            }
+        )
+        uninstall_path = (
+            "/backend-api/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+            "/uninstall"
+        )
+        if self.path != uninstall_path:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "id": "plugins~Plugin_00000000000000000000000000000000",
+                "enabled": False,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
         PluginBackendHandler.requests.append(
             {
@@ -1159,6 +1190,77 @@ remote_plugin = true
         )
         assert invalid_skill["id"] == "plugin-skill-read-invalid"
         assert invalid_skill["error"]["code"] == -32600
+
+        current_cache = (
+            remote_home
+            / "plugins"
+            / "cache"
+            / "chatgpt-global"
+            / "linear"
+            / "1.0.0"
+            / ".codex-plugin"
+        )
+        legacy_cache = (
+            remote_home
+            / "plugins"
+            / "cache"
+            / "chatgpt-global"
+            / "plugins~Plugin_00000000000000000000000000000000"
+            / "local"
+            / ".codex-plugin"
+        )
+        current_cache.mkdir(parents=True)
+        legacy_cache.mkdir(parents=True)
+        current_cache.joinpath("plugin.json").write_text(
+            json.dumps({"name": "linear", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        legacy_cache.joinpath("plugin.json").write_text(
+            json.dumps({"name": "linear"}),
+            encoding="utf-8",
+        )
+        PluginBackendHandler.requests = []
+        remote_plugin_uninstall = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-plugin-uninstall",
+                "method": "plugin/uninstall",
+                "params": {
+                    "pluginId": "plugins~Plugin_00000000000000000000000000000000"
+                },
+            },
+            remote_env,
+        )
+        assert remote_plugin_uninstall["id"] == "remote-plugin-uninstall"
+        assert remote_plugin_uninstall["result"] == {}
+        assert not (remote_home / "plugins" / "cache" / "chatgpt-global" / "linear").exists()
+        assert not (
+            remote_home
+            / "plugins"
+            / "cache"
+            / "chatgpt-global"
+            / "plugins~Plugin_00000000000000000000000000000000"
+        ).exists()
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": (
+                    "/backend-api/plugins/"
+                    "plugins~Plugin_00000000000000000000000000000000"
+                    "/uninstall"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
     finally:
         server.shutdown()
         server.server_close()
