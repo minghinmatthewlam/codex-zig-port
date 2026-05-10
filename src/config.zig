@@ -749,6 +749,18 @@ pub fn namedSectionStringValue(
     return (ConfigView{ .bytes = bytes }).getNamedSectionString(allocator, section_prefix, section_name, key);
 }
 
+pub fn sectionStringValue(allocator: std.mem.Allocator, bytes: []const u8, section_name: []const u8, key: []const u8) !?[]const u8 {
+    return (ConfigView{ .bytes = bytes }).getSectionString(allocator, section_name, key);
+}
+
+pub fn sectionStringArrayValue(allocator: std.mem.Allocator, bytes: []const u8, section_name: []const u8, key: []const u8) !?StringList {
+    return (ConfigView{ .bytes = bytes }).getSectionStringArray(allocator, section_name, key);
+}
+
+pub fn sectionBoolValue(bytes: []const u8, section_name: []const u8, key: []const u8) ?bool {
+    return (ConfigView{ .bytes = bytes }).getSectionBool(section_name, key);
+}
+
 pub fn persistTuiTheme(allocator: std.mem.Allocator, codex_home: []const u8, name: []const u8) !void {
     const bytes = try readConfigToml(allocator, codex_home);
     defer if (bytes) |value| allocator.free(value);
@@ -1151,6 +1163,26 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getSectionBool(
+        self: ConfigView,
+        section_name: []const u8,
+        key: []const u8,
+    ) ?bool {
+        var in_section = false;
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_section = isExactSection(line, section_name);
+                continue;
+            }
+            if (!in_section) continue;
+            if (boolValueForKey(line, key)) |value| return value;
+        }
+        return null;
+    }
+
     fn getTopLevelString(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
@@ -1271,7 +1303,7 @@ fn boolValueForKey(line: []const u8, key: []const u8) ?bool {
     return null;
 }
 
-fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
+pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
     if (rhs.len < 2 or rhs[0] != '"') return null;
 
     var output = std.ArrayList(u8).empty;

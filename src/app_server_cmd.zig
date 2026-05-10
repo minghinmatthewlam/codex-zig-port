@@ -3551,10 +3551,15 @@ fn handleConfigRead(
             for (origin_keys) |key| allocator.free(key);
             allocator.free(origin_keys);
         }
+        var tools = try loadConfigReadUserTools(allocator, bytes);
+        errdefer tools.deinit(allocator);
+        const version = try configVersionAlloc(allocator, bytes);
+        errdefer allocator.free(version);
         user_layer = .{
             .file_path = config_path,
-            .version = try configVersionAlloc(allocator, bytes),
+            .version = version,
             .origin_keys = origin_keys,
+            .tools = tools,
         };
     }
 
@@ -3721,6 +3726,7 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
     const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
+    try appendConfigReadToolsField(allocator, &result, &first, if (user_layer) |layer| layer.tools else null);
     const model_reasoning_effort = project_layers.modelReasoningEffort() orelse cfg.model_reasoning_effort;
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
     const service_tier = project_layers.serviceTier() orelse cfg.service_tier;
@@ -3822,13 +3828,181 @@ const ConfigReadUserLayer = struct {
     file_path: []const u8,
     version: []const u8,
     origin_keys: []const []const u8,
+    tools: ConfigReadTools,
 
     fn deinit(self: *ConfigReadUserLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.version);
         for (self.origin_keys) |key| allocator.free(key);
         allocator.free(self.origin_keys);
+        self.tools.deinit(allocator);
     }
 };
+
+const ConfigReadTools = struct {
+    present: bool = false,
+    web_search: ?ConfigReadWebSearchTool = null,
+    view_image: ?bool = null,
+
+    fn deinit(self: *ConfigReadTools, allocator: std.mem.Allocator) void {
+        if (self.web_search) |*tool| tool.deinit(allocator);
+    }
+};
+
+const ConfigReadWebSearchTool = struct {
+    context_size: ?[]const u8 = null,
+    allowed_domains: ?config.StringList = null,
+    location: ?ConfigReadWebSearchLocation = null,
+
+    fn deinit(self: *ConfigReadWebSearchTool, allocator: std.mem.Allocator) void {
+        if (self.context_size) |value| allocator.free(value);
+        if (self.allowed_domains) |*domains| domains.deinit(allocator);
+        if (self.location) |*location| location.deinit(allocator);
+    }
+};
+
+const ConfigReadWebSearchLocation = struct {
+    country: ?[]const u8 = null,
+    region: ?[]const u8 = null,
+    city: ?[]const u8 = null,
+    timezone: ?[]const u8 = null,
+
+    fn deinit(self: *ConfigReadWebSearchLocation, allocator: std.mem.Allocator) void {
+        if (self.country) |value| allocator.free(value);
+        if (self.region) |value| allocator.free(value);
+        if (self.city) |value| allocator.free(value);
+        if (self.timezone) |value| allocator.free(value);
+    }
+};
+
+fn loadConfigReadUserTools(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadTools {
+    var tools = ConfigReadTools{};
+    errdefer tools.deinit(allocator);
+
+    if (configReadSectionHasKey(bytes, "tools", "web_search")) {
+        tools.present = true;
+    }
+    if (config.sectionBoolValue(bytes, "tools", "view_image")) |value| {
+        tools.view_image = value;
+        tools.present = true;
+    }
+    if (try loadConfigReadWebSearchTool(allocator, bytes)) |web_search| {
+        tools.web_search = web_search;
+        tools.present = true;
+    }
+
+    return tools;
+}
+
+fn loadConfigReadWebSearchTool(allocator: std.mem.Allocator, bytes: []const u8) !?ConfigReadWebSearchTool {
+    if (!configReadSectionExists(bytes, "tools.web_search")) return null;
+
+    var tool = ConfigReadWebSearchTool{};
+    errdefer tool.deinit(allocator);
+
+    if (try config.sectionStringValue(allocator, bytes, "tools.web_search", "context_size")) |value| {
+        errdefer allocator.free(value);
+        if (!isConfigReadWebSearchContextSize(value)) return error.InvalidConfigReadWebSearchContextSize;
+        tool.context_size = value;
+    }
+    if (try config.sectionStringArrayValue(allocator, bytes, "tools.web_search", "allowed_domains")) |domains| {
+        tool.allowed_domains = domains;
+    }
+    if (configReadSectionRawValue(bytes, "tools.web_search", "location")) |raw_location| {
+        tool.location = try parseConfigReadWebSearchLocation(allocator, raw_location);
+    }
+
+    return tool;
+}
+
+fn isConfigReadWebSearchContextSize(value: []const u8) bool {
+    return std.mem.eql(u8, value, "low") or
+        std.mem.eql(u8, value, "medium") or
+        std.mem.eql(u8, value, "high");
+}
+
+fn parseConfigReadWebSearchLocation(allocator: std.mem.Allocator, raw: []const u8) !ConfigReadWebSearchLocation {
+    const trimmed = std.mem.trim(u8, raw, " \t\r");
+    if (trimmed.len < 2 or trimmed[0] != '{') return error.InvalidConfigReadWebSearchLocation;
+    const close_index = std.mem.lastIndexOfScalar(u8, trimmed, '}') orelse return error.InvalidConfigReadWebSearchLocation;
+    const body = trimmed[1..close_index];
+
+    var location = ConfigReadWebSearchLocation{};
+    errdefer location.deinit(allocator);
+
+    var fields = std.mem.splitScalar(u8, body, ',');
+    while (fields.next()) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadWebSearchLocation;
+        const key = std.mem.trim(u8, field[0..eq], " \t\r\n");
+        if (!configReadWebSearchLocationKeySupported(key)) continue;
+
+        const value_rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        const value = try config.parseTomlString(allocator, value_rhs) orelse return error.InvalidConfigReadWebSearchLocation;
+        errdefer allocator.free(value);
+        if (std.mem.eql(u8, key, "country")) {
+            if (location.country) |existing| allocator.free(existing);
+            location.country = value;
+        } else if (std.mem.eql(u8, key, "region")) {
+            if (location.region) |existing| allocator.free(existing);
+            location.region = value;
+        } else if (std.mem.eql(u8, key, "city")) {
+            if (location.city) |existing| allocator.free(existing);
+            location.city = value;
+        } else if (std.mem.eql(u8, key, "timezone")) {
+            if (location.timezone) |existing| allocator.free(existing);
+            location.timezone = value;
+        }
+    }
+
+    return location;
+}
+
+fn configReadWebSearchLocationKeySupported(key: []const u8) bool {
+    return std.mem.eql(u8, key, "country") or
+        std.mem.eql(u8, key, "region") or
+        std.mem.eql(u8, key, "city") or
+        std.mem.eql(u8, key, "timezone");
+}
+
+fn configReadSectionExists(bytes: []const u8, section_name: []const u8) bool {
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (configReadLineIsExactSection(line, section_name)) return true;
+    }
+    return false;
+}
+
+fn configReadSectionHasKey(bytes: []const u8, section_name: []const u8, key: []const u8) bool {
+    return configReadSectionRawValue(bytes, section_name, key) != null;
+}
+
+fn configReadSectionRawValue(bytes: []const u8, section_name: []const u8, key: []const u8) ?[]const u8 {
+    var in_section = false;
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_section = configReadLineIsExactSection(line, section_name);
+            continue;
+        }
+        if (!in_section) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        if (!std.mem.eql(u8, lhs, key)) continue;
+        return std.mem.trim(u8, line[eq + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn configReadLineIsExactSection(line: []const u8, section_name: []const u8) bool {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    return std.mem.eql(u8, section, section_name);
+}
 
 const ConfigReadSection = enum {
     top_level,
@@ -4081,8 +4255,46 @@ fn appendConfigReadOrigins(
             if (project_layers.hasOriginKey(key)) continue;
             try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
         }
+        try appendConfigReadUserToolsOrigins(allocator, result, &first, layer);
     }
     try result.append(allocator, '}');
+}
+
+fn appendConfigReadUserToolsOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+) !void {
+    if (layer.tools.web_search) |web_search| {
+        if (web_search.context_size != null) {
+            try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.web_search.context_size");
+        }
+        if (web_search.allowed_domains) |domains| {
+            for (domains.items, 0..) |_, index| {
+                const key = try std.fmt.allocPrint(allocator, "tools.web_search.allowed_domains.{d}", .{index});
+                defer allocator.free(key);
+                try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+            }
+        }
+        if (web_search.location) |location| {
+            if (location.country != null) {
+                try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.web_search.location.country");
+            }
+            if (location.region != null) {
+                try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.web_search.location.region");
+            }
+            if (location.city != null) {
+                try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.web_search.location.city");
+            }
+            if (location.timezone != null) {
+                try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.web_search.location.timezone");
+            }
+        }
+    }
+    if (layer.tools.view_image != null) {
+        try appendConfigReadUserOrigin(allocator, result, first, layer, "tools.view_image");
+    }
 }
 
 fn configReadProjectSliceHasOriginKey(layers: []const ConfigReadProjectLayer, key: []const u8) bool {
@@ -4202,7 +4414,7 @@ fn appendConfigReadUserLayer(
     defer allocator.free(version_json);
     try result.appendSlice(allocator, version_json);
     try result.appendSlice(allocator, ",\"config\":");
-    try appendConfigReadUserLayerConfig(allocator, result, cfg, layer.origin_keys);
+    try appendConfigReadUserLayerConfig(allocator, result, cfg, layer);
     try result.append(allocator, '}');
 }
 
@@ -4272,11 +4484,11 @@ fn appendConfigReadUserLayerConfig(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     cfg: config.Config,
-    origin_keys: []const []const u8,
+    layer: ConfigReadUserLayer,
 ) !void {
     try result.append(allocator, '{');
     var first = true;
-    for (origin_keys) |key| {
+    for (layer.origin_keys) |key| {
         if (std.mem.eql(u8, key, "model")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.model);
         } else if (std.mem.eql(u8, key, "profile")) {
@@ -4298,6 +4510,10 @@ fn appendConfigReadUserLayerConfig(
         } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.chatgpt_base_url);
         }
+    }
+    if (layer.tools.present) {
+        try appendJsonFieldName(allocator, result, &first, "tools");
+        try appendConfigReadToolsObject(allocator, result, layer.tools);
     }
     try result.append(allocator, '}');
 }
@@ -4328,6 +4544,93 @@ fn appendJsonMaybeStringField(
         try appendJsonFieldName(allocator, result, first, name);
         try result.appendSlice(allocator, "null");
     }
+}
+
+fn appendJsonMaybeBoolField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?bool,
+) !void {
+    try appendJsonFieldName(allocator, result, first, name);
+    if (value) |boolean| {
+        try result.appendSlice(allocator, if (boolean) "true" else "false");
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendConfigReadToolsField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    tools: ?ConfigReadTools,
+) !void {
+    try appendJsonFieldName(allocator, result, first, "tools");
+    if (tools) |value| {
+        if (!value.present) {
+            try result.appendSlice(allocator, "null");
+            return;
+        }
+        try appendConfigReadToolsObject(allocator, result, value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendConfigReadToolsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    tools: ConfigReadTools,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonFieldName(allocator, result, &first, "web_search");
+    if (tools.web_search) |web_search| {
+        try appendConfigReadWebSearchTool(allocator, result, web_search);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try appendJsonMaybeBoolField(allocator, result, &first, "view_image", tools.view_image);
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadWebSearchTool(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    web_search: ConfigReadWebSearchTool,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonMaybeStringField(allocator, result, &first, "context_size", web_search.context_size);
+    try appendJsonFieldName(allocator, result, &first, "allowed_domains");
+    if (web_search.allowed_domains) |domains| {
+        try appendJsonStringArray(allocator, result, domains.items);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try appendJsonFieldName(allocator, result, &first, "location");
+    if (web_search.location) |location| {
+        try appendConfigReadWebSearchLocation(allocator, result, location);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadWebSearchLocation(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    location: ConfigReadWebSearchLocation,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonMaybeStringField(allocator, result, &first, "country", location.country);
+    try appendJsonMaybeStringField(allocator, result, &first, "region", location.region);
+    try appendJsonMaybeStringField(allocator, result, &first, "city", location.city);
+    try appendJsonMaybeStringField(allocator, result, &first, "timezone", location.timezone);
+    try result.append(allocator, '}');
 }
 
 fn appendConfigReadFeaturesField(
