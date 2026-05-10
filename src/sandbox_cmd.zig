@@ -29,10 +29,6 @@ const SandboxArgs = struct {
         roots.deinit(allocator);
         if (self.command.len > 0) allocator.free(self.command);
     }
-
-    fn usesPermissionProfileOptions(self: SandboxArgs) bool {
-        return self.permissions_profile != null or self.include_managed_config;
-    }
 };
 
 pub const Options = struct {
@@ -69,7 +65,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (parsed.command.len == 0) return error.MissingSandboxCommand;
-    if (parsed.usesPermissionProfileOptions()) return error.SandboxPermissionProfileUnsupported;
     switch (kind) {
         .macos => if (builtin.os.tag != .macos) return error.SeatbeltUnsupported,
         .linux => return error.LinuxSandboxUnsupported,
@@ -80,6 +75,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (parsed.mode) |mode| cfg.sandbox_mode = mode;
+    if (parsed.permissions_profile) |profile| {
+        cfg.sandbox_mode = try resolveBuiltInPermissionProfile(profile);
+    }
 
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
@@ -216,6 +214,13 @@ fn runCommand(
     }
 }
 
+fn resolveBuiltInPermissionProfile(profile: []const u8) !config.SandboxMode {
+    if (std.mem.eql(u8, profile, ":read-only")) return .read_only;
+    if (std.mem.eql(u8, profile, ":workspace")) return .workspace_write;
+    if (std.mem.eql(u8, profile, ":danger-no-sandbox")) return .danger_full_access;
+    return error.SandboxPermissionProfileUnsupported;
+}
+
 fn dupeRemaining(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
     const command = try allocator.alloc([]const u8, args.len);
     errdefer allocator.free(command);
@@ -248,7 +253,7 @@ fn printMacosHelp() void {
         \\
         \\Options:
         \\  --permissions-profile NAME
-        \\                      Recognize Rust permission-profile sandbox syntax
+        \\                      Apply a Rust built-in profile: :read-only, :workspace, or :danger-no-sandbox
         \\  --include-managed-config
         \\                      Recognize managed config with --permissions-profile
         \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
@@ -290,6 +295,13 @@ test "sandbox args require permission profile for profile controls" {
 
     const managed_only = [_][]const u8{ "--include-managed-config", "--", "/bin/echo" };
     try std.testing.expectError(error.MissingSandboxPermissionsProfile, parseSandboxArgs(allocator, managed_only[0..]));
+}
+
+test "sandbox permission profile resolver supports Rust built-ins" {
+    try std.testing.expectEqual(config.SandboxMode.read_only, try resolveBuiltInPermissionProfile(":read-only"));
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, try resolveBuiltInPermissionProfile(":workspace"));
+    try std.testing.expectEqual(config.SandboxMode.danger_full_access, try resolveBuiltInPermissionProfile(":danger-no-sandbox"));
+    try std.testing.expectError(error.SandboxPermissionProfileUnsupported, resolveBuiltInPermissionProfile("custom-profile"));
 }
 
 test "sandbox macos args parse help" {
