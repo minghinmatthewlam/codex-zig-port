@@ -381,6 +381,35 @@ def run_exec_review_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_review_stdin_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-review-stdin-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        reviewed = subprocess.run(
+            [str(binary.resolve()), "review", "-"],
+            cwd=temp_root,
+            env=env,
+            input="focus on public API regressions\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert reviewed.stdout == "stored reply\n"
+        assert reviewed.stderr == "Reading review prompt from stdin...\n"
+        assert len(server.request_bodies) == 1
+        prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
+        assert "Review according to these instructions:" in prompt
+        assert "focus on public API regressions" in prompt
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_equals_options_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-options-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -548,6 +577,7 @@ def main() -> None:
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
+    run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
     run_exec_stdin_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
@@ -555,6 +585,7 @@ def main() -> None:
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
+    print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
