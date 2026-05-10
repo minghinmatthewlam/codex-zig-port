@@ -247,7 +247,8 @@ compatibility for analytics defaults plus websocket auth parsing. It also runs
 CLI smokes for profile-scoped feature enablement writes and reads, `exec review`
 dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
 exec Git-repository guard, yolo approval-policy conflicts, and removed
-`--full-auto` compatibility. App-server smokes cover profile-scoped feature
+`--full-auto` compatibility, plus rejection of the removed top-level
+`marketplace` namespace. App-server smokes cover profile-scoped feature
 enablement writes and reads. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
