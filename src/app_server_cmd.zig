@@ -42,6 +42,7 @@ const AppServerState = struct {
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
+    skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
@@ -50,6 +51,8 @@ const AppServerState = struct {
         self.fs_watches.deinit(allocator);
         for (self.skill_watch_roots.items) |root| allocator.free(root);
         self.skill_watch_roots.deinit(allocator);
+        clearSkillsListCache(allocator, self);
+        self.skills_list_cache.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
     }
@@ -62,6 +65,16 @@ const FsWatchEntry = struct {
     fn deinit(self: *FsWatchEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.watch_id);
         allocator.free(self.path);
+    }
+};
+
+const SkillsListCacheEntry = struct {
+    cwd: []const u8,
+    entry_json: []const u8,
+
+    fn deinit(self: *SkillsListCacheEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwd);
+        allocator.free(self.entry_json);
     }
 };
 
@@ -908,11 +921,23 @@ fn isPluginMarketplaceKind(value: []const u8) bool {
 const ParsedSkillsListParams = struct {
     cwds: []const []const u8,
     extra_roots_by_cwd: []skills_list.ExtraRootsForCwd,
+    force_reload: bool = false,
 
     fn deinit(self: ParsedSkillsListParams, allocator: std.mem.Allocator) void {
         allocator.free(self.cwds);
         for (self.extra_roots_by_cwd) |entry| allocator.free(entry.roots);
         allocator.free(self.extra_roots_by_cwd);
+    }
+};
+
+const SkillsListRequestCwds = struct {
+    values: []const []const u8,
+    owned: bool = false,
+
+    fn deinit(self: SkillsListRequestCwds, allocator: std.mem.Allocator) void {
+        if (!self.owned) return;
+        for (self.values) |value| allocator.free(value);
+        allocator.free(self.values);
     }
 };
 
@@ -928,15 +953,38 @@ fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_val
     };
     defer params.deinit(allocator);
 
-    var listed = skills_list.list(allocator, params.cwds, params.extra_roots_by_cwd) catch |err| {
+    const request_cwds = resolveSkillsListRequestCwds(allocator, params.cwds) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
+    };
+    defer request_cwds.deinit(allocator);
+
+    if (!params.force_reload) {
+        if (try renderCachedSkillsListResponse(allocator, state, request_cwds.values)) |cached_result| {
+            defer allocator.free(cached_result);
+            return renderJsonRpcResult(allocator, id_value, cached_result);
+        }
+    }
+
+    var listed = skills_list.list(allocator, request_cwds.values, params.extra_roots_by_cwd) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
     };
     defer listed.deinit(allocator);
     try registerSkillWatchRoots(allocator, state, listed, params.extra_roots_by_cwd);
+    try updateSkillsListCache(allocator, state, listed);
 
     const result = try renderSkillsListResponse(allocator, listed);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn resolveSkillsListRequestCwds(allocator: std.mem.Allocator, cwds: []const []const u8) !SkillsListRequestCwds {
+    if (cwds.len != 0) return .{ .values = cwds };
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    errdefer allocator.free(cwd);
+    const values = try allocator.alloc([]const u8, 1);
+    values[0] = cwd;
+    return .{ .values = values, .owned = true };
 }
 
 fn parseSkillsListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedSkillsListParams {
@@ -948,6 +996,10 @@ fn parseSkillsListParams(allocator: std.mem.Allocator, params_value: ?std.json.V
     if (params.object.get("forceReload")) |force_reload| {
         if (force_reload != .null and force_reload != .bool) return error.InvalidSkillsListForceReload;
     }
+    const force_reload = if (params.object.get("forceReload")) |value|
+        value == .bool and value.bool
+    else
+        false;
 
     const cwds = try parseOptionalStringArray(allocator, params.object.get("cwds"), error.InvalidSkillsListCwds);
     errdefer allocator.free(cwds);
@@ -957,7 +1009,7 @@ fn parseSkillsListParams(allocator: std.mem.Allocator, params_value: ?std.json.V
         allocator.free(extra_roots);
     }
 
-    return .{ .cwds = cwds, .extra_roots_by_cwd = extra_roots };
+    return .{ .cwds = cwds, .extra_roots_by_cwd = extra_roots, .force_reload = force_reload };
 }
 
 fn parseOptionalStringArray(
@@ -1037,6 +1089,65 @@ fn appendSkillsListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u
         try appendSkillErrorJson(allocator, out, skill_error);
     }
     try out.appendSlice(allocator, "]}");
+}
+
+fn renderCachedSkillsListResponse(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    cwds: []const []const u8,
+) !?[]const u8 {
+    if (cwds.len == 0) return null;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"data\":[");
+    for (cwds, 0..) |cwd, index| {
+        const cached = findSkillsListCacheEntry(state, cwd) orelse return null;
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, cached.entry_json);
+    }
+    try out.appendSlice(allocator, "]}");
+    return try out.toOwnedSlice(allocator);
+}
+
+fn updateSkillsListCache(allocator: std.mem.Allocator, state: *AppServerState, result: skills_list.Result) !void {
+    for (result.entries) |entry| {
+        var entry_json = std.ArrayList(u8).empty;
+        errdefer entry_json.deinit(allocator);
+        try appendSkillsListEntryJson(allocator, &entry_json, entry);
+        const owned_entry_json = try entry_json.toOwnedSlice(allocator);
+        errdefer allocator.free(owned_entry_json);
+
+        if (findSkillsListCacheEntryIndex(state, entry.cwd)) |index| {
+            allocator.free(state.skills_list_cache.items[index].entry_json);
+            state.skills_list_cache.items[index].entry_json = owned_entry_json;
+            continue;
+        }
+
+        const owned_cwd = try allocator.dupe(u8, entry.cwd);
+        errdefer allocator.free(owned_cwd);
+        try state.skills_list_cache.append(allocator, .{
+            .cwd = owned_cwd,
+            .entry_json = owned_entry_json,
+        });
+    }
+}
+
+fn findSkillsListCacheEntry(state: *const AppServerState, cwd: []const u8) ?SkillsListCacheEntry {
+    if (findSkillsListCacheEntryIndex(state, cwd)) |index| return state.skills_list_cache.items[index];
+    return null;
+}
+
+fn findSkillsListCacheEntryIndex(state: *const AppServerState, cwd: []const u8) ?usize {
+    for (state.skills_list_cache.items, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.cwd, cwd)) return index;
+    }
+    return null;
+}
+
+fn clearSkillsListCache(allocator: std.mem.Allocator, state: *AppServerState) void {
+    for (state.skills_list_cache.items) |*entry| entry.deinit(allocator);
+    state.skills_list_cache.clearRetainingCapacity();
 }
 
 fn appendSkillMetadataJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill: skills_list.Skill) !void {
@@ -1132,6 +1243,7 @@ fn queueSkillsChangedNotificationForPath(allocator: std.mem.Allocator, state: *A
 }
 
 fn queueSkillsChangedNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    clearSkillsListCache(allocator, state);
     const notification = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"method\":\"skills/changed\",\"params\":{}}");
     errdefer allocator.free(notification);
     try state.pending_notifications.append(
@@ -1714,7 +1826,7 @@ fn isConfigMethod(method: []const u8) bool {
 
 fn handleConfigMethod(
     allocator: std.mem.Allocator,
-    state: *const AppServerState,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
@@ -1723,10 +1835,14 @@ fn handleConfigMethod(
         return handleConfigRead(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "config/value/write")) {
-        return handleConfigValueWrite(allocator, id_value, params_value);
+        const response = try handleConfigValueWrite(allocator, id_value, params_value);
+        clearSkillsListCache(allocator, state);
+        return response;
     }
     if (std.mem.eql(u8, method, "config/batchWrite")) {
-        return handleConfigBatchWrite(allocator, id_value, params_value);
+        const response = try handleConfigBatchWrite(allocator, id_value, params_value);
+        clearSkillsListCache(allocator, state);
+        return response;
     }
     if (std.mem.eql(u8, method, "configRequirements/read")) {
         return handleConfigRequirementsRead(allocator, id_value, params_value);
