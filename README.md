@@ -99,7 +99,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - parse Rust-compatible `plugin marketplace add|upgrade|remove` command shapes
   with explicit not-implemented errors
 - list local app-server skills from repo, user, and per-cwd extra roots with
-  `skills/list`, including `skills/config/write` enablement toggles
+  `skills/list`, including `forceReload` cache refreshes and
+  `skills/config/write` enablement toggles
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
   `exec-server`, and `update` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
@@ -154,7 +155,8 @@ partial-reset refusal cases, then checks an explicit Unix socket and the default
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 and plugin RPC stubs, verifies app-server skills-list discovery plus
-`skills/changed` invalidations for in-process skill and config mutations, verifies
+`forceReload` cache behavior and `skills/changed` invalidations for in-process
+skill and config mutations, verifies
 app-server MCP server status pagination and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
