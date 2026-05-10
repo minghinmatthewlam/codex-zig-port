@@ -107,6 +107,69 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
 
     def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body_bytes = self.rfile.read(content_length)
+        body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else None
+        upload_url_path = "/backend-api/public/plugins/workspace/upload-url"
+        finalize_create_path = "/backend-api/public/plugins/workspace"
+        finalize_update_path = (
+            "/backend-api/public/plugins/workspace/"
+            "plugins~Plugin_00000000000000000000000000000000"
+        )
+        uninstall_path = (
+            "/backend-api/plugins/"
+            "plugins~Plugin_00000000000000000000000000000000"
+            "/uninstall"
+        )
+        if self.path == upload_url_path:
+            PluginBackendHandler.requests.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "account_id": self.headers.get("ChatGPT-Account-Id"),
+                    "content_type": self.headers.get("Content-Type"),
+                    "body": body_json,
+                }
+            )
+            body = json.dumps(
+                {
+                    "file_id": "file_123",
+                    "upload_url": f"http://{self.headers['Host']}/upload/file_123",
+                    "etag": "upload-etag-123",
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path == finalize_create_path or self.path == finalize_update_path:
+            PluginBackendHandler.requests.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "account_id": self.headers.get("ChatGPT-Account-Id"),
+                    "content_type": self.headers.get("Content-Type"),
+                    "body": body_json,
+                }
+            )
+            body = json.dumps(
+                {
+                    "plugin_id": "plugins~Plugin_11111111111111111111111111111111",
+                    "share_url": "https://chatgpt.example/plugins/share/share-key-save",
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         PluginBackendHandler.requests.append(
             {
                 "path": self.path,
@@ -114,32 +177,45 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                 "account_id": self.headers.get("ChatGPT-Account-Id"),
             }
         )
-        uninstall_path = (
-            "/backend-api/plugins/"
-            "plugins~Plugin_00000000000000000000000000000000"
-            "/uninstall"
-        )
-        if self.path != uninstall_path:
-            self.send_response(404)
+        if self.path == uninstall_path:
+            body = json.dumps(
+                {
+                    "id": "plugins~Plugin_00000000000000000000000000000000",
+                    "enabled": False,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
             return
 
-        body = json.dumps(
-            {
-                "id": "plugins~Plugin_00000000000000000000000000000000",
-                "enabled": False,
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_response(404)
         self.end_headers()
-        self.wfile.write(body)
 
     def do_PUT(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
-        body_text = self.rfile.read(content_length).decode("utf-8")
+        body_bytes = self.rfile.read(content_length)
+        upload_path = "/upload/file_123"
+        if self.path == upload_path:
+            PluginBackendHandler.requests.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "account_id": self.headers.get("ChatGPT-Account-Id"),
+                    "content_type": self.headers.get("Content-Type"),
+                    "x_ms_blob_type": self.headers.get("x-ms-blob-type"),
+                    "body_len": len(body_bytes),
+                    "body_magic": list(body_bytes[:2]),
+                }
+            )
+            self.send_response(201)
+            self.end_headers()
+            return
+
+        body_text = body_bytes.decode("utf-8")
         body_json = json.loads(body_text) if body_text else None
         PluginBackendHandler.requests.append(
             {
@@ -1346,8 +1422,91 @@ remote_plugin = true
         assert invalid_skill["id"] == "plugin-skill-read-invalid"
         assert invalid_skill["error"]["code"] == -32600
 
+        share_source = remote_home / "share-source"
+        share_source.joinpath(".codex-plugin").mkdir(parents=True)
+        share_source.joinpath("skills", "draft").mkdir(parents=True)
+        share_source.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "share-source",
+                    "interface": {"displayName": "Share Source"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        share_source.joinpath("skills", "draft", "SKILL.md").write_text(
+            "# Draft\n",
+            encoding="utf-8",
+        )
+        PluginBackendHandler.requests = []
+        plugin_share_save = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-save",
+                "method": "plugin/share/save",
+                "params": {
+                    "pluginPath": str(share_source),
+                    "remotePluginId": None,
+                    "discoverability": "PRIVATE",
+                    "shareTargets": [
+                        {"principalType": "user", "principalId": "user-1"},
+                        {"principalType": "workspace", "principalId": "workspace-1"},
+                    ],
+                },
+            },
+            remote_env,
+        )
+        assert plugin_share_save["id"] == "plugin-share-save"
+        assert plugin_share_save["result"] == {
+            "remotePluginId": "plugins~Plugin_11111111111111111111111111111111",
+            "shareUrl": "https://chatgpt.example/plugins/share/share-key-save",
+        }
+
         share_mapping = remote_home / ".tmp" / "plugin-share-local-paths-v1.json"
-        share_mapping.parent.mkdir()
+        saved_mapping = json.loads(share_mapping.read_text(encoding="utf-8"))
+        assert saved_mapping == {
+            "localPluginPathsByRemotePluginId": {
+                "plugins~Plugin_11111111111111111111111111111111": str(share_source)
+            }
+        }
+        assert len(PluginBackendHandler.requests) == 3
+        assert PluginBackendHandler.requests[0] == {
+            "path": "/backend-api/public/plugins/workspace/upload-url",
+            "authorization": f"Bearer {access_token}",
+            "account_id": "acct_123",
+            "content_type": "application/json",
+            "body": {
+                "filename": "share-source.tar.gz",
+                "mime_type": "application/gzip",
+                "size_bytes": PluginBackendHandler.requests[0]["body"]["size_bytes"],
+            },
+        }
+        assert PluginBackendHandler.requests[0]["body"]["size_bytes"] > 10
+        assert PluginBackendHandler.requests[1]["path"] == "/upload/file_123"
+        assert PluginBackendHandler.requests[1]["authorization"] is None
+        assert PluginBackendHandler.requests[1]["account_id"] is None
+        assert PluginBackendHandler.requests[1]["content_type"] == "application/gzip"
+        assert PluginBackendHandler.requests[1]["x_ms_blob_type"] == "BlockBlob"
+        assert PluginBackendHandler.requests[1]["body_len"] == PluginBackendHandler.requests[0]["body"]["size_bytes"]
+        assert PluginBackendHandler.requests[1]["body_magic"] == [0x1F, 0x8B]
+        assert PluginBackendHandler.requests[2] == {
+            "path": "/backend-api/public/plugins/workspace",
+            "authorization": f"Bearer {access_token}",
+            "account_id": "acct_123",
+            "content_type": "application/json",
+            "body": {
+                "file_id": "file_123",
+                "etag": "upload-etag-123",
+                "discoverability": "PRIVATE",
+                "share_targets": [
+                    {"principal_type": "user", "principal_id": "user-1"},
+                    {"principal_type": "workspace", "principal_id": "workspace-1"},
+                ],
+            },
+        }
+
+        share_mapping.parent.mkdir(exist_ok=True)
         local_shared_plugin = remote_home / "shared-linear"
         share_mapping.write_text(
             json.dumps(
@@ -1556,17 +1715,6 @@ remote_plugin = true
         shutil.rmtree(remote_home, ignore_errors=True)
 
     cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-share-save",
-            "method": "plugin/share/save",
-            "params": {
-                "pluginPath": "/tmp/plugins/gmail",
-                "remotePluginId": None,
-                "discoverability": "PRIVATE",
-                "shareTargets": [{"principalType": "user", "principalId": "user-1"}],
-            },
-        },
         {
             "jsonrpc": "2.0",
             "id": "plugin-install",
