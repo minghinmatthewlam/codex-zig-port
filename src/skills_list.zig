@@ -2,6 +2,7 @@ const std = @import("std");
 
 const config = @import("config.zig");
 const env = @import("env.zig");
+const plugin_config = @import("plugin_config.zig");
 
 pub const ExtraRootsForCwd = struct {
     cwd: []const u8,
@@ -110,6 +111,7 @@ pub const Result = struct {
 const Root = struct {
     path: []const u8,
     scope: []const u8,
+    skill_name_prefix: ?[]const u8 = null,
 };
 
 pub const ConfigSelector = union(enum) {
@@ -260,11 +262,15 @@ fn listForCwd(
 
     var roots = std.ArrayList(Root).empty;
     defer {
-        for (roots.items) |root| allocator.free(root.path);
+        for (roots.items) |root| {
+            allocator.free(root.path);
+            if (root.skill_name_prefix) |value| allocator.free(value);
+        }
         roots.deinit(allocator);
     }
     try appendRepoSkillRoots(allocator, &roots, cwd);
     try appendCodexHomeSkillRoot(allocator, &roots);
+    try appendPluginSkillRoots(allocator, &roots);
     try appendExtraSkillRoots(allocator, &roots, cwd, extra_roots_by_cwd);
 
     for (roots.items) |root| {
@@ -288,6 +294,59 @@ fn appendCodexHomeSkillRoot(allocator: std.mem.Allocator, roots: *std.ArrayList(
     const codex_home = resolveCodexHome(allocator) catch return;
     defer allocator.free(codex_home);
     try roots.append(allocator, .{ .path = try std.fs.path.join(allocator, &.{ codex_home, "skills" }), .scope = "user" });
+}
+
+fn appendPluginSkillRoots(allocator: std.mem.Allocator, roots: *std.ArrayList(Root)) !void {
+    const codex_home = resolveCodexHome(allocator) catch return;
+    defer allocator.free(codex_home);
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const bytes = config.readConfigTomlFile(allocator, config_path) catch return;
+    defer if (bytes) |value| allocator.free(value);
+    const contents = bytes orelse return;
+    if (!plugin_config.pluginsFeatureEnabled(contents)) return;
+
+    const plugin_ids = try plugin_config.enabledPluginIds(allocator, contents);
+    defer plugin_config.freeStringList(allocator, plugin_ids);
+    for (plugin_ids) |plugin_id| {
+        const plugin_root = (try plugin_config.localPluginRoot(allocator, codex_home, plugin_id)) orelse continue;
+        defer allocator.free(plugin_root);
+        const skills_path = try std.fs.path.join(allocator, &.{ plugin_root, "skills" });
+        errdefer allocator.free(skills_path);
+        const skill_name_prefix = try pluginSkillNamePrefix(allocator, plugin_root, plugin_id);
+        errdefer allocator.free(skill_name_prefix);
+        try roots.append(allocator, .{
+            .path = skills_path,
+            .scope = "user",
+            .skill_name_prefix = skill_name_prefix,
+        });
+    }
+}
+
+fn pluginSkillNamePrefix(allocator: std.mem.Allocator, plugin_root: []const u8, plugin_id: []const u8) ![]const u8 {
+    if (try pluginManifestName(allocator, plugin_root, ".codex-plugin")) |name| return name;
+    if (try pluginManifestName(allocator, plugin_root, ".claude-plugin")) |name| return name;
+    const parts = plugin_config.splitPluginId(plugin_id) orelse return allocator.dupe(u8, plugin_id);
+    return allocator.dupe(u8, parts.name);
+}
+
+fn pluginManifestName(allocator: std.mem.Allocator, plugin_root: []const u8, manifest_dir: []const u8) !?[]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_root, manifest_dir, "plugin.json" });
+    defer allocator.free(manifest_path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), manifest_path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const value = parsed.value.object.get("name") orelse return null;
+    if (value != .string) return null;
+    const name = std.mem.trim(u8, value.string, " \t\r\n");
+    if (name.len == 0) return null;
+    return try allocator.dupe(u8, name);
 }
 
 fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
@@ -318,7 +377,7 @@ fn scanSkillRoot(
     skills: *std.ArrayList(Skill),
     errors: *std.ArrayList(SkillError),
 ) !void {
-    try scanSkillDirectoryIfPresent(allocator, root.path, root.scope, skills, errors);
+    try scanSkillDirectoryIfPresent(allocator, root.path, root.scope, root.skill_name_prefix, skills, errors);
 
     var dir = std.Io.Dir.openDirAbsolute(std.Io.Threaded.global_single_threaded.io(), root.path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir => return,
@@ -335,7 +394,7 @@ fn scanSkillRoot(
         if (entry.kind != .directory) continue;
         const child = try std.fs.path.join(allocator, &.{ root.path, entry.name });
         defer allocator.free(child);
-        try scanSkillDirectoryIfPresent(allocator, child, root.scope, skills, errors);
+        try scanSkillDirectoryIfPresent(allocator, child, root.scope, root.skill_name_prefix, skills, errors);
     }
 }
 
@@ -343,6 +402,7 @@ fn scanSkillDirectoryIfPresent(
     allocator: std.mem.Allocator,
     directory: []const u8,
     scope: []const u8,
+    skill_name_prefix: ?[]const u8,
     skills: *std.ArrayList(Skill),
     errors: *std.ArrayList(SkillError),
 ) !void {
@@ -359,11 +419,16 @@ fn scanSkillDirectoryIfPresent(
     defer allocator.free(bytes);
 
     const metadata = parseSkillFrontmatter(bytes);
-    const name = metadata.name orelse std.fs.path.basename(directory);
+    const base_name = metadata.name orelse std.fs.path.basename(directory);
     const description = metadata.description orelse "";
     if (metadata.description == null) {
         try appendSkillError(allocator, errors, skill_path, "SKILL.md is missing description frontmatter");
     }
+    const name = if (skill_name_prefix) |prefix|
+        try std.fmt.allocPrint(allocator, "{s}:{s}", .{ prefix, base_name })
+    else
+        try allocator.dupe(u8, base_name);
+    errdefer allocator.free(name);
 
     const normalized_skill_path = try normalizePathAlloc(allocator, skill_path);
     errdefer allocator.free(normalized_skill_path);
@@ -373,7 +438,7 @@ fn scanSkillDirectoryIfPresent(
     errdefer file_metadata.deinit(allocator);
 
     try skills.append(allocator, .{
-        .name = try allocator.dupe(u8, name),
+        .name = name,
         .description = try allocator.dupe(u8, description),
         .short_description = if (metadata.short_description) |value| try allocator.dupe(u8, value) else null,
         .interface = file_metadata.interface,
@@ -1263,4 +1328,59 @@ test "skills list scans extra roots" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "skills list namespaces plugin skill names" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugin/.codex-plugin");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugin/skills/search");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugin/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"sample\"}",
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugin/skills/search/SKILL.md",
+        .data =
+        \\---
+        \\name: search
+        \\description: Search sample data
+        \\---
+        \\Use this plugin skill.
+        ,
+    });
+
+    const plugin_root = try std.fs.path.join(allocator, &.{ root, "plugin" });
+    defer allocator.free(plugin_root);
+    const skills_path = try std.fs.path.join(allocator, &.{ plugin_root, "skills" });
+    defer allocator.free(skills_path);
+    const prefix = try pluginSkillNamePrefix(allocator, plugin_root, "sample@test");
+    defer allocator.free(prefix);
+
+    var skills = std.ArrayList(Skill).empty;
+    defer {
+        for (skills.items) |skill| skill.deinit(allocator);
+        skills.deinit(allocator);
+    }
+    var errors = std.ArrayList(SkillError).empty;
+    defer {
+        for (errors.items) |err| err.deinit(allocator);
+        errors.deinit(allocator);
+    }
+    try scanSkillRoot(
+        allocator,
+        .{ .path = skills_path, .scope = "user", .skill_name_prefix = prefix },
+        &skills,
+        &errors,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), errors.items.len);
+    try std.testing.expectEqual(@as(usize, 1), skills.items.len);
+    try std.testing.expectEqualStrings("sample:search", skills.items[0].name);
+    try std.testing.expectEqualStrings("user", skills.items[0].scope);
+    try std.testing.expect(std.mem.endsWith(u8, skills.items[0].path, "plugin/skills/search/SKILL.md"));
 }
