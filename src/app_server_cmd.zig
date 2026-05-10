@@ -5078,7 +5078,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
     const env_map = if (child_env) |*map| map else null;
 
-    var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, if (disable_timeout) null else timeout_ms_i64) catch |err| switch (err) {
+    var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, if (disable_timeout) null else timeout_ms_i64, effective_output_cap) catch |err| switch (err) {
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
     };
     defer result.deinit(allocator);
@@ -5090,6 +5090,8 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
             process_id.?,
             result.stdout,
             result.stderr,
+            result.stdout_observed_len,
+            result.stderr_observed_len,
             effective_output_cap,
         );
     }
@@ -5103,11 +5105,13 @@ const CommandExecRunResult = struct {
     exit_code: i32,
     stdout: []const u8,
     stderr: []const u8,
+    stdout_observed_len: usize,
+    stderr_observed_len: usize,
 
     fn deinit(self: *CommandExecRunResult, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
         allocator.free(self.stderr);
-        self.* = .{ .exit_code = 0, .stdout = "", .stderr = "" };
+        self.* = .{ .exit_code = 0, .stdout = "", .stderr = "", .stdout_observed_len = 0, .stderr_observed_len = 0 };
     }
 };
 
@@ -5118,6 +5122,7 @@ fn runCommandExecProcess(
     cwd: std.process.Child.Cwd,
     environ_map: ?*std.process.Environ.Map,
     timeout_ms: ?i64,
+    output_bytes_cap: ?usize,
 ) !CommandExecRunResult {
     var child = try std.process.spawn(io_instance.io(), .{
         .argv = argv,
@@ -5134,24 +5139,26 @@ fn runCommandExecProcess(
     errdefer stdout.deinit(allocator);
     var stderr = std.ArrayList(u8).empty;
     errdefer stderr.deinit(allocator);
+    var stdout_observed_len: usize = 0;
+    var stderr_observed_len: usize = 0;
 
     const started = std.Io.Timestamp.now(io_instance.io(), .awake);
     while (true) {
         if (pollCommandExecChild(&child)) |term| {
             child_alive = false;
-            try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr);
-            return finishCommandExecRunResult(allocator, commandExecExitCode(term), &stdout, &stderr);
+            try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr, &stdout_observed_len, &stderr_observed_len, output_bytes_cap);
+            return finishCommandExecRunResult(allocator, commandExecExitCode(term), &stdout, &stderr, stdout_observed_len, stderr_observed_len);
         }
 
-        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, &stdout, 2);
-        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, &stderr, 2);
+        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, &stdout, &stdout_observed_len, output_bytes_cap, 2);
+        _ = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, &stderr, &stderr_observed_len, output_bytes_cap, 2);
 
         if (timeout_ms) |limit| {
             if (elapsedCommandExecMilliseconds(io_instance.io(), started) >= @as(u64, @intCast(limit))) {
                 child.kill(io_instance.io());
                 child_alive = false;
-                try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr);
-                return finishCommandExecRunResult(allocator, COMMAND_EXEC_TIMEOUT_EXIT_CODE, &stdout, &stderr);
+                try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr, &stdout_observed_len, &stderr_observed_len, output_bytes_cap);
+                return finishCommandExecRunResult(allocator, COMMAND_EXEC_TIMEOUT_EXIT_CODE, &stdout, &stderr, stdout_observed_len, stderr_observed_len);
             }
         }
     }
@@ -5162,6 +5169,8 @@ fn finishCommandExecRunResult(
     exit_code: i32,
     stdout: *std.ArrayList(u8),
     stderr: *std.ArrayList(u8),
+    stdout_observed_len: usize,
+    stderr_observed_len: usize,
 ) !CommandExecRunResult {
     const stdout_owned = try stdout.toOwnedSlice(allocator);
     errdefer allocator.free(stdout_owned);
@@ -5170,6 +5179,8 @@ fn finishCommandExecRunResult(
         .exit_code = exit_code,
         .stdout = stdout_owned,
         .stderr = stderr_owned,
+        .stdout_observed_len = stdout_observed_len,
+        .stderr_observed_len = stderr_observed_len,
     };
 }
 
@@ -5179,12 +5190,15 @@ fn drainCommandExecOutput(
     child: *std.process.Child,
     stdout: *std.ArrayList(u8),
     stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    output_bytes_cap: ?usize,
 ) !void {
     var empty_rounds: usize = 0;
     while (empty_rounds < 2) {
         var made_progress = false;
-        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, stdout, 1) or made_progress;
-        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, stderr, 1) or made_progress;
+        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, stdout, stdout_observed_len, output_bytes_cap, 1) or made_progress;
+        made_progress = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, stderr, stderr_observed_len, output_bytes_cap, 1) or made_progress;
         if (made_progress) {
             empty_rounds = 0;
         } else {
@@ -5198,6 +5212,8 @@ fn readCommandExecPipeChunk(
     allocator: std.mem.Allocator,
     maybe_file: ?std.Io.File,
     output: *std.ArrayList(u8),
+    observed_len: *usize,
+    output_bytes_cap: ?usize,
     timeout_ms: u64,
 ) !bool {
     const file = maybe_file orelse return false;
@@ -5218,7 +5234,14 @@ fn readCommandExecPipeChunk(
         else => return err,
     };
     if (count == 0) return false;
-    try output.appendSlice(allocator, buffer[0..count]);
+    observed_len.* += count;
+    const bytes = buffer[0..count];
+    if (output_bytes_cap) |cap| {
+        const remaining = cap -| output.items.len;
+        try output.appendSlice(allocator, bytes[0..@min(bytes.len, remaining)]);
+    } else {
+        try output.appendSlice(allocator, bytes);
+    }
     return true;
 }
 
@@ -5385,13 +5408,15 @@ fn queueCommandExecOutputDeltas(
     process_id: []const u8,
     stdout: []const u8,
     stderr: []const u8,
+    stdout_observed_len: usize,
+    stderr_observed_len: usize,
     output_bytes_cap: ?usize,
 ) !void {
-    if (stdout.len > 0) {
-        try queueCommandExecOutputDelta(allocator, state, process_id, "stdout", stdout, output_bytes_cap);
+    if (stdout_observed_len > 0) {
+        try queueCommandExecOutputDelta(allocator, state, process_id, "stdout", stdout, stdout_observed_len, output_bytes_cap);
     }
-    if (stderr.len > 0) {
-        try queueCommandExecOutputDelta(allocator, state, process_id, "stderr", stderr, output_bytes_cap);
+    if (stderr_observed_len > 0) {
+        try queueCommandExecOutputDelta(allocator, state, process_id, "stderr", stderr, stderr_observed_len, output_bytes_cap);
     }
 }
 
@@ -5401,10 +5426,11 @@ fn queueCommandExecOutputDelta(
     process_id: []const u8,
     stream: []const u8,
     bytes: []const u8,
+    observed_len: usize,
     output_bytes_cap: ?usize,
 ) !void {
     const capped = commandExecCappedOutput(bytes, output_bytes_cap);
-    const cap_reached = commandExecOutputCapReached(bytes, output_bytes_cap);
+    const cap_reached = commandExecOutputCapReached(observed_len, output_bytes_cap);
 
     const encoded_len = std.base64.standard.Encoder.calcSize(capped.len);
     const encoded = try allocator.alloc(u8, encoded_len);
@@ -5432,9 +5458,9 @@ fn commandExecCappedOutput(bytes: []const u8, output_bytes_cap: ?usize) []const 
     return bytes[0..@min(bytes.len, cap)];
 }
 
-fn commandExecOutputCapReached(bytes: []const u8, output_bytes_cap: ?usize) bool {
+fn commandExecOutputCapReached(observed_len: usize, output_bytes_cap: ?usize) bool {
     const cap = output_bytes_cap orelse return false;
-    return bytes.len >= cap;
+    return observed_len >= cap;
 }
 
 fn commandExecExitCode(term: std.process.Child.Term) i32 {
