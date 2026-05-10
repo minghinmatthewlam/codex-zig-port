@@ -667,7 +667,7 @@ pub fn printHelp() void {
         \\  --oss                   Use a local open-source provider
         \\  --local-provider NAME   Local OSS provider: lmstudio or ollama
         \\  --ephemeral             Do not save or resume a session file
-        \\  --skip-git-repo-check   Accepted for Rust CLI compatibility
+        \\  --skip-git-repo-check   Allow exec outside a Git repository
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
         \\  -c, --config key=value  Override a supported config value
