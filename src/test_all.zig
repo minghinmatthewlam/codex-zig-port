@@ -17,6 +17,7 @@ const modules = .{
     @import("fuzzy_file_search.zig"),
     @import("git_diff.zig"),
     @import("git_remote_diff.zig"),
+    @import("hooks_list.zig"),
     @import("input_images.zig"),
     @import("login.zig"),
     @import("memory_reset.zig"),
