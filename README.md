@@ -122,9 +122,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `--enable/--disable`
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
-- add and remove local marketplace directories with `plugin marketplace`,
-  mutating `$CODEX_HOME/config.toml`; git-backed marketplace add and upgrade
-  remain parsed explicit stubs
+- add local and git-backed marketplace sources and remove configured
+  marketplaces with `plugin marketplace`, mutating `$CODEX_HOME/config.toml`;
+  marketplace upgrade remains a parsed explicit stub
 - list user and per-cwd project command hooks from `config.toml` and
   `hooks.json` with app-server `hooks/list`, including user hook-state
   enable/trust metadata and enabled local plugin-cache hooks
@@ -166,8 +166,8 @@ The `e2e` step starts a local mock Responses server, launches the real
 `-i/--image` initial-prompt attachment on the interactive path, verifies
 runtime feature toggles through `features list`, checks `help [COMMAND]`, verifies
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
-Rust top-level command stubs, verifies local `plugin marketplace` add/remove
-config mutation plus remaining git/upgrade stubs,
+Rust top-level command stubs, verifies local and git-backed `plugin marketplace`
+add/repeat/remove config mutation plus the remaining upgrade stub,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
 and state-db partial-reset rejection, checks planned debug app-server and
 trace-reducer stubs, runs the top-level `apply` command against a mock ChatGPT
@@ -185,8 +185,8 @@ over stdio, verifies `memory/reset` against temporary memory roots plus
 partial-reset refusal cases, then checks an explicit Unix socket and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
 script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
-hidden `stdio-to-uds` relay command, verifies app-server local marketplace
-add/list/remove RPC behavior plus remaining git/upgrade stubs, local app-server
+hidden `stdio-to-uds` relay command, verifies app-server local and git-backed
+marketplace add/list/repeat/remove RPC behavior plus the remaining upgrade stub, local app-server
 `plugin/list` marketplace discovery from repo, home, and configured local roots, remote
 `plugin/list` catalog fetching, remote `plugin/read` detail fetching, remote
 `plugin/skill/read` Markdown fetching, remote plugin share save/list/update/delete
