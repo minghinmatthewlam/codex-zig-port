@@ -4808,6 +4808,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "managed_allowed_domains_only = true",
                     "allow_local_binding = true",
                     "",
+                    "[experimental_network.domains]",
+                    '"api.openai.com" = "allow"',
+                    '"blocked.example.com" = "deny"',
+                    "",
+                    "[experimental_network.unix_sockets]",
+                    '"/tmp/codex-zig.sock" = "allow"',
+                    '"/tmp/blocked.sock" = "none"',
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -4843,8 +4851,55 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "allowUpstreamProxy": False,
                     "dangerouslyAllowNonLoopbackProxy": True,
                     "dangerouslyAllowAllUnixSockets": False,
+                    "domains": {
+                        "api.openai.com": "allow",
+                        "blocked.example.com": "deny",
+                    },
                     "managedAllowedDomainsOnly": True,
+                    "allowedDomains": ["api.openai.com"],
+                    "deniedDomains": ["blocked.example.com"],
+                    "unixSockets": {
+                        "/tmp/blocked.sock": "none",
+                        "/tmp/codex-zig.sock": "allow",
+                    },
+                    "allowUnixSockets": ["/tmp/codex-zig.sock"],
                     "allowLocalBinding": True,
+                },
+            }
+        }
+
+        system_requirements_path.write_text(
+            "\n".join(
+                [
+                    "[experimental_network]",
+                    'allowed_domains = ["api.legacy.example", "shared.example"]',
+                    'denied_domains = ["blocked.legacy.example", "shared.example"]',
+                    'allow_unix_sockets = ["/tmp/legacy.sock"]',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_requirements_legacy_network = rpc_without_params(
+            "config-requirements-read-legacy-network",
+            "configRequirements/read",
+        )
+        assert config_requirements_legacy_network["id"] == "config-requirements-read-legacy-network"
+        assert config_requirements_legacy_network["result"] == {
+            "requirements": {
+                "allowedApprovalPolicies": ["never"],
+                "allowedApprovalsReviewers": ["guardian_subagent", "user"],
+                "allowedSandboxModes": ["read-only", "workspace-write"],
+                "network": {
+                    "domains": {
+                        "api.legacy.example": "allow",
+                        "blocked.legacy.example": "deny",
+                        "shared.example": "deny",
+                    },
+                    "allowedDomains": ["api.legacy.example"],
+                    "deniedDomains": ["blocked.legacy.example", "shared.example"],
+                    "unixSockets": {"/tmp/legacy.sock": "allow"},
+                    "allowUnixSockets": ["/tmp/legacy.sock"],
                 },
             }
         }
