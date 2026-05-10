@@ -22,6 +22,9 @@ instead of your real `~/.codex` directory.
 
 - Keep commits small and focused.
 - Prefer behavior-compatible implementations over broad rewrites.
+- Treat upstream Codex source as a behavioral reference. Do not copy source,
+  generated assets, or fixtures into this repository without preserving the
+  required license and notice files.
 - Update `README.md` or `docs/parity.md` when a user-visible surface changes.
 - Add or extend a smoke test when the change affects CLI, TUI, app-server, auth,
   config, MCP, plugin, or filesystem behavior.

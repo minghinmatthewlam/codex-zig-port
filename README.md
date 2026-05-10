@@ -1,9 +1,9 @@
 # Codex Zig Port
 
 This repository is an independent Zig reimplementation of the Codex CLI.
-The Rust Codex checkout at `~/dev/codex` is a behavioral reference only:
-runtime code in this repository must not import, link to, or shell out to the
-original implementation.
+A local Rust Codex checkout can be used as a behavioral reference only:
+runtime code in this repository must not import, link to, shell out to, or copy
+source from the original implementation.
 
 This is an unofficial project and is not affiliated with or endorsed by OpenAI.
 
