@@ -5249,6 +5249,44 @@ def run_flag_compat_smoke(binary: Path) -> None:
     assert missing_mode.returncode != 0
     assert "AppServerWebsocketAuthModeRequired" in missing_mode.stderr
 
+    remote_proxy = subprocess.run(
+        [
+            str(binary),
+            "--remote-auth-token-env",
+            "CODEX_REMOTE_AUTH_TOKEN",
+            "app-server",
+            "proxy",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert remote_proxy.returncode != 0
+    assert "codex-zig app-server proxy" in remote_proxy.stderr
+    assert "RemoteModeUnsupportedForSubcommand" in remote_proxy.stderr
+
+    remote_internal_schema = subprocess.run(
+        [
+            str(binary),
+            "--remote-auth-token-env",
+            "CODEX_REMOTE_AUTH_TOKEN",
+            "app-server",
+            "generate-internal-json-schema",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert remote_internal_schema.returncode != 0
+    assert "codex-zig app-server generate-internal-json-schema" in remote_internal_schema.stderr
+    assert "RemoteModeUnsupportedForSubcommand" in remote_internal_schema.stderr
+
 
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
