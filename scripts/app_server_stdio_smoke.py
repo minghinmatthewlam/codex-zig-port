@@ -995,7 +995,7 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         invalid_value = rpc(
             "config-write-invalid-value",
             "config/value/write",
-            {"keyPath": "model", "value": {"nested": True}, "mergeStrategy": "replace"},
+            {"keyPath": "model", "value": {"nested": None}, "mergeStrategy": "replace"},
         )
         assert invalid_value["id"] == "config-write-invalid-value"
         assert invalid_value["error"]["code"] == -32602
@@ -1014,6 +1014,148 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
             {"filePath": "relative.toml", "keyPath": "model", "value": "gpt-test", "mergeStrategy": "replace"},
         )
         assert invalid_path["id"] == "config-write-invalid-path"
+        assert invalid_path["error"]["code"] == -32602
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_config_batch_write_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-batch-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        'model = "gpt-old"\napproval_policy = "on-request"\n\n[features]\ngoals = false\n',
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        batch = rpc(
+            "config-batch-write",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {"keyPath": "model", "value": "gpt-batch", "mergeStrategy": "replace"},
+                    {"keyPath": "features.goals", "value": True, "mergeStrategy": "upsert"},
+                    {"keyPath": "tui.status_line", "value": ["model", "cwd"], "mergeStrategy": "replace"},
+                    {
+                        "keyPath": "hooks.state",
+                        "value": {
+                            "hook-one": {"enabled": False},
+                            "hook-two": {"trusted_hash": "hash-123"},
+                        },
+                        "mergeStrategy": "upsert",
+                    },
+                    {"keyPath": "approval_policy", "value": None, "mergeStrategy": "replace"},
+                ],
+                "reloadUserConfig": True,
+                "expectedVersion": None,
+            },
+        )
+        assert batch["id"] == "config-batch-write"
+        assert batch["result"]["status"] == "ok"
+        assert batch["result"]["filePath"] == str(config_path)
+        assert batch["result"]["overriddenMetadata"] is None
+        assert batch["result"]["version"].startswith("sha256:")
+
+        after_batch = rpc("config-read-after-batch-write", "config/read", {})
+        assert after_batch["id"] == "config-read-after-batch-write"
+        assert after_batch["result"]["config"]["model"] == "gpt-batch"
+        assert after_batch["result"]["config"]["features"]["goals"] is True
+
+        contents = config_path.read_text(encoding="utf-8")
+        assert 'status_line = ["model", "cwd"]' in contents
+        assert 'state = {"hook-one" = {"enabled" = false}, "hook-two" = {"trusted_hash" = "hash-123"}}' in contents
+        assert "approval_policy" not in contents
+
+        batch_with_version = rpc(
+            "config-batch-write-version",
+            "config/batchWrite",
+            {
+                "filePath": str(config_path),
+                "edits": [
+                    {"keyPath": "sandbox_mode", "value": "workspace-write", "mergeStrategy": "replace"},
+                ],
+                "expectedVersion": batch["result"]["version"],
+            },
+        )
+        assert batch_with_version["id"] == "config-batch-write-version"
+        assert batch_with_version["result"]["status"] == "ok"
+
+        after_versioned_batch = rpc("config-read-after-versioned-batch", "config/read", {})
+        assert after_versioned_batch["id"] == "config-read-after-versioned-batch"
+        assert after_versioned_batch["result"]["config"]["sandbox_mode"] == "workspace-write"
+
+        conflict = rpc(
+            "config-batch-conflict",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {"keyPath": "model", "value": "stale", "mergeStrategy": "replace"},
+                ],
+                "expectedVersion": "sha256:stale",
+            },
+        )
+        assert conflict["id"] == "config-batch-conflict"
+        assert conflict["error"]["code"] == -32602
+        assert "config version conflict" in conflict["error"]["message"]
+
+        invalid_edits = rpc("config-batch-invalid-edits", "config/batchWrite", {"edits": {}})
+        assert invalid_edits["id"] == "config-batch-invalid-edits"
+        assert invalid_edits["error"]["code"] == -32602
+
+        invalid_edit = rpc("config-batch-invalid-edit", "config/batchWrite", {"edits": [{"keyPath": "model"}]})
+        assert invalid_edit["id"] == "config-batch-invalid-edit"
+        assert invalid_edit["error"]["code"] == -32602
+
+        invalid_reload = rpc(
+            "config-batch-invalid-reload",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {"keyPath": "model", "value": "gpt-test", "mergeStrategy": "replace"},
+                ],
+                "reloadUserConfig": "yes",
+            },
+        )
+        assert invalid_reload["id"] == "config-batch-invalid-reload"
+        assert invalid_reload["error"]["code"] == -32602
+
+        invalid_path = rpc(
+            "config-batch-invalid-path",
+            "config/batchWrite",
+            {
+                "filePath": "relative.toml",
+                "edits": [
+                    {"keyPath": "model", "value": "gpt-test", "mergeStrategy": "replace"},
+                ],
+            },
+        )
+        assert invalid_path["id"] == "config-batch-invalid-path"
         assert invalid_path["error"]["code"] == -32602
     finally:
         if proc.stdin is not None:
@@ -2142,6 +2284,8 @@ def main() -> None:
     print("app-server-config-read-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
     print("app-server-config-value-write-rpc-e2e: ok")
+    run_config_batch_write_rpc_smoke(binary)
+    print("app-server-config-batch-write-rpc-e2e: ok")
     run_account_read_rpc_smoke(binary)
     print("app-server-account-read-rpc-e2e: ok")
     run_get_auth_status_rpc_smoke(binary)
