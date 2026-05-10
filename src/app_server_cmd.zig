@@ -3750,21 +3750,27 @@ fn renderConfigReadResponse(
 
     try result.appendSlice(allocator, "{\"config\":{");
     var first = true;
-    const model = if (managed_layer) |layer| layer.model orelse project_layers.model() orelse cfg.model else project_layers.model() orelse cfg.model;
+    const system_model = if (system_layer) |layer| layer.model else null;
+    const model = if (managed_layer) |layer| layer.model orelse project_layers.model() orelse configReadUserOrSystemString(cfg.model, user_layer, "model", system_model) else project_layers.model() orelse configReadUserOrSystemString(cfg.model, user_layer, "model", system_model);
     try appendJsonStringField(allocator, &result, &first, "model", model);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
-    const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse cfg.approval_policy else project_layers.approvalPolicy() orelse cfg.approval_policy;
+    const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
+    const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
-    const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse cfg.sandbox_mode else project_layers.sandboxMode() orelse cfg.sandbox_mode;
+    const system_sandbox_mode = if (system_layer) |layer| layer.sandbox_mode else null;
+    const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode) else project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode);
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
     try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer, system_layer));
-    const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
+    const system_web_search_mode = if (system_layer) |layer| layer.web_search_mode else null;
+    const web_search_mode = project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, if (user_layer) |layer| layer.tools else null);
     try appendConfigReadAppsField(allocator, &result, &first, if (user_layer) |layer| layer.apps else null);
-    const model_reasoning_effort = project_layers.modelReasoningEffort() orelse cfg.model_reasoning_effort;
+    const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
+    const model_reasoning_effort = project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
-    const service_tier = project_layers.serviceTier() orelse cfg.service_tier;
+    const system_service_tier = if (system_layer) |layer| layer.service_tier else null;
+    const service_tier = project_layers.serviceTier() orelse configReadUserOrSystemMaybeString(cfg.service_tier, user_layer, "service_tier", system_service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
@@ -3836,16 +3842,80 @@ const ConfigReadSystemLayer = struct {
     file_path: []const u8,
     version: []const u8,
     origin_keys: []const []const u8,
+    model: ?[]const u8,
+    approval_policy: ?config.ApprovalPolicy,
+    sandbox_mode: ?config.SandboxMode,
+    web_search_mode: ?config.WebSearchMode,
+    model_reasoning_effort: ?config.ReasoningEffort,
+    service_tier: ?[]const u8,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
 
     fn deinit(self: *ConfigReadSystemLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.file_path);
         allocator.free(self.version);
+        if (self.model) |value| allocator.free(value);
+        if (self.service_tier) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.sandbox_workspace_write.deinit(allocator);
     }
 };
+
+fn configReadUserOrSystemString(
+    user_value: []const u8,
+    user_layer: ?ConfigReadUserLayer,
+    key: []const u8,
+    system_value: ?[]const u8,
+) []const u8 {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, key) else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemMaybeString(
+    user_value: ?[]const u8,
+    user_layer: ?ConfigReadUserLayer,
+    key: []const u8,
+    system_value: ?[]const u8,
+) ?[]const u8 {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, key) else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemApprovalPolicy(
+    user_value: config.ApprovalPolicy,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.ApprovalPolicy,
+) config.ApprovalPolicy {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "approval_policy") else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemSandboxMode(
+    user_value: config.SandboxMode,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.SandboxMode,
+) config.SandboxMode {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "sandbox_mode") else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemWebSearchMode(
+    user_value: ?config.WebSearchMode,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.WebSearchMode,
+) ?config.WebSearchMode {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "web_search") else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemReasoningEffort(
+    user_value: ?config.ReasoningEffort,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.ReasoningEffort,
+) ?config.ReasoningEffort {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "model_reasoning_effort") else false) return user_value;
+    return system_value orelse user_value;
+}
 
 const ConfigReadProjectLayers = struct {
     items: []ConfigReadProjectLayer,
@@ -4546,6 +4616,45 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !?ConfigReadSystemLay
         origin_keys.deinit(allocator);
     }
 
+    var model: ?[]const u8 = null;
+    errdefer if (model) |value| allocator.free(value);
+    var approval_policy: ?config.ApprovalPolicy = null;
+    var sandbox_mode: ?config.SandboxMode = null;
+    var web_search_mode: ?config.WebSearchMode = null;
+    var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var service_tier: ?[]const u8 = null;
+    errdefer if (service_tier) |value| allocator.free(value);
+
+    if (try config.topLevelStringValue(allocator, payload, "model")) |value| {
+        model = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
+        defer allocator.free(value);
+        approval_policy = try config.ApprovalPolicy.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "approval_policy");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "sandbox_mode")) |value| {
+        defer allocator.free(value);
+        sandbox_mode = try config.SandboxMode.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "sandbox_mode");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "web_search")) |value| {
+        defer allocator.free(value);
+        web_search_mode = try config.WebSearchMode.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "web_search");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_reasoning_effort")) |value| {
+        defer allocator.free(value);
+        model_reasoning_effort = try config.ReasoningEffort.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "service_tier")) |value| {
+        defer allocator.free(value);
+        service_tier = try config.normalizeServiceTier(allocator, value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
+    }
+
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, payload);
     errdefer sandbox_workspace_write.deinit(allocator);
     try appendConfigReadSandboxWorkspaceOriginKeys(allocator, &origin_keys, sandbox_workspace_write);
@@ -4559,6 +4668,12 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !?ConfigReadSystemLay
         .file_path = file_path,
         .version = try configVersionAlloc(allocator, payload),
         .origin_keys = owned_origin_keys,
+        .model = model,
+        .approval_policy = approval_policy,
+        .sandbox_mode = sandbox_mode,
+        .web_search_mode = web_search_mode,
+        .model_reasoning_effort = model_reasoning_effort,
+        .service_tier = service_tier,
         .sandbox_workspace_write = sandbox_workspace_write,
     };
 }
@@ -5424,6 +5539,21 @@ fn appendConfigReadSystemLayerConfig(
 ) !void {
     try result.append(allocator, '{');
     var first = true;
+    for (layer.origin_keys) |key| {
+        if (std.mem.eql(u8, key, "model")) {
+            if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
+        } else if (std.mem.eql(u8, key, "approval_policy")) {
+            if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
+        } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+            if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "web_search")) {
+            if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_reasoning_effort) |effort| effort.label() else null);
+        } else if (std.mem.eql(u8, key, "service_tier")) {
+            if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, key, value);
+        }
+    }
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
         try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
