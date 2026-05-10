@@ -63,6 +63,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   hooks, app ids, and MCP server names
 - install local app-server plugins with `plugin/install`, including cache copy,
   config enablement, and Rust-shaped auth-policy responses
+- install remote app-server plugins with `plugin/install`, including bundle
+  download, versioned cache writes, cloud install mutation, and Rust-shaped
+  auth-policy responses
 - read remote app-server plugin details with `plugin/read`, including catalog
   metadata, installed/enabled state, disabled remote skills, app ids, and
   remote source summaries
@@ -185,6 +188,7 @@ stubs, local app-server `plugin/list` marketplace discovery, remote
 `plugin/skill/read` Markdown fetching, remote plugin share save/list/update/delete
 behavior, local `plugin/uninstall` cache/config cleanup, remote
 `plugin/uninstall` cache cleanup, local `plugin/install` cache/config writes,
+remote `plugin/install` bundle cache writes and cloud mutation,
 and local `plugin/read` details for skills, hooks, apps, and MCP servers,
 verifies app-server hooks-list discovery for user and
 project `config.toml` / `hooks.json` command hooks, enabled local plugin-cache
