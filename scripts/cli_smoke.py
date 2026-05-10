@@ -130,7 +130,12 @@ def make_exec_provider_wire_api_env(temp_root: Path, base_url: str, wire_api: st
     return env
 
 
-def make_exec_provider_command_auth_env(temp_root: Path, base_url: str, inline_auth: bool = False) -> dict[str, str]:
+def make_exec_provider_command_auth_env(
+    temp_root: Path,
+    base_url: str,
+    inline_auth: bool = False,
+    conflict_env_key: bool = False,
+) -> dict[str, str]:
     codex_home = temp_root / "codex-home"
     codex_home.mkdir()
     auth_dir = temp_root / "provider-auth"
@@ -157,23 +162,24 @@ def make_exec_provider_command_auth_env(temp_root: Path, base_url: str, inline_a
             "",
         ]
     )
+    provider_config = [
+        'model = "gpt-provider-command"',
+        'model_provider = "corp"',
+        "",
+        "[model_providers.corp]",
+        f'base_url = "{base_url}"',
+        'wire_api = "responses"',
+        'requires_openai_auth = false',
+    ]
+    if conflict_env_key:
+        provider_config.append('env_key = "CORP_API_KEY"')
     (codex_home / "config.toml").write_text(
-        "\n".join(
-            [
-                'model = "gpt-provider-command"',
-                'model_provider = "corp"',
-                "",
-                "[model_providers.corp]",
-                f'base_url = "{base_url}"',
-                'wire_api = "responses"',
-                'requires_openai_auth = false',
-            ]
-            + auth_config
-        ),
+        "\n".join(provider_config + auth_config),
         encoding="utf-8",
     )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
+    env["CORP_API_KEY"] = "conflicting-token"
     env.pop("OPENAI_API_KEY", None)
     env.pop("CODEX_ACCESS_TOKEN", None)
     return env
@@ -918,6 +924,23 @@ def run_exec_provider_command_auth_smoke(binary: Path) -> None:
         assert server.request_bodies[1]["model"] == "gpt-provider-command"
         assert server.request_bodies[1]["input"][-1]["content"][0]["text"] == "use inline command auth"
         assert server.request_headers[1]["Authorization"] == "Bearer command-token"
+
+        conflict_root = temp_root / "conflict-auth"
+        conflict_root.mkdir()
+        conflict_env = make_exec_provider_command_auth_env(conflict_root, base_url, conflict_env_key=True)
+        rejected = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "bad", "command", "auth"],
+            cwd=temp_root,
+            env=conflict_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "provider command auth cannot be combined" in rejected.stderr
+        assert len(server.request_bodies) == 2
     finally:
         server.shutdown()
         server.server_close()
