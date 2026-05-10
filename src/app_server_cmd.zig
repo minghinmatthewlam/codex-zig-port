@@ -3923,16 +3923,30 @@ const ConfigReadWebSearchLocation = struct {
 };
 
 const ConfigReadApps = struct {
+    default_config: ?ConfigReadAppsDefault = null,
     items: []ConfigReadApp,
 
     fn empty() ConfigReadApps {
         return .{ .items = &.{} };
     }
 
+    fn isEmpty(self: ConfigReadApps) bool {
+        return self.default_config == null and self.items.len == 0;
+    }
+
     fn deinit(self: *ConfigReadApps, allocator: std.mem.Allocator) void {
         for (self.items) |*app| app.deinit(allocator);
         if (self.items.len > 0) allocator.free(self.items);
     }
+};
+
+const ConfigReadAppsDefault = struct {
+    enabled: bool = true,
+    enabled_present: bool = false,
+    destructive_enabled: bool = true,
+    destructive_enabled_present: bool = false,
+    open_world_enabled: bool = true,
+    open_world_enabled_present: bool = false,
 };
 
 const ConfigReadApp = struct {
@@ -4163,17 +4177,22 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
         apps.deinit(allocator);
     }
 
+    var default_config: ?ConfigReadAppsDefault = null;
+    var in_default_section = false;
     var current_app_index: ?usize = null;
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
         const line = std.mem.trim(u8, line_raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
+            in_default_section = false;
             current_app_index = null;
             if (try parseConfigReadAppSectionName(allocator, line)) |name| {
                 var owned_name: ?[]const u8 = name;
                 errdefer if (owned_name) |value| allocator.free(value);
                 if (std.mem.eql(u8, name, "_default")) {
+                    default_config = default_config orelse ConfigReadAppsDefault{};
+                    in_default_section = true;
                     allocator.free(name);
                     continue;
                 }
@@ -4188,12 +4207,19 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
             continue;
         }
 
+        if (in_default_section) {
+            try applyConfigReadAppsDefaultLine(&default_config.?, line);
+            continue;
+        }
         const app_index = current_app_index orelse continue;
         try applyConfigReadAppLine(allocator, &apps.items[app_index], line);
     }
 
-    if (apps.items.len == 0) return ConfigReadApps.empty();
-    return .{ .items = try apps.toOwnedSlice(allocator) };
+    if (apps.items.len == 0 and default_config == null) return ConfigReadApps.empty();
+    return .{
+        .default_config = default_config,
+        .items = if (apps.items.len == 0) &.{} else try apps.toOwnedSlice(allocator),
+    };
 }
 
 fn parseConfigReadAppSectionName(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
@@ -4214,6 +4240,22 @@ fn findConfigReadAppIndex(apps: []const ConfigReadApp, name: []const u8) ?usize 
         if (std.mem.eql(u8, app.name, name)) return index;
     }
     return null;
+}
+
+fn applyConfigReadAppsDefaultLine(default_config: *ConfigReadAppsDefault, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (std.mem.eql(u8, key, "enabled")) {
+        default_config.enabled = try parseConfigReadBool(rhs);
+        default_config.enabled_present = true;
+    } else if (std.mem.eql(u8, key, "destructive_enabled")) {
+        default_config.destructive_enabled = try parseConfigReadBool(rhs);
+        default_config.destructive_enabled_present = true;
+    } else if (std.mem.eql(u8, key, "open_world_enabled")) {
+        default_config.open_world_enabled = try parseConfigReadBool(rhs);
+        default_config.open_world_enabled_present = true;
+    }
 }
 
 fn applyConfigReadAppLine(allocator: std.mem.Allocator, app: *ConfigReadApp, line: []const u8) !void {
@@ -4721,6 +4763,17 @@ fn appendConfigReadUserAppsOrigins(
     first: *bool,
     layer: ConfigReadUserLayer,
 ) !void {
+    if (layer.apps.default_config) |default_config| {
+        if (default_config.enabled_present) {
+            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.enabled");
+        }
+        if (default_config.destructive_enabled_present) {
+            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.destructive_enabled");
+        }
+        if (default_config.open_world_enabled_present) {
+            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.open_world_enabled");
+        }
+    }
     for (layer.apps.items) |app| {
         if (app.has_enabled) {
             try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "enabled");
@@ -5066,7 +5119,7 @@ fn appendConfigReadUserLayerConfig(
         try appendJsonFieldName(allocator, result, &first, "tools");
         try appendConfigReadToolsObject(allocator, result, layer.tools);
     }
-    if (layer.apps.items.len > 0) {
+    if (!layer.apps.isEmpty()) {
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
@@ -5211,7 +5264,7 @@ fn appendConfigReadAppsField(
 ) !void {
     try appendJsonFieldName(allocator, result, first, "apps");
     if (apps) |value| {
-        if (value.items.len == 0) {
+        if (value.isEmpty()) {
             try result.appendSlice(allocator, "null");
             return;
         }
@@ -5229,11 +5282,28 @@ fn appendConfigReadAppsObject(
     try result.append(allocator, '{');
     var first = true;
     try appendJsonFieldName(allocator, result, &first, "_default");
-    try result.appendSlice(allocator, "null");
+    if (apps.default_config) |default_config| {
+        try appendConfigReadAppsDefaultObject(allocator, result, default_config);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
     for (apps.items) |app| {
         try appendJsonFieldName(allocator, result, &first, app.name);
         try appendConfigReadAppObject(allocator, result, app);
     }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadAppsDefaultObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    default_config: ConfigReadAppsDefault,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonBoolField(allocator, result, &first, "enabled", default_config.enabled);
+    try appendJsonBoolField(allocator, result, &first, "destructive_enabled", default_config.destructive_enabled);
+    try appendJsonBoolField(allocator, result, &first, "open_world_enabled", default_config.open_world_enabled);
     try result.append(allocator, '}');
 }
 
