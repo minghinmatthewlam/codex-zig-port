@@ -3872,6 +3872,23 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert slash_tmp_target.read_text(encoding="utf-8") == "cfg-slash"
         slash_tmp_target.unlink()
 
+        sandbox_policy_bad_type = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-bad-type",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "sandboxPolicy": {"type": "unsupported"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_bad_type["id"] == "command-exec-sandbox-policy-bad-type"
+        assert sandbox_policy_bad_type["error"]["code"] == -32602
+        assert "externalSandbox" in sandbox_policy_bad_type["error"]["message"]
+
         sandbox_policy_external_bad_network = request_stdio_app_server(
             binary,
             {
@@ -4027,6 +4044,39 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             },
             "network": {"enabled": False},
         }
+
+        permission_profile_bad_glob_depth = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-bad-glob-depth",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 0,
+                            "entries": [
+                                {
+                                    "path": {
+                                        "type": "special",
+                                        "value": {"kind": "root"},
+                                    },
+                                    "access": "read",
+                                }
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert permission_profile_bad_glob_depth["id"] == "command-exec-permission-profile-bad-glob-depth"
+        assert permission_profile_bad_glob_depth["error"]["code"] == -32602
+        assert "globScanMaxDepth" in permission_profile_bad_glob_depth["error"]["message"]
 
         permission_profile_disabled = request_stdio_app_server(
             binary,
@@ -7497,14 +7547,61 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert command_exec["properties"]["command"]["items"]["type"] == "string"
         assert command_exec["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"] == "SandboxPolicy.json"
         assert command_exec["properties"]["permissionProfile"]["oneOf"][0]["$ref"] == "PermissionProfile.json"
+        absolute_path = json.loads((out_dir / "AbsolutePathBuf.json").read_text(encoding="utf-8"))
+        assert absolute_path["title"] == "AbsolutePathBuf"
+        assert absolute_path["type"] == "string"
+        network_access = json.loads((out_dir / "NetworkAccess.json").read_text(encoding="utf-8"))
+        assert network_access["enum"] == ["restricted", "enabled"]
+        sandbox_policy = json.loads((out_dir / "SandboxPolicy.json").read_text(encoding="utf-8"))
+        external_policy = sandbox_policy["oneOf"][2]
+        assert external_policy["properties"]["type"]["const"] == "externalSandbox"
+        assert (
+            external_policy["properties"]["networkAccess"]["allOf"][0]["$ref"]
+            == "NetworkAccess.json"
+        )
+        workspace_policy = sandbox_policy["oneOf"][3]
+        assert workspace_policy["properties"]["type"]["const"] == "workspaceWrite"
+        assert workspace_policy["properties"]["writableRoots"]["items"]["$ref"] == "AbsolutePathBuf.json"
+        assert workspace_policy["properties"]["writableRoots"]["default"] == []
+        filesystem_path = json.loads((out_dir / "FileSystemPath.json").read_text(encoding="utf-8"))
+        assert filesystem_path["oneOf"][0]["properties"]["path"]["$ref"] == "AbsolutePathBuf.json"
+        assert filesystem_path["oneOf"][2]["properties"]["value"]["$ref"] == "FileSystemSpecialPath.json"
+        filesystem_entry = json.loads(
+            (out_dir / "FileSystemSandboxEntry.json").read_text(encoding="utf-8")
+        )
+        assert filesystem_entry["properties"]["path"]["$ref"] == "FileSystemPath.json"
+        assert filesystem_entry["properties"]["access"]["$ref"] == "FileSystemAccessMode.json"
+        permission_profile_file_system = json.loads(
+            (out_dir / "PermissionProfileFileSystemPermissions.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            permission_profile_file_system["oneOf"][0]["properties"]["entries"]["items"]["$ref"]
+            == "FileSystemSandboxEntry.json"
+        )
+        assert (
+            "globScanMaxDepth"
+            in permission_profile_file_system["oneOf"][0]["properties"]
+        )
+        permission_profile_network = json.loads(
+            (out_dir / "PermissionProfileNetworkPermissions.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permission_profile_network["required"] == ["enabled"]
         permission_profile = json.loads((out_dir / "PermissionProfile.json").read_text(encoding="utf-8"))
         assert permission_profile["title"] == "PermissionProfile"
         managed_profile = permission_profile["oneOf"][0]
         assert managed_profile["required"] == ["type", "fileSystem", "network"]
-        assert managed_profile["properties"]["network"]["required"] == ["enabled"]
-        assert managed_profile["properties"]["network"]["properties"]["enabled"]["type"] == "boolean"
-        assert "fileSystem" in managed_profile["properties"]
-        assert "globScanMaxDepth" in managed_profile["properties"]["fileSystem"]["oneOf"][0]["properties"]
+        assert (
+            managed_profile["properties"]["fileSystem"]["$ref"]
+            == "PermissionProfileFileSystemPermissions.json"
+        )
+        assert (
+            managed_profile["properties"]["network"]["$ref"]
+            == "PermissionProfileNetworkPermissions.json"
+        )
         command_exec_output_delta = json.loads(
             (out_dir / "CommandExecOutputDeltaNotification.json").read_text(
                 encoding="utf-8"
@@ -7529,6 +7626,23 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "InitializeResponse" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
+        assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
+        assert (
+            bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
+            == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["PermissionProfile"]["oneOf"][0]["properties"]["fileSystem"]["$ref"]
+            == "#/$defs/PermissionProfileFileSystemPermissions"
+        )
+        assert (
+            bundle["$defs"]["CommandExecParams"]["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"]
+            == "#/$defs/SandboxPolicy"
+        )
+        assert (
+            bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
+            == "#/$defs/PermissionProfile"
+        )
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
         )
