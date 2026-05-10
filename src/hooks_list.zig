@@ -740,22 +740,84 @@ fn parseHookStates(allocator: std.mem.Allocator, bytes: []const u8) !HookStates 
         states.deinit(allocator);
     }
 
-    var in_hooks = false;
+    var section: enum { none, hooks, hook_state } = .none;
+    var table_state: ?HookState = null;
+    errdefer if (table_state) |state| state.deinit(allocator);
+
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
-            in_hooks = std.mem.eql(u8, line, "[hooks]");
+            try flushHookState(allocator, &states, &table_state);
+            if (std.mem.eql(u8, line, "[hooks]")) {
+                section = .hooks;
+                continue;
+            }
+            if (try parseHookStateTableHeader(allocator, line)) |key| {
+                table_state = .{ .key = key };
+                section = .hook_state;
+                continue;
+            }
+            section = .none;
             continue;
         }
-        if (!in_hooks) continue;
-        if (tomlRawValueForKey(line, "state")) |raw_state| {
-            try appendInlineHookStates(allocator, &states, raw_state);
+        switch (section) {
+            .hooks => if (tomlRawValueForKey(line, "state")) |raw_state| {
+                try appendInlineHookStates(allocator, &states, raw_state);
+            },
+            .hook_state => if (table_state) |*state| {
+                try updateHookStateFromLine(allocator, state, line);
+            },
+            .none => {},
         }
     }
+    try flushHookState(allocator, &states, &table_state);
 
     return .{ .entries = try states.toOwnedSlice(allocator) };
+}
+
+fn parseHookStateTableHeader(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    const prefix = "hooks.state.";
+    if (!std.mem.startsWith(u8, inner, prefix)) return null;
+    var index: usize = prefix.len;
+    const key = (try parseTomlStringAt(allocator, inner, &index)) orelse return null;
+    errdefer allocator.free(key);
+    skipTomlWhitespace(inner, &index);
+    if (index != inner.len) {
+        allocator.free(key);
+        return null;
+    }
+    return key;
+}
+
+fn updateHookStateFromLine(allocator: std.mem.Allocator, state: *HookState, line: []const u8) !void {
+    if (tomlBoolValueForKey(line, "enabled")) |enabled| {
+        state.enabled = enabled;
+        return;
+    }
+    if (try tomlStringValueForKey(allocator, line, "trusted_hash")) |trusted_hash| {
+        if (state.trusted_hash) |previous| allocator.free(previous);
+        state.trusted_hash = trusted_hash;
+        return;
+    }
+    if (try tomlStringValueForKey(allocator, line, "trustedHash")) |trusted_hash| {
+        if (state.trusted_hash) |previous| allocator.free(previous);
+        state.trusted_hash = trusted_hash;
+    }
+}
+
+fn flushHookState(allocator: std.mem.Allocator, states: *std.ArrayList(HookState), state: *?HookState) !void {
+    var owned = state.* orelse return;
+    state.* = null;
+    errdefer owned.deinit(allocator);
+    if (owned.enabled == null and owned.trusted_hash == null) {
+        owned.deinit(allocator);
+        return;
+    }
+    try states.append(allocator, owned);
 }
 
 fn appendInlineHookStates(allocator: std.mem.Allocator, states: *std.ArrayList(HookState), raw: []const u8) !void {
@@ -1375,6 +1437,58 @@ test "hooks list applies user hook state" {
         \\[[hooks.PreToolUse.hooks]]
         \\type = "command"
         \\command = "echo stateful"
+        \\timeout = 5
+        \\
+    ,
+        .{ hook_key, current_hash },
+    );
+    defer allocator.free(config_bytes);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "codex-home/config.toml",
+        .data = config_bytes,
+    });
+
+    var result = try list(allocator, codex_home, &.{cwd});
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.entries[0].hooks.len);
+    const hook = result.entries[0].hooks[0];
+    try std.testing.expectEqual(false, hook.enabled);
+    try std.testing.expectEqual(TrustStatus.trusted, hook.trust_status);
+}
+
+test "hooks list applies user hook state table" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "codex-home");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "repo");
+
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    defer allocator.free(config_path);
+    const cwd = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(cwd);
+    const hook_key = try std.fmt.allocPrint(allocator, "{s}:pre_tool_use:0:0", .{config_path});
+    defer allocator.free(hook_key);
+    const current_hash = try commandHookHash(allocator, .pre_tool_use, "Bash", "echo table state", 5, null);
+    defer allocator.free(current_hash);
+    const config_bytes = try std.fmt.allocPrint(
+        allocator,
+        \\[hooks]
+        \\
+        \\[hooks.state."{s}"]
+        \\enabled = false
+        \\trusted_hash = "{s}"
+        \\
+        \\[[hooks.PreToolUse]]
+        \\matcher = "Bash"
+        \\
+        \\[[hooks.PreToolUse.hooks]]
+        \\type = "command"
+        \\command = "echo table state"
         \\timeout = 5
         \\
     ,
