@@ -1304,8 +1304,55 @@ fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, para
         error.InvalidPluginReadMarketplacePath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: marketplacePath must be an absolute path"),
     };
 
-    if (params.remote_marketplace_name != null) {
-        return renderJsonRpcError(allocator, id_value, -32603, "app-server remote plugin/read is parsed but not implemented yet");
+    if (params.remote_marketplace_name) |remote_marketplace_name| {
+        if (!remote_plugin.isValidRemotePluginId(params.plugin_name)) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "invalid remote plugin id: {s}; only ASCII letters, digits, `_`, `-`, and `~` are allowed",
+                .{params.plugin_name},
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+
+        var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+
+        const config_path = config.configTomlPath(allocator, cfg.codex_home) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to load config", err);
+        };
+        defer allocator.free(config_path);
+        const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to load config", err);
+        };
+        defer if (config_bytes) |bytes| allocator.free(bytes);
+        if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "remote plugin read is not enabled for marketplace {s}",
+                .{remote_marketplace_name},
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+
+        var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+            error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to load auth", err),
+        };
+        defer credentials.deinit(allocator);
+        switch (credentials.mode) {
+            .chatgpt, .agent_identity => {},
+            .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
+        }
+
+        const result = remote_plugin.fetchReadJson(allocator, cfg.chatgpt_base_url, credentials, params.plugin_name) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to fetch remote plugin details", err);
+        };
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     const marketplace_path = params.marketplace_path.?;
 
