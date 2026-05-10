@@ -245,12 +245,48 @@ prefix_rule(pattern = ["git"], not_match = ["git status"])
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_review_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-review-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+
+        help_result = subprocess.run(
+            [str(binary), "exec", "review", "--help"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "codex-zig review --uncommitted" in help_result.stderr
+        assert "--base BRANCH" in help_result.stderr
+
+        exec_help_result = subprocess.run(
+            [str(binary), "help", "exec"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "codex-zig exec [OPTIONS] review [REVIEW_OPTIONS]" in exec_help_result.stderr
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
+    run_exec_review_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
+    print("cli-exec-review-e2e: ok")
 
 
 if __name__ == "__main__":
