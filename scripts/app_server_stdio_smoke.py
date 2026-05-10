@@ -3889,6 +3889,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "network_access = false",
                 "exclude_tmpdir_env_var = true",
                 "",
+                "[tools.web_search]",
+                'context_size = "low"',
+                'allowed_domains = ["system.example"]',
+                'location = { region = "CA" }',
+                "",
+                "[tools]",
+                "view_image = true",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -3936,7 +3944,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowed_domains": ["example.com"],
                 "location": {
                     "country": "US",
-                    "region": None,
+                    "region": "CA",
                     "city": "New York, NY",
                     "timezone": "America/New_York",
                 },
@@ -4002,6 +4010,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert origins["model_reasoning_effort"]["version"].startswith("sha256:")
         assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == system_source
         assert origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"].startswith("sha256:")
+        assert origins["tools.web_search.location.region"]["name"] == system_source
+        assert origins["tools.web_search.location.region"]["version"].startswith("sha256:")
         layers = config_read["result"]["layers"]
         assert len(layers) == 2
         assert layers[0]["name"] == {"type": "user", "file": config_path}
@@ -4067,6 +4077,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "network_access": False,
                 "exclude_tmpdir_env_var": True,
                 "exclude_slash_tmp": False,
+            },
+            "tools": {
+                "web_search": {
+                    "context_size": "low",
+                    "allowed_domains": ["system.example"],
+                    "location": {
+                        "country": None,
+                        "region": "CA",
+                        "city": None,
+                        "timezone": None,
+                    },
+                },
+                "view_image": True,
             },
         }
 
@@ -4443,8 +4466,17 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         bool_tool_config = rpc("config-read-bool-web-search-tool", "config/read", {})
         assert bool_tool_config["id"] == "config-read-bool-web-search-tool"
         assert bool_tool_config["result"]["config"]["tools"] == {
-            "web_search": None,
-            "view_image": None,
+            "web_search": {
+                "context_size": "low",
+                "allowed_domains": ["system.example"],
+                "location": {
+                    "country": None,
+                    "region": "CA",
+                    "city": None,
+                    "timezone": None,
+                },
+            },
+            "view_image": True,
         }
     finally:
         if proc.stdin is not None:
