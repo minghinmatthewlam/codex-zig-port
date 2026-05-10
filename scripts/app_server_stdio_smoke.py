@@ -915,6 +915,111 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_config_value_write_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-write-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    config_path.write_text('model = "gpt-old"\n\n[features]\ngoals = false\n', encoding="utf-8")
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        write_model = rpc(
+            "config-write-model",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-written",
+                "mergeStrategy": "replace",
+                "expectedVersion": None,
+            },
+        )
+        assert write_model["id"] == "config-write-model"
+        assert write_model["result"]["status"] == "ok"
+        assert write_model["result"]["filePath"] == str(config_path)
+        assert write_model["result"]["overriddenMetadata"] is None
+        assert write_model["result"]["version"].startswith("sha256:")
+        assert len(write_model["result"]["version"]) == len("sha256:") + 64
+
+        after_model = rpc("config-read-after-model-write", "config/read", {})
+        assert after_model["id"] == "config-read-after-model-write"
+        assert after_model["result"]["config"]["model"] == "gpt-written"
+
+        write_feature = rpc(
+            "config-write-feature",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "features.goals",
+                "value": True,
+                "mergeStrategy": "upsert",
+                "expectedVersion": write_model["result"]["version"],
+            },
+        )
+        assert write_feature["id"] == "config-write-feature"
+        assert write_feature["result"]["status"] == "ok"
+        assert write_feature["result"]["filePath"] == str(config_path)
+
+        after_feature = rpc("config-read-after-feature-write", "config/read", {})
+        assert after_feature["id"] == "config-read-after-feature-write"
+        assert after_feature["result"]["config"]["features"]["goals"] is True
+
+        conflict = rpc(
+            "config-write-conflict",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "stale",
+                "mergeStrategy": "replace",
+                "expectedVersion": "sha256:stale",
+            },
+        )
+        assert conflict["id"] == "config-write-conflict"
+        assert conflict["error"]["code"] == -32602
+        assert "config version conflict" in conflict["error"]["message"]
+
+        invalid_value = rpc(
+            "config-write-invalid-value",
+            "config/value/write",
+            {"keyPath": "model", "value": {"nested": True}, "mergeStrategy": "replace"},
+        )
+        assert invalid_value["id"] == "config-write-invalid-value"
+        assert invalid_value["error"]["code"] == -32602
+
+        invalid_merge = rpc(
+            "config-write-invalid-merge",
+            "config/value/write",
+            {"keyPath": "model", "value": "gpt-test", "mergeStrategy": "append"},
+        )
+        assert invalid_merge["id"] == "config-write-invalid-merge"
+        assert invalid_merge["error"]["code"] == -32602
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def encode_unsigned_jwt(payload: dict) -> str:
     def encode(value: bytes) -> str:
         return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -2027,6 +2132,8 @@ def main() -> None:
     print("app-server-model-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
+    run_config_value_write_rpc_smoke(binary)
+    print("app-server-config-value-write-rpc-e2e: ok")
     run_account_read_rpc_smoke(binary)
     print("app-server-account-read-rpc-e2e: ok")
     run_get_auth_status_rpc_smoke(binary)
