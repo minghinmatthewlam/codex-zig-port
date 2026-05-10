@@ -129,7 +129,10 @@ fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const owned_default_path = if (socket_path_arg == null) try defaultUnixSocketPath(allocator) else null;
     defer if (owned_default_path) |path| allocator.free(path);
     const socket_path = socket_path_arg orelse owned_default_path.?;
+    try runStdioToUnixSocket(allocator, socket_path);
+}
 
+pub fn runStdioToUnixSocket(allocator: std.mem.Allocator, socket_path: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var address = try net.UnixAddress.init(socket_path);
     var stream = try address.connect(io);

@@ -102,7 +102,8 @@ inline, then launches `codex-zig app-server` as a subprocess and verifies
 newline-delimited JSON-RPC initialize requests and unsupported-method errors
 over stdio, an explicit Unix socket, and the default
 `CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
-script also proxies JSON-RPC over `app-server proxy --sock`. Run
+script also proxies JSON-RPC over `app-server proxy --sock` and verifies the
+hidden `stdio-to-uds` relay command. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 

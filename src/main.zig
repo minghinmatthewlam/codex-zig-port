@@ -308,6 +308,10 @@ fn mainInner(init: std.process.Init) !void {
             try app_server_cmd.run(allocator, &args);
             return;
         }
+        if (std.mem.eql(u8, cmd, "stdio-to-uds")) {
+            try runStdioToUdsCommand(allocator, &args);
+            return;
+        }
         if (isApplyCommand(cmd)) {
             try apply_command.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -563,6 +567,29 @@ fn joinInitialPrompt(
         try parts.append(allocator, arg);
     }
     return cli_utils.joinWithSpaces(allocator, parts.items);
+}
+
+fn runStdioToUdsCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    const socket_path = args.next() orelse {
+        printStdioToUdsHelp();
+        return error.MissingStdioToUdsSocketPath;
+    };
+    if (isHelpFlag(socket_path)) {
+        printStdioToUdsHelp();
+        return;
+    }
+    if (args.next() != null) return error.UnexpectedStdioToUdsArgument;
+    try app_server_cmd.runStdioToUnixSocket(allocator, socket_path);
+}
+
+fn printStdioToUdsHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig stdio-to-uds SOCKET_PATH
+        \\
+        \\Relays newline-delimited JSON-RPC between stdio and a Unix socket.
+        \\
+    , .{});
 }
 
 const SessionCommandArgs = struct {

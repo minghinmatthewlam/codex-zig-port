@@ -159,7 +159,7 @@ def run_unix_default_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
-def run_proxy_smoke(binary: Path) -> None:
+def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-proxy-", dir="/tmp"))
     try:
         socket_path = socket_dir / "app-server.sock"
@@ -174,7 +174,7 @@ def run_proxy_smoke(binary: Path) -> None:
         try:
             wait_for_socket(socket_path, server, 5)
             proxy = subprocess.Popen(
-                [str(binary), "app-server", "proxy", "--sock", str(socket_path)],
+                [str(binary), *relay_args_for_socket(socket_path)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -205,6 +205,17 @@ def run_proxy_smoke(binary: Path) -> None:
                 server.wait(timeout=5)
     finally:
         shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def run_proxy_smoke(binary: Path) -> None:
+    run_relay_smoke(
+        binary,
+        lambda socket_path: ["app-server", "proxy", "--sock", str(socket_path)],
+    )
+
+
+def run_stdio_to_uds_smoke(binary: Path) -> None:
+    run_relay_smoke(binary, lambda socket_path: ["stdio-to-uds", str(socket_path)])
 
 
 def run_unix_refuses_regular_file_smoke(binary: Path) -> None:
@@ -238,6 +249,8 @@ def main() -> None:
     print("app-server-unix-default-e2e: ok")
     run_proxy_smoke(binary)
     print("app-server-proxy-e2e: ok")
+    run_stdio_to_uds_smoke(binary)
+    print("stdio-to-uds-e2e: ok")
     run_unix_refuses_regular_file_smoke(binary)
     print("app-server-unix-regular-file-e2e: ok")
 
