@@ -1486,10 +1486,35 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
 def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-status-", dir="/tmp"))
     config_path = codex_home / "config.toml"
+    plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
     try:
+        plugin_root.mkdir(parents=True)
+        (plugin_root / ".mcp.json").write_text(
+            "\n".join(
+                [
+                    "{",
+                    '  "mcpServers": {',
+                    '    "plugin_remote": {',
+                    '      "type": "http",',
+                    '      "url": "https://plugin.example/mcp",',
+                    '      "bearerTokenEnvVar": "PLUGIN_MCP_TOKEN"',
+                    "    }",
+                    "  }",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         config_path.write_text(
             "\n".join(
                 [
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."sample@test"]',
+                    "enabled = true",
+                    "",
                     "[mcp_servers.docs]",
                     'command = "docs-server"',
                     'args = ["--stdio"]',
@@ -1508,6 +1533,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         )
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["PLUGIN_MCP_TOKEN"] = "plugin-token"
         env["TEST_MCP_TOKEN"] = "test-token"
         env.pop("MISSING_MCP_TOKEN", None)
 
@@ -1557,11 +1583,15 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert second_page["id"] == "mcp-status-second-page"
         assert second_page["result"]["nextCursor"] is None
         second_entries = second_page["result"]["data"]
-        assert [entry["name"] for entry in second_entries] == ["remote"]
+        assert [entry["name"] for entry in second_entries] == ["plugin_remote", "remote"]
         assert second_entries[0]["authStatus"] == "bearerToken"
         assert second_entries[0]["tools"] == {}
         assert second_entries[0]["resources"] == []
         assert second_entries[0]["resourceTemplates"] == []
+        assert second_entries[1]["authStatus"] == "bearerToken"
+        assert second_entries[1]["tools"] == {}
+        assert second_entries[1]["resources"] == []
+        assert second_entries[1]["resourceTemplates"] == []
 
         zero_limit = request_stdio_app_server(
             binary,

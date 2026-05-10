@@ -51,7 +51,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - ask a question in an ephemeral fork with `/side`
 - inspect configured MCP servers from the interactive TUI with `/mcp`
 - accept app-server MCP config reload requests and list server status with
-  `config/mcpServer/reload` and `mcpServerStatus/list`
+  `config/mcpServer/reload` and `mcpServerStatus/list`, including enabled
+  local plugin-cache `.mcp.json` server entries
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
@@ -167,7 +168,8 @@ skills-list discovery for repo, user, extra, and enabled local plugin-cache
 skill roots plus `forceReload` cache behavior, `agents/openai.yaml`
 interface/dependency metadata, and `skills/changed` invalidations for in-process skill and config
 mutations, verifies
-app-server MCP server status pagination and bearer-token auth reporting, verifies
+app-server MCP server status pagination, enabled local plugin-cache MCP entries,
+and bearer-token auth reporting, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations and unwatch cleanup,
