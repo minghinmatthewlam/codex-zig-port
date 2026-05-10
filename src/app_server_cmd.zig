@@ -1160,7 +1160,8 @@ fn timespecToUnixMs(value: std.c.timespec) i64 {
 }
 
 fn isConfigMethod(method: []const u8) bool {
-    return std.mem.eql(u8, method, "config/read");
+    return std.mem.eql(u8, method, "config/read") or
+        std.mem.eql(u8, method, "configRequirements/read");
 }
 
 fn handleConfigMethod(
@@ -1173,7 +1174,19 @@ fn handleConfigMethod(
     if (std.mem.eql(u8, method, "config/read")) {
         return handleConfigRead(allocator, state, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "configRequirements/read")) {
+        return handleConfigRequirementsRead(allocator, id_value, params_value);
+    }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown config method");
+}
+
+fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null) {
+            return renderJsonRpcError(allocator, id_value, -32602, "configRequirements/read params must be null or omitted");
+        }
+    }
+    return renderJsonRpcResult(allocator, id_value, "{\"requirements\":null}");
 }
 
 fn handleConfigRead(
