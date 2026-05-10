@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const plugin_config = @import("plugin_config.zig");
+const skills_list = @import("skills_list.zig");
 
 const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
     ".agents/plugins/marketplace.json",
@@ -140,7 +141,15 @@ pub fn renderReadResponse(
         );
         try out.appendSlice(allocator, ",\"description\":");
         try appendOptionalStringJson(allocator, &out, stringField(manifest_parse.value.object, "description"));
-        try out.appendSlice(allocator, ",\"skills\":[],\"hooks\":[],\"apps\":[],\"mcpServers\":[]}}");
+        try out.appendSlice(allocator, ",\"skills\":");
+        try appendPluginSkillsJson(allocator, &out, plugin_root, manifest_parse.value.object, config_bytes);
+        try out.appendSlice(allocator, ",\"hooks\":");
+        try appendPluginHooksJson(allocator, &out, plugin_root, plugin_id);
+        try out.appendSlice(allocator, ",\"apps\":");
+        try appendPluginAppsJson(allocator, &out, plugin_root);
+        try out.appendSlice(allocator, ",\"mcpServers\":");
+        try appendPluginMcpServerNamesJson(allocator, &out, plugin_root);
+        try out.appendSlice(allocator, "}}");
         return out.toOwnedSlice(allocator);
     }
 
@@ -538,6 +547,257 @@ fn appendManifestKeywordsJson(allocator: std.mem.Allocator, out: *std.ArrayList(
         return;
     }
     try appendStringArrayValue(allocator, out, manifest.object.get("keywords"));
+}
+
+fn appendPluginSkillsJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    plugin_root: []const u8,
+    manifest_object: std.json.ObjectMap,
+    config_bytes: []const u8,
+) !void {
+    const prefix = pluginNamePrefix(manifest_object, plugin_root);
+    var result = try skills_list.listPluginSkills(allocator, plugin_root, prefix, config_bytes);
+    defer result.deinit(allocator);
+
+    try out.appendSlice(allocator, "[");
+    for (result.skills, 0..) |skill, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendPluginSkillSummaryJson(allocator, out, skill);
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendPluginSkillSummaryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill: skills_list.Skill) !void {
+    const name_json = try jsonString(allocator, skill.name);
+    defer allocator.free(name_json);
+    const description_json = try jsonString(allocator, skill.description);
+    defer allocator.free(description_json);
+    const path_json = try jsonString(allocator, skill.path);
+    defer allocator.free(path_json);
+
+    try out.appendSlice(allocator, "{\"name\":");
+    try out.appendSlice(allocator, name_json);
+    try out.appendSlice(allocator, ",\"description\":");
+    try out.appendSlice(allocator, description_json);
+    try out.appendSlice(allocator, ",\"shortDescription\":");
+    try appendOptionalStringJson(allocator, out, skill.short_description);
+    try out.appendSlice(allocator, ",\"interface\":");
+    if (skill.interface) |interface| {
+        try appendSkillInterfaceJson(allocator, out, interface);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, ",\"path\":");
+    try out.appendSlice(allocator, path_json);
+    try out.appendSlice(allocator, ",\"enabled\":");
+    try appendBool(allocator, out, skill.enabled);
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendSkillInterfaceJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), interface: skills_list.SkillInterface) !void {
+    try out.appendSlice(allocator, "{");
+    try appendNamedOptionalString(allocator, out, "displayName", interface.display_name);
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "shortDescription", interface.short_description);
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "iconSmall", interface.icon_small);
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "iconLarge", interface.icon_large);
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "brandColor", interface.brand_color);
+    try out.appendSlice(allocator, ",");
+    try appendNamedOptionalString(allocator, out, "defaultPrompt", interface.default_prompt);
+    try out.appendSlice(allocator, "}");
+}
+
+const HookEventSpec = struct {
+    config_label: []const u8,
+    key_label: []const u8,
+    json_label: []const u8,
+};
+
+const HOOK_EVENT_SPECS = [_]HookEventSpec{
+    .{ .config_label = "PreToolUse", .key_label = "pre_tool_use", .json_label = "preToolUse" },
+    .{ .config_label = "PermissionRequest", .key_label = "permission_request", .json_label = "permissionRequest" },
+    .{ .config_label = "PostToolUse", .key_label = "post_tool_use", .json_label = "postToolUse" },
+    .{ .config_label = "PreCompact", .key_label = "pre_compact", .json_label = "preCompact" },
+    .{ .config_label = "PostCompact", .key_label = "post_compact", .json_label = "postCompact" },
+    .{ .config_label = "SessionStart", .key_label = "session_start", .json_label = "sessionStart" },
+    .{ .config_label = "UserPromptSubmit", .key_label = "user_prompt_submit", .json_label = "userPromptSubmit" },
+    .{ .config_label = "Stop", .key_label = "stop", .json_label = "stop" },
+};
+
+fn appendPluginHooksJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: []const u8, plugin_id: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ plugin_root, "hooks", "hooks.json" });
+    defer allocator.free(path);
+    const bytes = try readFileOptional(allocator, path, 1024 * 256) orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    const hooks_value = parsed.value.object.get("hooks") orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    if (hooks_value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+
+    try out.appendSlice(allocator, "[");
+    var count: usize = 0;
+    for (HOOK_EVENT_SPECS) |event| {
+        const groups_value = hooks_value.object.get(event.config_label) orelse continue;
+        if (groups_value != .array) continue;
+        for (groups_value.array.items, 0..) |group_value, group_index| {
+            if (group_value != .object) continue;
+            const handlers_value = group_value.object.get("hooks") orelse continue;
+            if (handlers_value != .array) continue;
+            for (handlers_value.array.items, 0..) |handler_value, handler_index| {
+                if (handler_value != .object) continue;
+                const handler_type = stringField(handler_value.object, "type") orelse continue;
+                if (!std.mem.eql(u8, handler_type, "command")) continue;
+                try appendCommaIfNeeded(allocator, out, &count);
+                const key = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}:hooks/hooks.json:{s}:{}:{}",
+                    .{ plugin_id, event.key_label, group_index, handler_index },
+                );
+                defer allocator.free(key);
+                const key_json = try jsonString(allocator, key);
+                defer allocator.free(key_json);
+                const event_json = try jsonString(allocator, event.json_label);
+                defer allocator.free(event_json);
+                try out.appendSlice(allocator, "{\"key\":");
+                try out.appendSlice(allocator, key_json);
+                try out.appendSlice(allocator, ",\"eventName\":");
+                try out.appendSlice(allocator, event_json);
+                try out.appendSlice(allocator, "}");
+            }
+        }
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendPluginAppsJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ plugin_root, ".app.json" });
+    defer allocator.free(path);
+    const bytes = try readFileOptional(allocator, path, 1024 * 256) orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    const apps_value = parsed.value.object.get("apps") orelse parsed.value;
+    if (apps_value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+
+    try out.appendSlice(allocator, "[");
+    var iterator = apps_value.object.iterator();
+    var count: usize = 0;
+    while (iterator.next()) |entry| {
+        const fallback_id = entry.key_ptr.*;
+        const app_object = if (entry.value_ptr.* == .object) entry.value_ptr.object else null;
+        const app_id = stringFieldOpt(app_object, "id") orelse fallback_id;
+        if (app_id.len == 0 or app_id[0] == '$') continue;
+        const name = stringFieldOpt(app_object, "name") orelse app_id;
+        const description = stringFieldOpt(app_object, "description");
+        const install_url = stringFieldOpt(app_object, "installUrl") orelse stringFieldOpt(app_object, "install_url");
+        try appendCommaIfNeeded(allocator, out, &count);
+        try appendPluginAppSummaryJson(allocator, out, app_id, name, description, install_url);
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn appendPluginAppSummaryJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    app_id: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    install_url: ?[]const u8,
+) !void {
+    const id_json = try jsonString(allocator, app_id);
+    defer allocator.free(id_json);
+    const name_json = try jsonString(allocator, name);
+    defer allocator.free(name_json);
+    const default_install_url = try std.fmt.allocPrint(allocator, "https://chatgpt.com/apps/{s}/{s}", .{ app_id, app_id });
+    defer allocator.free(default_install_url);
+
+    try out.appendSlice(allocator, "{\"id\":");
+    try out.appendSlice(allocator, id_json);
+    try out.appendSlice(allocator, ",\"name\":");
+    try out.appendSlice(allocator, name_json);
+    try out.appendSlice(allocator, ",\"description\":");
+    try appendOptionalStringJson(allocator, out, description);
+    try out.appendSlice(allocator, ",\"installUrl\":");
+    try appendOptionalStringJson(allocator, out, install_url orelse default_install_url);
+    try out.appendSlice(allocator, ",\"needsAuth\":true}");
+}
+
+fn appendPluginMcpServerNamesJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ plugin_root, ".mcp.json" });
+    defer allocator.free(path);
+    const bytes = try readFileOptional(allocator, path, 1024 * 256) orelse {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        try out.appendSlice(allocator, "[]");
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+    const servers_value = parsed.value.object.get("mcpServers") orelse parsed.value;
+    if (servers_value != .object) {
+        try out.appendSlice(allocator, "[]");
+        return;
+    }
+
+    try out.appendSlice(allocator, "[");
+    var iterator = servers_value.object.iterator();
+    var count: usize = 0;
+    while (iterator.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (name.len == 0 or name[0] == '$') continue;
+        try appendCommaIfNeeded(allocator, out, &count);
+        const name_json = try jsonString(allocator, name);
+        defer allocator.free(name_json);
+        try out.appendSlice(allocator, name_json);
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn pluginNamePrefix(manifest_object: std.json.ObjectMap, plugin_root: []const u8) []const u8 {
+    if (stringField(manifest_object, "name")) |name| {
+        const trimmed = std.mem.trim(u8, name, " \t\r\n");
+        if (trimmed.len != 0) return trimmed;
+    }
+    return std.fs.path.basename(plugin_root);
 }
 
 fn readPluginManifestBytes(allocator: std.mem.Allocator, plugin_root: []const u8) !?[]const u8 {

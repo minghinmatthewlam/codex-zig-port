@@ -108,6 +108,15 @@ pub const Result = struct {
     }
 };
 
+pub const PluginSkillsResult = struct {
+    skills: []Skill,
+
+    pub fn deinit(self: PluginSkillsResult, allocator: std.mem.Allocator) void {
+        for (self.skills) |skill| skill.deinit(allocator);
+        allocator.free(self.skills);
+    }
+};
+
 const Root = struct {
     path: []const u8,
     scope: []const u8,
@@ -212,6 +221,45 @@ pub fn list(
     }
 
     return .{ .entries = try entries.toOwnedSlice(allocator) };
+}
+
+pub fn listPluginSkills(
+    allocator: std.mem.Allocator,
+    plugin_root: []const u8,
+    skill_name_prefix: []const u8,
+    config_bytes: []const u8,
+) !PluginSkillsResult {
+    var skills = std.ArrayList(Skill).empty;
+    errdefer {
+        for (skills.items) |skill| skill.deinit(allocator);
+        skills.deinit(allocator);
+    }
+    var errors = std.ArrayList(SkillError).empty;
+    defer {
+        for (errors.items) |err| err.deinit(allocator);
+        errors.deinit(allocator);
+    }
+
+    const skills_root = try std.fs.path.join(allocator, &.{ plugin_root, "skills" });
+    defer allocator.free(skills_root);
+    const prefix = try allocator.dupe(u8, skill_name_prefix);
+    defer allocator.free(prefix);
+    try scanSkillRoot(
+        allocator,
+        .{
+            .path = skills_root,
+            .scope = "user",
+            .skill_name_prefix = prefix,
+        },
+        &skills,
+        &errors,
+    );
+
+    const rules = try skillConfigRulesFromBytes(allocator, config_bytes);
+    defer rules.deinit(allocator);
+    applySkillConfigRules(skills.items, rules);
+
+    return .{ .skills = try skills.toOwnedSlice(allocator) };
 }
 
 fn defaultCwdList(allocator: std.mem.Allocator) ![]const []const u8 {
@@ -485,6 +533,16 @@ fn loadSkillConfigRules(allocator: std.mem.Allocator) !SkillConfigRules {
         try appendSkillConfigRulesFromToml(allocator, bytes, &rules);
     }
 
+    return .{ .entries = try rules.toOwnedSlice(allocator), .owned = true };
+}
+
+fn skillConfigRulesFromBytes(allocator: std.mem.Allocator, bytes: []const u8) !SkillConfigRules {
+    var rules = std.ArrayList(SkillConfigRule).empty;
+    errdefer {
+        for (rules.items) |rule| rule.deinit(allocator);
+        rules.deinit(allocator);
+    }
+    try appendSkillConfigRulesFromToml(allocator, bytes, &rules);
     return .{ .entries = try rules.toOwnedSlice(allocator), .owned = true };
 }
 
