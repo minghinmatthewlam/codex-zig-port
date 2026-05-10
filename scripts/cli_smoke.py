@@ -130,6 +130,38 @@ def make_exec_provider_wire_api_env(temp_root: Path, base_url: str, wire_api: st
     return env
 
 
+def make_exec_provider_headers_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-headers"',
+                'model_provider = "corp"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}"',
+                'env_key = "CORP_API_KEY"',
+                'wire_api = "responses"',
+                'requires_openai_auth = false',
+                'http_headers = { "X-Corp-Static" = "static-value" }',
+                "",
+                "[model_providers.corp.env_http_headers]",
+                '"X-Corp-Env" = "CORP_HEADER_TOKEN"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CORP_API_KEY"] = "provider-token"
+    env["CORP_HEADER_TOKEN"] = "env-header-value"
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
 def make_exec_provider_command_auth_env(
     temp_root: Path,
     base_url: str,
@@ -882,6 +914,36 @@ def run_exec_provider_wire_api_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_provider_headers_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-headers-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_provider_headers_env(temp_root, base_url)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "provider", "headers"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_paths == ["/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-provider-headers"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use provider headers"
+        assert server.request_headers[0]["Authorization"] == "Bearer provider-token"
+        assert server.request_headers[0]["X-Corp-Static"] == "static-value"
+        assert server.request_headers[0]["X-Corp-Env"] == "env-header-value"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_provider_command_auth_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-command-auth-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1564,6 +1626,7 @@ def main() -> None:
     run_exec_stdin_smoke(binary)
     run_exec_provider_env_key_smoke(binary)
     run_exec_provider_wire_api_smoke(binary)
+    run_exec_provider_headers_smoke(binary)
     run_exec_provider_command_auth_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -1581,6 +1644,7 @@ def main() -> None:
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-provider-env-key-e2e: ok")
     print("cli-exec-provider-wire-api-e2e: ok")
+    print("cli-exec-provider-headers-e2e: ok")
     print("cli-exec-provider-command-auth-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
