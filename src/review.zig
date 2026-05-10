@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const git_diff = @import("git_diff.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
+const workdir = @import("workdir.zig");
 
 const ReviewArgs = struct {
     help: bool = false,
@@ -30,6 +31,7 @@ pub const Options = struct {
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     ignore_user_config: bool = false,
+    skip_git_repo_check: bool = false,
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -49,6 +51,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
         printHelp();
         return;
     }
+    try workdir.enforceTrustedGitRepository(allocator, options.skip_git_repo_check);
 
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = options.profile,
