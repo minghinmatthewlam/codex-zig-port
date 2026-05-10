@@ -8016,6 +8016,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             "notSubscribed",
             "unsubscribed",
         ]
+        thread_compact_start = json.loads(
+            (out_dir / "ThreadCompactStartParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_compact_start["required"] == ["threadId"]
+        thread_compact_start_response = json.loads(
+            (out_dir / "ThreadCompactStartResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_compact_start_response["additionalProperties"] is False
+        thread_shell_command = json.loads(
+            (out_dir / "ThreadShellCommandParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_shell_command["required"] == ["threadId", "command"]
+        thread_shell_command_response = json.loads(
+            (out_dir / "ThreadShellCommandResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_shell_command_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8027,6 +8043,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
+        assert "ThreadCompactStartResponse" in bundle["$defs"]
+        assert "ThreadShellCommandResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8112,6 +8130,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: ThreadLoadedListParams | null;" in client_request
         assert 'method: "thread/unsubscribe";' in client_request
         assert "params: ThreadUnsubscribeParams;" in client_request
+        assert 'method: "thread/compact/start";' in client_request
+        assert "params: ThreadCompactStartParams;" in client_request
+        assert 'method: "thread/shellCommand";' in client_request
+        assert "params: ThreadShellCommandParams;" in client_request
+        client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert 'method: "thread/compact/start";' in client_response
+        assert "result: ThreadCompactStartResponse;" in client_response
+        assert 'method: "thread/shellCommand";' in client_response
+        assert "result: ThreadShellCommandResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8176,6 +8203,23 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadUnsubscribeStatus.ts"
         ).read_text(encoding="utf-8")
         assert '"notLoaded" | "notSubscribed" | "unsubscribed"' in thread_unsubscribe_status
+        thread_compact_start = (
+            out_dir / "v2" / "ThreadCompactStartParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_compact_start
+        thread_compact_start_response = (
+            out_dir / "v2" / "ThreadCompactStartResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadCompactStartResponse {}" in thread_compact_start_response
+        thread_shell_command = (
+            out_dir / "v2" / "ThreadShellCommandParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_shell_command
+        assert "command: string;" in thread_shell_command
+        thread_shell_command_response = (
+            out_dir / "v2" / "ThreadShellCommandResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadShellCommandResponse {}" in thread_shell_command_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8188,6 +8232,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
+        assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
+        assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
