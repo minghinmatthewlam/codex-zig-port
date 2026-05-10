@@ -4913,6 +4913,7 @@ fn handleCommandExecMethod(
 
 const COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP = 64 * 1024;
 const COMMAND_EXEC_DEFAULT_TIMEOUT_MS: i64 = 30_000;
+const COMMAND_EXEC_TIMEOUT_EXIT_CODE: i32 = 124;
 
 const CommandExecSandbox = struct {
     mode: config.SandboxMode,
@@ -5095,7 +5096,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
         .timeout = timeout,
     }) catch |err| switch (err) {
         error.StreamTooLong => return renderJsonRpcError(allocator, id_value, -32603, "command/exec output exceeded configured cap"),
-        error.Timeout => return renderJsonRpcError(allocator, id_value, -32603, "command/exec timed out"),
+        error.Timeout => return renderCommandExecResponse(allocator, id_value, COMMAND_EXEC_TIMEOUT_EXIT_CODE, "", ""),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
     };
     defer allocator.free(result.stdout);
@@ -5114,14 +5115,24 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
 
     const stdout_response = if (stream_output) "" else commandExecCappedOutput(result.stdout, effective_output_cap);
     const stderr_response = if (stream_output) "" else commandExecCappedOutput(result.stderr, effective_output_cap);
-    const stdout_json = try std.json.Stringify.valueAlloc(allocator, stdout_response, .{});
+    return renderCommandExecResponse(allocator, id_value, commandExecExitCode(result.term), stdout_response, stderr_response);
+}
+
+fn renderCommandExecResponse(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    exit_code: i32,
+    stdout: []const u8,
+    stderr: []const u8,
+) ![]const u8 {
+    const stdout_json = try std.json.Stringify.valueAlloc(allocator, stdout, .{});
     defer allocator.free(stdout_json);
-    const stderr_json = try std.json.Stringify.valueAlloc(allocator, stderr_response, .{});
+    const stderr_json = try std.json.Stringify.valueAlloc(allocator, stderr, .{});
     defer allocator.free(stderr_json);
     const response = try std.fmt.allocPrint(
         allocator,
         "{{\"exitCode\":{d},\"stdout\":{s},\"stderr\":{s}}}",
-        .{ commandExecExitCode(result.term), stdout_json, stderr_json },
+        .{ exit_code, stdout_json, stderr_json },
     );
     defer allocator.free(response);
     return renderJsonRpcResult(allocator, id_value, response);
