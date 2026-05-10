@@ -21,6 +21,19 @@ const SourceRender = struct {
     }
 };
 
+const InstallSourceRoot = struct {
+    plugin_root: []const u8,
+    cleanup_root: ?[]const u8 = null,
+
+    fn deinit(self: InstallSourceRoot, allocator: std.mem.Allocator) void {
+        if (self.cleanup_root) |path| {
+            deletePathIfPresent(path) catch {};
+            allocator.free(path);
+        }
+        allocator.free(self.plugin_root);
+    }
+};
+
 pub const ReadError = error{
     InvalidMarketplaceFile,
     PluginNotFound,
@@ -243,9 +256,18 @@ pub fn installLocalPlugin(
         }
 
         const source_value = plugin_value.object.get("source") orelse return InstallError.UnsupportedInstallSource;
-        const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return InstallError.UnsupportedInstallSource;
-        defer source.deinit(allocator);
-        const plugin_root = source.plugin_root orelse return InstallError.UnsupportedInstallSource;
+        const plugin_base_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name, plugin_name });
+        defer allocator.free(plugin_base_root);
+        const install_source = (try materializeInstallSource(
+            allocator,
+            codex_home,
+            marketplace_name,
+            plugin_name,
+            marketplace_path,
+            source_value,
+        )) orelse return InstallError.UnsupportedInstallSource;
+        defer install_source.deinit(allocator);
+        const plugin_root = install_source.plugin_root;
 
         const manifest_bytes = try readPluginManifestBytes(allocator, plugin_root) orelse return InstallError.MissingPluginManifest;
         defer allocator.free(manifest_bytes);
@@ -260,8 +282,6 @@ pub fn installLocalPlugin(
         defer allocator.free(plugin_id);
         const installed_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name, plugin_name, plugin_version });
         errdefer allocator.free(installed_path);
-        const plugin_base_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name, plugin_name });
-        defer allocator.free(plugin_base_root);
 
         try replaceLocalPluginCache(allocator, plugin_root, plugin_base_root, installed_path);
         const updated_config = try plugin_config.upsertEnabledPluginConfig(allocator, config_bytes, plugin_id);
@@ -528,6 +548,129 @@ fn renderGitPluginSource(allocator: std.mem.Allocator, object: std.json.ObjectMa
         .{ url_json, path_json, ref_json, sha_json },
     );
     return .{ .source_json = source_json };
+}
+
+fn materializeInstallSource(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_name: []const u8,
+    plugin_name: []const u8,
+    marketplace_path: []const u8,
+    source_value: std.json.Value,
+) !?InstallSourceRoot {
+    if (source_value == .string) {
+        return materializeLocalInstallSource(allocator, marketplace_path, source_value.string);
+    }
+    if (source_value != .object) return null;
+
+    const kind = stringField(source_value.object, "source") orelse return null;
+    if (std.mem.eql(u8, kind, "local")) {
+        const path = stringField(source_value.object, "path") orelse return null;
+        return materializeLocalInstallSource(allocator, marketplace_path, path);
+    }
+    if (std.mem.eql(u8, kind, "url")) {
+        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, source_value.object, false);
+    }
+    if (std.mem.eql(u8, kind, "git-subdir")) {
+        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, source_value.object, true);
+    }
+    return null;
+}
+
+fn materializeLocalInstallSource(allocator: std.mem.Allocator, marketplace_path: []const u8, raw_path: []const u8) !?InstallSourceRoot {
+    const plugin_root = (try resolveLocalPluginPath(allocator, marketplace_path, raw_path)) orelse return null;
+    return .{ .plugin_root = plugin_root };
+}
+
+fn materializeGitInstallSource(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_name: []const u8,
+    plugin_name: []const u8,
+    object: std.json.ObjectMap,
+    require_path: bool,
+) !?InstallSourceRoot {
+    const url = stringField(object, "url") orelse return null;
+    if (std.mem.trim(u8, url, " \t\r\n").len == 0) return null;
+    const source_path = stringField(object, "path");
+    if (require_path and source_path == null) return null;
+    if (source_path) |path| {
+        if (path.len == 0 or !isSafeRelativePath(path)) return null;
+    }
+
+    const staging_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", ".marketplace-plugin-source-staging" });
+    defer allocator.free(staging_root);
+    const clone_root = try std.fs.path.join(allocator, &.{ staging_root, marketplace_name, plugin_name });
+    errdefer allocator.free(clone_root);
+
+    try deletePathIfPresent(clone_root);
+    errdefer deletePathIfPresent(clone_root) catch {};
+    const clone_parent = std.fs.path.dirname(clone_root) orelse staging_root;
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), clone_parent);
+    try cloneGitPluginSource(allocator, url, stringField(object, "ref"), stringField(object, "sha"), source_path, clone_root);
+
+    const plugin_root = if (source_path) |path|
+        try std.fs.path.join(allocator, &.{ clone_root, path })
+    else
+        try allocator.dupe(u8, clone_root);
+    errdefer allocator.free(plugin_root);
+
+    return .{
+        .plugin_root = plugin_root,
+        .cleanup_root = clone_root,
+    };
+}
+
+fn cloneGitPluginSource(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    ref_name: ?[]const u8,
+    sha: ?[]const u8,
+    sparse_checkout_path: ?[]const u8,
+    destination: []const u8,
+) !void {
+    if (sparse_checkout_path) |path| {
+        try runGit(allocator, &.{ "git", "clone", "--filter=blob:none", "--sparse", "--no-checkout", url, destination }, null);
+        try runGit(allocator, &.{ "git", "sparse-checkout", "set", "--no-cone", "--", path }, destination);
+    } else {
+        try runGit(allocator, &.{ "git", "clone", url, destination }, null);
+    }
+
+    if (sha orelse ref_name) |target| {
+        try runGit(allocator, &.{ "git", "checkout", target }, destination);
+    } else if (sparse_checkout_path != null) {
+        try runGit(allocator, &.{ "git", "checkout" }, destination);
+    }
+}
+
+fn runGit(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var env_argv = std.ArrayList([]const u8).empty;
+    defer env_argv.deinit(allocator);
+    try env_argv.append(allocator, "env");
+    try env_argv.append(allocator, "GIT_TERMINAL_PROMPT=0");
+    try env_argv.appendSlice(allocator, argv);
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = env_argv.items,
+        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .stdout_limit = .limited(128 * 1024),
+        .stderr_limit = .limited(128 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(30_000),
+            .clock = .awake,
+        } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| if (code == 0) return,
+        else => {},
+    }
+    return InstallError.UnsupportedInstallSource;
 }
 
 fn resolveLocalPluginPath(allocator: std.mem.Allocator, marketplace_path: []const u8, raw_path: []const u8) !?[]const u8 {
