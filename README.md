@@ -380,7 +380,8 @@ those same fields, reads `[tui].theme`, `[tui].status_line`,
 `cwd`, and `timeout_ms` for command-backed bearer tokens.
 The current port supports Responses wire API providers, rejects the removed
 `wire_api = "chat"` setting, and rejects command-auth combinations that Rust
-marks invalid.
+marks invalid. If a command-backed provider token receives a 401 response, the
+command is rerun once and the request is retried with the refreshed token.
 
 ```sh
 codex-zig --profile work auth-status
