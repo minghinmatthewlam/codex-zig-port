@@ -331,6 +331,10 @@ fn mainInner(init: std.process.Init) !void {
             try app_server_cmd.run(allocator, &args);
             return;
         }
+        if (isKnownUnimplementedCommand(cmd)) {
+            try runKnownUnimplementedCommand(cmd, &args);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "stdio-to-uds")) {
             try runStdioToUdsCommand(allocator, &args);
             return;
@@ -560,6 +564,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "debug") or
         std.mem.eql(u8, cmd, "mcp") or
         std.mem.eql(u8, cmd, "app-server") or
+        isKnownUnimplementedCommand(cmd) or
         std.mem.eql(u8, cmd, "stdio-to-uds") or
         std.mem.eql(u8, cmd, "help") or
         std.mem.eql(u8, cmd, "mcp-server") or
@@ -570,6 +575,38 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mock-sandbox-demo") or
         isExecCommand(cmd) or
         isApplyCommand(cmd);
+}
+
+fn isKnownUnimplementedCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "plugin") or
+        std.mem.eql(u8, cmd, "remote-control") or
+        std.mem.eql(u8, cmd, "app") or
+        std.mem.eql(u8, cmd, "update") or
+        std.mem.eql(u8, cmd, "cloud") or
+        std.mem.eql(u8, cmd, "cloud-tasks") or
+        std.mem.eql(u8, cmd, "responses-api-proxy") or
+        std.mem.eql(u8, cmd, "exec-server");
+}
+
+fn runKnownUnimplementedCommand(cmd: []const u8, args: *std.process.Args.Iterator) !void {
+    if (args.next()) |arg| {
+        if (isHelpFlag(arg)) {
+            printKnownUnimplementedHelp(cmd);
+            return;
+        }
+    }
+    std.debug.print("codex-zig {s} is parsed but not implemented yet\n", .{cmd});
+    return error.CliCommandNotImplemented;
+}
+
+fn printKnownUnimplementedHelp(cmd: []const u8) void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig {s} [ARGS]
+        \\
+        \\This Rust CLI command is recognized by the Zig port but is not implemented yet.
+        \\
+    , .{cmd});
 }
 
 fn rejectRemoteModeForSubcommand(remote: ?[]const u8, remote_auth_token_env: ?[]const u8, subcommand: []const u8) !void {
@@ -613,6 +650,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         mcp_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "app-server")) {
         app_server_cmd.printHelp();
+    } else if (isKnownUnimplementedCommand(target)) {
+        printKnownUnimplementedHelp(target);
     } else if (std.mem.eql(u8, target, "completion")) {
         completion_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "sandbox")) {
@@ -785,6 +824,11 @@ fn printHelp() !void {
         \\                          Run Codex as a stdio MCP server
         \\  codex-zig app-server
         \\                          Run the app-server JSON-RPC stdio transport
+        \\  codex-zig cloud        Recognized; not implemented yet
+        \\  codex-zig exec-server  Recognized; not implemented yet
+        \\  codex-zig plugin       Recognized; not implemented yet
+        \\  codex-zig remote-control
+        \\                          Recognized; not implemented yet
         \\  codex-zig auth-status  Check local Codex auth reuse
         \\  codex-zig help [COMMAND]
         \\                          Print general or command-specific help
@@ -1185,7 +1229,20 @@ test "fork session command rejects include non interactive" {
 test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("exec"));
     try std.testing.expect(commandRejectsRootRemote("app-server"));
+    try std.testing.expect(commandRejectsRootRemote("remote-control"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
+}
+
+test "known unimplemented Rust commands are recognized" {
+    try std.testing.expect(isKnownUnimplementedCommand("plugin"));
+    try std.testing.expect(isKnownUnimplementedCommand("remote-control"));
+    try std.testing.expect(isKnownUnimplementedCommand("app"));
+    try std.testing.expect(isKnownUnimplementedCommand("update"));
+    try std.testing.expect(isKnownUnimplementedCommand("cloud"));
+    try std.testing.expect(isKnownUnimplementedCommand("cloud-tasks"));
+    try std.testing.expect(isKnownUnimplementedCommand("responses-api-proxy"));
+    try std.testing.expect(isKnownUnimplementedCommand("exec-server"));
+    try std.testing.expect(!isKnownUnimplementedCommand("write this prompt"));
 }

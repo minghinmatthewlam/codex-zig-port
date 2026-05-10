@@ -3,14 +3,14 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 
 const top_level_commands =
-    "a app-server apply auth-status completion debug e exec features fork help login logout mcp mcp-server review resume sandbox sessions";
+    "a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update";
 const global_options =
-    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --no-alt-screen";
+    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
-    "'a' 'app-server' 'apply' 'auth-status' 'completion' 'debug' 'e' 'exec' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'review' 'resume' 'sandbox' 'sessions'";
+    "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'e' 'exec' 'exec-server' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'review' 'resume' 'sandbox' 'sessions' 'update'";
 const elvish_global_options =
-    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--no-alt-screen'";
+    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--remote' '--remote-auth-token-env' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
 
 const Shell = enum {
@@ -234,6 +234,9 @@ test "completion renders bash by default shape" {
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "complete -F _codex_zig codex-zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "completion") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "cloud-tasks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-control") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-auth-token-env") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "powershell") != null);
 }
 

@@ -666,10 +666,42 @@ def run_help_command_smoke(
         capture_output=True,
         check=True,
     )
-    if "a app-server apply" not in completion_result.stdout:
-        raise AssertionError(
-            f"expected apply commands in bash completion:\n{completion_result.stdout}"
+    for command in ['commands="a ', "app-server", "apply", "cloud-tasks", "remote-control"]:
+        if command not in completion_result.stdout:
+            raise AssertionError(
+                f"expected {command} in bash completion:\n{completion_result.stdout}"
+            )
+
+
+def run_unimplemented_command_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    for command in [
+        "plugin",
+        "remote-control",
+        "app",
+        "update",
+        "cloud",
+        "cloud-tasks",
+        "responses-api-proxy",
+        "exec-server",
+    ]:
+        result = subprocess.run(
+            [str(binary), command],
+            cwd=workspace,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
         )
+        if result.returncode == 0:
+            raise AssertionError(f"{command} unexpectedly succeeded")
+        if "parsed but not implemented yet" not in result.stderr:
+            raise AssertionError(
+                f"expected not-implemented message for {command}:\n{result.stderr}"
+            )
 
 
 def run_remote_flag_smoke(
@@ -901,6 +933,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
+            run_unimplemented_command_smoke(binary, env, workspace)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
 
