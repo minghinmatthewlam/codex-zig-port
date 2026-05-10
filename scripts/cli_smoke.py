@@ -31,6 +31,7 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.server.request_bodies.append(json.loads(body))
+        self.server.request_headers.append(dict(self.headers.items()))
         payload = (
             b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
             b"data: [DONE]\n\n"
@@ -47,11 +48,13 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
 
 class ExecResponsesServer(ThreadingHTTPServer):
     request_bodies: list[dict]
+    request_headers: list[dict[str, str]]
 
 
 def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server = ExecResponsesServer(("127.0.0.1", 0), ExecResponsesHandler)
     server.request_bodies = []
+    server.request_headers = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -66,6 +69,33 @@ def make_exec_mock_env(temp_root: Path, base_url: str) -> dict[str, str]:
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     env["OPENAI_API_KEY"] = "test-api-key"
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
+def make_exec_provider_env_key_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-env"',
+                'model_provider = "corp"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}"',
+                'env_key = "CORP_API_KEY"',
+                'wire_api = "responses"',
+                'requires_openai_auth = false',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CORP_API_KEY"] = "provider-token"
+    env.pop("OPENAI_API_KEY", None)
     env.pop("CODEX_ACCESS_TOKEN", None)
     return env
 
@@ -695,6 +725,33 @@ def run_exec_stdin_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_provider_env_key_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-env-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_provider_env_key_env(temp_root, base_url)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "provider", "auth"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["model"] == "gpt-provider-env"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "use provider auth"
+        assert server.request_headers[0]["Authorization"] == "Bearer provider-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1310,6 +1367,7 @@ def main() -> None:
     run_exec_equals_options_smoke(binary)
     run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
+    run_exec_provider_env_key_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1324,6 +1382,7 @@ def main() -> None:
     print("cli-exec-options-e2e: ok")
     print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
+    print("cli-exec-provider-env-key-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
