@@ -999,6 +999,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/skill/read")) {
         return handlePluginSkillRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/share/save")) {
+        return handlePluginShareSave(allocator, state, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "plugin/share/updateTargets")) {
         return handlePluginShareUpdateTargets(allocator, state, id_value, params_value);
     }
@@ -1155,6 +1158,50 @@ fn parsePluginSkillReadParams(params_value: ?std.json.Value) !ParsedPluginSkillR
     };
 }
 
+fn handlePluginShareSave(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validatePluginShareSaveParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const params = parsePluginShareSaveParams(params_value);
+    if (!std.fs.path.isAbsolute(params.plugin_path)) {
+        return renderJsonRpcError(allocator, id_value, -32600, FS_ABSOLUTE_PATH_MESSAGE);
+    }
+    if (params.remote_plugin_id) |remote_plugin_id| {
+        if (!remote_plugin.isValidRemotePluginId(remote_plugin_id)) {
+            return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
+        }
+        if (params.discoverability != null or params.share_targets != null) {
+            return renderJsonRpcError(
+                allocator,
+                id_value,
+                -32600,
+                "discoverability and shareTargets are only supported when creating a plugin share; use plugin/share/updateTargets to update share targets",
+            );
+        }
+    }
+
+    var context = loadRemotePluginShareContext(allocator) catch |err| {
+        return renderRemotePluginShareContextError(allocator, id_value, "plugin/share/save", err);
+    };
+    defer context.deinit(allocator);
+
+    const result = remote_plugin.saveShareJson(
+        allocator,
+        context.cfg.chatgpt_base_url,
+        context.credentials,
+        context.cfg.codex_home,
+        params.plugin_path,
+        params.remote_plugin_id,
+        params.discoverability,
+        params.share_targets,
+    ) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/share/save failed to save remote plugin share", err);
+    };
+    defer allocator.free(result);
+    clearSkillsListCache(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
 fn handlePluginShareList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     if (validateOptionalObjectParams(params_value)) |message| {
         return renderJsonRpcError(allocator, id_value, -32602, message);
@@ -1272,6 +1319,29 @@ const ParsedPluginShareUpdateTargetsParams = struct {
     remote_plugin_id: []const u8,
     share_targets: []const std.json.Value,
 };
+
+const ParsedPluginShareSaveParams = struct {
+    plugin_path: []const u8,
+    remote_plugin_id: ?[]const u8,
+    discoverability: ?[]const u8,
+    share_targets: ?[]const std.json.Value,
+};
+
+fn parsePluginShareSaveParams(params_value: ?std.json.Value) ParsedPluginShareSaveParams {
+    const object = params_value.?.object;
+    const remote_plugin_id = optionalStringFieldForPluginParams(object, "remotePluginId");
+    const discoverability = optionalStringFieldForPluginParams(object, "discoverability");
+    const share_targets = if (object.get("shareTargets")) |value|
+        if (value == .null) null else value.array.items
+    else
+        null;
+    return .{
+        .plugin_path = object.get("pluginPath").?.string,
+        .remote_plugin_id = remote_plugin_id,
+        .discoverability = discoverability,
+        .share_targets = share_targets,
+    };
+}
 
 fn parsePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ParsedPluginShareUpdateTargetsParams {
     const params = params_value.?;
@@ -1681,6 +1751,12 @@ fn parsePluginReadParams(params_value: ?std.json.Value) !ParsedPluginReadParams 
 fn stringFieldForPluginParams(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const value = object.get(field) orelse return null;
     if (value != .string) return null;
+    return value.string;
+}
+
+fn optionalStringFieldForPluginParams(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
     return value.string;
 }
 
@@ -4589,7 +4665,6 @@ test "app-server plugin methods validate params and return not implemented" {
     defer state.deinit(allocator);
 
     const cases = [_][]const u8{
-        "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-share-save\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":null,\"discoverability\":\"PRIVATE\",\"shareTargets\":[{\"principalType\":\"user\",\"principalId\":\"user-1\"}]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-install\",\"method\":\"plugin/install\",\"params\":{\"remoteMarketplaceName\":\"openai-curated\",\"pluginName\":\"gmail\"}}",
     };
 
@@ -4631,6 +4706,24 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_skill_name.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_skill_name.?, "\"code\":-32600") != null);
+
+    const relative_share_path = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"relative-plugin-share-path\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"relative-plugin\"}}",
+    );
+    defer allocator.free(relative_share_path.?);
+    try std.testing.expect(std.mem.indexOf(u8, relative_share_path.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, relative_share_path.?, "AbsolutePathBuf deserialized without a base path") != null);
+
+    const invalid_share_save_policy = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-share-policy\",\"method\":\"plugin/share/save\",\"params\":{\"pluginPath\":\"/tmp/plugins/gmail\",\"remotePluginId\":\"plugins~Plugin_123\",\"discoverability\":\"PRIVATE\"}}",
+    );
+    defer allocator.free(invalid_share_save_policy.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_share_save_policy.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_share_save_policy.?, "discoverability and shareTargets are only supported") != null);
 
     const invalid_share_id = try handleJsonRpcLine(
         allocator,
