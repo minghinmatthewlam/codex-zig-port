@@ -1000,20 +1000,6 @@ def run_filesystem_rpc_smoke(binary: Path) -> None:
         assert missing_removed["id"] == "fs-remove-missing"
         assert missing_removed["result"] == {}
 
-        watch = rpc(
-            "fs-watch",
-            "fs/watch",
-            {"watchId": "watch-1", "path": str(nested_dir)},
-        )
-        assert watch["id"] == "fs-watch"
-        assert watch["error"]["code"] == -32603
-        assert "fs/watch is parsed but not implemented yet" in watch["error"]["message"]
-
-        unwatch = rpc("fs-unwatch", "fs/unwatch", {"watchId": "watch-1"})
-        assert unwatch["id"] == "fs-unwatch"
-        assert unwatch["error"]["code"] == -32603
-        assert "fs/unwatch is parsed but not implemented yet" in unwatch["error"]["message"]
-
         relative = rpc("fs-relative", "fs/readFile", {"path": "relative.txt"})
         assert relative["id"] == "fs-relative"
         assert relative["error"]["code"] == -32602
@@ -1028,6 +1014,139 @@ def run_filesystem_rpc_smoke(binary: Path) -> None:
         assert invalid_base64["error"]["code"] == -32602
         assert "valid base64 dataBase64" in invalid_base64["error"]["message"]
     finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-watch-", dir="/tmp"))
+    env = os.environ.copy()
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        watched_dir = root / "watched"
+        watched_dir.mkdir()
+        watched_file = watched_dir / "note.txt"
+        payload_base64 = base64.b64encode(b"watched contents").decode("ascii")
+
+        watch = rpc(
+            "fs-watch",
+            "fs/watch",
+            {"watchId": "watch-dir", "path": str(watched_dir)},
+        )
+        assert watch["id"] == "fs-watch"
+        assert watch["result"] == {"path": str(watched_dir)}
+
+        duplicate = rpc(
+            "fs-watch-duplicate",
+            "fs/watch",
+            {"watchId": "watch-dir", "path": str(watched_dir)},
+        )
+        assert duplicate["id"] == "fs-watch-duplicate"
+        assert duplicate["error"]["code"] == -32602
+        assert "watchId already exists" in duplicate["error"]["message"]
+
+        write = rpc(
+            "fs-watch-write",
+            "fs/writeFile",
+            {"path": str(watched_file), "dataBase64": payload_base64},
+        )
+        assert write["id"] == "fs-watch-write"
+        assert write["result"] == {}
+
+        changed = read_json_line(proc, 5)
+        assert changed["jsonrpc"] == "2.0"
+        assert changed["method"] == "fs/changed"
+        assert changed["params"] == {
+            "watchId": "watch-dir",
+            "changedPaths": [str(watched_file)],
+        }
+
+        file_watch = rpc(
+            "fs-watch-file",
+            "fs/watch",
+            {"watchId": "watch-file", "path": str(watched_file)},
+        )
+        assert file_watch["id"] == "fs-watch-file"
+        assert file_watch["result"] == {"path": str(watched_file)}
+
+        rewrite = rpc(
+            "fs-watch-rewrite",
+            "fs/writeFile",
+            {"path": str(watched_file), "dataBase64": payload_base64},
+        )
+        assert rewrite["id"] == "fs-watch-rewrite"
+        assert rewrite["result"] == {}
+
+        changed_for_dir = read_json_line(proc, 5)
+        changed_for_file = read_json_line(proc, 5)
+        notifications_by_watch = {
+            changed_for_dir["params"]["watchId"]: changed_for_dir,
+            changed_for_file["params"]["watchId"]: changed_for_file,
+        }
+        assert sorted(notifications_by_watch) == ["watch-dir", "watch-file"]
+        assert notifications_by_watch["watch-dir"]["method"] == "fs/changed"
+        assert notifications_by_watch["watch-dir"]["params"]["changedPaths"] == [str(watched_file)]
+        assert notifications_by_watch["watch-file"]["method"] == "fs/changed"
+        assert notifications_by_watch["watch-file"]["params"]["changedPaths"] == [str(watched_file)]
+
+        invalid_watch_path = rpc(
+            "fs-watch-relative",
+            "fs/watch",
+            {"watchId": "watch-relative", "path": "relative"},
+        )
+        assert invalid_watch_path["id"] == "fs-watch-relative"
+        assert invalid_watch_path["error"]["code"] == -32602
+
+        invalid_unwatch = rpc("fs-unwatch-invalid", "fs/unwatch", {"watchId": 12})
+        assert invalid_unwatch["id"] == "fs-unwatch-invalid"
+        assert invalid_unwatch["error"]["code"] == -32602
+
+        unwatch_dir = rpc("fs-unwatch-dir", "fs/unwatch", {"watchId": "watch-dir"})
+        assert unwatch_dir["id"] == "fs-unwatch-dir"
+        assert unwatch_dir["result"] == {}
+
+        unwatch_file = rpc("fs-unwatch-file", "fs/unwatch", {"watchId": "watch-file"})
+        assert unwatch_file["id"] == "fs-unwatch-file"
+        assert unwatch_file["result"] == {}
+
+        post_unwatch = rpc(
+            "fs-post-unwatch-write",
+            "fs/writeFile",
+            {"path": str(watched_file), "dataBase64": payload_base64},
+        )
+        assert post_unwatch["id"] == "fs-post-unwatch-write"
+        assert post_unwatch["result"] == {}
+
+        try:
+            extra = read_json_line(proc, 0.25)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"unexpected fs/changed notification after unwatch: {extra!r}")
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -2576,6 +2695,8 @@ def main() -> None:
     print("app-server-mcp-server-status-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
+    run_filesystem_watch_rpc_smoke(binary)
+    print("app-server-filesystem-watch-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
