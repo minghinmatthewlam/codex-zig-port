@@ -65,6 +65,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   metadata, installed/enabled state, disabled remote skills, app ids, and
   remote source summaries
 - read remote app-server plugin skill Markdown with `plugin/skill/read`
+- uninstall remote app-server plugins with `plugin/uninstall`, including cloud
+  mutation and local cache cleanup
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
@@ -175,7 +177,7 @@ script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
 hidden `stdio-to-uds` relay command, verifies parsed app-server marketplace RPC
 stubs, local app-server `plugin/list` marketplace discovery, remote
 `plugin/list` catalog fetching, remote `plugin/read` detail fetching, remote
-`plugin/skill/read` Markdown fetching,
+`plugin/skill/read` Markdown fetching, remote `plugin/uninstall` cache cleanup,
 and remaining plugin RPC behavior including local `plugin/read` details for
 skills, hooks, apps, and MCP servers,
 verifies app-server hooks-list discovery for user and
