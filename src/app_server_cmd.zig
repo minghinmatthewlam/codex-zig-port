@@ -31,6 +31,14 @@ const AppServerOptions = struct {
     websocket_auth: WebsocketAuthArgs = .{},
 };
 
+const AppServerState = struct {
+    runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
+
+    fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
+        self.runtime_feature_enablement.deinit(allocator);
+    }
+};
+
 const WebSocketListen = struct {
     host: []const u8,
     port: u16,
@@ -338,6 +346,9 @@ const StdioServer = struct {
     allocator: std.mem.Allocator,
 
     fn run(self: *StdioServer) !void {
+        var state = AppServerState{};
+        defer state.deinit(self.allocator);
+
         var input_buffer: [64 * 1024]u8 = undefined;
         var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
 
@@ -346,7 +357,7 @@ const StdioServer = struct {
             const line = line_opt orelse break;
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0) continue;
-            const response = handleJsonRpcLine(self.allocator, trimmed) catch |err| {
+            const response = handleJsonRpcLine(self.allocator, &state, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
                 defer self.allocator.free(message);
                 try cli_utils.writeStderr(message);
@@ -377,6 +388,9 @@ const UnixServer = struct {
         defer server.deinit(io);
         defer deleteSocketFileIfSocket(self.allocator, io, self.socket_path) catch {};
 
+        var state = AppServerState{};
+        defer state.deinit(self.allocator);
+
         var stream = try server.accept(io);
         defer stream.close(io);
 
@@ -390,7 +404,7 @@ const UnixServer = struct {
             const line = line_opt orelse break;
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0) continue;
-            const response = handleJsonRpcLine(self.allocator, trimmed) catch |err| {
+            const response = handleJsonRpcLine(self.allocator, &state, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
                 defer self.allocator.free(message);
                 try cli_utils.writeStderr(message);
@@ -404,7 +418,7 @@ const UnixServer = struct {
     }
 };
 
-fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line: []const u8) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
     };
@@ -446,7 +460,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u
         return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
     }
     if (isExperimentalFeatureMethod(method)) {
-        return try handleExperimentalFeatureMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleExperimentalFeatureMethod(allocator, state, id_value.?, method, object.get("params"));
     }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
@@ -1304,20 +1318,26 @@ fn isExperimentalFeatureMethod(method: []const u8) bool {
 
 fn handleExperimentalFeatureMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "experimentalFeature/list")) {
-        return handleExperimentalFeatureList(allocator, id_value, params_value);
+        return handleExperimentalFeatureList(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "experimentalFeature/enablement/set")) {
-        return handleExperimentalFeatureEnablementSet(allocator, id_value, params_value);
+        return handleExperimentalFeatureEnablementSet(allocator, state, id_value, params_value);
     }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown experimental feature method");
 }
 
-fn handleExperimentalFeatureList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleExperimentalFeatureList(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
     const params = switch (optionalExperimentalFeatureListParams(params_value)) {
         .object => |object| object,
         .empty => null,
@@ -1382,7 +1402,9 @@ fn handleExperimentalFeatureList(allocator: std.mem.Allocator, id_value: std.jso
     try result.appendSlice(allocator, "{\"data\":[");
     for (all_features[start..end], 0..) |feature, index| {
         if (index > 0) try result.appendSlice(allocator, ",");
-        const enabled = feature_overrides.get(feature.key) orelse feature.default_enabled;
+        const enabled = feature_overrides.get(feature.key) orelse
+            state.runtime_feature_enablement.get(feature.key) orelse
+            feature.default_enabled;
         try appendExperimentalFeatureJson(allocator, &result, feature, enabled);
     }
     try result.appendSlice(allocator, "],\"nextCursor\":");
@@ -1442,15 +1464,77 @@ fn experimentalFeatureStageLabel(stage: []const u8) []const u8 {
     return "underDevelopment";
 }
 
-fn handleExperimentalFeatureEnablementSet(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+const supported_experimental_feature_enablement = [_][]const u8{
+    "apps",
+    "memories",
+    "plugins",
+    "remote_control",
+    "tool_search",
+    "tool_suggest",
+    "tool_call_mcp_elicitation",
+};
+
+const supported_experimental_feature_enablement_message = "apps, memories, plugins, remote_control, tool_search, tool_suggest, tool_call_mcp_elicitation";
+
+fn handleExperimentalFeatureEnablementSet(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "experimentalFeature/enablement/set params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "experimentalFeature/enablement/set params must be an object");
     const enablement = params.object.get("enablement") orelse return renderJsonRpcError(allocator, id_value, -32602, "enablement must be an object");
     if (enablement != .object) return renderJsonRpcError(allocator, id_value, -32602, "enablement must be an object");
-    for (enablement.object.values()) |value| {
+
+    for (enablement.object.keys(), enablement.object.values()) |key, value| {
         if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "enablement values must be booleans");
+        if (!features_cmd.isKnownFeature(key)) {
+            const message = try std.fmt.allocPrint(allocator, "invalid feature enablement `{s}`", .{key});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        if (!isSupportedExperimentalFeatureEnablement(key)) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "unsupported feature enablement `{s}`: currently supported features are {s}",
+                .{ key, supported_experimental_feature_enablement_message },
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
     }
-    return renderParsedButNotImplemented(allocator, id_value, "experimentalFeature/enablement/set");
+
+    for (enablement.object.keys(), enablement.object.values()) |key, value| {
+        try state.runtime_feature_enablement.put(allocator, key, value.bool);
+    }
+
+    const result = try renderExperimentalFeatureEnablementResponse(allocator, enablement.object);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn isSupportedExperimentalFeatureEnablement(key: []const u8) bool {
+    for (supported_experimental_feature_enablement) |supported| {
+        if (std.mem.eql(u8, key, supported)) return true;
+    }
+    return false;
+}
+
+fn renderExperimentalFeatureEnablementResponse(allocator: std.mem.Allocator, enablement: std.json.ObjectMap) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "{\"enablement\":{");
+    for (enablement.keys(), enablement.values(), 0..) |key, value, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        const key_json = try std.json.Stringify.valueAlloc(allocator, key, .{});
+        defer allocator.free(key_json);
+        try result.appendSlice(allocator, key_json);
+        try result.appendSlice(allocator, if (value.bool) ":true" else ":false");
+    }
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
 }
 
 fn renderInitializeResult(allocator: std.mem.Allocator) ![]const u8 {
@@ -1726,8 +1810,12 @@ test "app-server initialize result exposes server info" {
 
 test "app-server marketplace methods validate params and return not implemented" {
     const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
     const valid_add = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"add\",\"method\":\"marketplace/add\",\"params\":{\"source\":\"owner/repo\",\"refName\":\"main\",\"sparsePaths\":[\"plugins/foo\"]}}",
     );
     defer allocator.free(valid_add.?);
@@ -1736,6 +1824,7 @@ test "app-server marketplace methods validate params and return not implemented"
 
     const valid_remove = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"remove\",\"method\":\"marketplace/remove\",\"params\":{\"marketplaceName\":\"debug\"}}",
     );
     defer allocator.free(valid_remove.?);
@@ -1743,6 +1832,7 @@ test "app-server marketplace methods validate params and return not implemented"
 
     const valid_upgrade = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"upgrade\",\"method\":\"marketplace/upgrade\",\"params\":{\"marketplaceName\":null}}",
     );
     defer allocator.free(valid_upgrade.?);
@@ -1750,6 +1840,7 @@ test "app-server marketplace methods validate params and return not implemented"
 
     const invalid_add = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"bad-add\",\"method\":\"marketplace/add\",\"params\":{\"refName\":\"main\"}}",
     );
     defer allocator.free(invalid_add.?);
@@ -1758,6 +1849,9 @@ test "app-server marketplace methods validate params and return not implemented"
 
 test "app-server plugin methods validate params and return not implemented" {
     const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
     const cases = [_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-list\",\"method\":\"plugin/list\",\"params\":{\"cwds\":[\"/tmp/repo\"],\"marketplaceKinds\":[\"local\",\"workspace-directory\",\"shared-with-me\"]}}",
         "{\"jsonrpc\":\"2.0\",\"id\":\"plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\",\"remoteMarketplaceName\":null,\"pluginName\":\"gmail\"}}",
@@ -1771,7 +1865,7 @@ test "app-server plugin methods validate params and return not implemented" {
     };
 
     for (cases) |line| {
-        const response = try handleJsonRpcLine(allocator, line);
+        const response = try handleJsonRpcLine(allocator, &state, line);
         defer allocator.free(response.?);
         try std.testing.expect(std.mem.indexOf(u8, response.?, "\"code\":-32603") != null);
         try std.testing.expect(std.mem.indexOf(u8, response.?, "is parsed but not implemented yet") != null);
@@ -1779,6 +1873,7 @@ test "app-server plugin methods validate params and return not implemented" {
 
     const invalid_read = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-read\",\"method\":\"plugin/read\",\"params\":{\"marketplacePath\":\"/tmp/marketplace.json\"}}",
     );
     defer allocator.free(invalid_read.?);
@@ -1786,6 +1881,7 @@ test "app-server plugin methods validate params and return not implemented" {
 
     const invalid_kind = try handleJsonRpcLine(
         allocator,
+        &state,
         "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-list\",\"method\":\"plugin/list\",\"params\":{\"marketplaceKinds\":[\"unexpected\"]}}",
     );
     defer allocator.free(invalid_kind.?);
