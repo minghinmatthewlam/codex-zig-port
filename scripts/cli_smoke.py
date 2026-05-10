@@ -591,6 +591,94 @@ def run_yolo_approval_conflict_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_full_auto_compat_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-full-auto-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        root_result = subprocess.run(
+            [str(binary.resolve()), "--full-auto"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert root_result.returncode != 0
+        assert "error: UnknownCliOption" in root_result.stderr
+
+        exec_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--full-auto",
+                "say",
+                "hi",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert exec_result.stdout == "stored reply\n"
+        assert (
+            "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead."
+            in exec_result.stderr
+        )
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "say hi"
+
+        sandbox_full_auto = subprocess.run(
+            [str(binary.resolve()), "sandbox", "linux", "--full-auto", "--"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert sandbox_full_auto.returncode != 0
+        assert "error: UnknownSandboxOption" in sandbox_full_auto.stderr
+
+        linux_unsupported = subprocess.run(
+            [str(binary.resolve()), "sandbox", "landlock", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert linux_unsupported.returncode != 0
+        assert "error: LinuxSandboxUnsupported" in linux_unsupported.stderr
+
+        windows_unsupported = subprocess.run(
+            [str(binary.resolve()), "sandbox", "windows", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert windows_unsupported.returncode != 0
+        assert "error: WindowsSandboxUnsupported" in windows_unsupported.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
@@ -601,6 +689,7 @@ def main() -> None:
     run_exec_stdin_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
+    run_full_auto_compat_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
@@ -609,6 +698,7 @@ def main() -> None:
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
+    print("cli-full-auto-compat-e2e: ok")
 
 
 if __name__ == "__main__":
