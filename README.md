@@ -374,10 +374,10 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 those same fields, reads `[tui].theme`, `[tui].status_line`,
 `[tui].terminal_title`, and `[tui].alternate_screen` for TUI preferences, and reads
 `[model_providers.<name>].base_url`, `wire_api`, `env_key`,
-`experimental_bearer_token`, `http_headers`, and `env_http_headers` for custom
-providers. It also supports section-form `[model_providers.<name>.auth]` and
-inline `auth = { ... }` `command`, `args`, `cwd`, and `timeout_ms` for
-command-backed bearer tokens.
+`experimental_bearer_token`, `query_params`, `http_headers`, and
+`env_http_headers` for custom providers. It also supports section-form
+`[model_providers.<name>.auth]` and inline `auth = { ... }` `command`, `args`,
+`cwd`, and `timeout_ms` for command-backed bearer tokens.
 The current port supports Responses wire API providers, rejects the removed
 `wire_api = "chat"` setting, and rejects command-auth combinations that Rust
 marks invalid.
