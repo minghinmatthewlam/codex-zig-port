@@ -1208,6 +1208,76 @@ description: Summarize plugin smoke threads
         )
         assert plugin_uninstall_again["id"] == "plugin-uninstall-local-again"
         assert plugin_uninstall_again["result"] == {}
+
+        installable_root = repo / "plugins" / "installable-plugin"
+        installable_root.joinpath(".codex-plugin").mkdir(parents=True)
+        installable_root.joinpath("skills", "installer").mkdir(parents=True)
+        installable_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "installable-plugin",
+                    "version": "1.2.3",
+                    "interface": {"displayName": "Installable Plugin"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        installable_root.joinpath("skills", "installer", "SKILL.md").write_text(
+            "# Installer\n",
+            encoding="utf-8",
+        )
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "plugins": [
+                        {
+                            "name": "installable-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./plugins/installable-plugin",
+                            },
+                            "policy": {"authentication": "ON_USE"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-install-local",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(
+                        repo / ".agents" / "plugins" / "marketplace.json"
+                    ),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "installable-plugin",
+                },
+            },
+            env,
+        )
+        assert plugin_install["id"] == "plugin-install-local"
+        assert plugin_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        installed_installable = (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "local-market"
+            / "installable-plugin"
+            / "1.2.3"
+        )
+        assert installed_installable.joinpath(".codex-plugin", "plugin.json").is_file()
+        assert installed_installable.joinpath("skills", "installer", "SKILL.md").is_file()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert '[plugins."installable-plugin@local-market"]' in config_text
+        assert "enabled = true" in config_text
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -1713,23 +1783,6 @@ remote_plugin = true
         server.shutdown()
         server.server_close()
         shutil.rmtree(remote_home, ignore_errors=True)
-
-    cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-install",
-            "method": "plugin/install",
-            "params": {"remoteMarketplaceName": "openai-curated", "pluginName": "gmail"},
-        },
-    ]
-    for payload in cases:
-        response = request_stdio_app_server(binary, payload, env)
-        assert response["id"] == payload["id"]
-        assert response["error"]["code"] == -32603
-        assert (
-            f"app-server method {payload['method']} is parsed but not implemented yet"
-            in response["error"]["message"]
-        )
 
     invalid_read = request_stdio_app_server(
         binary,
