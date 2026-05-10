@@ -4537,6 +4537,22 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "[tools]",
                     "view_image = true",
                     "",
+                    "[apps._default]",
+                    "enabled = true",
+                    "",
+                    "[apps.app1]",
+                    "enabled = true",
+                    'default_tools_approval_mode = "auto"',
+                    "",
+                    "[apps.app1.tools.search]",
+                    'approval_mode = "auto"',
+                    "",
+                    "[apps.app4]",
+                    "destructive_enabled = false",
+                    "",
+                    "[apps.app4.tools.deploy]",
+                    "enabled = false",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -4571,6 +4587,56 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
             "view_image": True,
         }
+        assert managed_config_body["apps"] == {
+            "_default": {
+                "enabled": True,
+                "destructive_enabled": False,
+                "open_world_enabled": True,
+            },
+            "app1": {
+                "enabled": True,
+                "destructive_enabled": False,
+                "open_world_enabled": True,
+                "default_tools_approval_mode": "auto",
+                "default_tools_enabled": False,
+                "tools": {
+                    "search": {
+                        "enabled": True,
+                        "approval_mode": "auto",
+                    },
+                    "summarize": {
+                        "enabled": False,
+                        "approval_mode": None,
+                    },
+                },
+            },
+            "app4": {
+                "enabled": True,
+                "destructive_enabled": False,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": None,
+                "default_tools_enabled": None,
+                "tools": {
+                    "deploy": {
+                        "enabled": False,
+                        "approval_mode": None,
+                    },
+                },
+            },
+            "app2": {
+                "enabled": False,
+                "destructive_enabled": None,
+                "open_world_enabled": None,
+                "default_tools_approval_mode": "approve",
+                "default_tools_enabled": None,
+                "tools": {
+                    "export": {
+                        "enabled": None,
+                        "approval_mode": "prompt",
+                    },
+                },
+            },
+        }
         managed_source = {
             "type": "legacyManagedConfigTomlFromFile",
             "file": str(managed_config_path),
@@ -4585,6 +4651,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.allowed_domains.0",
             "tools.web_search.location.country",
             "tools.view_image",
+            "apps._default.enabled",
+            "apps.app1.enabled",
+            "apps.app1.default_tools_approval_mode",
+            "apps.app1.tools.search.approval_mode",
+            "apps.app4.destructive_enabled",
+            "apps.app4.tools.deploy.enabled",
         ]:
             assert managed_origins[key]["name"] == managed_source
             assert managed_origins[key]["version"].startswith("sha256:")
@@ -4597,6 +4669,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.context_size",
             "tools.web_search.location.city",
             "tools.web_search.location.timezone",
+            "apps._default.destructive_enabled",
+            "apps._default.open_world_enabled",
+            "apps.app1.destructive_enabled",
+            "apps.app1.open_world_enabled",
+            "apps.app1.default_tools_enabled",
+            "apps.app1.tools.search.enabled",
         ]:
             assert managed_origins[key]["name"] == {"type": "user", "file": config_path}
             assert managed_origins[key]["version"].startswith("sha256:")
@@ -4604,6 +4682,14 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_origins["model_reasoning_effort"]["version"].startswith("sha256:")
         assert managed_origins["tools.web_search.location.region"]["name"] == system_source
         assert managed_origins["tools.web_search.location.region"]["version"].startswith("sha256:")
+        for key in [
+            "apps.app1.tools.summarize.enabled",
+            "apps.app2.enabled",
+            "apps.app2.default_tools_approval_mode",
+            "apps.app2.tools.export.approval_mode",
+        ]:
+            assert managed_origins[key]["name"] == system_source
+            assert managed_origins[key]["version"].startswith("sha256:")
         managed_layers = managed_config_read["result"]["layers"]
         assert len(managed_layers) == 3
         assert managed_layers[0]["name"] == managed_source
@@ -4629,6 +4715,39 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
                 "view_image": True,
+            },
+            "apps": {
+                "_default": {
+                    "enabled": True,
+                    "destructive_enabled": True,
+                    "open_world_enabled": True,
+                },
+                "app1": {
+                    "enabled": True,
+                    "destructive_enabled": None,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": "auto",
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "search": {
+                            "enabled": None,
+                            "approval_mode": "auto",
+                        },
+                    },
+                },
+                "app4": {
+                    "enabled": True,
+                    "destructive_enabled": False,
+                    "open_world_enabled": None,
+                    "default_tools_approval_mode": None,
+                    "default_tools_enabled": None,
+                    "tools": {
+                        "deploy": {
+                            "enabled": False,
+                            "approval_mode": None,
+                        },
+                    },
+                },
             },
         }
         assert managed_layers[1]["name"] == {"type": "user", "file": config_path}
