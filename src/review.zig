@@ -28,6 +28,7 @@ pub const Options = struct {
     runtime_overrides: config.RuntimeOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
+    ignore_user_config: bool = false,
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -37,14 +38,21 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try raw_args.append(allocator, arg);
     }
 
-    var parsed = try parseArgs(allocator, raw_args.items);
+    try runRawArgsWithOptions(allocator, raw_args.items, options);
+}
+
+pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []const u8, options: Options) !void {
+    var parsed = try parseArgs(allocator, raw_args);
     defer parsed.deinit(allocator);
     if (parsed.help) {
         printHelp();
         return;
     }
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    var cfg = try config.loadWithOptions(allocator, .{
+        .profile = options.profile,
+        .ignore_user_config = options.ignore_user_config,
+    });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (options.oss) {

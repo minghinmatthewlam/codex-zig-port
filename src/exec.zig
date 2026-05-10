@@ -4,6 +4,7 @@ const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const input_images = @import("input_images.zig");
+const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const workdir = @import("workdir.zig");
@@ -33,6 +34,8 @@ const ExecArgs = struct {
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
     resume_target: ?[]const u8 = null,
     resume_all: bool = false,
+    review_mode: bool = false,
+    review_args: std.ArrayList([]const u8) = .empty,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
 
@@ -50,6 +53,8 @@ const ExecArgs = struct {
         var additional_writable_roots = self.additional_writable_roots;
         additional_writable_roots.deinit(allocator);
         if (self.resume_target) |target| allocator.free(target);
+        var review_args = self.review_args;
+        review_args.deinit(allocator);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
 };
@@ -86,6 +91,17 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     if (parsed.help) {
         printHelp();
+        return;
+    }
+
+    if (parsed.review_mode) {
+        try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
+            .profile = parsed.profile,
+            .runtime_overrides = mergedReviewOverrides(options.runtime_overrides, parsed),
+            .oss = options.oss or parsed.oss,
+            .oss_provider = parsed.oss_provider orelse options.oss_provider,
+            .ignore_user_config = parsed.ignore_user_config,
+        });
         return;
     }
 
@@ -431,6 +447,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             resume_mode = true;
             continue;
         }
+        if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "review")) {
+            parsed.review_mode = true;
+            index += 1;
+            while (index < args.len) : (index += 1) {
+                try parsed.review_args.append(allocator, args[index]);
+            }
+            break;
+        }
 
         if (resume_mode and !resume_target_set) {
             try setResumeTarget(allocator, &parsed, arg);
@@ -457,6 +481,29 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     }
 
     return parsed;
+}
+
+fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config.RuntimeOverrides {
+    var merged = base;
+    mergeRuntimeOverrides(&merged, parsed.config_overrides);
+    if (parsed.model) |model| merged.model = model;
+    if (parsed.approval_policy) |approval_policy| merged.approval_policy = approval_policy;
+    if (parsed.sandbox_mode) |sandbox_mode| merged.sandbox_mode = sandbox_mode;
+    return merged;
+}
+
+fn mergeRuntimeOverrides(target: *config.RuntimeOverrides, source: config.RuntimeOverrides) void {
+    if (source.model) |value| target.model = value;
+    if (source.openai_base_url) |value| target.openai_base_url = value;
+    if (source.chatgpt_base_url) |value| target.chatgpt_base_url = value;
+    if (source.oss_provider) |value| target.oss_provider = value;
+    if (source.approval_policy) |value| target.approval_policy = value;
+    if (source.sandbox_mode) |value| target.sandbox_mode = value;
+    if (source.web_search_mode) |value| target.web_search_mode = value;
+    if (source.service_tier) |value| target.service_tier = value;
+    if (source.syntax_theme) |value| target.syntax_theme = value;
+    if (source.personality) |value| target.personality = value;
+    if (source.tui_alternate_screen) |value| target.tui_alternate_screen = value;
 }
 
 fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []const u8) !void {
@@ -536,6 +583,7 @@ pub fn printHelp() void {
         \\  codex-zig exec [OPTIONS] [PROMPT]
         \\  codex-zig exec [OPTIONS] -
         \\  codex-zig exec [OPTIONS] resume [--all] [last|ID|PATH] PROMPT
+        \\  codex-zig exec [OPTIONS] review [REVIEW_OPTIONS]
         \\
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
@@ -648,6 +696,30 @@ test "exec args keep resume literal after end options" {
 
     try std.testing.expect(parsed.resume_target == null);
     try std.testing.expectEqualStrings("resume this prompt", parsed.prompt.?);
+}
+
+test "exec args parse review subcommand" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--json", "--model", "gpt-test", "review", "--uncommitted" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.json);
+    try std.testing.expect(parsed.review_mode);
+    try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
+    try std.testing.expectEqual(@as(usize, 1), parsed.review_args.items.len);
+    try std.testing.expectEqualStrings("--uncommitted", parsed.review_args.items[0]);
+    try std.testing.expect(parsed.prompt == null);
+}
+
+test "exec args keep review literal after end options" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--", "review", "--uncommitted" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(!parsed.review_mode);
+    try std.testing.expectEqualStrings("review --uncommitted", parsed.prompt.?);
 }
 
 test "exec args parse approval and sandbox options" {
