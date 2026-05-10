@@ -4359,6 +4359,26 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "",
         }
 
+        timeout_response = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-timeout",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "sleep 1"],
+                    "timeoutMs": 10,
+                },
+            },
+            env,
+        )
+        assert timeout_response["id"] == "command-exec-timeout"
+        assert timeout_response["result"] == {
+            "exitCode": 124,
+            "stdout": "",
+            "stderr": "",
+        }
+
         empty_command = request_stdio_app_server(
             binary,
             {
