@@ -1400,7 +1400,40 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
             return renderJsonRpcError(allocator, id_value, -32600, message);
         }
 
-        return renderJsonRpcError(allocator, id_value, -32603, "plugin/install remote marketplace is parsed but not implemented yet");
+        var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+            error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to load auth", err),
+        };
+        defer credentials.deinit(allocator);
+        switch (credentials.mode) {
+            .chatgpt, .agent_identity => {},
+            .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
+        }
+
+        const install_result = remote_plugin.install(
+            allocator,
+            cfg.chatgpt_base_url,
+            credentials,
+            cfg.codex_home,
+            remote_marketplace_name,
+            params.plugin_name,
+        ) catch |err| switch (err) {
+            error.RemotePluginDisabledByAdmin => {
+                const message = try std.fmt.allocPrint(allocator, "remote plugin {s} is disabled by admin", .{params.plugin_name});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            error.RemotePluginNotAvailable => {
+                const message = try std.fmt.allocPrint(allocator, "remote plugin {s} is not available for install", .{params.plugin_name});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            error.RemotePluginInsecureBundleDownloadUrl => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: remote plugin bundle URL must use HTTPS"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to install remote plugin", err),
+        };
+        defer install_result.deinit(allocator);
+        clearSkillsListCache(allocator, state);
+        return renderJsonRpcResult(allocator, id_value, install_result.response_json);
     }
 
     const marketplace_path = params.marketplace_path.?;
