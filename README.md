@@ -130,8 +130,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
-  `review --commit` flows, including Rust-compatible `exec review` dispatch
-  with exec-level `--cd` handling
+  `review --commit` flows, plus custom review instructions from argv or stdin,
+  including Rust-compatible `exec review` dispatch with exec-level `--cd`
+  handling
 - run non-interactive `exec` prompts from argv, explicit `-`, or piped stdin,
   including prompt-plus-piped-context requests
 - enforce Rust-compatible non-interactive `exec` Git-repository checks, with
