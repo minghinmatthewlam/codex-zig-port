@@ -1099,6 +1099,13 @@ fn optionalBoolFieldValue(object: std.json.ObjectMap, field: []const u8, default
     return .{ .value = value.bool };
 }
 
+fn optionalNullableBoolField(object: std.json.ObjectMap, field: []const u8, default: bool) FsBoolField {
+    const value = object.get(field) orelse return .{ .value = default };
+    if (value == .null) return .{ .value = default };
+    if (value != .bool) return .{ .message = "optional field must be a boolean" };
+    return .{ .value = value.bool };
+}
+
 fn renderFsInvalidBase64(allocator: std.mem.Allocator, id_value: std.json.Value, err: anyerror) ![]const u8 {
     const message = try std.fmt.allocPrint(allocator, "fs/writeFile requires valid base64 dataBase64: {s}", .{@errorName(err)});
     defer allocator.free(message);
@@ -1337,6 +1344,7 @@ fn appendJsonFieldName(
 
 fn isAccountMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "account/read") or
+        std.mem.eql(u8, method, "getAuthStatus") or
         std.mem.eql(u8, method, "account/login/cancel") or
         std.mem.eql(u8, method, "account/login/start") or
         std.mem.eql(u8, method, "account/rateLimits/read") or
@@ -1352,6 +1360,9 @@ fn handleAccountMethod(
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "account/read")) {
         return handleAccountRead(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "getAuthStatus")) {
+        return handleGetAuthStatus(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "account/login/cancel")) {
         return handleAccountLoginCancel(allocator, id_value, params_value);
@@ -1514,6 +1525,122 @@ fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.js
     const result = try std.fmt.allocPrint(allocator, "{{\"status\":\"{s}\"}}", .{status.jsonLabel()});
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleGetAuthStatus(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = switch (optionalGetAuthStatusParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var include_token = false;
+    var refresh_token = false;
+    if (params) |object| {
+        include_token = switch (optionalNullableBoolField(object, "includeToken", false)) {
+            .value => |value| value,
+            .message => return renderJsonRpcError(allocator, id_value, -32602, "includeToken must be a boolean"),
+        };
+        refresh_token = switch (optionalNullableBoolField(object, "refreshToken", false)) {
+            .value => |value| value,
+            .message => return renderJsonRpcError(allocator, id_value, -32602, "refreshToken must be a boolean"),
+        };
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "getAuthStatus failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const provider_requires_openai_auth = config.loadModelProviderRequiresOpenAiAuth(allocator, null) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "getAuthStatus failed to load model provider auth requirements", err);
+    };
+    const requires_openai_auth = cfg.oss_provider == null and provider_requires_openai_auth;
+    if (!requires_openai_auth) {
+        const result = try renderAuthStatusJson(allocator, null, null, false);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
+    }
+
+    var credentials = blk: {
+        const loaded = if (refresh_token)
+            auth_mod.load(allocator, cfg.codex_home)
+        else
+            auth_mod.loadNoRefresh(allocator, cfg.codex_home);
+        break :blk loaded catch |err| switch (err) {
+            error.NoUsableAuth => null,
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "getAuthStatus failed to load auth", err),
+        };
+    };
+    defer if (credentials) |*value| value.deinit(allocator);
+
+    const fields = if (credentials) |value|
+        authStatusFields(value, include_token)
+    else
+        AuthStatusFields{};
+    const result = try renderAuthStatusJson(allocator, fields.auth_method, fields.auth_token, true);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn optionalGetAuthStatusParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "getAuthStatus params must be an object" };
+    return .{ .object = params.object };
+}
+
+const AuthStatusFields = struct {
+    auth_method: ?[]const u8 = null,
+    auth_token: ?[]const u8 = null,
+};
+
+fn authStatusFields(credentials: auth_mod.Credentials, include_token: bool) AuthStatusFields {
+    return switch (credentials.mode) {
+        .api_key, .chatgpt => if (credentials.token.len == 0)
+            .{}
+        else
+            .{
+                .auth_method = authMethodLabel(credentials.mode),
+                .auth_token = if (include_token) credentials.token else null,
+            },
+        .agent_identity => .{ .auth_method = authMethodLabel(credentials.mode) },
+        .local_oss => .{},
+    };
+}
+
+fn authMethodLabel(mode: auth_mod.Credentials.Mode) ?[]const u8 {
+    return switch (mode) {
+        .api_key => "apikey",
+        .chatgpt => "chatgpt",
+        .agent_identity => "agentIdentity",
+        .local_oss => null,
+    };
+}
+
+fn renderAuthStatusJson(
+    allocator: std.mem.Allocator,
+    auth_method: ?[]const u8,
+    auth_token: ?[]const u8,
+    requires_openai_auth: bool,
+) ![]const u8 {
+    const auth_method_json = if (auth_method) |value|
+        try std.json.Stringify.valueAlloc(allocator, value, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(auth_method_json);
+
+    const auth_token_json = if (auth_token) |value|
+        try std.json.Stringify.valueAlloc(allocator, value, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(auth_token_json);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"authMethod\":{s},\"authToken\":{s},\"requiresOpenaiAuth\":{}}}",
+        .{ auth_method_json, auth_token_json, requires_openai_auth },
+    );
 }
 
 fn handleAccountLogout(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
