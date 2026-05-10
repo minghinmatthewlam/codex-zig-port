@@ -3555,6 +3555,8 @@ fn handleConfigRead(
         errdefer tools.deinit(allocator);
         var apps = try loadConfigReadUserApps(allocator, bytes);
         errdefer apps.deinit(allocator);
+        var sandbox_workspace_write = try loadConfigReadUserSandboxWorkspaceWrite(allocator, bytes);
+        errdefer sandbox_workspace_write.deinit(allocator);
         const version = try configVersionAlloc(allocator, bytes);
         errdefer allocator.free(version);
         user_layer = .{
@@ -3563,6 +3565,7 @@ fn handleConfigRead(
             .origin_keys = origin_keys,
             .tools = tools,
             .apps = apps,
+            .sandbox_workspace_write = sandbox_workspace_write,
         };
     }
 
@@ -3727,6 +3730,7 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
     const sandbox_mode = project_layers.sandboxMode() orelse cfg.sandbox_mode;
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
+    try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, if (user_layer) |layer| layer.sandbox_workspace_write else null);
     const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, if (user_layer) |layer| layer.tools else null);
@@ -3834,6 +3838,7 @@ const ConfigReadUserLayer = struct {
     origin_keys: []const []const u8,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
+    sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite,
 
     fn deinit(self: *ConfigReadUserLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.version);
@@ -3841,6 +3846,7 @@ const ConfigReadUserLayer = struct {
         allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
         self.apps.deinit(allocator);
+        self.sandbox_workspace_write.deinit(allocator);
     }
 };
 
@@ -3905,6 +3911,21 @@ const ConfigReadApp = struct {
     fn deinit(self: *ConfigReadApp, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.default_tools_approval_mode) |value| allocator.free(value);
+    }
+};
+
+const ConfigReadSandboxWorkspaceWrite = struct {
+    present: bool = false,
+    writable_roots: ?config.StringList = null,
+    network_access: bool = false,
+    network_access_present: bool = false,
+    exclude_tmpdir_env_var: bool = false,
+    exclude_tmpdir_env_var_present: bool = false,
+    exclude_slash_tmp: bool = false,
+    exclude_slash_tmp_present: bool = false,
+
+    fn deinit(self: *ConfigReadSandboxWorkspaceWrite, allocator: std.mem.Allocator) void {
+        if (self.writable_roots) |*roots| roots.deinit(allocator);
     }
 };
 
@@ -4002,6 +4023,7 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
     var index = start.*;
     var in_string = false;
     var escaped = false;
+    var bracket_depth: usize = 0;
     while (index < body.len) : (index += 1) {
         const byte = body[index];
         if (in_string) {
@@ -4016,12 +4038,17 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
         }
         if (byte == '"') {
             in_string = true;
-        } else if (byte == ',') {
+        } else if (byte == '[') {
+            bracket_depth += 1;
+        } else if (byte == ']') {
+            if (bracket_depth == 0) return error.InvalidConfigReadInlineTable;
+            bracket_depth -= 1;
+        } else if (byte == ',' and bracket_depth == 0) {
             start.* = index + 1;
             return body[field_start..index];
         }
     }
-    if (in_string or escaped) return error.InvalidConfigReadInlineTable;
+    if (in_string or escaped or bracket_depth != 0) return error.InvalidConfigReadInlineTable;
 
     start.* = index;
     return body[field_start..index];
@@ -4165,6 +4192,89 @@ fn isConfigReadAppToolApproval(value: []const u8) bool {
     return std.mem.eql(u8, value, "auto") or
         std.mem.eql(u8, value, "prompt") or
         std.mem.eql(u8, value, "approve");
+}
+
+fn loadConfigReadUserSandboxWorkspaceWrite(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadSandboxWorkspaceWrite {
+    var sandbox = ConfigReadSandboxWorkspaceWrite{};
+    errdefer sandbox.deinit(allocator);
+
+    if (try config.sectionStringArrayValue(allocator, bytes, "sandbox_workspace_write", "writable_roots")) |roots| {
+        sandbox.writable_roots = roots;
+        sandbox.present = true;
+    }
+    if (config.sectionBoolValue(bytes, "sandbox_workspace_write", "network_access")) |value| {
+        sandbox.network_access = value;
+        sandbox.network_access_present = true;
+        sandbox.present = true;
+    }
+    if (config.sectionBoolValue(bytes, "sandbox_workspace_write", "exclude_tmpdir_env_var")) |value| {
+        sandbox.exclude_tmpdir_env_var = value;
+        sandbox.exclude_tmpdir_env_var_present = true;
+        sandbox.present = true;
+    }
+    if (config.sectionBoolValue(bytes, "sandbox_workspace_write", "exclude_slash_tmp")) |value| {
+        sandbox.exclude_slash_tmp = value;
+        sandbox.exclude_slash_tmp_present = true;
+        sandbox.present = true;
+    }
+    if (configReadSectionExists(bytes, "sandbox_workspace_write")) {
+        sandbox.present = true;
+    }
+
+    if (configReadTopLevelRawValue(bytes, "sandbox_workspace_write")) |raw| {
+        try applyConfigReadSandboxWorkspaceInline(allocator, &sandbox, raw);
+        sandbox.present = true;
+    }
+
+    return sandbox;
+}
+
+fn applyConfigReadSandboxWorkspaceInline(
+    allocator: std.mem.Allocator,
+    sandbox: *ConfigReadSandboxWorkspaceWrite,
+    raw: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, raw, " \t\r");
+    if (trimmed.len < 2 or trimmed[0] != '{') return error.InvalidConfigReadSandboxWorkspaceWrite;
+    const close_index = std.mem.lastIndexOfScalar(u8, trimmed, '}') orelse return error.InvalidConfigReadSandboxWorkspaceWrite;
+    const body = trimmed[1..close_index];
+
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadSandboxWorkspaceWrite;
+        const key = std.mem.trim(u8, field[0..eq], " \t\r\n\"");
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        if (std.mem.eql(u8, key, "writable_roots")) {
+            const roots = try config.parseTomlStringArray(allocator, rhs) orelse return error.InvalidConfigReadSandboxWorkspaceWrite;
+            if (sandbox.writable_roots) |*existing| existing.deinit(allocator);
+            sandbox.writable_roots = roots;
+        } else if (std.mem.eql(u8, key, "network_access")) {
+            sandbox.network_access = try parseConfigReadBool(rhs);
+            sandbox.network_access_present = true;
+        } else if (std.mem.eql(u8, key, "exclude_tmpdir_env_var")) {
+            sandbox.exclude_tmpdir_env_var = try parseConfigReadBool(rhs);
+            sandbox.exclude_tmpdir_env_var_present = true;
+        } else if (std.mem.eql(u8, key, "exclude_slash_tmp")) {
+            sandbox.exclude_slash_tmp = try parseConfigReadBool(rhs);
+            sandbox.exclude_slash_tmp_present = true;
+        }
+    }
+}
+
+fn configReadTopLevelRawValue(bytes: []const u8, key: []const u8) ?[]const u8 {
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') break;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        if (!std.mem.eql(u8, lhs, key)) continue;
+        return std.mem.trim(u8, line[eq + 1 ..], " \t");
+    }
+    return null;
 }
 
 const ConfigReadSection = enum {
@@ -4420,6 +4530,7 @@ fn appendConfigReadOrigins(
         }
         try appendConfigReadUserToolsOrigins(allocator, result, &first, layer);
         try appendConfigReadUserAppsOrigins(allocator, result, &first, layer);
+        try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, layer);
     }
     try result.append(allocator, '}');
 }
@@ -4497,6 +4608,30 @@ fn appendConfigReadUserAppOrigin(
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
     defer allocator.free(key);
     try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+}
+
+fn appendConfigReadUserSandboxWorkspaceOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+) !void {
+    if (layer.sandbox_workspace_write.writable_roots) |roots| {
+        for (roots.items, 0..) |_, index| {
+            const key = try std.fmt.allocPrint(allocator, "sandbox_workspace_write.writable_roots.{d}", .{index});
+            defer allocator.free(key);
+            try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+        }
+    }
+    if (layer.sandbox_workspace_write.network_access_present) {
+        try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.network_access");
+    }
+    if (layer.sandbox_workspace_write.exclude_tmpdir_env_var_present) {
+        try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.exclude_tmpdir_env_var");
+    }
+    if (layer.sandbox_workspace_write.exclude_slash_tmp_present) {
+        try appendConfigReadUserOrigin(allocator, result, first, layer, "sandbox_workspace_write.exclude_slash_tmp");
+    }
 }
 
 fn configReadProjectSliceHasOriginKey(layers: []const ConfigReadProjectLayer, key: []const u8) bool {
@@ -4721,6 +4856,10 @@ fn appendConfigReadUserLayerConfig(
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
+    if (layer.sandbox_workspace_write.present) {
+        try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
+        try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
+    }
     try result.append(allocator, '}');
 }
 
@@ -4881,6 +5020,43 @@ fn appendConfigReadAppsObject(
         try appendJsonFieldName(allocator, result, &first, app.name);
         try appendConfigReadAppObject(allocator, result, app);
     }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadSandboxWorkspaceWriteField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    sandbox: ?ConfigReadSandboxWorkspaceWrite,
+) !void {
+    try appendJsonFieldName(allocator, result, first, "sandbox_workspace_write");
+    if (sandbox) |value| {
+        if (!value.present) {
+            try result.appendSlice(allocator, "null");
+            return;
+        }
+        try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendConfigReadSandboxWorkspaceWriteObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    sandbox: ConfigReadSandboxWorkspaceWrite,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonFieldName(allocator, result, &first, "writable_roots");
+    if (sandbox.writable_roots) |roots| {
+        try appendJsonStringArray(allocator, result, roots.items);
+    } else {
+        try result.appendSlice(allocator, "[]");
+    }
+    try appendJsonBoolField(allocator, result, &first, "network_access", sandbox.network_access);
+    try appendJsonBoolField(allocator, result, &first, "exclude_tmpdir_env_var", sandbox.exclude_tmpdir_env_var);
+    try appendJsonBoolField(allocator, result, &first, "exclude_slash_tmp", sandbox.exclude_slash_tmp);
     try result.append(allocator, '}');
 }
 

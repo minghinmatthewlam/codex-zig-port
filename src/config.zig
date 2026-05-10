@@ -1337,7 +1337,7 @@ pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const 
     return error.InvalidTomlString;
 }
 
-fn parseTomlStringArray(allocator: std.mem.Allocator, rhs: []const u8) !?StringList {
+pub fn parseTomlStringArray(allocator: std.mem.Allocator, rhs: []const u8) !?StringList {
     if (rhs.len == 0 or rhs[0] != '[') return null;
 
     var items = std.ArrayList([]const u8).empty;
