@@ -17,12 +17,17 @@ const SandboxArgs = struct {
     mode: ?config.SandboxMode = null,
     permissions_profile: ?[]const u8 = null,
     include_managed_config: bool = false,
+    allow_unix_sockets: std.ArrayList([]const u8) = .empty,
+    log_denials: bool = false,
     cwd: ?[]const u8 = null,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
     command: []const []const u8 = &.{},
 
     fn deinit(self: SandboxArgs, allocator: std.mem.Allocator) void {
         if (self.permissions_profile) |profile| allocator.free(profile);
+        for (self.allow_unix_sockets.items) |path| allocator.free(path);
+        var sockets = self.allow_unix_sockets;
+        sockets.deinit(allocator);
         if (self.cwd) |cwd| allocator.free(cwd);
         for (self.additional_writable_roots.items) |root| allocator.free(root);
         var roots = self.additional_writable_roots;
@@ -70,6 +75,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .linux => return error.LinuxSandboxUnsupported,
         .windows => return error.WindowsSandboxUnsupported,
     }
+    if (parsed.allow_unix_sockets.items.len > 0) return error.SandboxAllowUnixSocketUnsupported;
+    if (parsed.log_denials) return error.SandboxLogDenialsUnsupported;
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -129,6 +136,20 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
         }
         if (!end_options and std.mem.eql(u8, arg, "--include-managed-config")) {
             parsed.include_managed_config = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--allow-unix-socket")) {
+            index += 1;
+            if (index >= args.len) return error.MissingSandboxOptionValue;
+            try parsed.allow_unix_sockets.append(allocator, try allocator.dupe(u8, args[index]));
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--allow-unix-socket=")) {
+            try parsed.allow_unix_sockets.append(allocator, try allocator.dupe(u8, arg["--allow-unix-socket=".len..]));
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--log-denials")) {
+            parsed.log_denials = true;
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s"))) {
@@ -256,6 +277,9 @@ fn printMacosHelp() void {
         \\                      Apply a Rust built-in profile: :read-only, :workspace, or :danger-no-sandbox
         \\  --include-managed-config
         \\                      Recognize managed config with --permissions-profile
+        \\  --allow-unix-socket PATH
+        \\                      Parse Rust socket allowlists; currently returns an explicit unsupported error
+        \\  --log-denials      Parse Rust denial logging; currently returns an explicit unsupported error
         \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
         \\  -C, --cd DIR        Profile working root; requires --permissions-profile
         \\  --add-dir DIR       Allow workspace-write command to write DIR
@@ -271,6 +295,20 @@ test "sandbox macos args parse command and options" {
 
     try std.testing.expectEqual(config.SandboxMode.read_only, parsed.mode.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
+    try std.testing.expectEqualStrings("ok", parsed.command[1]);
+}
+
+test "sandbox args parse Rust seatbelt-only controls" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--allow-unix-socket", "/tmp/codex-browser-use", "--allow-unix-socket=relative.sock", "--log-denials", "--", "/bin/echo", "ok" };
+    const parsed = try parseSandboxArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.allow_unix_sockets.items.len);
+    try std.testing.expectEqualStrings("/tmp/codex-browser-use", parsed.allow_unix_sockets.items[0]);
+    try std.testing.expectEqualStrings("relative.sock", parsed.allow_unix_sockets.items[1]);
+    try std.testing.expect(parsed.log_denials);
     try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
     try std.testing.expectEqualStrings("ok", parsed.command[1]);
 }
