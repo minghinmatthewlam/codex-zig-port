@@ -121,6 +121,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply multiple app-server config edits in one file write with
   `config/batchWrite`
 - report absent managed config requirements with `configRequirements/read`
+- clear memory directories and SQLite memory-state rows with `memory/reset`
 - list app-server collaboration mode presets with `collaborationMode/list`
 - list app-server experimental feature metadata and patch process-local runtime
   feature enablement
@@ -204,7 +205,7 @@ parsing/rejection, verifies session-local `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
-and state-db partial-reset rejection, checks planned debug app-server and
+rejection and SQLite state-db row cleanup, checks planned debug app-server and
 trace-reducer stubs, runs the top-level `apply` command against a mock ChatGPT
 task backend and temporary git repository, then drives
 `/help`, `/status`,
