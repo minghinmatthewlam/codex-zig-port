@@ -236,7 +236,10 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             return;
         }
         if (std.mem.eql(u8, name, "generate-ts")) return error.AppServerGenerateTsNotImplemented;
-        if (std.mem.eql(u8, name, "generate-json-schema")) return error.AppServerGenerateJsonSchemaNotImplemented;
+        if (std.mem.eql(u8, name, "generate-json-schema")) {
+            try runGenerateJsonSchema(allocator, subcommand_args.items);
+            return;
+        }
         if (std.mem.eql(u8, name, "generate-internal-json-schema")) {
             try runGenerateInternalJsonSchema(allocator, subcommand_args.items);
             return;
@@ -344,6 +347,35 @@ fn validateSha256DigestArg(value: []const u8) !void {
     }
 }
 
+fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var out_dir: ?[]const u8 = null;
+    var experimental = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
+            if (index + 1 >= args.len) return error.MissingAppServerGenerateJsonSchemaOutDir;
+            index += 1;
+            out_dir = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--out=")) {
+            out_dir = arg["--out=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental")) {
+            experimental = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownAppServerGenerateJsonSchemaOption;
+        return error.UnexpectedAppServerGenerateJsonSchemaArgument;
+    }
+
+    const target_dir = out_dir orelse return error.MissingAppServerGenerateJsonSchemaOutDir;
+    if (target_dir.len == 0) return error.MissingAppServerGenerateJsonSchemaOutDir;
+    try writeAppServerJsonSchemas(allocator, target_dir, experimental);
+}
+
 fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var out_dir: ?[]const u8 = null;
     var index: usize = 0;
@@ -368,6 +400,262 @@ fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []c
     try writeRolloutLineJsonSchema(allocator, target_dir);
 }
 
+const SchemaFile = struct {
+    name: []const u8,
+    contents: []const u8,
+};
+
+const REQUEST_ID_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RequestId",
+    \\  "oneOf": [
+    \\    { "type": "string" },
+    \\    { "type": "integer" }
+    \\  ]
+    \\}
+    \\
+;
+
+const JSONRPC_REQUEST_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCRequest",
+    \\  "type": "object",
+    \\  "required": ["id", "method"],
+    \\  "properties": {
+    \\    "id": { "$ref": "RequestId.json" },
+    \\    "method": { "type": "string" },
+    \\    "params": true,
+    \\    "trace": { "type": "object" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const JSONRPC_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCNotification",
+    \\  "type": "object",
+    \\  "required": ["method"],
+    \\  "properties": {
+    \\    "method": { "type": "string" },
+    \\    "params": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const JSONRPC_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCResponse",
+    \\  "type": "object",
+    \\  "required": ["id", "result"],
+    \\  "properties": {
+    \\    "id": { "$ref": "RequestId.json" },
+    \\    "result": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const JSONRPC_ERROR_ERROR_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCErrorError",
+    \\  "type": "object",
+    \\  "required": ["code", "message"],
+    \\  "properties": {
+    \\    "code": { "type": "integer" },
+    \\    "message": { "type": "string" },
+    \\    "data": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const JSONRPC_ERROR_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCError",
+    \\  "type": "object",
+    \\  "required": ["id", "error"],
+    \\  "properties": {
+    \\    "id": { "$ref": "RequestId.json" },
+    \\    "error": { "$ref": "JSONRPCErrorError.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const JSONRPC_MESSAGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "JSONRPCMessage",
+    \\  "oneOf": [
+    \\    { "$ref": "JSONRPCRequest.json" },
+    \\    { "$ref": "JSONRPCNotification.json" },
+    \\    { "$ref": "JSONRPCResponse.json" },
+    \\    { "$ref": "JSONRPCError.json" }
+    \\  ]
+    \\}
+    \\
+;
+
+const INITIALIZE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "InitializeParams",
+    \\  "type": "object",
+    \\  "required": ["clientInfo"],
+    \\  "properties": {
+    \\    "clientInfo": {
+    \\      "type": "object",
+    \\      "required": ["name", "version"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "title": { "type": ["string", "null"] },
+    \\        "version": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "capabilities": {
+    \\      "type": ["object", "null"],
+    \\      "properties": {
+    \\        "experimentalApi": { "type": "boolean" },
+    \\        "optOutNotificationMethods": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "type": "string" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const INITIALIZE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "InitializeResponse",
+    \\  "type": "object",
+    \\  "required": ["serverInfo", "capabilities"],
+    \\  "properties": {
+    \\    "serverInfo": {
+    \\      "type": "object",
+    \\      "required": ["name", "version"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "version": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "capabilities": { "type": "object" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "codex_app_server_protocol.schemas",
+    \\  "$defs": {
+    \\    "RequestId": {
+    \\      "oneOf": [
+    \\        { "type": "string" },
+    \\        { "type": "integer" }
+    \\      ]
+    \\    },
+    \\    "JSONRPCMessage": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/JSONRPCRequest" },
+    \\        { "$ref": "#/$defs/JSONRPCNotification" },
+    \\        { "$ref": "#/$defs/JSONRPCResponse" },
+    \\        { "$ref": "#/$defs/JSONRPCError" }
+    \\      ]
+    \\    },
+    \\    "JSONRPCRequest": {
+    \\      "type": "object",
+    \\      "required": ["id", "method"],
+    \\      "properties": {
+    \\        "id": { "$ref": "#/$defs/RequestId" },
+    \\        "method": { "type": "string" },
+    \\        "params": true,
+    \\        "trace": { "type": "object" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "JSONRPCNotification": {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "type": "string" },
+    \\        "params": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "JSONRPCResponse": {
+    \\      "type": "object",
+    \\      "required": ["id", "result"],
+    \\      "properties": {
+    \\        "id": { "$ref": "#/$defs/RequestId" },
+    \\        "result": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "JSONRPCError": {
+    \\      "type": "object",
+    \\      "required": ["id", "error"],
+    \\      "properties": {
+    \\        "id": { "$ref": "#/$defs/RequestId" },
+    \\        "error": { "$ref": "#/$defs/JSONRPCErrorError" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "JSONRPCErrorError": {
+    \\      "type": "object",
+    \\      "required": ["code", "message"],
+    \\      "properties": {
+    \\        "code": { "type": "integer" },
+    \\        "message": { "type": "string" },
+    \\        "data": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "InitializeParams": {
+    \\      "type": "object",
+    \\      "required": ["clientInfo"],
+    \\      "properties": {
+    \\        "clientInfo": { "type": "object" },
+    \\        "capabilities": { "type": ["object", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "InitializeResponse": {
+    \\      "type": "object",
+    \\      "required": ["serverInfo", "capabilities"],
+    \\      "properties": {
+    \\        "serverInfo": { "type": "object" },
+    \\        "capabilities": { "type": "object" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  }
+    \\}
+    \\
+;
+
 const ROLLOUT_LINE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -391,12 +679,38 @@ const ROLLOUT_LINE_JSON_SCHEMA =
     \\
 ;
 
+const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
+    .{ .name = "RequestId.json", .contents = REQUEST_ID_JSON_SCHEMA },
+    .{ .name = "JSONRPCMessage.json", .contents = JSONRPC_MESSAGE_JSON_SCHEMA },
+    .{ .name = "JSONRPCRequest.json", .contents = JSONRPC_REQUEST_JSON_SCHEMA },
+    .{ .name = "JSONRPCNotification.json", .contents = JSONRPC_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "JSONRPCResponse.json", .contents = JSONRPC_RESPONSE_JSON_SCHEMA },
+    .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
+    .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
+    .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
+    .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
+    .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
+};
+
+fn writeAppServerJsonSchemas(allocator: std.mem.Allocator, out_dir: []const u8, experimental: bool) !void {
+    _ = experimental;
+    try writeSchemaFiles(allocator, out_dir, &APP_SERVER_JSON_SCHEMA_FILES);
+}
+
 fn writeRolloutLineJsonSchema(allocator: std.mem.Allocator, out_dir: []const u8) !void {
+    const files = [_]SchemaFile{.{ .name = "RolloutLine.json", .contents = ROLLOUT_LINE_JSON_SCHEMA }};
+    try writeSchemaFiles(allocator, out_dir, &files);
+}
+
+fn writeSchemaFiles(allocator: std.mem.Allocator, out_dir: []const u8, files: []const SchemaFile) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, out_dir);
-    const schema_path = try std.fs.path.join(allocator, &.{ out_dir, "RolloutLine.json" });
-    defer allocator.free(schema_path);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = ROLLOUT_LINE_JSON_SCHEMA });
+    for (files) |file| {
+        const schema_path = try std.fs.path.join(allocator, &.{ out_dir, file.name });
+        defer allocator.free(schema_path);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = file.contents });
+    }
 }
 
 fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
