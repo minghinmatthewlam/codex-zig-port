@@ -651,6 +651,47 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in too_large_loaded_threads_limit["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-unsubscribe",
+            "method": "thread/unsubscribe",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000001"},
+        }
+    )
+    thread_unsubscribe = read_line()
+    assert thread_unsubscribe == {
+        "jsonrpc": "2.0",
+        "id": "thread-unsubscribe",
+        "result": {"status": "notLoaded"},
+    }
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "bad-thread-unsubscribe",
+            "method": "thread/unsubscribe",
+            "params": {},
+        }
+    )
+    bad_thread_unsubscribe = read_line()
+    assert bad_thread_unsubscribe["id"] == "bad-thread-unsubscribe"
+    assert bad_thread_unsubscribe["error"]["code"] == -32602
+    assert "threadId must be a string" in bad_thread_unsubscribe["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "invalid-thread-unsubscribe",
+            "method": "thread/unsubscribe",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    invalid_thread_unsubscribe = read_line()
+    assert invalid_thread_unsubscribe["id"] == "invalid-thread-unsubscribe"
+    assert invalid_thread_unsubscribe["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in invalid_thread_unsubscribe["error"]["message"]
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
