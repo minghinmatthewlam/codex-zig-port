@@ -624,6 +624,8 @@ def run_help_command_smoke(
         )
     if "codex-zig --remote ws://HOST:PORT" not in root_result.stderr:
         raise AssertionError(f"expected remote flag help output:\n{root_result.stderr}")
+    if "codex-zig --remote-control" not in root_result.stderr:
+        raise AssertionError(f"expected remote-control flag help output:\n{root_result.stderr}")
 
     exec_result = subprocess.run(
         [str(binary), "help", "exec"],
@@ -1218,6 +1220,66 @@ def run_remote_flag_smoke(
     if "RemoteAuthTokenEnvRequiresRemote" not in missing_remote_result.stderr:
         raise AssertionError(
             f"expected remote auth token env validation failure:\n{missing_remote_result.stderr}"
+        )
+
+    local_remote_result = subprocess.run(
+        [
+            str(binary),
+            "--remote-control",
+            "--remote-control-bind",
+            "127.0.0.1:0",
+            "--no-alt-screen",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if local_remote_result.returncode == 0:
+        raise AssertionError("local remote-control smoke unexpectedly succeeded")
+    if "local remote control is parsed but not implemented yet" not in local_remote_result.stderr:
+        raise AssertionError(
+            f"expected local remote-control not-implemented message:\n{local_remote_result.stderr}"
+        )
+
+    missing_local_remote_result = subprocess.run(
+        [
+            str(binary),
+            "--remote-control-bind=127.0.0.1:0",
+            "--no-alt-screen",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if missing_local_remote_result.returncode == 0:
+        raise AssertionError("remote-control bind without flag unexpectedly succeeded")
+    if "RemoteControlBindRequiresRemoteControl" not in missing_local_remote_result.stderr:
+        raise AssertionError(
+            f"expected local remote-control bind validation failure:\n{missing_local_remote_result.stderr}"
+        )
+
+    rejected_local_result = subprocess.run(
+        [
+            str(binary),
+            "--remote-control",
+            "exec",
+            "hello",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if rejected_local_result.returncode == 0:
+        raise AssertionError("remote-control non-interactive command unexpectedly succeeded")
+    if "only supported for interactive TUI commands" not in rejected_local_result.stderr:
+        raise AssertionError(
+            f"expected non-interactive remote-control rejection:\n{rejected_local_result.stderr}"
         )
 
     rejected_result = subprocess.run(
