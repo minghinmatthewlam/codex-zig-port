@@ -119,6 +119,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   config-origin/layer metadata with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
+- merge and replace existing app-server TOML table objects with
+  `config/value/write`
 - apply multiple app-server config edits in one file write with
   `config/batchWrite`
 - report absent managed config requirements with `configRequirements/read`
@@ -255,7 +257,8 @@ git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notific
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read with user origin/layer metadata,
-config-value-write, config-batch-write, and config-requirements RPCs against temporary config homes and a
+config-value-write including table-object merge/replace behavior,
+config-batch-write, and config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
