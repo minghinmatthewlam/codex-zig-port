@@ -11,6 +11,7 @@ const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const model_catalog = @import("model_catalog.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -2777,6 +2778,7 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
 
     var cursor: ?[]const u8 = null;
     var limit: ?usize = null;
+    var include_hidden = false;
     if (params) |object| {
         if (object.get("cursor")) |value| {
             if (value != .null) {
@@ -2797,7 +2799,7 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
                 else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
             };
         }
-        _ = switch (optionalBoolFieldValue(object, "includeHidden", false, true)) {
+        include_hidden = switch (optionalBoolFieldValue(object, "includeHidden", false, true)) {
             .value => |value| value,
             .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
         };
@@ -2812,17 +2814,12 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     else
         0;
 
-    const total: usize = 1;
+    const total = modelListTotal(include_hidden);
     if (start > total) {
         const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total models {d}", .{ start, total });
         defer allocator.free(message);
         return renderJsonRpcError(allocator, id_value, -32600, message);
     }
-
-    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "model/list failed to load config", err);
-    };
-    defer cfg.deinit(allocator);
 
     const effective_limit = @min(@max(limit orelse total, 1), total);
     const end = @min(start + effective_limit, total);
@@ -2830,8 +2827,16 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     var result = std.ArrayList(u8).empty;
     defer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"data\":[");
-    if (start < end) {
-        try appendConfiguredModelJson(allocator, &result, cfg.model);
+    var visible_index: usize = 0;
+    var emitted = false;
+    const default_slug = model_catalog.defaultModel().slug;
+    for (model_catalog.bundled_models) |model| {
+        if (!include_hidden and model.hidden()) continue;
+        defer visible_index += 1;
+        if (visible_index < start or visible_index >= end) continue;
+        if (emitted) try result.appendSlice(allocator, ",");
+        try appendAppServerModelJson(allocator, &result, model, std.mem.eql(u8, model.slug, default_slug));
+        emitted = true;
     }
     try result.appendSlice(allocator, "],\"nextCursor\":");
     if (end < total) {
@@ -2861,25 +2866,108 @@ fn optionalModelListParams(params_value: ?std.json.Value) OptionalObjectParams {
     return .{ .object = params.object };
 }
 
-fn appendConfiguredModelJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), model: []const u8) !void {
-    const model_json = try std.json.Stringify.valueAlloc(allocator, model, .{});
-    defer allocator.free(model_json);
-    const description_json = try std.json.Stringify.valueAlloc(allocator, "Configured Codex Zig model.", .{});
-    defer allocator.free(description_json);
+fn modelListTotal(include_hidden: bool) usize {
+    var total: usize = 0;
+    for (model_catalog.bundled_models) |model| {
+        if (include_hidden or !model.hidden()) total += 1;
+    }
+    return total;
+}
+
+fn appendAppServerModelJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    model: model_catalog.Entry,
+    is_default: bool,
+) !void {
     try result.appendSlice(allocator, "{\"id\":");
-    try result.appendSlice(allocator, model_json);
+    try appendJsonString(allocator, result, model.slug);
     try result.appendSlice(allocator, ",\"model\":");
-    try result.appendSlice(allocator, model_json);
-    try result.appendSlice(allocator, ",\"upgrade\":null,\"upgradeInfo\":null,\"availabilityNux\":null,\"displayName\":");
-    try result.appendSlice(allocator, model_json);
+    try appendJsonString(allocator, result, model.slug);
+    try result.appendSlice(allocator, ",\"upgrade\":");
+    if (model.upgrade) |upgrade| try appendJsonString(allocator, result, upgrade.model) else try result.appendSlice(allocator, "null");
+    try result.appendSlice(allocator, ",\"upgradeInfo\":");
+    if (model.upgrade) |upgrade| {
+        try result.appendSlice(allocator, "{\"model\":");
+        try appendJsonString(allocator, result, upgrade.model);
+        try result.appendSlice(allocator, ",\"upgradeCopy\":");
+        try appendOptionalJsonString(allocator, result, upgrade.upgrade_copy);
+        try result.appendSlice(allocator, ",\"modelLink\":");
+        try appendOptionalJsonString(allocator, result, upgrade.model_link);
+        try result.appendSlice(allocator, ",\"migrationMarkdown\":");
+        try appendOptionalJsonString(allocator, result, upgrade.migration_markdown);
+        try result.appendSlice(allocator, "}");
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"availabilityNux\":");
+    if (model.availability_nux) |nux| {
+        try result.appendSlice(allocator, "{\"message\":");
+        try appendJsonString(allocator, result, nux.message);
+        try result.appendSlice(allocator, "}");
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"displayName\":");
+    try appendJsonString(allocator, result, model.display_name);
     try result.appendSlice(allocator, ",\"description\":");
-    try result.appendSlice(allocator, description_json);
-    try result.appendSlice(allocator, ",\"hidden\":false,\"supportedReasoningEfforts\":[");
-    try result.appendSlice(allocator, "{\"reasoningEffort\":\"low\",\"description\":\"Fast responses with lighter reasoning\"}");
-    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"medium\",\"description\":\"Balanced reasoning depth\"}");
-    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"high\",\"description\":\"Greater reasoning depth\"}");
-    try result.appendSlice(allocator, ",{\"reasoningEffort\":\"xhigh\",\"description\":\"Extra high reasoning depth\"}");
-    try result.appendSlice(allocator, "],\"defaultReasoningEffort\":\"medium\",\"inputModalities\":[\"text\",\"image\"],\"supportsPersonality\":false,\"additionalSpeedTiers\":[],\"serviceTiers\":[],\"isDefault\":true}");
+    try appendJsonString(allocator, result, model.description);
+    try result.appendSlice(allocator, ",\"hidden\":");
+    try result.appendSlice(allocator, if (model.hidden()) "true" else "false");
+    try result.appendSlice(allocator, ",\"supportedReasoningEfforts\":[");
+    for (model.supported_reasoning_levels, 0..) |reasoning, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"reasoningEffort\":");
+        try appendJsonString(allocator, result, reasoning.effort);
+        try result.appendSlice(allocator, ",\"description\":");
+        try appendJsonString(allocator, result, reasoning.description);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "],\"defaultReasoningEffort\":");
+    try appendJsonString(allocator, result, model.default_reasoning_level);
+    try result.appendSlice(allocator, ",\"inputModalities\":");
+    try appendJsonStringArray(allocator, result, model.input_modalities);
+    try result.appendSlice(allocator, ",\"supportsPersonality\":");
+    try result.appendSlice(allocator, if (model.supports_personality) "true" else "false");
+    try result.appendSlice(allocator, ",\"additionalSpeedTiers\":");
+    try appendJsonStringArray(allocator, result, model.additional_speed_tiers);
+    try result.appendSlice(allocator, ",\"serviceTiers\":[");
+    for (model.service_tiers, 0..) |tier, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"id\":");
+        try appendJsonString(allocator, result, tier.id);
+        try result.appendSlice(allocator, ",\"name\":");
+        try appendJsonString(allocator, result, tier.name);
+        try result.appendSlice(allocator, ",\"description\":");
+        try appendJsonString(allocator, result, tier.description);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "],\"isDefault\":");
+    try result.appendSlice(allocator, if (is_default) "true" else "false");
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, result: *std.ArrayList(u8), value: []const u8) !void {
+    const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(value_json);
+    try result.appendSlice(allocator, value_json);
+}
+
+fn appendOptionalJsonString(allocator: std.mem.Allocator, result: *std.ArrayList(u8), value: ?[]const u8) !void {
+    if (value) |payload| {
+        try appendJsonString(allocator, result, payload);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendJsonStringArray(allocator: std.mem.Allocator, result: *std.ArrayList(u8), values: []const []const u8) !void {
+    try result.appendSlice(allocator, "[");
+    for (values, 0..) |value, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendJsonString(allocator, result, value);
+    }
+    try result.appendSlice(allocator, "]");
 }
 
 fn handleModelProviderCapabilitiesRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
