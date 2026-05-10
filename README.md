@@ -150,6 +150,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - parse Rust-compatible local remote-control flags with `--remote-control` and
   `--remote-control-bind` while the local remote-control server remains
   unimplemented
+- accept interactive override flags after `resume` and `fork`, including model,
+  profile, cwd, image, approval, sandbox, OSS, remote, and no-alt-screen
+  settings
 - add local and git-backed marketplace sources, upgrade configured Git
   marketplaces, and remove configured marketplaces with `plugin marketplace`,
   mutating `$CODEX_HOME/config.toml`
@@ -197,7 +200,8 @@ runtime feature toggles through `features list`, checks `help [COMMAND]`, verifi
 `network_rule` validation, and resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
 Rust top-level command stubs, verifies local remote-control flag
-parsing/rejection, verifies local and git-backed `plugin marketplace`
+parsing/rejection, verifies session-local `resume` / `fork` override parsing,
+verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
 and state-db partial-reset rejection, checks planned debug app-server and
@@ -290,6 +294,7 @@ Interactive and non-interactive turns save Zig-native JSONL transcripts under
 codex-zig sessions
 codex-zig resume
 codex-zig resume --last
+codex-zig resume last -m gpt-5.5 --sandbox workspace-write
 codex-zig resume <session-id>
 codex-zig fork
 codex-zig fork --last
