@@ -237,7 +237,10 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         }
         if (std.mem.eql(u8, name, "generate-ts")) return error.AppServerGenerateTsNotImplemented;
         if (std.mem.eql(u8, name, "generate-json-schema")) return error.AppServerGenerateJsonSchemaNotImplemented;
-        if (std.mem.eql(u8, name, "generate-internal-json-schema")) return error.AppServerGenerateInternalJsonSchemaNotImplemented;
+        if (std.mem.eql(u8, name, "generate-internal-json-schema")) {
+            try runGenerateInternalJsonSchema(allocator, subcommand_args.items);
+            return;
+        }
         return error.UnknownAppServerSubcommand;
     }
 
@@ -339,6 +342,61 @@ fn validateSha256DigestArg(value: []const u8) !void {
             else => return error.AppServerWebsocketAuthSha256DigestInvalid,
         }
     }
+}
+
+fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var out_dir: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
+            if (index + 1 >= args.len) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
+            index += 1;
+            out_dir = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--out=")) {
+            out_dir = arg["--out=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownAppServerGenerateInternalJsonSchemaOption;
+        return error.UnexpectedAppServerGenerateInternalJsonSchemaArgument;
+    }
+
+    const target_dir = out_dir orelse return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
+    if (target_dir.len == 0) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
+    try writeRolloutLineJsonSchema(allocator, target_dir);
+}
+
+const ROLLOUT_LINE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RolloutLine",
+    \\  "type": "object",
+    \\  "required": ["timestamp", "type", "payload"],
+    \\  "properties": {
+    \\    "timestamp": {
+    \\      "type": "string"
+    \\    },
+    \\    "type": {
+    \\      "type": "string",
+    \\      "enum": ["session_meta", "response_item", "compacted", "turn_context", "event_msg"]
+    \\    },
+    \\    "payload": {
+    \\      "type": "object"
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+fn writeRolloutLineJsonSchema(allocator: std.mem.Allocator, out_dir: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, out_dir);
+    const schema_path = try std.fs.path.join(allocator, &.{ out_dir, "RolloutLine.json" });
+    defer allocator.free(schema_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = ROLLOUT_LINE_JSON_SCHEMA });
 }
 
 fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
