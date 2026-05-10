@@ -147,6 +147,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - persist feature flags globally or per profile with `features enable|disable`
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
+- parse Rust-compatible local remote-control flags with `--remote-control` and
+  `--remote-control-bind` while the local remote-control server remains
+  unimplemented
 - add local and git-backed marketplace sources, upgrade configured Git
   marketplaces, and remove configured marketplaces with `plugin marketplace`,
   mutating `$CODEX_HOME/config.toml`
@@ -193,7 +196,8 @@ runtime feature toggles through `features list`, checks `help [COMMAND]`, verifi
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
 `network_rule` validation, and resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
-Rust top-level command stubs, verifies local and git-backed `plugin marketplace`
+Rust top-level command stubs, verifies local remote-control flag
+parsing/rejection, verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
 and state-db partial-reset rejection, checks planned debug app-server and
