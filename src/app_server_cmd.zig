@@ -3247,10 +3247,10 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     var requirements = ConfigRequirementsReadRequirements{};
     errdefer requirements.deinit(allocator);
 
-    requirements.allowed_approval_policies = try parseAllowedApprovalPolicies(allocator, payload);
-    requirements.allowed_approvals_reviewers = try parseAllowedApprovalsReviewers(allocator, payload);
-    requirements.allowed_sandbox_modes = try parseAllowedSandboxModes(allocator, payload);
-    requirements.allowed_web_search_modes = try parseAllowedWebSearchModes(allocator, payload);
+    requirements.allowed_approval_policies = try parseAllowedRequirementList(allocator, payload, "allowed_approval_policies", .approval_policy);
+    requirements.allowed_approvals_reviewers = try parseAllowedRequirementList(allocator, payload, "allowed_approvals_reviewers", .approvals_reviewer);
+    requirements.allowed_sandbox_modes = try parseAllowedRequirementList(allocator, payload, "allowed_sandbox_modes", .sandbox_mode);
+    requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
 
     return requirements;
 }
@@ -3291,74 +3291,30 @@ fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !ConfigRequ
     return requirements;
 }
 
-fn parseAllowedApprovalPolicies(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
-    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_approval_policies") orelse return null;
-    defer raw.deinit(allocator);
+const RequirementListKind = enum {
+    approval_policy,
+    approvals_reviewer,
+    sandbox_mode,
+    web_search_mode,
+};
 
-    var labels = try allocator.alloc([]const u8, raw.items.len);
-    var copied: usize = 0;
-    errdefer {
-        for (labels[0..copied]) |label| allocator.free(label);
-        allocator.free(labels);
-    }
-
-    for (raw.items, 0..) |value, index| {
-        const parsed = try config.ApprovalPolicy.parse(value);
-        labels[index] = try allocator.dupe(u8, parsed.label());
-        copied += 1;
-    }
-    return .{ .items = labels };
-}
-
-fn parseAllowedApprovalsReviewers(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
-    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_approvals_reviewers") orelse return null;
-    defer raw.deinit(allocator);
-
-    var labels = try allocator.alloc([]const u8, raw.items.len);
-    var copied: usize = 0;
-    errdefer {
-        for (labels[0..copied]) |label| allocator.free(label);
-        allocator.free(labels);
-    }
-
-    for (raw.items, 0..) |value, index| {
-        const parsed = try ApprovalsReviewer.parse(value);
-        labels[index] = try allocator.dupe(u8, parsed.label());
-        copied += 1;
-    }
-    return .{ .items = labels };
-}
-
-fn parseAllowedSandboxModes(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
-    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_sandbox_modes") orelse return null;
-    defer raw.deinit(allocator);
-
-    var labels = try allocator.alloc([]const u8, raw.items.len);
-    var copied: usize = 0;
-    errdefer {
-        for (labels[0..copied]) |label| allocator.free(label);
-        allocator.free(labels);
-    }
-
-    for (raw.items, 0..) |value, index| {
-        const parsed = try config.SandboxMode.parse(value);
-        labels[index] = try allocator.dupe(u8, parsed.label());
-        copied += 1;
-    }
-    return .{ .items = labels };
-}
-
-fn parseAllowedWebSearchModes(allocator: std.mem.Allocator, payload: []const u8) !?config.StringList {
-    var raw = try config.topLevelStringArrayValue(allocator, payload, "allowed_web_search_modes") orelse return null;
+fn parseAllowedRequirementList(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    key: []const u8,
+    kind: RequirementListKind,
+) !?config.StringList {
+    var raw = try config.topLevelStringArrayValue(allocator, payload, key) orelse return null;
     defer raw.deinit(allocator);
 
     var disabled_present = false;
     for (raw.items) |value| {
-        const parsed = try config.WebSearchMode.parse(value);
-        if (parsed == .disabled) disabled_present = true;
+        if (std.mem.eql(u8, try requirementLabel(kind, value), config.WebSearchMode.disabled.label())) {
+            disabled_present = true;
+        }
     }
 
-    const extra_disabled: usize = if (disabled_present) 0 else 1;
+    const extra_disabled: usize = if (kind == .web_search_mode and !disabled_present) 1 else 0;
     var labels = try allocator.alloc([]const u8, raw.items.len + extra_disabled);
     var copied: usize = 0;
     errdefer {
@@ -3367,15 +3323,23 @@ fn parseAllowedWebSearchModes(allocator: std.mem.Allocator, payload: []const u8)
     }
 
     for (raw.items, 0..) |value, index| {
-        const parsed = try config.WebSearchMode.parse(value);
-        labels[index] = try allocator.dupe(u8, parsed.label());
+        labels[index] = try allocator.dupe(u8, try requirementLabel(kind, value));
         copied += 1;
     }
-    if (!disabled_present) {
+    if (extra_disabled == 1) {
         labels[raw.items.len] = try allocator.dupe(u8, config.WebSearchMode.disabled.label());
         copied += 1;
     }
     return .{ .items = labels };
+}
+
+fn requirementLabel(kind: RequirementListKind, value: []const u8) ![]const u8 {
+    return switch (kind) {
+        .approval_policy => (try config.ApprovalPolicy.parse(value)).label(),
+        .approvals_reviewer => (try ApprovalsReviewer.parse(value)).label(),
+        .sandbox_mode => (try config.SandboxMode.parse(value)).label(),
+        .web_search_mode => (try config.WebSearchMode.parse(value)).label(),
+    };
 }
 
 fn stringListFromLabels(allocator: std.mem.Allocator, labels: []const []const u8) !config.StringList {
