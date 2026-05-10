@@ -353,6 +353,9 @@ fn mainInner(init: std.process.Init) !void {
             try plugin_cmd.run(allocator, &args);
             return;
         }
+        if (isRemovedTopLevelCommand(cmd)) {
+            return error.RemovedTopLevelCommand;
+        }
         if (isKnownUnimplementedCommand(cmd)) {
             try runKnownUnimplementedCommand(cmd, &args);
             return;
@@ -609,6 +612,10 @@ fn isKnownUnimplementedCommand(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "cloud-tasks") or
         std.mem.eql(u8, cmd, "responses-api-proxy") or
         std.mem.eql(u8, cmd, "exec-server");
+}
+
+fn isRemovedTopLevelCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "marketplace");
 }
 
 fn runKnownUnimplementedCommand(cmd: []const u8, args: *std.process.Args.Iterator) !void {
@@ -1275,4 +1282,10 @@ test "known unimplemented Rust commands are recognized" {
     try std.testing.expect(isKnownUnimplementedCommand("exec-server"));
     try std.testing.expect(!isKnownUnimplementedCommand("plugin"));
     try std.testing.expect(!isKnownUnimplementedCommand("write this prompt"));
+}
+
+test "removed top-level Rust commands are rejected" {
+    try std.testing.expect(isRemovedTopLevelCommand("marketplace"));
+    try std.testing.expect(!isRemovedTopLevelCommand("plugin"));
+    try std.testing.expect(!isRemovedTopLevelCommand("write this prompt"));
 }
