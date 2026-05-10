@@ -1084,6 +1084,26 @@ const COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA =
     \\
 ;
 
+const ABSOLUTE_PATH_BUF_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AbsolutePathBuf",
+    \\  "description": "A path that is guaranteed to be absolute and normalized. When deserializing an AbsolutePathBuf, a base path must be set unless the path is already absolute.",
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const NETWORK_ACCESS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "NetworkAccess",
+    \\  "enum": ["restricted", "enabled"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
 const SANDBOX_POLICY_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1108,14 +1128,11 @@ const SANDBOX_POLICY_JSON_SCHEMA =
     \\      "type": "object",
     \\      "required": ["type"],
     \\      "properties": {
-    \\        "type": { "const": "workspaceWrite" },
-    \\        "writableRoots": {
-    \\          "type": "array",
-    \\          "items": { "type": "string" }
-    \\        },
-    \\        "networkAccess": { "type": "boolean", "default": false },
-    \\        "excludeTmpdirEnvVar": { "type": "boolean", "default": false },
-    \\        "excludeSlashTmp": { "type": "boolean", "default": false }
+    \\        "type": { "const": "externalSandbox" },
+    \\        "networkAccess": {
+    \\          "allOf": [{ "$ref": "NetworkAccess.json" }],
+    \\          "default": "restricted"
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -1123,9 +1140,174 @@ const SANDBOX_POLICY_JSON_SCHEMA =
     \\      "type": "object",
     \\      "required": ["type"],
     \\      "properties": {
-    \\        "type": { "const": "externalSandbox" },
-    \\        "networkAccess": { "enum": ["restricted", "enabled"], "default": "restricted" }
+    \\        "type": { "const": "workspaceWrite" },
+    \\        "writableRoots": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "AbsolutePathBuf.json" },
+    \\          "default": []
+    \\        },
+    \\        "networkAccess": { "type": "boolean", "default": false },
+    \\        "excludeTmpdirEnvVar": { "type": "boolean", "default": false },
+    \\        "excludeSlashTmp": { "type": "boolean", "default": false }
     \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const FILE_SYSTEM_ACCESS_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileSystemAccessMode",
+    \\  "enum": ["read", "write", "none"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const FILE_SYSTEM_SPECIAL_PATH_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileSystemSpecialPath",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind"],
+    \\      "properties": { "kind": { "const": "root" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind"],
+    \\      "properties": { "kind": { "const": "minimal" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind"],
+    \\      "properties": {
+    \\        "kind": { "const": "project_roots" },
+    \\        "subpath": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind"],
+    \\      "properties": { "kind": { "const": "tmpdir" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind"],
+    \\      "properties": { "kind": { "const": "slash_tmp" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["kind", "path"],
+    \\      "properties": {
+    \\        "kind": { "const": "unknown" },
+    \\        "path": { "type": "string" },
+    \\        "subpath": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const FILE_SYSTEM_PATH_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileSystemPath",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "path"],
+    \\      "properties": {
+    \\        "type": { "const": "path" },
+    \\        "path": { "$ref": "AbsolutePathBuf.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "pattern"],
+    \\      "properties": {
+    \\        "type": { "const": "glob_pattern" },
+    \\        "pattern": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "const": "special" },
+    \\        "value": { "$ref": "FileSystemSpecialPath.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const FILE_SYSTEM_SANDBOX_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileSystemSandboxEntry",
+    \\  "type": "object",
+    \\  "required": ["path", "access"],
+    \\  "properties": {
+    \\    "path": { "$ref": "FileSystemPath.json" },
+    \\    "access": { "$ref": "FileSystemAccessMode.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PERMISSION_PROFILE_NETWORK_PERMISSIONS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileNetworkPermissions",
+    \\  "type": "object",
+    \\  "required": ["enabled"],
+    \\  "properties": {
+    \\    "enabled": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileFileSystemPermissions",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "entries"],
+    \\      "properties": {
+    \\        "type": { "const": "restricted" },
+    \\        "entries": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "FileSystemSandboxEntry.json" }
+    \\        },
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "const": "unrestricted" } },
     \\      "additionalProperties": true
     \\    }
     \\  ]
@@ -1143,45 +1325,8 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\      "required": ["type", "fileSystem", "network"],
     \\      "properties": {
     \\        "type": { "const": "managed" },
-    \\        "fileSystem": {
-    \\          "oneOf": [
-    \\            {
-    \\              "type": "object",
-    \\              "required": ["type", "entries"],
-    \\              "properties": {
-    \\                "type": { "const": "restricted" },
-    \\                "entries": {
-    \\                  "type": "array",
-    \\                  "items": {
-    \\                    "type": "object",
-    \\                    "required": ["path", "access"],
-    \\                    "properties": {
-    \\                      "path": { "type": "object" },
-    \\                      "access": { "enum": ["read", "write", "none"] }
-    \\                    },
-    \\                    "additionalProperties": true
-    \\                  }
-    \\                },
-    \\                "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
-    \\              },
-    \\              "additionalProperties": true
-    \\            },
-    \\            {
-    \\              "type": "object",
-    \\              "required": ["type"],
-    \\              "properties": { "type": { "const": "unrestricted" } },
-    \\              "additionalProperties": true
-    \\            }
-    \\          ]
-    \\        },
-    \\        "network": {
-    \\          "type": "object",
-    \\          "required": ["enabled"],
-    \\          "properties": {
-    \\            "enabled": { "type": "boolean" }
-    \\          },
-    \\          "additionalProperties": true
-    \\        }
+    \\        "fileSystem": { "$ref": "PermissionProfileFileSystemPermissions.json" },
+    \\        "network": { "$ref": "PermissionProfileNetworkPermissions.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -1196,14 +1341,7 @@ const PERMISSION_PROFILE_JSON_SCHEMA =
     \\      "required": ["type", "network"],
     \\      "properties": {
     \\        "type": { "const": "external" },
-    \\        "network": {
-    \\          "type": "object",
-    \\          "required": ["enabled"],
-    \\          "properties": {
-    \\            "enabled": { "type": "boolean" }
-    \\          },
-    \\          "additionalProperties": true
-    \\        }
+    \\        "network": { "$ref": "PermissionProfileNetworkPermissions.json" }
     \\      },
     \\      "additionalProperties": true
     \\    }
@@ -1453,6 +1591,211 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "AbsolutePathBuf": {
+    \\      "type": "string"
+    \\    },
+    \\    "NetworkAccess": {
+    \\      "enum": ["restricted", "enabled"],
+    \\      "type": "string"
+    \\    },
+    \\    "SandboxPolicy": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "dangerFullAccess" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "readOnly" },
+    \\            "networkAccess": { "type": "boolean", "default": false }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "externalSandbox" },
+    \\            "networkAccess": {
+    \\              "allOf": [{ "$ref": "#/$defs/NetworkAccess" }],
+    \\              "default": "restricted"
+    \\            }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "workspaceWrite" },
+    \\            "writableRoots": {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\              "default": []
+    \\            },
+    \\            "networkAccess": { "type": "boolean", "default": false },
+    \\            "excludeTmpdirEnvVar": { "type": "boolean", "default": false },
+    \\            "excludeSlashTmp": { "type": "boolean", "default": false }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "FileSystemAccessMode": {
+    \\      "enum": ["read", "write", "none"],
+    \\      "type": "string"
+    \\    },
+    \\    "FileSystemSpecialPath": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind"],
+    \\          "properties": { "kind": { "const": "root" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind"],
+    \\          "properties": { "kind": { "const": "minimal" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind"],
+    \\          "properties": {
+    \\            "kind": { "const": "project_roots" },
+    \\            "subpath": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind"],
+    \\          "properties": { "kind": { "const": "tmpdir" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind"],
+    \\          "properties": { "kind": { "const": "slash_tmp" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["kind", "path"],
+    \\          "properties": {
+    \\            "kind": { "const": "unknown" },
+    \\            "path": { "type": "string" },
+    \\            "subpath": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "FileSystemPath": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "path" },
+    \\            "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "pattern"],
+    \\          "properties": {
+    \\            "type": { "const": "glob_pattern" },
+    \\            "pattern": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "value"],
+    \\          "properties": {
+    \\            "type": { "const": "special" },
+    \\            "value": { "$ref": "#/$defs/FileSystemSpecialPath" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "FileSystemSandboxEntry": {
+    \\      "type": "object",
+    \\      "required": ["path", "access"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/FileSystemPath" },
+    \\        "access": { "$ref": "#/$defs/FileSystemAccessMode" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PermissionProfileNetworkPermissions": {
+    \\      "type": "object",
+    \\      "required": ["enabled"],
+    \\      "properties": {
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PermissionProfileFileSystemPermissions": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "entries"],
+    \\          "properties": {
+    \\            "type": { "const": "restricted" },
+    \\            "entries": {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/FileSystemSandboxEntry" }
+    \\            },
+    \\            "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "unrestricted" } },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "PermissionProfile": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "fileSystem", "network"],
+    \\          "properties": {
+    \\            "type": { "const": "managed" },
+    \\            "fileSystem": { "$ref": "#/$defs/PermissionProfileFileSystemPermissions" },
+    \\            "network": { "$ref": "#/$defs/PermissionProfileNetworkPermissions" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "disabled" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "network"],
+    \\          "properties": {
+    \\            "type": { "const": "external" },
+    \\            "network": { "$ref": "#/$defs/PermissionProfileNetworkPermissions" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
     \\    "CommandExecParams": {
     \\      "type": "object",
     \\      "required": ["command"],
@@ -1462,8 +1805,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "streamStdin": { "type": "boolean" },
     \\        "streamStdoutStderr": { "type": "boolean" },
     \\        "tty": { "type": "boolean" },
-    \\        "sandboxPolicy": true,
-    \\        "permissionProfile": true
+    \\        "sandboxPolicy": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/SandboxPolicy" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "permissionProfile": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/PermissionProfile" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -1525,7 +1878,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
+    .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
+    .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
     .{ .name = "SandboxPolicy.json", .contents = SANDBOX_POLICY_JSON_SCHEMA },
+    .{ .name = "FileSystemAccessMode.json", .contents = FILE_SYSTEM_ACCESS_MODE_JSON_SCHEMA },
+    .{ .name = "FileSystemSpecialPath.json", .contents = FILE_SYSTEM_SPECIAL_PATH_JSON_SCHEMA },
+    .{ .name = "FileSystemPath.json", .contents = FILE_SYSTEM_PATH_JSON_SCHEMA },
+    .{ .name = "FileSystemSandboxEntry.json", .contents = FILE_SYSTEM_SANDBOX_ENTRY_JSON_SCHEMA },
+    .{ .name = "PermissionProfileNetworkPermissions.json", .contents = PERMISSION_PROFILE_NETWORK_PERMISSIONS_JSON_SCHEMA },
+    .{ .name = "PermissionProfileFileSystemPermissions.json", .contents = PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_JSON_SCHEMA },
     .{ .name = "PermissionProfile.json", .contents = PERMISSION_PROFILE_JSON_SCHEMA },
     .{ .name = "CommandExecParams.json", .contents = COMMAND_EXEC_PARAMS_JSON_SCHEMA },
     .{ .name = "CommandExecResponse.json", .contents = COMMAND_EXEC_RESPONSE_JSON_SCHEMA },
@@ -4666,7 +5027,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, id_value: std.json.Value, par
     else
         parseCommandExecSandboxPolicy(allocator, sandbox_policy_value, cfg.sandbox_mode) catch |err| switch (err) {
             error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
-            error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, or workspaceWrite"),
+            error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, externalSandbox, or workspaceWrite"),
             error.InvalidCommandExecSandboxPolicyNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be a boolean"),
             error.InvalidCommandExecSandboxPolicyExternalNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be restricted or enabled"),
             error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeTmpdirEnvVar must be a boolean"),
