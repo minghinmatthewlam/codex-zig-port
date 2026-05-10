@@ -677,7 +677,7 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
         assert no_auth["id"] == "account-no-auth"
         assert no_auth["result"] == {"account": None, "requiresOpenaiAuth": True}
 
-        api_key = request(api_key_home, "account-api-key", {}, {"OPENAI_API_KEY": "sk-test-key"})
+        api_key = request(api_key_home, "account-api-key", {}, {"OPENAI_API_KEY": "test-api-key"})
         assert api_key["id"] == "account-api-key"
         assert api_key["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
 
@@ -757,7 +757,7 @@ def run_account_logout_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-", dir="/tmp"))
     try:
         (codex_home / "auth.json").write_text(
-            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test-key"}),
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}),
             encoding="utf-8",
         )
 
@@ -800,6 +800,94 @@ def run_account_logout_rpc_smoke(binary: Path) -> None:
             invalid = read_json_line(proc, 5)
             assert invalid["id"] == "invalid-logout"
             assert invalid["error"]["code"] == -32602
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_account_login_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-login-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "login",
+                    "method": "account/login/start",
+                    "params": {"type": "apiKey", "apiKey": "test-api-key"},
+                },
+            )
+            login = read_json_line(proc, 5)
+            assert login["id"] == "login"
+            assert login["result"] == {"type": "apiKey"}
+
+            completed = read_json_line(proc, 5)
+            assert completed == {
+                "method": "account/login/completed",
+                "params": {"loginId": None, "success": True, "error": None},
+            }
+
+            updated = read_json_line(proc, 5)
+            assert updated == {
+                "method": "account/updated",
+                "params": {"authMode": "apikey", "planType": None},
+            }
+
+            auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+            assert auth_json == {"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "after-login", "method": "account/read"})
+            after = read_json_line(proc, 5)
+            assert after["id"] == "after-login"
+            assert after["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "missing-api-key",
+                    "method": "account/login/start",
+                    "params": {"type": "apiKey"},
+                },
+            )
+            missing_api_key = read_json_line(proc, 5)
+            assert missing_api_key["id"] == "missing-api-key"
+            assert missing_api_key["error"]["code"] == -32602
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unsupported-login",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgpt"},
+                },
+            )
+            unsupported = read_json_line(proc, 5)
+            assert unsupported["id"] == "unsupported-login"
+            assert unsupported["error"]["code"] == -32603
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -1197,6 +1285,8 @@ def main() -> None:
     print("app-server-account-read-rpc-e2e: ok")
     run_account_logout_rpc_smoke(binary)
     print("app-server-account-logout-rpc-e2e: ok")
+    run_account_login_rpc_smoke(binary)
+    print("app-server-account-login-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
