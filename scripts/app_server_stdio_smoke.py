@@ -977,52 +977,156 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
 
 def run_marketplace_rpc_smoke(binary: Path) -> None:
     env = os.environ.copy()
-
-    cases = [
-        {
-            "jsonrpc": "2.0",
-            "id": "marketplace-add",
-            "method": "marketplace/add",
-            "params": {
-                "source": "owner/repo",
-                "refName": "main",
-                "sparsePaths": ["plugins/foo"],
-            },
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "marketplace-remove",
-            "method": "marketplace/remove",
-            "params": {"marketplaceName": "debug"},
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "marketplace-upgrade",
-            "method": "marketplace/upgrade",
-            "params": {"marketplaceName": None},
-        },
-    ]
-    for payload in cases:
-        response = request_stdio_app_server(binary, payload, env)
-        assert response["id"] == payload["id"]
-        assert response["error"]["code"] == -32603
-        assert (
-            f"app-server method {payload['method']} is parsed but not implemented yet"
-            in response["error"]["message"]
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-marketplace-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    source = root / "marketplace-source"
+    try:
+        codex_home.mkdir()
+        source.joinpath(".agents", "plugins").mkdir(parents=True)
+        source.joinpath("plugins", "sample", ".codex-plugin").mkdir(parents=True)
+        source.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "debug",
+                    "plugins": [
+                        {
+                            "name": "sample",
+                            "source": {"source": "local", "path": "./plugins/sample"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
         )
+        source.joinpath("plugins", "sample", ".codex-plugin", "plugin.json").write_text(
+            json.dumps({"name": "sample", "interface": {"displayName": "Sample"}}),
+            encoding="utf-8",
+        )
+        env["CODEX_HOME"] = str(codex_home)
+        expected_source = str(source.resolve())
 
-    invalid = request_stdio_app_server(
-        binary,
-        {
-            "jsonrpc": "2.0",
-            "id": "marketplace-add-invalid",
-            "method": "marketplace/add",
-            "params": {"refName": "main"},
-        },
-        env,
-    )
-    assert invalid["id"] == "marketplace-add-invalid"
-    assert invalid["error"]["code"] == -32602
+        added = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-add-local",
+                "method": "marketplace/add",
+                "params": {"source": str(source)},
+            },
+            env,
+        )
+        assert added["id"] == "marketplace-add-local"
+        assert added["result"] == {
+            "marketplaceName": "debug",
+            "installedRoot": expected_source,
+            "alreadyAdded": False,
+        }
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert "[marketplaces.debug]" in config_text
+        assert 'source_type = "local"' in config_text
+        assert expected_source in config_text
+
+        repeated = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-add-local-repeat",
+                "method": "marketplace/add",
+                "params": {"source": str(source)},
+            },
+            env,
+        )
+        assert repeated["id"] == "marketplace-add-local-repeat"
+        assert repeated["result"]["alreadyAdded"] is True
+
+        listed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-list-configured",
+                "method": "plugin/list",
+                "params": {},
+            },
+            env,
+        )
+        assert listed["id"] == "marketplace-list-configured"
+        assert listed["result"]["marketplaces"][0]["name"] == "debug"
+        assert listed["result"]["marketplaces"][0]["plugins"][0]["id"] == "sample@debug"
+
+        removed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-remove-local",
+                "method": "marketplace/remove",
+                "params": {"marketplaceName": "debug"},
+            },
+            env,
+        )
+        assert removed["id"] == "marketplace-remove-local"
+        assert removed["result"] == {"marketplaceName": "debug", "installedRoot": None}
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert "[marketplaces.debug]" not in config_text
+
+        unknown_remove = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-remove-unknown",
+                "method": "marketplace/remove",
+                "params": {"marketplaceName": "debug"},
+            },
+            env,
+        )
+        assert unknown_remove["id"] == "marketplace-remove-unknown"
+        assert unknown_remove["error"]["code"] == -32600
+
+        git_add = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-add-git",
+                "method": "marketplace/add",
+                "params": {
+                    "source": "owner/repo",
+                    "refName": "main",
+                    "sparsePaths": ["plugins/foo"],
+                },
+            },
+            env,
+        )
+        assert git_add["id"] == "marketplace-add-git"
+        assert git_add["error"]["code"] == -32603
+        assert "marketplace/add source is parsed but not implemented yet" in git_add["error"]["message"]
+
+        upgrade = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-upgrade",
+                "method": "marketplace/upgrade",
+                "params": {"marketplaceName": None},
+            },
+            env,
+        )
+        assert upgrade["id"] == "marketplace-upgrade"
+        assert upgrade["error"]["code"] == -32603
+        assert "marketplace/upgrade is parsed but not implemented yet" in upgrade["error"]["message"]
+
+        invalid = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "marketplace-add-invalid",
+                "method": "marketplace/add",
+                "params": {"refName": "main"},
+            },
+            env,
+        )
+        assert invalid["id"] == "marketplace-add-invalid"
+        assert invalid["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def run_plugin_rpc_smoke(binary: Path) -> None:

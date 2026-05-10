@@ -760,19 +760,70 @@ def run_plugin_marketplace_smoke(
         if usage not in result.stderr:
             raise AssertionError(f"expected {usage} help output:\n{result.stderr}")
 
-    command_cases = [
-        [
-            "add",
-            "--ref",
-            "main",
-            "--sparse",
-            "agents",
-            "owner/repo",
-        ],
-        ["upgrade", "debug"],
-        ["remove", "debug"],
+    source = workspace / "marketplace-source"
+    source.joinpath(".agents", "plugins").mkdir(parents=True)
+    source.joinpath("plugins", "sample", ".codex-plugin").mkdir(parents=True)
+    source.joinpath(".agents", "plugins", "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "debug",
+                "plugins": [
+                    {
+                        "name": "sample",
+                        "source": {"source": "local", "path": "./plugins/sample"},
+                    }
+                ],
+            }
+        )
+    )
+    source.joinpath("plugins", "sample", ".codex-plugin", "plugin.json").write_text(
+        json.dumps({"name": "sample"})
+    )
+
+    add = subprocess.run(
+        [str(binary), "plugin", "marketplace", "add", str(source)],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added marketplace `debug`" not in add.stderr:
+        raise AssertionError(f"expected marketplace add output:\n{add.stderr}")
+    config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
+    if "[marketplaces.debug]" not in config_text:
+        raise AssertionError(f"expected marketplace config entry:\n{config_text}")
+
+    repeated = subprocess.run(
+        [str(binary), "plugin", "marketplace", "add", str(source)],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "is already added" not in repeated.stderr:
+        raise AssertionError(f"expected marketplace already-added output:\n{repeated.stderr}")
+
+    remove = subprocess.run(
+        [str(binary), "plugin", "marketplace", "remove", "debug"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Removed marketplace `debug`." not in remove.stderr:
+        raise AssertionError(f"expected marketplace remove output:\n{remove.stderr}")
+
+    unsupported_cases = [
+        (
+            ["add", "--ref", "main", "--sparse", "agents", "owner/repo"],
+            "parsed for git sources but not implemented yet",
+        ),
+        (["upgrade", "debug"], "parsed but not implemented yet"),
     ]
-    for args in command_cases:
+    for args, expected in unsupported_cases:
         result = subprocess.run(
             [str(binary), "plugin", "marketplace", *args],
             cwd=workspace,
@@ -783,9 +834,9 @@ def run_plugin_marketplace_smoke(
         )
         if result.returncode == 0:
             raise AssertionError(f"plugin marketplace {args[0]} unexpectedly succeeded")
-        if "parsed but not implemented yet" not in result.stderr:
+        if expected not in result.stderr:
             raise AssertionError(
-                f"expected plugin marketplace not-implemented output:\n{result.stderr}"
+                f"expected plugin marketplace fallback output:\n{result.stderr}"
             )
 
 
