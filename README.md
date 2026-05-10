@@ -119,8 +119,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   config-origin/layer metadata, user sandbox workspace settings, user tools
   and apps config including app defaults, policy flags, and per-app tool
   overrides, trusted project-stack scalar and sandbox workspace layers, system
-  scalar/sandbox workspace precedence, and legacy managed scalar/sandbox
-  overrides with `config/read`
+  scalar/sandbox workspace precedence, required empty user/system layers, and
+  legacy managed scalar/sandbox overrides with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
 - merge and replace existing app-server TOML table objects with
@@ -267,8 +267,8 @@ account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read with user origin/layer metadata, user
 sandbox workspace settings, tools/apps config including app defaults, policy
 flags, and per-app tool overrides, trusted project scalar and sandbox workspace
-layers, system scalar/sandbox workspace precedence, and legacy managed
-scalar/sandbox overrides,
+layers, system scalar/sandbox workspace precedence, required empty user/system
+layers, and legacy managed scalar/sandbox overrides,
 config-value-write including table-object merge/replace behavior,
 config-batch-write including table-object merge/replace behavior, and
 config-requirements RPCs against temporary config homes, including legacy
