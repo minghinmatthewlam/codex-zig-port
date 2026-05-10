@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const cli_utils = @import("cli_utils.zig");
+const plugin_config = @import("plugin_config.zig");
 const env = @import("env.zig");
 
 pub const ServerKind = enum { unknown, stdio, streamable_http };
@@ -96,8 +97,10 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const subcommand = args[0];
     if (std.mem.eql(u8, subcommand, "list")) {
+        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runList(allocator, servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "get")) {
+        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runGet(allocator, servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "add")) {
         try runAdd(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
@@ -114,7 +117,10 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
 pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpServers {
     const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
-    return parseServers(allocator, config_bytes orelse "");
+    var servers = try parseServers(allocator, config_bytes orelse "");
+    errdefer servers.deinit(allocator);
+    try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+    return servers;
 }
 
 pub fn renderStatus(allocator: std.mem.Allocator, codex_home: []const u8, verbose: bool) ![]const u8 {
@@ -413,6 +419,111 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
         }
     }
     return servers;
+}
+
+fn appendPluginMcpServers(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    servers: *McpServers,
+) !void {
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return;
+
+    const plugin_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
+    defer plugin_config.freeStringList(allocator, plugin_ids);
+    for (plugin_ids) |plugin_id| {
+        const plugin_root = (try plugin_config.localPluginRoot(allocator, codex_home, plugin_id)) orelse continue;
+        defer allocator.free(plugin_root);
+        try appendPluginMcpFile(allocator, plugin_root, servers);
+    }
+}
+
+fn appendPluginMcpFile(allocator: std.mem.Allocator, plugin_root: []const u8, servers: *McpServers) !void {
+    const path = try std.fs.path.join(allocator, &.{ plugin_root, ".mcp.json" });
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const server_map = if (parsed.value.object.get("mcpServers")) |wrapped| blk: {
+        if (wrapped != .object) return;
+        break :blk wrapped.object;
+    } else parsed.value.object;
+
+    var iterator = server_map.iterator();
+    while (iterator.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (name.len == 0 or name[0] == '$') continue;
+        if (servers.findIndex(name) != null) continue;
+        const server = try parsePluginMcpServer(allocator, name, entry.value_ptr.*);
+        if (server) |value| {
+            errdefer {
+                var owned = value;
+                owned.deinit(allocator);
+            }
+            try servers.items.append(allocator, value);
+        }
+    }
+}
+
+fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: std.json.Value) !?McpServer {
+    if (value != .object) return null;
+    var server = McpServer{ .name = try allocator.dupe(u8, name) };
+    errdefer server.deinit(allocator);
+
+    if (jsonStringField(value.object, "url")) |url| {
+        server.kind = .streamable_http;
+        server.url = try allocator.dupe(u8, url);
+    }
+    if (jsonStringField(value.object, "command")) |command| {
+        server.kind = .stdio;
+        server.command = try allocator.dupe(u8, command);
+    }
+    if (jsonStringField(value.object, "bearer_token_env_var")) |token_env| {
+        server.bearer_token_env_var = try allocator.dupe(u8, token_env);
+    } else if (jsonStringField(value.object, "bearerTokenEnvVar")) |token_env| {
+        server.bearer_token_env_var = try allocator.dupe(u8, token_env);
+    }
+    if (value.object.get("enabled")) |enabled| {
+        if (enabled == .bool) server.enabled = enabled.bool;
+    }
+    if (value.object.get("args")) |args_value| {
+        if (args_value == .array) {
+            for (args_value.array.items) |item| {
+                if (item == .string) try server.args.append(allocator, try allocator.dupe(u8, item.string));
+            }
+        }
+    }
+    if (value.object.get("env")) |env_value| {
+        if (env_value == .object) {
+            var iterator = env_value.object.iterator();
+            while (iterator.next()) |entry| {
+                if (entry.value_ptr.* != .string) continue;
+                try server.env_vars.append(allocator, .{
+                    .key = try allocator.dupe(u8, entry.key_ptr.*),
+                    .value = try allocator.dupe(u8, entry.value_ptr.*.string),
+                });
+            }
+        }
+    }
+
+    if (server.kind == .unknown) {
+        server.deinit(allocator);
+        return null;
+    }
+    return server;
+}
+
+fn jsonStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
 }
 
 const McpSection = struct {
@@ -773,6 +884,59 @@ test "mcp config parses and renders stdio and http servers" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "model = \"demo\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.docs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.remote]") != null);
+}
+
+test "mcp config loads enabled plugin mcp servers" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "config.toml",
+        .data =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."sample@test"]
+        \\enabled = true
+        \\
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\
+        ,
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugins/cache/test/sample/local/.mcp.json",
+        .data =
+        \\{
+        \\  "mcpServers": {
+        \\    "plugin_docs": {
+        \\      "command": "plugin-mcp",
+        \\      "args": ["--stdio"],
+        \\      "env": {"PLUGIN_TOKEN": "abc"}
+        \\    },
+        \\    "plugin_remote": {
+        \\      "type": "http",
+        \\      "url": "https://plugin.example/mcp",
+        \\      "bearerTokenEnvVar": "PLUGIN_MCP_TOKEN"
+        \\    }
+        \\  }
+        \\}
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    var servers = try loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), servers.items.items.len);
+    try std.testing.expectEqualStrings("docs-server", servers.get("docs").?.command.?);
+    try std.testing.expectEqualStrings("plugin-mcp", servers.get("plugin_docs").?.command.?);
+    try std.testing.expectEqualStrings("--stdio", servers.get("plugin_docs").?.args.items[0]);
+    try std.testing.expectEqualStrings("PLUGIN_TOKEN", servers.get("plugin_docs").?.env_vars.items[0].key);
+    try std.testing.expectEqualStrings("abc", servers.get("plugin_docs").?.env_vars.items[0].value);
+    try std.testing.expectEqualStrings("https://plugin.example/mcp", servers.get("plugin_remote").?.url.?);
+    try std.testing.expectEqualStrings("PLUGIN_MCP_TOKEN", servers.get("plugin_remote").?.bearer_token_env_var.?);
 }
 
 test "mcp server name validation" {
