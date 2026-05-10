@@ -205,9 +205,10 @@ parsing/rejection, verifies session-local `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
-rejection and SQLite state-db row cleanup, checks planned debug app-server and
-trace-reducer stubs, runs the top-level `apply` command against a mock ChatGPT
-task backend and temporary git repository, then drives
+rejection and SQLite state-db row cleanup, checks the planned debug app-server
+stub, verifies `debug trace-reduce` lifecycle replay against a temporary trace
+bundle, runs the top-level `apply` command against a mock ChatGPT task backend
+and temporary git repository, then drives
 `/help`, `/status`,
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
