@@ -998,6 +998,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/skill/read")) {
         return handlePluginSkillRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/uninstall")) {
+        return handlePluginUninstall(allocator, id_value, params_value);
+    }
 
     if (validatePluginParams(method, params_value)) |message| {
         return try renderJsonRpcError(allocator, id_value, -32602, message);
@@ -1140,6 +1143,83 @@ fn parsePluginSkillReadParams(params_value: ?std.json.Value) !ParsedPluginSkillR
         .remote_plugin_id = remote_plugin_id,
         .skill_name = skill_name,
     };
+}
+
+fn handlePluginUninstall(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginUninstallParams(params_value) catch |err| switch (err) {
+        error.InvalidPluginUninstallParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/uninstall params must be an object"),
+        error.InvalidPluginUninstallPluginId => return renderJsonRpcError(allocator, id_value, -32602, "pluginId must be a string"),
+    };
+    const remote_plugin_id = remote_plugin.isValidRemotePluginId(params.plugin_id);
+    if (!remote_plugin_id and !isValidLocalPluginId(params.plugin_id)) {
+        return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
+    }
+    if (!remote_plugin_id) {
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "app-server method {s} is parsed but not implemented yet",
+            .{"plugin/uninstall"},
+        );
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32603, message);
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const config_path = config.configTomlPath(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to load config", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to load config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
+        return renderJsonRpcError(allocator, id_value, -32600, "remote plugin uninstall is not enabled");
+    }
+
+    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+    switch (credentials.mode) {
+        .chatgpt, .agent_identity => {},
+        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
+    }
+
+    remote_plugin.uninstall(allocator, cfg.chatgpt_base_url, credentials, cfg.codex_home, params.plugin_id) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to uninstall remote plugin", err);
+    };
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+const ParsedPluginUninstallParams = struct {
+    plugin_id: []const u8,
+};
+
+fn parsePluginUninstallParams(params_value: ?std.json.Value) !ParsedPluginUninstallParams {
+    const params = params_value orelse return error.InvalidPluginUninstallParams;
+    if (params != .object) return error.InvalidPluginUninstallParams;
+    const plugin_id = stringFieldForPluginParams(params.object, "pluginId") orelse return error.InvalidPluginUninstallPluginId;
+    return .{ .plugin_id = plugin_id };
+}
+
+fn isValidLocalPluginId(plugin_id: []const u8) bool {
+    const parts = plugin_config.splitPluginId(plugin_id) orelse return false;
+    return isValidPluginIdSegment(parts.name) and isValidPluginIdSegment(parts.marketplace);
+}
+
+fn isValidPluginIdSegment(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_') continue;
+        return false;
+    }
+    return true;
 }
 
 fn validatePluginShareSaveParams(params_value: ?std.json.Value) ?[]const u8 {
@@ -4398,6 +4478,15 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_skill_name.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_skill_name.?, "\"code\":-32600") != null);
+
+    const invalid_uninstall_id = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-uninstall-id\",\"method\":\"plugin/uninstall\",\"params\":{\"pluginId\":\"linear/../../oops\"}}",
+    );
+    defer allocator.free(invalid_uninstall_id.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_uninstall_id.?, "\"code\":-32600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_uninstall_id.?, "invalid remote plugin id") != null);
 
     const invalid_kind = try handleJsonRpcLine(
         allocator,

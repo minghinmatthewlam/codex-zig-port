@@ -91,6 +91,11 @@ const RemotePluginInstalledResponsePayload = struct {
     pagination: RemotePluginPaginationPayload = .{},
 };
 
+const RemotePluginMutationResponsePayload = struct {
+    id: []const u8,
+    enabled: bool,
+};
+
 const RemotePluginInstalledItemPayload = struct {
     id: []const u8,
     name: ?[]const u8 = null,
@@ -186,6 +191,35 @@ pub fn fetchSkillReadJson(
     return renderSkillReadJson(allocator, bytes, plugin_id, skill_name);
 }
 
+pub fn uninstall(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    codex_home: []const u8,
+    plugin_id: []const u8,
+) !void {
+    const detail_url = try pluginDetailUrl(allocator, base_url, plugin_id);
+    defer allocator.free(detail_url);
+    const detail_body = try fetchJsonBytes(allocator, detail_url, credentials);
+    defer allocator.free(detail_body);
+
+    var detail_parse = try parsePluginDetail(allocator, detail_body, plugin_id);
+    defer detail_parse.deinit();
+    const scope = scopeFromApiValue(detail_parse.value.scope) orelse return error.RemotePluginInvalidScope;
+
+    const uninstall_url = try uninstallPluginUrl(allocator, base_url, plugin_id);
+    defer allocator.free(uninstall_url);
+    const uninstall_body = try sendJsonBytes(allocator, uninstall_url, .POST, credentials);
+    defer allocator.free(uninstall_body);
+
+    var mutation_parse = try std.json.parseFromSlice(RemotePluginMutationResponsePayload, allocator, uninstall_body, .{ .ignore_unknown_fields = true });
+    defer mutation_parse.deinit();
+    if (!std.mem.eql(u8, mutation_parse.value.id, plugin_id)) return error.RemotePluginPluginIdMismatch;
+    if (mutation_parse.value.enabled) return error.RemotePluginUnexpectedEnabledState;
+
+    try removeRemotePluginCache(allocator, codex_home, marketplaceName(scope), detail_parse.value.name, plugin_id);
+}
+
 pub fn fetchMarketplacesJson(
     allocator: std.mem.Allocator,
     base_url: []const u8,
@@ -262,6 +296,10 @@ pub fn fetchMarketplacesJson(
 }
 
 fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
+    return sendJsonBytes(allocator, url, .GET, credentials);
+}
+
+fn sendJsonBytes(allocator: std.mem.Allocator, url: []const u8, method: std.http.Method, credentials: auth.Credentials) ![]const u8 {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
     const auth_header = try auth.authorizationHeader(allocator, credentials);
@@ -287,7 +325,8 @@ fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: au
 
     const result = try client.fetch(.{
         .location = .{ .url = url },
-        .method = .GET,
+        .method = method,
+        .payload = if (method.requestHasBody()) "" else null,
         .response_writer = &response_body.writer,
         .extra_headers = headers.items,
     });
@@ -448,6 +487,19 @@ fn skillDetailUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id:
     try appendPathSegment(allocator, &url, plugin_id);
     try url.appendSlice(allocator, "/skills/");
     try appendPathSegment(allocator, &url, skill_name);
+    return url.toOwnedSlice(allocator);
+}
+
+fn uninstallPluginUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/plugins/");
+    try appendPathSegment(allocator, &url, plugin_id);
+    try url.appendSlice(allocator, "/uninstall");
     return url.toOwnedSlice(allocator);
 }
 
@@ -875,6 +927,58 @@ fn asciiLowerOrder(left: []const u8, right: []const u8) std.math.Order {
     return .eq;
 }
 
+fn removeRemotePluginCache(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_name_value: []const u8,
+    plugin_name: []const u8,
+    legacy_plugin_id: []const u8,
+) !void {
+    if (!isSafePluginCacheSegment(marketplace_name_value) or
+        !isSafePluginCacheSegment(plugin_name) or
+        !isSafeCachePathSegment(legacy_plugin_id))
+    {
+        return error.RemotePluginInvalidCachePath;
+    }
+
+    const plugin_cache_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name_value, plugin_name });
+    defer allocator.free(plugin_cache_root);
+    try deleteCachePathIfPresent(plugin_cache_root);
+
+    const legacy_cache_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace_name_value, legacy_plugin_id });
+    defer allocator.free(legacy_cache_root);
+    if (!std.mem.eql(u8, legacy_cache_root, plugin_cache_root)) {
+        try deleteCachePathIfPresent(legacy_cache_root);
+    }
+}
+
+fn deleteCachePathIfPresent(path: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    std.Io.Dir.cwd().deleteTree(io, path) catch |err| return err;
+}
+
+fn isSafeCachePathSegment(value: []const u8) bool {
+    if (value.len == 0 or std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') continue;
+        return false;
+    }
+    return true;
+}
+
+fn isSafePluginCacheSegment(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_') continue;
+        return false;
+    }
+    return true;
+}
+
 fn scopeFromApiValue(value: []const u8) ?RemotePluginScope {
     if (std.mem.eql(u8, value, "GLOBAL")) return .global;
     if (std.mem.eql(u8, value, "WORKSPACE")) return .workspace;
@@ -1196,6 +1300,54 @@ test "remote skill detail URL appends escaped path segments" {
     const url = try skillDetailUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123", "plan work");
     defer allocator.free(url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/ps/plugins/plugins~Plugin_123/skills/plan%20work", url);
+}
+
+test "remote uninstall URL matches backend mutation path" {
+    const allocator = std.testing.allocator;
+    const url = try uninstallPluginUrl(allocator, "https://chatgpt.com/backend-api/", "plugins~Plugin_123");
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/plugins/plugins~Plugin_123/uninstall", url);
+}
+
+test "remote uninstall cache cleanup removes current and legacy roots" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home/plugins/cache/chatgpt-global/linear/1.0.0/.codex-plugin");
+    try dir.dir.createDirPath(io, "home/plugins/cache/chatgpt-global/plugins~Plugin_123/local/.codex-plugin");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "home/plugins/cache/chatgpt-global/linear/1.0.0/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"linear\"}",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "home/plugins/cache/chatgpt-global/plugins~Plugin_123/local/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"linear\"}",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(root);
+    try removeRemotePluginCache(allocator, root, "chatgpt-global", "linear", "plugins~Plugin_123");
+
+    try std.testing.expectError(error.FileNotFound, dir.dir.statFile(io, "home/plugins/cache/chatgpt-global/linear", .{}));
+    try std.testing.expectError(error.FileNotFound, dir.dir.statFile(io, "home/plugins/cache/chatgpt-global/plugins~Plugin_123", .{}));
+}
+
+test "remote uninstall cache cleanup rejects invalid plugin cache segments" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "home");
+
+    const root = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(root);
+
+    try std.testing.expectError(
+        error.RemotePluginInvalidCachePath,
+        removeRemotePluginCache(allocator, root, "chatgpt-global", "linear.v2", "plugins~Plugin_123"),
+    );
 }
 
 test "remote skill detail JSON renders nullable contents" {
