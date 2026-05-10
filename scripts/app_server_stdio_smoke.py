@@ -856,6 +856,145 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(oss_home, ignore_errors=True)
 
 
+def run_get_auth_status_rpc_smoke(binary: Path) -> None:
+    def request(codex_home: Path, request_id: str, params_marker: object, extra_env: dict[str, str] | None = None) -> dict:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        if extra_env:
+            env.update(extra_env)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "getAuthStatus"}
+        if params_marker is not _OMIT:
+            payload["params"] = params_marker
+        return request_stdio_app_server(binary, payload, env)
+
+    no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-none-", dir="/tmp"))
+    api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-api-", dir="/tmp"))
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-chatgpt-", dir="/tmp"))
+    agent_identity_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-agent-", dir="/tmp"))
+    custom_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-custom-", dir="/tmp"))
+    oss_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-oss-", dir="/tmp"))
+    try:
+        no_auth = request(no_auth_home, "auth-status-none", {"includeToken": True, "refreshToken": None})
+        assert no_auth["id"] == "auth-status-none"
+        assert no_auth["result"] == {
+            "authMethod": None,
+            "authToken": None,
+            "requiresOpenaiAuth": True,
+        }
+
+        api_key = request(api_key_home, "auth-status-api-key", {"includeToken": True}, {"OPENAI_API_KEY": "test-api-key"})
+        assert api_key["id"] == "auth-status-api-key"
+        assert api_key["result"] == {
+            "authMethod": "apikey",
+            "authToken": "test-api-key",
+            "requiresOpenaiAuth": True,
+        }
+
+        api_key_no_token = request(
+            api_key_home,
+            "auth-status-api-key-no-token",
+            {"refreshToken": False},
+            {"OPENAI_API_KEY": "test-api-key"},
+        )
+        assert api_key_no_token["id"] == "auth-status-api-key-no-token"
+        assert api_key_no_token["result"] == {
+            "authMethod": "apikey",
+            "authToken": None,
+            "requiresOpenaiAuth": True,
+        }
+
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        (chatgpt_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        chatgpt = request(chatgpt_home, "auth-status-chatgpt", {"includeToken": True, "refreshToken": False})
+        assert chatgpt["id"] == "auth-status-chatgpt"
+        assert chatgpt["result"] == {
+            "authMethod": "chatgpt",
+            "authToken": access_token,
+            "requiresOpenaiAuth": True,
+        }
+
+        agent_token = encode_unsigned_jwt({"account_id": "acct_agent"})
+        (agent_identity_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "agentIdentity", "agent_identity": agent_token}),
+            encoding="utf-8",
+        )
+        agent_identity = request(agent_identity_home, "auth-status-agent", {"includeToken": True})
+        assert agent_identity["id"] == "auth-status-agent"
+        assert agent_identity["result"] == {
+            "authMethod": "agentIdentity",
+            "authToken": None,
+            "requiresOpenaiAuth": True,
+        }
+
+        (custom_home / "config.toml").write_text(
+            '\n'.join(
+                [
+                    'model_provider = "custom-provider"',
+                    "",
+                    "[model_providers.custom-provider]",
+                    'base_url = "https://proxy.example/v1"',
+                    'wire_api = "responses"',
+                    'requires_openai_auth = false',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        custom = request(custom_home, "auth-status-custom", {"includeToken": True}, {"OPENAI_API_KEY": "test-api-key"})
+        assert custom["id"] == "auth-status-custom"
+        assert custom["result"] == {
+            "authMethod": None,
+            "authToken": None,
+            "requiresOpenaiAuth": False,
+        }
+
+        (oss_home / "config.toml").write_text('oss_provider = "ollama"\n', encoding="utf-8")
+        oss = request(oss_home, "auth-status-oss", _OMIT, {"OPENAI_API_KEY": "test-api-key"})
+        assert oss["id"] == "auth-status-oss"
+        assert oss["result"] == {
+            "authMethod": None,
+            "authToken": None,
+            "requiresOpenaiAuth": False,
+        }
+
+        invalid_params = request(no_auth_home, "auth-status-invalid-params", [])
+        assert invalid_params["id"] == "auth-status-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+
+        invalid_field = request(no_auth_home, "auth-status-invalid-field", {"includeToken": "yes"})
+        assert invalid_field["id"] == "auth-status-invalid-field"
+        assert invalid_field["error"]["code"] == -32602
+    finally:
+        shutil.rmtree(no_auth_home, ignore_errors=True)
+        shutil.rmtree(api_key_home, ignore_errors=True)
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(agent_identity_home, ignore_errors=True)
+        shutil.rmtree(custom_home, ignore_errors=True)
+        shutil.rmtree(oss_home, ignore_errors=True)
+
+
 def run_account_logout_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-", dir="/tmp"))
     try:
@@ -1702,6 +1841,8 @@ def main() -> None:
     print("app-server-config-read-rpc-e2e: ok")
     run_account_read_rpc_smoke(binary)
     print("app-server-account-read-rpc-e2e: ok")
+    run_get_auth_status_rpc_smoke(binary)
+    print("app-server-get-auth-status-rpc-e2e: ok")
     run_account_logout_rpc_smoke(binary)
     print("app-server-account-logout-rpc-e2e: ok")
     run_account_login_rpc_smoke(binary)
