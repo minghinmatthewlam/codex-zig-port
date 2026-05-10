@@ -373,7 +373,8 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 `$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
 those same fields, reads `[tui].theme`, `[tui].status_line`,
 `[tui].terminal_title`, and `[tui].alternate_screen` for TUI preferences, and reads
-`[model_providers.<name>].base_url` for custom Responses-compatible providers.
+`[model_providers.<name>].base_url`, `env_key`, and
+`experimental_bearer_token` for custom Responses-compatible providers.
 
 ```sh
 codex-zig --profile work auth-status
