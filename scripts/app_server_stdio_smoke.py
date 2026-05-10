@@ -3886,6 +3886,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
     managed_config_path = codex_home / "managed_config.toml"
     env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
     system_config_path = codex_home / "system_config.toml"
+    system_requirements_path = codex_home / "system_requirements.toml"
+    env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
     system_config_path.write_text(
         "\n".join(
             [
@@ -4784,6 +4786,17 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_requirements_null["id"] == "config-requirements-read-null"
         assert config_requirements_null["result"] == {"requirements": None}
 
+        system_requirements_path.write_text(
+            "\n".join(
+                [
+                    'allowed_approval_policies = ["on-request"]',
+                    'allowed_sandbox_modes = ["danger-full-access"]',
+                    'allowed_web_search_modes = ["cached"]',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         managed_config_path.write_text(
             "\n".join(
                 [
@@ -4801,6 +4814,21 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         assert config_requirements_managed["id"] == "config-requirements-read-managed"
         assert config_requirements_managed["result"] == {
+            "requirements": {
+                "allowedApprovalPolicies": ["on-request"],
+                "allowedApprovalsReviewers": ["guardian_subagent", "user"],
+                "allowedSandboxModes": ["danger-full-access"],
+                "allowedWebSearchModes": ["cached", "disabled"],
+            }
+        }
+
+        system_requirements_path.unlink()
+        config_requirements_legacy = rpc_without_params(
+            "config-requirements-read-legacy",
+            "configRequirements/read",
+        )
+        assert config_requirements_legacy["id"] == "config-requirements-read-legacy"
+        assert config_requirements_legacy["result"] == {
             "requirements": {
                 "allowedApprovalPolicies": ["never"],
                 "allowedApprovalsReviewers": ["guardian_subagent", "user"],
