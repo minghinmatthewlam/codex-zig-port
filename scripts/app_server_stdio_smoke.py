@@ -627,11 +627,35 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hooks-", dir="/tmp"))
     codex_home = root / "codex-home"
     config_path = codex_home / "config.toml"
+    user_hooks_json = codex_home / "hooks.json"
     cwd = root / "repo"
     project_config = cwd / ".codex" / "config.toml"
+    project_hooks_json = cwd / ".codex" / "hooks.json"
     try:
         codex_home.mkdir()
         project_config.parent.mkdir(parents=True)
+        user_hooks_json.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Read",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo user json hook",
+                                        "timeout": 7,
+                                        "statusMessage": "running user json hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         config_path.write_text(
             "\n".join(
                 [
@@ -647,6 +671,25 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
                     'statusMessage = "running listed hook"',
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        project_hooks_json.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PostToolUse": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo project json hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
             ),
             encoding="utf-8",
         )
@@ -688,26 +731,53 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert entry["cwd"] == str(cwd)
         assert entry["warnings"] == []
         assert entry["errors"] == []
-        assert len(entry["hooks"]) == 2
+        assert len(entry["hooks"]) == 4
 
-        user_hook = entry["hooks"][0]
-        assert user_hook["eventName"] == "preToolUse"
-        assert user_hook["handlerType"] == "command"
-        assert user_hook["matcher"] == "Bash"
-        assert user_hook["command"] == "python3 /tmp/listed-hook.py"
-        assert user_hook["timeoutSec"] == 5
-        assert user_hook["statusMessage"] == "running listed hook"
-        assert user_hook["sourcePath"] == str(config_path.resolve())
-        assert user_hook["source"] == "user"
-        assert user_hook["pluginId"] is None
-        assert user_hook["displayOrder"] == 0
-        assert user_hook["enabled"] is True
-        assert user_hook["isManaged"] is False
-        assert user_hook["trustStatus"] == "untrusted"
-        assert user_hook["currentHash"].startswith("sha256:")
-        assert len(user_hook["currentHash"]) == len("sha256:") + 64
+        user_json_hook = entry["hooks"][0]
+        assert user_json_hook["eventName"] == "preToolUse"
+        assert user_json_hook["handlerType"] == "command"
+        assert user_json_hook["matcher"] == "Read"
+        assert user_json_hook["command"] == "echo user json hook"
+        assert user_json_hook["timeoutSec"] == 7
+        assert user_json_hook["statusMessage"] == "running user json hook"
+        assert user_json_hook["sourcePath"] == str(user_hooks_json.resolve())
+        assert user_json_hook["source"] == "user"
+        assert user_json_hook["pluginId"] is None
+        assert user_json_hook["displayOrder"] == 0
+        assert user_json_hook["enabled"] is True
+        assert user_json_hook["isManaged"] is False
+        assert user_json_hook["trustStatus"] == "untrusted"
+        assert user_json_hook["currentHash"].startswith("sha256:")
+        assert len(user_json_hook["currentHash"]) == len("sha256:") + 64
 
-        project_hook = entry["hooks"][1]
+        user_config_hook = entry["hooks"][1]
+        assert user_config_hook["eventName"] == "preToolUse"
+        assert user_config_hook["handlerType"] == "command"
+        assert user_config_hook["matcher"] == "Bash"
+        assert user_config_hook["command"] == "python3 /tmp/listed-hook.py"
+        assert user_config_hook["timeoutSec"] == 5
+        assert user_config_hook["statusMessage"] == "running listed hook"
+        assert user_config_hook["sourcePath"] == str(config_path.resolve())
+        assert user_config_hook["source"] == "user"
+        assert user_config_hook["pluginId"] is None
+        assert user_config_hook["displayOrder"] == 1
+        assert user_config_hook["enabled"] is True
+        assert user_config_hook["isManaged"] is False
+        assert user_config_hook["trustStatus"] == "untrusted"
+        assert user_config_hook["currentHash"].startswith("sha256:")
+        assert len(user_config_hook["currentHash"]) == len("sha256:") + 64
+
+        project_json_hook = entry["hooks"][2]
+        assert project_json_hook["eventName"] == "postToolUse"
+        assert project_json_hook["matcher"] is None
+        assert project_json_hook["command"] == "echo project json hook"
+        assert project_json_hook["timeoutSec"] == 600
+        assert project_json_hook["statusMessage"] is None
+        assert project_json_hook["sourcePath"] == str(project_hooks_json.resolve())
+        assert project_json_hook["source"] == "project"
+        assert project_json_hook["displayOrder"] == 2
+
+        project_hook = entry["hooks"][3]
         assert project_hook["eventName"] == "userPromptSubmit"
         assert project_hook["matcher"] is None
         assert project_hook["command"] == "echo project hook"
@@ -715,7 +785,7 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert project_hook["statusMessage"] is None
         assert project_hook["sourcePath"] == str(project_config.resolve())
         assert project_hook["source"] == "project"
-        assert project_hook["displayOrder"] == 1
+        assert project_hook["displayOrder"] == 3
 
         def write_hook_state(request_id: str, state: dict[str, object]) -> None:
             response = request_stdio_app_server(
@@ -753,8 +823,9 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
                 env,
             )
             assert response["id"] == request_id
-            return response["result"]["data"][0]["hooks"][0]
+            return response["result"]["data"][0]["hooks"][1]
 
+        user_hook = user_config_hook
         write_hook_state("hooks-state-disable", {user_hook["key"]: {"enabled": False}})
         disabled_user_hook = list_user_hook("hooks-list-disabled")
         assert disabled_user_hook["key"] == user_hook["key"]
@@ -789,6 +860,23 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         modified_user_hook = list_user_hook("hooks-list-modified")
         assert modified_user_hook["key"] == user_hook["key"]
         assert modified_user_hook["trustStatus"] == "modified"
+
+        project_hooks_json.write_text("{ not-json", encoding="utf-8")
+        json_warning = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "hooks-list-json-warning",
+                "method": "hooks/list",
+                "params": {"cwds": [str(cwd)]},
+            },
+            env,
+        )
+        assert json_warning["id"] == "hooks-list-json-warning"
+        warnings = json_warning["result"]["data"][0]["warnings"]
+        assert len(warnings) == 1
+        assert "failed to parse hooks config" in warnings[0]
+        assert str(project_hooks_json) in warnings[0]
 
         invalid = request_stdio_app_server(
             binary,

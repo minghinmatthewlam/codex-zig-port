@@ -6,11 +6,12 @@ Status values:
 - `partial`: implemented enough for a demo or narrow flow
 - `covered`: implemented and verified against the affected product surface
 
-Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml` and
-per-cwd `.codex/config.toml` command hooks, Rust-shaped `cwds` params and JSON
-fields, default command timeouts, source metadata, user `hooks.state`
-enable/trust metadata, and `[features].hooks` gating. Plugin hooks, hooks.json,
-managed hooks, and full config-layer parity remain planned.
+Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
+`$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
+`.codex/hooks.json` command hooks, Rust-shaped `cwds` params and JSON fields,
+default command timeouts, source metadata, user `hooks.state` enable/trust
+metadata, malformed `hooks.json` warnings, and `[features].hooks` gating. Plugin
+hooks, managed hooks, and full config-layer parity remain planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
