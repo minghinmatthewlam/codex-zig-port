@@ -43,7 +43,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`
 - check `prefix_rule` execpolicy files against a command with
-  `execpolicy check`, including absolute host executable resolution
+  `execpolicy check`, including `network_rule` validation and absolute host
+  executable resolution
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
 - copy the last assistant response from the interactive TUI with `/copy`
@@ -168,7 +169,8 @@ The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
 `-i/--image` initial-prompt attachment on the interactive path, verifies
 runtime feature toggles through `features list`, checks `help [COMMAND]`, verifies
-`execpolicy check` prefix-rule and resolved host executable JSON output,
+`execpolicy check` prefix-rule JSON output, `network_rule` validation, and
+resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
 Rust top-level command stubs, verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
