@@ -459,6 +459,77 @@ def run_filesystem_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_model_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            env,
+        )
+
+    try:
+        default_models = rpc("model-list-default", "model/list", {"limit": 1})
+        assert default_models["id"] == "model-list-default"
+        assert default_models["result"]["nextCursor"] is None
+        assert len(default_models["result"]["data"]) == 1
+        default_model = default_models["result"]["data"][0]
+        assert default_model["id"] == "gpt-5.2-codex"
+        assert default_model["model"] == "gpt-5.2-codex"
+        assert default_model["isDefault"] is True
+        assert default_model["hidden"] is False
+        assert default_model["defaultReasoningEffort"] == "medium"
+        assert default_model["inputModalities"] == ["text", "image"]
+
+        default_capabilities = rpc(
+            "model-capabilities-default",
+            "modelProvider/capabilities/read",
+            {},
+        )
+        assert default_capabilities["id"] == "model-capabilities-default"
+        assert default_capabilities["result"] == {
+            "namespaceTools": True,
+            "imageGeneration": True,
+            "webSearch": True,
+        }
+
+        (codex_home / "config.toml").write_text('model = "gpt-test"\n', encoding="utf-8")
+        configured_models = rpc("model-list-configured", "model/list", {})
+        assert configured_models["id"] == "model-list-configured"
+        assert configured_models["result"]["data"][0]["model"] == "gpt-test"
+
+        cursor_end = rpc("model-list-cursor-end", "model/list", {"cursor": "1"})
+        assert cursor_end["id"] == "model-list-cursor-end"
+        assert cursor_end["result"]["data"] == []
+        assert cursor_end["result"]["nextCursor"] is None
+
+        invalid_cursor = rpc("model-list-invalid-cursor", "model/list", {"cursor": "bad"})
+        assert invalid_cursor["id"] == "model-list-invalid-cursor"
+        assert invalid_cursor["error"]["code"] == -32600
+        assert invalid_cursor["error"]["message"] == "invalid cursor: bad"
+
+        (codex_home / "config.toml").write_text(
+            'profile = "bedrock"\n[profiles.bedrock]\nmodel_provider = "amazon-bedrock"\n',
+            encoding="utf-8",
+        )
+        bedrock_capabilities = rpc(
+            "model-capabilities-bedrock",
+            "modelProvider/capabilities/read",
+            {},
+        )
+        assert bedrock_capabilities["id"] == "model-capabilities-bedrock"
+        assert bedrock_capabilities["result"] == {
+            "namespaceTools": False,
+            "imageGeneration": False,
+            "webSearch": False,
+        }
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -700,6 +771,8 @@ def main() -> None:
     print("app-server-plugin-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
+    run_model_rpc_smoke(binary)
+    print("app-server-model-rpc-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
