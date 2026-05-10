@@ -122,7 +122,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - merge and replace existing app-server TOML table objects with
   `config/value/write`
 - apply multiple app-server config edits in one file write with
-  `config/batchWrite`
+  `config/batchWrite`, including table-object merge/replace behavior
 - report absent managed config requirements with `configRequirements/read`
 - clear memory directories and SQLite memory-state rows with `memory/reset`
 - list app-server collaboration mode presets with `collaborationMode/list`
@@ -258,7 +258,8 @@ account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read with user origin/layer metadata,
 config-value-write including table-object merge/replace behavior,
-config-batch-write, and config-requirements RPCs against temporary config homes and a
+config-batch-write including table-object merge/replace behavior, and
+config-requirements RPCs against temporary config homes and a
 mock backend, checks app-server experimental feature listing and runtime
 enablement patching against temporary config homes, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs

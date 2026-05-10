@@ -4091,7 +4091,27 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-batch-", dir="/tmp"))
     config_path = codex_home / "config.toml"
     config_path.write_text(
-        'model = "gpt-old"\napproval_policy = "on-request"\n\n[features]\ngoals = false\n',
+        "\n".join(
+            [
+                'model = "gpt-old"',
+                'approval_policy = "on-request"',
+                "",
+                "[features]",
+                "goals = false",
+                "",
+                "[mcp_servers.linear]",
+                'bearer_token_env_var = "TOKEN"',
+                'name = "linear"',
+                'url = "https://linear.example"',
+                "",
+                "[mcp_servers.linear.env_http_headers]",
+                'existing = "keep"',
+                "",
+                "[mcp_servers.linear.http_headers]",
+                'alpha = "a"',
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -4129,6 +4149,19 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                         },
                         "mergeStrategy": "upsert",
                     },
+                    {
+                        "keyPath": "mcp_servers.linear",
+                        "value": {
+                            "bearer_token_env_var": "NEW_TOKEN",
+                            "http_headers": {
+                                "alpha": "updated",
+                                "beta": "b",
+                            },
+                            "name": "linear",
+                            "url": "https://linear.example",
+                        },
+                        "mergeStrategy": "upsert",
+                    },
                     {"keyPath": "approval_policy", "value": None, "mergeStrategy": "replace"},
                 ],
                 "reloadUserConfig": True,
@@ -4149,6 +4182,10 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         contents = config_path.read_text(encoding="utf-8")
         assert 'status_line = ["model", "cwd"]' in contents
         assert 'state = {"hook-one" = {"enabled" = false}, "hook-two" = {"trusted_hash" = "hash-123"}}' in contents
+        assert 'bearer_token_env_var = "NEW_TOKEN"' in contents
+        assert '[mcp_servers.linear.env_http_headers]\nexisting = "keep"' in contents
+        assert 'alpha = "updated"' in contents
+        assert 'beta = "b"' in contents
         assert "approval_policy" not in contents
 
         batch_with_version = rpc(
@@ -4158,6 +4195,18 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                 "filePath": str(config_path),
                 "edits": [
                     {"keyPath": "sandbox_mode", "value": "workspace-write", "mergeStrategy": "replace"},
+                    {
+                        "keyPath": "mcp_servers.linear",
+                        "value": {
+                            "bearer_token_env_var": "REPLACED_TOKEN",
+                            "http_headers": {
+                                "alpha": "replaced",
+                            },
+                            "name": "linear",
+                            "url": "https://linear.example",
+                        },
+                        "mergeStrategy": "replace",
+                    },
                 ],
                 "expectedVersion": batch["result"]["version"],
             },
@@ -4168,6 +4217,12 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         after_versioned_batch = rpc("config-read-after-versioned-batch", "config/read", {})
         assert after_versioned_batch["id"] == "config-read-after-versioned-batch"
         assert after_versioned_batch["result"]["config"]["sandbox_mode"] == "workspace-write"
+        replaced_contents = config_path.read_text(encoding="utf-8")
+        assert 'bearer_token_env_var = "REPLACED_TOKEN"' in replaced_contents
+        assert 'alpha = "replaced"' in replaced_contents
+        assert "[mcp_servers.linear.env_http_headers]" not in replaced_contents
+        assert 'existing = "keep"' not in replaced_contents
+        assert 'beta = "b"' not in replaced_contents
 
         conflict = rpc(
             "config-batch-conflict",
