@@ -1170,12 +1170,77 @@ fn appendSkillMetadataJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
         try out.appendSlice(allocator, ",\"shortDescription\":");
         try out.appendSlice(allocator, short_description_json);
     }
+    if (skill.interface) |interface| {
+        try out.appendSlice(allocator, ",\"interface\":");
+        try appendSkillInterfaceJson(allocator, out, interface);
+    }
+    if (skill.dependencies) |dependencies| {
+        try out.appendSlice(allocator, ",\"dependencies\":");
+        try appendSkillDependenciesJson(allocator, out, dependencies);
+    }
     try out.appendSlice(allocator, ",\"path\":");
     try out.appendSlice(allocator, path_json);
     try out.appendSlice(allocator, ",\"scope\":");
     try out.appendSlice(allocator, scope_json);
     try out.appendSlice(allocator, ",\"enabled\":");
     try out.appendSlice(allocator, if (skill.enabled) "true}" else "false}");
+}
+
+fn appendSkillInterfaceJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), interface: skills_list.SkillInterface) !void {
+    try out.append(allocator, '{');
+    var first = true;
+    try appendOptionalJsonStringField(allocator, out, &first, "displayName", interface.display_name);
+    try appendOptionalJsonStringField(allocator, out, &first, "shortDescription", interface.short_description);
+    try appendOptionalJsonStringField(allocator, out, &first, "iconSmall", interface.icon_small);
+    try appendOptionalJsonStringField(allocator, out, &first, "iconLarge", interface.icon_large);
+    try appendOptionalJsonStringField(allocator, out, &first, "brandColor", interface.brand_color);
+    try appendOptionalJsonStringField(allocator, out, &first, "defaultPrompt", interface.default_prompt);
+    try out.append(allocator, '}');
+}
+
+fn appendSkillDependenciesJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), dependencies: skills_list.SkillDependencies) !void {
+    try out.appendSlice(allocator, "{\"tools\":[");
+    for (dependencies.tools, 0..) |tool, index| {
+        if (index > 0) try out.append(allocator, ',');
+        try appendSkillToolDependencyJson(allocator, out, tool);
+    }
+    try out.appendSlice(allocator, "]}");
+}
+
+fn appendSkillToolDependencyJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), tool: skills_list.SkillToolDependency) !void {
+    const type_json = try std.json.Stringify.valueAlloc(allocator, tool.kind, .{});
+    defer allocator.free(type_json);
+    const value_json = try std.json.Stringify.valueAlloc(allocator, tool.value, .{});
+    defer allocator.free(value_json);
+    try out.appendSlice(allocator, "{\"type\":");
+    try out.appendSlice(allocator, type_json);
+    try out.appendSlice(allocator, ",\"value\":");
+    try out.appendSlice(allocator, value_json);
+    var first = false;
+    try appendOptionalJsonStringField(allocator, out, &first, "description", tool.description);
+    try appendOptionalJsonStringField(allocator, out, &first, "transport", tool.transport);
+    try appendOptionalJsonStringField(allocator, out, &first, "command", tool.command);
+    try appendOptionalJsonStringField(allocator, out, &first, "url", tool.url);
+    try out.append(allocator, '}');
+}
+
+fn appendOptionalJsonStringField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    comptime field_name: []const u8,
+    value_opt: ?[]const u8,
+) !void {
+    const value = value_opt orelse return;
+    const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(value_json);
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.appendSlice(allocator, "\"" ++ field_name ++ "\":");
+    try out.appendSlice(allocator, value_json);
 }
 
 fn appendSkillErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill_error: skills_list.SkillError) !void {

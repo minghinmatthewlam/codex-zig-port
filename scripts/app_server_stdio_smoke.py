@@ -664,6 +664,36 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        (user_skill / "agents").mkdir()
+        (user_skill / "agents" / "openai.yaml").write_text(
+            json.dumps(
+                {
+                    "interface": {
+                        "display_name": "User Skill",
+                        "short_description": "  User   short  ",
+                        "icon_small": "./assets/small.svg",
+                        "brand_color": "#3B82F6",
+                        "default_prompt": "  Use   user skill ",
+                    },
+                    "dependencies": {
+                        "tools": [
+                            {
+                                "type": "env_var",
+                                "value": "USER_SKILL_TOKEN",
+                                "description": "User skill token",
+                            },
+                            {
+                                "type": "mcp",
+                                "value": "user-mcp",
+                                "transport": "streamable_http",
+                                "url": "https://example.com/mcp",
+                            },
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         (invalid_skill / "SKILL.md").write_text(
             "\n".join(
                 [
@@ -708,6 +738,28 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         assert by_name["user-skill"]["description"] == "User skill description"
         assert by_name["user-skill"]["scope"] == "user"
         assert by_name["user-skill"]["path"] == str((user_skill / "SKILL.md").resolve())
+        assert by_name["user-skill"]["interface"] == {
+            "displayName": "User Skill",
+            "shortDescription": "User short",
+            "iconSmall": str((user_skill / "assets" / "small.svg").resolve()),
+            "brandColor": "#3B82F6",
+            "defaultPrompt": "Use user skill",
+        }
+        assert by_name["user-skill"]["dependencies"] == {
+            "tools": [
+                {
+                    "type": "env_var",
+                    "value": "USER_SKILL_TOKEN",
+                    "description": "User skill token",
+                },
+                {
+                    "type": "mcp",
+                    "value": "user-mcp",
+                    "transport": "streamable_http",
+                    "url": "https://example.com/mcp",
+                },
+            ]
+        }
         assert any("missing description" in error["message"] for error in entry["errors"])
         assert any(error["path"] == str(invalid_skill / "SKILL.md") for error in entry["errors"])
 
