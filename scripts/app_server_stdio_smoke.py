@@ -808,6 +808,9 @@ enabled = false
 
 [plugins."enabled-plugin@local-market"]
 enabled = true
+
+[plugins."enabled-plugin@local-market".mcp_servers.demo]
+command = "demo-server"
 """,
             encoding="utf-8",
         )
@@ -977,6 +980,41 @@ description: Summarize plugin smoke threads
             }
         ]
         assert detail["mcpServers"] == ["demo"]
+
+        plugin_uninstall = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-uninstall-local",
+                "method": "plugin/uninstall",
+                "params": {"pluginId": "enabled-plugin@local-market"},
+            },
+            env,
+        )
+        assert plugin_uninstall["id"] == "plugin-uninstall-local"
+        assert plugin_uninstall["result"] == {}
+        assert not (
+            codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin"
+        ).exists()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert '[plugins."enabled-plugin@local-market"]' not in config_text
+        assert (
+            '[plugins."enabled-plugin@local-market".mcp_servers.demo]'
+            not in config_text
+        )
+
+        plugin_uninstall_again = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-uninstall-local-again",
+                "method": "plugin/uninstall",
+                "params": {"pluginId": "enabled-plugin@local-market"},
+            },
+            env,
+        )
+        assert plugin_uninstall_again["id"] == "plugin-uninstall-local-again"
+        assert plugin_uninstall_again["result"] == {}
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -1308,12 +1346,6 @@ remote_plugin = true
             "id": "plugin-install",
             "method": "plugin/install",
             "params": {"remoteMarketplaceName": "openai-curated", "pluginName": "gmail"},
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": "plugin-uninstall",
-            "method": "plugin/uninstall",
-            "params": {"pluginId": "gmail@openai-curated"},
         },
     ]
     for payload in cases:
