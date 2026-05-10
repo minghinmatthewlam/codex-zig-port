@@ -40,6 +40,20 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def make_exec_mock_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        f'openai_base_url = "{base_url}"\n',
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["OPENAI_API_KEY"] = "test-api-key"
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
 def run_features_profile_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-cli-features-", dir="/tmp"))
     try:
@@ -315,16 +329,7 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-options-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
     try:
-        codex_home = temp_root / "codex-home"
-        codex_home.mkdir()
-        (codex_home / "config.toml").write_text(
-            f'openai_base_url = "{base_url}"\n',
-            encoding="utf-8",
-        )
-        env = os.environ.copy()
-        env["CODEX_HOME"] = str(codex_home)
-        env["OPENAI_API_KEY"] = "test-api-key"
-        env.pop("CODEX_ACCESS_TOKEN", None)
+        env = make_exec_mock_env(temp_root, base_url)
 
         result = subprocess.run(
             [
@@ -353,16 +358,60 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_stdin_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-stdin-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        stdin_only = subprocess.run(
+            [str(binary.resolve()), "exec"],
+            cwd=temp_root,
+            env=env,
+            input="stdin only prompt",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stdin_only.stdout == "stored reply\n"
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "stdin only prompt"
+
+        prompt_with_context = subprocess.run(
+            [str(binary.resolve()), "exec", "summarize"],
+            cwd=temp_root,
+            env=env,
+            input="extra context",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert prompt_with_context.stdout == "stored reply\n"
+        assert (
+            server.request_bodies[1]["input"][-1]["content"][0]["text"]
+            == "summarize\n\n<stdin>\nextra context\n</stdin>"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
     run_exec_equals_options_smoke(binary)
+    run_exec_stdin_smoke(binary)
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")
     print("cli-exec-options-e2e: ok")
+    print("cli-exec-stdin-e2e: ok")
 
 
 if __name__ == "__main__":
