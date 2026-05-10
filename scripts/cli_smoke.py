@@ -29,6 +29,14 @@ COMPLETION_REQUIRED_VALUES = (
 
 
 class ExecResponsesHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        payload = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -1421,6 +1429,7 @@ def run_removed_top_level_command_smoke(binary: Path) -> None:
 
 def run_sandbox_permission_profile_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-sandbox-profile-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
     try:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(temp_root / "codex-home")
@@ -1614,6 +1623,13 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     "[permissions.custom-profile.network]",
                     "enabled = true",
                     "",
+                    "[permissions.no-network-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = "write"',
+                    "",
+                    "[permissions.no-network-profile.network]",
+                    "enabled = false",
+                    "",
                     "[permissions.minimal-profile.filesystem]",
                     '":minimal" = "read"',
                     "",
@@ -1652,6 +1668,59 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert (extra / "custom.txt").read_text(encoding="utf-8") == "extra"
         assert not (outside / "custom-blocked.txt").exists()
 
+        network_probe = (
+            "import urllib.request; "
+            f"print(urllib.request.urlopen({base_url!r}, timeout=2).read().decode().strip())"
+        )
+        network_allowed = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "custom-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                sys.executable,
+                "-c",
+                network_probe,
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert network_allowed.stdout == "ok\n"
+
+        network_blocked = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "no-network-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                sys.executable,
+                "-c",
+                network_probe,
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert network_blocked.returncode != 0
+        assert network_blocked.stdout == ""
+
         profile_unsupported = subprocess.run(
             [
                 str(binary.resolve()),
@@ -1676,6 +1745,8 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert profile_unsupported.returncode != 0
         assert "error: SandboxPermissionProfileUnsupported" in profile_unsupported.stderr
     finally:
+        server.shutdown()
+        server.server_close()
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
