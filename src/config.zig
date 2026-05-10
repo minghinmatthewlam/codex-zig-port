@@ -690,6 +690,9 @@ fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigVie
     errdefer if (bearer_token) |value| allocator.free(value);
     var command = try config_view.getModelProviderAuthCommand(allocator, provider);
     errdefer if (command) |*value| value.deinit(allocator);
+    if (command != null and (env_key != null or bearer_token != null or (config_view.getModelProviderBool(provider, "requires_openai_auth") orelse false))) {
+        return error.ModelProviderAuthConflict;
+    }
 
     return .{
         .env_key = env_key,
@@ -2174,6 +2177,25 @@ test "model provider command auth rejects empty command" {
     };
 
     try std.testing.expectError(error.ModelProviderAuthCommandEmpty, resolveModelProviderAuth(allocator, view, null));
+}
+
+test "model provider command auth rejects auth conflicts" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "command-provider"
+        \\
+        \\[model_providers.command-provider]
+        \\env_key = "CORP_API_KEY"
+        \\requires_openai_auth = false
+        \\
+        \\[model_providers.command-provider.auth]
+        \\command = "./print-token"
+        \\
+        ,
+    };
+
+    try std.testing.expectError(error.ModelProviderAuthConflict, resolveModelProviderAuth(allocator, view, null));
 }
 
 test "profile model provider overrides top-level provider" {

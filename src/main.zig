@@ -54,6 +54,10 @@ pub fn main(init: std.process.Init) !void {
                 "error: unsupported model provider `wire_api`; supported values: responses\n",
                 .{},
             ),
+            error.ModelProviderAuthConflict => std.debug.print(
+                "error: provider command auth cannot be combined with `env_key`, `experimental_bearer_token`, or `requires_openai_auth = true`\n",
+                .{},
+            ),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);
