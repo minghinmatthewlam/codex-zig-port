@@ -920,6 +920,53 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert ":read-only" in help_result.stderr
         assert ":workspace" in help_result.stderr
         assert ":danger-no-sandbox" in help_result.stderr
+        assert "--allow-unix-socket PATH" in help_result.stderr
+        assert "--log-denials" in help_result.stderr
+
+        socket_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--allow-unix-socket",
+                str(temp_root / "codex-browser-use"),
+                "--",
+                "/bin/echo",
+                "ok",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert socket_unsupported.returncode != 0
+        assert socket_unsupported.stdout == ""
+        assert "error: SandboxAllowUnixSocketUnsupported" in socket_unsupported.stderr
+
+        denials_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--log-denials",
+                "--",
+                "/bin/echo",
+                "ok",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denials_unsupported.returncode != 0
+        assert denials_unsupported.stdout == ""
+        assert "error: SandboxLogDenialsUnsupported" in denials_unsupported.stderr
 
         cwd_without_profile = subprocess.run(
             [str(binary.resolve()), "sandbox", "macos", "--cd", str(temp_root), "--", "/bin/echo", "ok"],
