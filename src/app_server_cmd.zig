@@ -3320,7 +3320,29 @@ fn handleConfigRead(
     };
     defer feature_overrides.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers);
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to read user config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    var user_layer: ?ConfigReadUserLayer = null;
+    defer if (user_layer) |*layer| layer.deinit(allocator);
+    if (config_bytes) |bytes| {
+        const origin_keys = try collectConfigReadUserOriginKeys(allocator, bytes, cfg.active_profile);
+        errdefer {
+            for (origin_keys) |key| allocator.free(key);
+            allocator.free(origin_keys);
+        }
+        user_layer = .{
+            .file_path = config_path,
+            .version = try configVersionAlloc(allocator, bytes),
+            .origin_keys = origin_keys,
+        };
+    }
+
+    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, user_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -3461,6 +3483,7 @@ fn renderConfigReadResponse(
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
     include_layers: bool,
+    user_layer: ?ConfigReadUserLayer,
 ) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -3477,11 +3500,214 @@ fn renderConfigReadResponse(
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
     try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
-    try result.appendSlice(allocator, "},\"origins\":{},\"layers\":");
-    try result.appendSlice(allocator, if (include_layers) "[]" else "null");
+    try result.appendSlice(allocator, "},\"origins\":");
+    try appendConfigReadOrigins(allocator, &result, user_layer);
+    try result.appendSlice(allocator, ",\"layers\":");
+    try appendConfigReadLayers(allocator, &result, cfg, include_layers, user_layer);
     try result.appendSlice(allocator, "}");
 
     return result.toOwnedSlice(allocator);
+}
+
+const ConfigReadUserLayer = struct {
+    file_path: []const u8,
+    version: []const u8,
+    origin_keys: []const []const u8,
+
+    fn deinit(self: *ConfigReadUserLayer, allocator: std.mem.Allocator) void {
+        allocator.free(self.version);
+        for (self.origin_keys) |key| allocator.free(key);
+        allocator.free(self.origin_keys);
+    }
+};
+
+const ConfigReadSection = enum {
+    top_level,
+    active_profile,
+    other,
+};
+
+fn collectConfigReadUserOriginKeys(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    active_profile: ?[]const u8,
+) ![]const []const u8 {
+    var keys = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (keys.items) |key| allocator.free(key);
+        keys.deinit(allocator);
+    }
+
+    var section: ConfigReadSection = .top_level;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            section = configReadSectionForLine(line, active_profile);
+            continue;
+        }
+        if (section != .top_level and section != .active_profile) continue;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (!isConfigReadOriginField(key)) continue;
+        if (section == .active_profile and std.mem.eql(u8, key, "profile")) continue;
+        try appendUniqueOriginKey(allocator, &keys, key);
+    }
+
+    return keys.toOwnedSlice(allocator);
+}
+
+fn configReadSectionForLine(line: []const u8, active_profile: ?[]const u8) ConfigReadSection {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return .other;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    if (std.mem.indexOfScalar(u8, section, '.') == null) return .other;
+    if (active_profile) |profile| {
+        const prefix = "profiles.";
+        if (std.mem.startsWith(u8, section, prefix)) {
+            const profile_name = section[prefix.len..];
+            if (profileSectionNameMatches(profile_name, profile)) return .active_profile;
+        }
+    }
+    return .other;
+}
+
+fn profileSectionNameMatches(raw_name: []const u8, profile: []const u8) bool {
+    if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
+        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], profile);
+    }
+    return std.mem.eql(u8, raw_name, profile);
+}
+
+fn isConfigReadOriginField(key: []const u8) bool {
+    return std.mem.eql(u8, key, "model") or
+        std.mem.eql(u8, key, "profile") or
+        std.mem.eql(u8, key, "approval_policy") or
+        std.mem.eql(u8, key, "sandbox_mode") or
+        std.mem.eql(u8, key, "web_search") or
+        std.mem.eql(u8, key, "service_tier") or
+        std.mem.eql(u8, key, "oss_provider") or
+        std.mem.eql(u8, key, "openai_base_url") or
+        std.mem.eql(u8, key, "chatgpt_base_url");
+}
+
+fn appendUniqueOriginKey(
+    allocator: std.mem.Allocator,
+    keys: *std.ArrayList([]const u8),
+    key: []const u8,
+) !void {
+    for (keys.items) |existing| {
+        if (std.mem.eql(u8, existing, key)) return;
+    }
+    try keys.append(allocator, try allocator.dupe(u8, key));
+}
+
+fn appendConfigReadOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    user_layer: ?ConfigReadUserLayer,
+) !void {
+    const layer = user_layer orelse {
+        try result.appendSlice(allocator, "{}");
+        return;
+    };
+    if (layer.origin_keys.len == 0) {
+        try result.appendSlice(allocator, "{}");
+        return;
+    }
+
+    try result.append(allocator, '{');
+    for (layer.origin_keys, 0..) |key, index| {
+        if (index > 0) try result.append(allocator, ',');
+        const key_json = try std.json.Stringify.valueAlloc(allocator, key, .{});
+        defer allocator.free(key_json);
+        try result.appendSlice(allocator, key_json);
+        try result.appendSlice(allocator, ":{\"name\":");
+        try appendConfigReadUserSource(allocator, result, layer.file_path);
+        try result.appendSlice(allocator, ",\"version\":");
+        const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
+        defer allocator.free(version_json);
+        try result.appendSlice(allocator, version_json);
+        try result.append(allocator, '}');
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadLayers(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    cfg: config.Config,
+    include_layers: bool,
+    user_layer: ?ConfigReadUserLayer,
+) !void {
+    if (!include_layers) {
+        try result.appendSlice(allocator, "null");
+        return;
+    }
+    const layer = user_layer orelse {
+        try result.appendSlice(allocator, "[]");
+        return;
+    };
+
+    try result.appendSlice(allocator, "[{\"name\":");
+    try appendConfigReadUserSource(allocator, result, layer.file_path);
+    try result.appendSlice(allocator, ",\"version\":");
+    const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
+    defer allocator.free(version_json);
+    try result.appendSlice(allocator, version_json);
+    try result.appendSlice(allocator, ",\"config\":");
+    try appendConfigReadLayerConfig(allocator, result, cfg, layer.origin_keys);
+    try result.appendSlice(allocator, "}]");
+}
+
+fn appendConfigReadUserSource(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    file_path: []const u8,
+) !void {
+    const file_json = try std.json.Stringify.valueAlloc(allocator, file_path, .{});
+    defer allocator.free(file_json);
+    try result.appendSlice(allocator, "{\"type\":\"user\",\"file\":");
+    try result.appendSlice(allocator, file_json);
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadLayerConfig(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    cfg: config.Config,
+    origin_keys: []const []const u8,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    for (origin_keys) |key| {
+        if (std.mem.eql(u8, key, "model")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.model);
+        } else if (std.mem.eql(u8, key, "profile")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.active_profile);
+        } else if (std.mem.eql(u8, key, "approval_policy")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.approval_policy.label());
+        } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.sandbox_mode.label());
+        } else if (std.mem.eql(u8, key, "web_search")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.web_search_mode) |mode| mode.label() else null);
+        } else if (std.mem.eql(u8, key, "service_tier")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.service_tier);
+        } else if (std.mem.eql(u8, key, "oss_provider")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.oss_provider);
+        } else if (std.mem.eql(u8, key, "openai_base_url")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.openai_base_url);
+        } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.chatgpt_base_url);
+        }
+    }
+    try result.append(allocator, '}');
 }
 
 fn appendJsonStringField(
@@ -4964,6 +5190,40 @@ test "app-server remote rejection labels known subcommands" {
         remoteRejectionLabel(&.{ "--ws-auth", "capability-token", "generate-ts" }),
     );
     try std.testing.expectEqualStrings("app-server", remoteRejectionLabel(&.{"--help"}));
+}
+
+test "config/read user origin keys include active profile scalars" {
+    const allocator = std.testing.allocator;
+    const keys = try collectConfigReadUserOriginKeys(allocator,
+        \\model = "base-model"
+        \\profile = "work"
+        \\approval_policy = "on-request"
+        \\
+        \\[features]
+        \\apps = false
+        \\
+        \\[profiles.work]
+        \\model = "profile-model"
+        \\sandbox_mode = "danger-full-access"
+        \\profile = "ignored-profile-key"
+        \\
+        \\[profiles.work.features]
+        \\goals = true
+        \\
+        \\[profiles.other]
+        \\service_tier = "flex"
+        \\
+    , "work");
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), keys.len);
+    try std.testing.expectEqualStrings("model", keys[0]);
+    try std.testing.expectEqualStrings("profile", keys[1]);
+    try std.testing.expectEqualStrings("approval_policy", keys[2]);
+    try std.testing.expectEqualStrings("sandbox_mode", keys[3]);
 }
 
 test "app-server transport parser accepts Rust listen URL forms" {
