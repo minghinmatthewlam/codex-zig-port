@@ -28,6 +28,7 @@ const modules = .{
     @import("main.zig"),
     @import("plan_tool.zig"),
     @import("plugin_cmd.zig"),
+    @import("plugin_config.zig"),
     @import("proposed_plan.zig"),
     @import("review.zig"),
     @import("sandbox.zig"),

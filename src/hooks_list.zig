@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const config = @import("config.zig");
+const plugin_config = @import("plugin_config.zig");
 
 const DEFAULT_TIMEOUT_SEC: u64 = 600;
 
@@ -339,16 +340,14 @@ fn appendPluginHooks(
     const bytes = config.readConfigTomlFile(allocator, user_config_path) catch return;
     defer if (bytes) |value| allocator.free(value);
     const contents = bytes orelse return;
-    if (!hooksFeatureEnabled(contents) or !pluginsFeatureEnabled(contents) or !pluginHooksFeatureEnabled(contents)) return;
+    if (!hooksFeatureEnabled(contents) or !plugin_config.pluginsFeatureEnabled(contents) or !plugin_config.pluginHooksFeatureEnabled(contents)) return;
 
-    const plugin_ids = try enabledPluginIds(allocator, contents);
-    defer freeStringList(allocator, plugin_ids);
+    const plugin_ids = try plugin_config.enabledPluginIds(allocator, contents);
+    defer plugin_config.freeStringList(allocator, plugin_ids);
     for (plugin_ids) |plugin_id| {
-        const at_index = std.mem.lastIndexOfScalar(u8, plugin_id, '@') orelse continue;
-        if (at_index == 0 or at_index + 1 >= plugin_id.len) continue;
-        const plugin_name = plugin_id[0..at_index];
-        const marketplace = plugin_id[at_index + 1 ..];
-        const hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", marketplace, plugin_name, "local", "hooks", "hooks.json" });
+        const plugin_root = (try plugin_config.localPluginRoot(allocator, codex_home, plugin_id)) orelse continue;
+        defer allocator.free(plugin_root);
+        const hooks_json_path = try std.fs.path.join(allocator, &.{ plugin_root, "hooks", "hooks.json" });
         defer allocator.free(hooks_json_path);
         const key_source = try std.fmt.allocPrint(allocator, "{s}:hooks/hooks.json", .{plugin_id});
         defer allocator.free(key_source);
@@ -1033,91 +1032,7 @@ fn appendErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), err: H
 }
 
 fn hooksFeatureEnabled(bytes: []const u8) bool {
-    return featureEnabled(bytes, "hooks", true);
-}
-
-fn pluginsFeatureEnabled(bytes: []const u8) bool {
-    return featureEnabled(bytes, "plugins", true);
-}
-
-fn pluginHooksFeatureEnabled(bytes: []const u8) bool {
-    return featureEnabled(bytes, "plugin_hooks", false);
-}
-
-fn featureEnabled(bytes: []const u8, key: []const u8, default_enabled: bool) bool {
-    var in_features = false;
-    var iter = std.mem.splitScalar(u8, bytes, '\n');
-    while (iter.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            in_features = std.mem.eql(u8, line, "[features]");
-            continue;
-        }
-        if (!in_features) continue;
-        if (tomlBoolValueForKey(line, key)) |value| return value;
-    }
-    return default_enabled;
-}
-
-fn enabledPluginIds(allocator: std.mem.Allocator, bytes: []const u8) ![]const []const u8 {
-    var ids = std.ArrayList([]const u8).empty;
-    errdefer {
-        for (ids.items) |id| allocator.free(id);
-        ids.deinit(allocator);
-    }
-    var current_plugin_id: ?[]const u8 = null;
-    var current_enabled = false;
-    errdefer if (current_plugin_id) |id| allocator.free(id);
-
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            try flushEnabledPluginId(allocator, &ids, &current_plugin_id, current_enabled);
-            current_enabled = false;
-            current_plugin_id = try parsePluginTableHeader(allocator, line);
-            continue;
-        }
-        if (current_plugin_id != null) {
-            if (tomlBoolValueForKey(line, "enabled")) |enabled| current_enabled = enabled;
-        }
-    }
-    try flushEnabledPluginId(allocator, &ids, &current_plugin_id, current_enabled);
-
-    return ids.toOwnedSlice(allocator);
-}
-
-fn flushEnabledPluginId(
-    allocator: std.mem.Allocator,
-    ids: *std.ArrayList([]const u8),
-    current_plugin_id: *?[]const u8,
-    current_enabled: bool,
-) !void {
-    const plugin_id = current_plugin_id.* orelse return;
-    current_plugin_id.* = null;
-    if (current_enabled) {
-        try ids.append(allocator, plugin_id);
-    } else {
-        allocator.free(plugin_id);
-    }
-}
-
-fn parsePluginTableHeader(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
-    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
-    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
-    const prefix = "plugins.";
-    if (!std.mem.startsWith(u8, inner, prefix)) return null;
-    var index: usize = prefix.len;
-    const plugin_id = (try parseTomlStringAt(allocator, inner, &index)) orelse return null;
-    errdefer allocator.free(plugin_id);
-    skipTomlWhitespace(inner, &index);
-    if (index != inner.len) {
-        allocator.free(plugin_id);
-        return null;
-    }
-    return plugin_id;
+    return plugin_config.featureEnabled(bytes, "hooks", true);
 }
 
 fn configContainsHooks(bytes: []const u8) bool {
