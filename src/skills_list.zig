@@ -22,6 +22,8 @@ pub const Skill = struct {
     name: []const u8,
     description: []const u8,
     short_description: ?[]const u8,
+    interface: ?SkillInterface,
+    dependencies: ?SkillDependencies,
     path: []const u8,
     scope: []const u8,
     enabled: bool,
@@ -30,8 +32,55 @@ pub const Skill = struct {
         allocator.free(self.name);
         allocator.free(self.description);
         if (self.short_description) |value| allocator.free(value);
+        if (self.interface) |value| value.deinit(allocator);
+        if (self.dependencies) |value| value.deinit(allocator);
         allocator.free(self.path);
         allocator.free(self.scope);
+    }
+};
+
+pub const SkillInterface = struct {
+    display_name: ?[]const u8 = null,
+    short_description: ?[]const u8 = null,
+    icon_small: ?[]const u8 = null,
+    icon_large: ?[]const u8 = null,
+    brand_color: ?[]const u8 = null,
+    default_prompt: ?[]const u8 = null,
+
+    fn deinit(self: SkillInterface, allocator: std.mem.Allocator) void {
+        if (self.display_name) |value| allocator.free(value);
+        if (self.short_description) |value| allocator.free(value);
+        if (self.icon_small) |value| allocator.free(value);
+        if (self.icon_large) |value| allocator.free(value);
+        if (self.brand_color) |value| allocator.free(value);
+        if (self.default_prompt) |value| allocator.free(value);
+    }
+};
+
+pub const SkillDependencies = struct {
+    tools: []SkillToolDependency,
+
+    fn deinit(self: SkillDependencies, allocator: std.mem.Allocator) void {
+        for (self.tools) |tool| tool.deinit(allocator);
+        allocator.free(self.tools);
+    }
+};
+
+pub const SkillToolDependency = struct {
+    kind: []const u8,
+    value: []const u8,
+    description: ?[]const u8 = null,
+    transport: ?[]const u8 = null,
+    command: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+
+    fn deinit(self: SkillToolDependency, allocator: std.mem.Allocator) void {
+        allocator.free(self.kind);
+        allocator.free(self.value);
+        if (self.description) |value| allocator.free(value);
+        if (self.transport) |value| allocator.free(value);
+        if (self.command) |value| allocator.free(value);
+        if (self.url) |value| allocator.free(value);
     }
 };
 
@@ -101,6 +150,39 @@ const SkillFrontmatter = struct {
     description: ?[]const u8 = null,
     short_description: ?[]const u8 = null,
 };
+
+const SkillFileMetadata = struct {
+    interface: ?SkillInterface = null,
+    dependencies: ?SkillDependencies = null,
+
+    fn deinit(self: SkillFileMetadata, allocator: std.mem.Allocator) void {
+        if (self.interface) |value| value.deinit(allocator);
+        if (self.dependencies) |value| value.deinit(allocator);
+    }
+};
+
+const PartialSkillTool = struct {
+    kind: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    transport: ?[]const u8 = null,
+    command: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+
+    fn deinit(self: PartialSkillTool, allocator: std.mem.Allocator) void {
+        if (self.kind) |value| allocator.free(value);
+        if (self.value) |value| allocator.free(value);
+        if (self.description) |value| allocator.free(value);
+        if (self.transport) |value| allocator.free(value);
+        if (self.command) |value| allocator.free(value);
+        if (self.url) |value| allocator.free(value);
+    }
+};
+
+const SKILL_METADATA_DIR = "agents";
+const SKILL_METADATA_FILENAME = "openai.yaml";
+const MAX_SKILL_NAME_LEN = 64;
+const MAX_SKILL_DESCRIPTION_LEN = 1024;
 
 pub fn list(
     allocator: std.mem.Allocator,
@@ -286,14 +368,21 @@ fn scanSkillDirectoryIfPresent(
     const normalized_skill_path = try normalizePathAlloc(allocator, skill_path);
     errdefer allocator.free(normalized_skill_path);
 
+    const metadata_directory = std.fs.path.dirname(normalized_skill_path) orelse directory;
+    var file_metadata = try loadSkillFileMetadata(allocator, metadata_directory);
+    errdefer file_metadata.deinit(allocator);
+
     try skills.append(allocator, .{
         .name = try allocator.dupe(u8, name),
         .description = try allocator.dupe(u8, description),
         .short_description = if (metadata.short_description) |value| try allocator.dupe(u8, value) else null,
+        .interface = file_metadata.interface,
+        .dependencies = file_metadata.dependencies,
         .path = normalized_skill_path,
         .scope = try allocator.dupe(u8, scope),
         .enabled = true,
     });
+    file_metadata = .{};
 }
 
 fn applySkillConfigRules(skills: []Skill, skill_config_rules: SkillConfigRules) void {
@@ -695,6 +784,304 @@ fn trimFrontmatterValue(raw: []const u8) []const u8 {
     return value;
 }
 
+fn loadSkillFileMetadata(allocator: std.mem.Allocator, directory: []const u8) !SkillFileMetadata {
+    const metadata_path = try std.fs.path.join(allocator, &.{ directory, SKILL_METADATA_DIR, SKILL_METADATA_FILENAME });
+    defer allocator.free(metadata_path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), metadata_path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{},
+    };
+    defer allocator.free(bytes);
+
+    if (try parseSkillMetadataJson(allocator, bytes, directory)) |metadata| return metadata;
+    return try parseSkillMetadataYaml(allocator, bytes, directory);
+}
+
+fn parseSkillMetadataJson(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8) !?SkillFileMetadata {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return .{};
+
+    var metadata = SkillFileMetadata{};
+    errdefer metadata.deinit(allocator);
+    metadata.interface = try parseSkillInterfaceJson(allocator, parsed.value.object.get("interface"), directory);
+    metadata.dependencies = try parseSkillDependenciesJson(allocator, parsed.value.object.get("dependencies"));
+    return metadata;
+}
+
+fn parseSkillInterfaceJson(allocator: std.mem.Allocator, value_opt: ?std.json.Value, directory: []const u8) !?SkillInterface {
+    const value = value_opt orelse return null;
+    if (value != .object) return null;
+    var interface = SkillInterface{};
+    errdefer interface.deinit(allocator);
+    interface.display_name = try ownedSanitizedString(allocator, jsonStringField(value.object, "display_name"), MAX_SKILL_NAME_LEN);
+    interface.short_description = try ownedSanitizedString(allocator, jsonStringField(value.object, "short_description"), MAX_SKILL_DESCRIPTION_LEN);
+    interface.icon_small = try ownedIconPath(allocator, directory, jsonStringField(value.object, "icon_small"));
+    interface.icon_large = try ownedIconPath(allocator, directory, jsonStringField(value.object, "icon_large"));
+    interface.brand_color = try ownedBrandColor(allocator, jsonStringField(value.object, "brand_color"));
+    interface.default_prompt = try ownedSanitizedString(allocator, jsonStringField(value.object, "default_prompt"), MAX_SKILL_DESCRIPTION_LEN);
+    if (skillInterfaceIsEmpty(interface)) return null;
+    return interface;
+}
+
+fn parseSkillDependenciesJson(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !?SkillDependencies {
+    const value = value_opt orelse return null;
+    if (value != .object) return null;
+    const tools_value = value.object.get("tools") orelse return null;
+    if (tools_value != .array) return null;
+
+    var tools = std.ArrayList(SkillToolDependency).empty;
+    errdefer {
+        for (tools.items) |tool| tool.deinit(allocator);
+        tools.deinit(allocator);
+    }
+    for (tools_value.array.items) |item| {
+        if (item != .object) continue;
+        if (try skillToolDependencyFromJson(allocator, item.object)) |tool| {
+            try tools.append(allocator, tool);
+        }
+    }
+    if (tools.items.len == 0) return null;
+    return .{ .tools = try tools.toOwnedSlice(allocator) };
+}
+
+fn skillToolDependencyFromJson(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?SkillToolDependency {
+    var tool = PartialSkillTool{};
+    errdefer tool.deinit(allocator);
+    tool.kind = try ownedSanitizedString(allocator, jsonStringField(object, "type"), MAX_SKILL_NAME_LEN);
+    tool.value = try ownedSanitizedString(allocator, jsonStringField(object, "value"), MAX_SKILL_DESCRIPTION_LEN);
+    tool.description = try ownedSanitizedString(allocator, jsonStringField(object, "description"), MAX_SKILL_DESCRIPTION_LEN);
+    tool.transport = try ownedSanitizedString(allocator, jsonStringField(object, "transport"), MAX_SKILL_NAME_LEN);
+    tool.command = try ownedSanitizedString(allocator, jsonStringField(object, "command"), MAX_SKILL_DESCRIPTION_LEN);
+    tool.url = try ownedSanitizedString(allocator, jsonStringField(object, "url"), MAX_SKILL_DESCRIPTION_LEN);
+    return takePartialSkillTool(allocator, &tool);
+}
+
+fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8) !SkillFileMetadata {
+    var metadata = SkillFileMetadata{};
+    errdefer metadata.deinit(allocator);
+    var interface = SkillInterface{};
+    errdefer interface.deinit(allocator);
+    var tools = std.ArrayList(SkillToolDependency).empty;
+    errdefer {
+        for (tools.items) |tool| tool.deinit(allocator);
+        tools.deinit(allocator);
+    }
+    var current_tool = PartialSkillTool{};
+    defer current_tool.deinit(allocator);
+    var section: enum { none, interface, dependencies, tools } = .none;
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line_with_cr| {
+        const raw_line = if (std.mem.endsWith(u8, raw_line_with_cr, "\r"))
+            raw_line_with_cr[0 .. raw_line_with_cr.len - 1]
+        else
+            raw_line_with_cr;
+        const trimmed = std.mem.trim(u8, raw_line, " \t");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        const indent = leadingSpaceCount(raw_line);
+
+        if (indent == 0) {
+            try appendPartialSkillTool(allocator, &tools, &current_tool);
+            if (std.mem.eql(u8, trimmed, "interface:")) {
+                section = .interface;
+            } else if (std.mem.eql(u8, trimmed, "dependencies:")) {
+                section = .dependencies;
+            } else {
+                section = .none;
+            }
+            continue;
+        }
+
+        switch (section) {
+            .interface => {
+                if (parseYamlKeyValue(trimmed)) |entry| {
+                    try setSkillInterfaceField(allocator, &interface, directory, entry.key, entry.value);
+                }
+            },
+            .dependencies => {
+                if (std.mem.eql(u8, trimmed, "tools:")) section = .tools;
+            },
+            .tools => {
+                if (std.mem.startsWith(u8, trimmed, "- ")) {
+                    try appendPartialSkillTool(allocator, &tools, &current_tool);
+                    if (parseYamlKeyValue(std.mem.trim(u8, trimmed[2..], " \t"))) |entry| {
+                        try setPartialToolField(allocator, &current_tool, entry.key, entry.value);
+                    }
+                } else if (parseYamlKeyValue(trimmed)) |entry| {
+                    try setPartialToolField(allocator, &current_tool, entry.key, entry.value);
+                }
+            },
+            .none => {},
+        }
+    }
+    try appendPartialSkillTool(allocator, &tools, &current_tool);
+
+    if (!skillInterfaceIsEmpty(interface)) {
+        metadata.interface = interface;
+        interface = .{};
+    }
+    if (tools.items.len > 0) {
+        metadata.dependencies = .{ .tools = try tools.toOwnedSlice(allocator) };
+    }
+    return metadata;
+}
+
+const YamlKeyValue = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+fn parseYamlKeyValue(line: []const u8) ?YamlKeyValue {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    const key = std.mem.trim(u8, line[0..colon], " \t");
+    if (key.len == 0) return null;
+    const value = trimFrontmatterValue(line[colon + 1 ..]);
+    if (value.len == 0) return null;
+    return .{ .key = key, .value = value };
+}
+
+fn setSkillInterfaceField(
+    allocator: std.mem.Allocator,
+    interface: *SkillInterface,
+    directory: []const u8,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    if (std.mem.eql(u8, key, "display_name")) {
+        replaceOptionalString(allocator, &interface.display_name, try ownedSanitizedString(allocator, value, MAX_SKILL_NAME_LEN));
+    } else if (std.mem.eql(u8, key, "short_description")) {
+        replaceOptionalString(allocator, &interface.short_description, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    } else if (std.mem.eql(u8, key, "icon_small")) {
+        replaceOptionalString(allocator, &interface.icon_small, try ownedIconPath(allocator, directory, value));
+    } else if (std.mem.eql(u8, key, "icon_large")) {
+        replaceOptionalString(allocator, &interface.icon_large, try ownedIconPath(allocator, directory, value));
+    } else if (std.mem.eql(u8, key, "brand_color")) {
+        replaceOptionalString(allocator, &interface.brand_color, try ownedBrandColor(allocator, value));
+    } else if (std.mem.eql(u8, key, "default_prompt")) {
+        replaceOptionalString(allocator, &interface.default_prompt, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    }
+}
+
+fn setPartialToolField(allocator: std.mem.Allocator, tool: *PartialSkillTool, key: []const u8, value: []const u8) !void {
+    if (std.mem.eql(u8, key, "type")) {
+        replaceOptionalString(allocator, &tool.kind, try ownedSanitizedString(allocator, value, MAX_SKILL_NAME_LEN));
+    } else if (std.mem.eql(u8, key, "value")) {
+        replaceOptionalString(allocator, &tool.value, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    } else if (std.mem.eql(u8, key, "description")) {
+        replaceOptionalString(allocator, &tool.description, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    } else if (std.mem.eql(u8, key, "transport")) {
+        replaceOptionalString(allocator, &tool.transport, try ownedSanitizedString(allocator, value, MAX_SKILL_NAME_LEN));
+    } else if (std.mem.eql(u8, key, "command")) {
+        replaceOptionalString(allocator, &tool.command, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    } else if (std.mem.eql(u8, key, "url")) {
+        replaceOptionalString(allocator, &tool.url, try ownedSanitizedString(allocator, value, MAX_SKILL_DESCRIPTION_LEN));
+    }
+}
+
+fn appendPartialSkillTool(allocator: std.mem.Allocator, tools: *std.ArrayList(SkillToolDependency), partial: *PartialSkillTool) !void {
+    if (try takePartialSkillTool(allocator, partial)) |tool| {
+        try tools.append(allocator, tool);
+    }
+}
+
+fn takePartialSkillTool(allocator: std.mem.Allocator, partial: *PartialSkillTool) !?SkillToolDependency {
+    if (partial.kind == null or partial.value == null) {
+        partial.deinit(allocator);
+        partial.* = .{};
+        return null;
+    }
+    const tool = SkillToolDependency{
+        .kind = partial.kind.?,
+        .value = partial.value.?,
+        .description = partial.description,
+        .transport = partial.transport,
+        .command = partial.command,
+        .url = partial.url,
+    };
+    partial.* = .{};
+    return tool;
+}
+
+fn skillInterfaceIsEmpty(interface: SkillInterface) bool {
+    return interface.display_name == null and
+        interface.short_description == null and
+        interface.icon_small == null and
+        interface.icon_large == null and
+        interface.brand_color == null and
+        interface.default_prompt == null;
+}
+
+fn jsonStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn ownedSanitizedString(allocator: std.mem.Allocator, value_opt: ?[]const u8, max_len: usize) !?[]const u8 {
+    const raw = value_opt orelse return null;
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var tokens = std.mem.tokenizeAny(u8, raw, " \t\r\n");
+    var first = true;
+    while (tokens.next()) |token| {
+        if (!first) try output.append(allocator, ' ');
+        first = false;
+        try output.appendSlice(allocator, token);
+    }
+    if (output.items.len == 0 or output.items.len > max_len) {
+        output.deinit(allocator);
+        return null;
+    }
+    return try output.toOwnedSlice(allocator);
+}
+
+fn ownedBrandColor(allocator: std.mem.Allocator, value_opt: ?[]const u8) !?[]const u8 {
+    const raw = value_opt orelse return null;
+    const value = std.mem.trim(u8, raw, " \t\r\n");
+    if (value.len != 7 or value[0] != '#') return null;
+    for (value[1..]) |byte| {
+        if (!std.ascii.isHex(byte)) return null;
+    }
+    return try allocator.dupe(u8, value);
+}
+
+fn ownedIconPath(allocator: std.mem.Allocator, directory: []const u8, value_opt: ?[]const u8) !?[]const u8 {
+    const raw = value_opt orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0 or std.fs.path.isAbsolute(trimmed)) return null;
+
+    var normalized = std.ArrayList(u8).empty;
+    defer normalized.deinit(allocator);
+    var parts = std.mem.splitScalar(u8, trimmed, '/');
+    while (parts.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) return null;
+        if (normalized.items.len > 0) try normalized.append(allocator, std.fs.path.sep);
+        try normalized.appendSlice(allocator, part);
+    }
+    if (normalized.items.len == 0) return null;
+    if (!std.mem.eql(u8, normalized.items, "assets") and
+        !std.mem.startsWith(u8, normalized.items, "assets" ++ std.fs.path.sep_str))
+    {
+        return null;
+    }
+    return try std.fs.path.join(allocator, &.{ directory, normalized.items });
+}
+
+fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, next: ?[]const u8) void {
+    if (slot.*) |previous| allocator.free(previous);
+    slot.* = next;
+}
+
+fn leadingSpaceCount(line: []const u8) usize {
+    var count: usize = 0;
+    while (count < line.len and line[count] == ' ') : (count += 1) {}
+    return count;
+}
+
 fn appendSkillError(allocator: std.mem.Allocator, errors: *std.ArrayList(SkillError), path: []const u8, message: []const u8) !void {
     try errors.append(allocator, .{
         .path = try allocator.dupe(u8, path),
@@ -714,6 +1101,98 @@ test "skill frontmatter parser extracts common fields" {
     try std.testing.expectEqualStrings("demo-skill", parsed.name.?);
     try std.testing.expectEqualStrings("Demo skill description", parsed.description.?);
     try std.testing.expectEqualStrings("Short demo", parsed.short_description.?);
+}
+
+test "skill metadata parser loads interface and dependencies" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\{
+        \\  "interface": {
+        \\    "display_name": "Demo Skill",
+        \\    "short_description": "  Demo   short  ",
+        \\    "icon_small": "./assets/small.svg",
+        \\    "brand_color": "#3B82F6",
+        \\    "default_prompt": "  Run   demo "
+        \\  },
+        \\  "dependencies": {
+        \\    "tools": [
+        \\      {"type": "env_var", "value": "DEMO_TOKEN", "description": "Demo token"},
+        \\      {"type": "mcp", "value": "demo-mcp", "transport": "stdio", "command": "demo-mcp"}
+        \\    ]
+        \\  }
+        \\}
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const metadata = try loadSkillFileMetadata(allocator, skill_dir);
+    defer metadata.deinit(allocator);
+
+    try std.testing.expect(metadata.interface != null);
+    try std.testing.expectEqualStrings("Demo Skill", metadata.interface.?.display_name.?);
+    try std.testing.expectEqualStrings("Demo short", metadata.interface.?.short_description.?);
+    const expected_icon = try std.fs.path.join(allocator, &.{ skill_dir, "assets", "small.svg" });
+    defer allocator.free(expected_icon);
+    try std.testing.expectEqualStrings(expected_icon, metadata.interface.?.icon_small.?);
+    try std.testing.expectEqualStrings("#3B82F6", metadata.interface.?.brand_color.?);
+    try std.testing.expectEqualStrings("Run demo", metadata.interface.?.default_prompt.?);
+
+    try std.testing.expect(metadata.dependencies != null);
+    try std.testing.expectEqual(@as(usize, 2), metadata.dependencies.?.tools.len);
+    try std.testing.expectEqualStrings("env_var", metadata.dependencies.?.tools[0].kind);
+    try std.testing.expectEqualStrings("DEMO_TOKEN", metadata.dependencies.?.tools[0].value);
+    try std.testing.expectEqualStrings("Demo token", metadata.dependencies.?.tools[0].description.?);
+    try std.testing.expectEqualStrings("mcp", metadata.dependencies.?.tools[1].kind);
+    try std.testing.expectEqualStrings("demo-mcp", metadata.dependencies.?.tools[1].value);
+    try std.testing.expectEqualStrings("stdio", metadata.dependencies.?.tools[1].transport.?);
+    try std.testing.expectEqualStrings("demo-mcp", metadata.dependencies.?.tools[1].command.?);
+}
+
+test "skill metadata parser accepts yaml interface and tool dependencies" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\interface:
+        \\  display_name: "Yaml Skill"
+        \\  icon_large: "assets/large.svg"
+        \\dependencies:
+        \\  tools:
+        \\    - type: cli
+        \\      value: gh
+        \\      description: "GitHub CLI"
+        \\
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const metadata = try loadSkillFileMetadata(allocator, skill_dir);
+    defer metadata.deinit(allocator);
+
+    try std.testing.expectEqualStrings("Yaml Skill", metadata.interface.?.display_name.?);
+    const expected_icon = try std.fs.path.join(allocator, &.{ skill_dir, "assets", "large.svg" });
+    defer allocator.free(expected_icon);
+    try std.testing.expectEqualStrings(expected_icon, metadata.interface.?.icon_large.?);
+    try std.testing.expectEqual(@as(usize, 1), metadata.dependencies.?.tools.len);
+    try std.testing.expectEqualStrings("cli", metadata.dependencies.?.tools[0].kind);
+    try std.testing.expectEqualStrings("gh", metadata.dependencies.?.tools[0].value);
+    try std.testing.expectEqualStrings("GitHub CLI", metadata.dependencies.?.tools[0].description.?);
 }
 
 test "skill config writer toggles name selector" {
