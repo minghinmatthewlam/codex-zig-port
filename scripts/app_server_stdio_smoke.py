@@ -3778,6 +3778,23 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert bad_env["error"]["code"] == -32602
         assert "env values must be strings or null" in bad_env["error"]["message"]
 
+        streaming_missing_process_id = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-streaming-missing-process-id",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "streamStdoutStderr": True,
+                },
+            },
+            env,
+        )
+        assert streaming_missing_process_id["id"] == "command-exec-streaming-missing-process-id"
+        assert streaming_missing_process_id["error"]["code"] == -32600
+        assert "requires a client-supplied processId" in streaming_missing_process_id["error"]["message"]
+
         streaming = request_stdio_app_server(
             binary,
             {
@@ -3796,6 +3813,34 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert streaming["error"]["code"] == -32603
         assert "streaming and tty modes" in streaming["error"]["message"]
 
+        missing_write_payload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-write-empty",
+                "method": "command/exec/write",
+                "params": {"processId": "proc-1"},
+            },
+            env,
+        )
+        assert missing_write_payload["id"] == "command-exec-write-empty"
+        assert missing_write_payload["error"]["code"] == -32602
+        assert "requires deltaBase64 or closeStdin" in missing_write_payload["error"]["message"]
+
+        bad_write_delta = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-write-bad-base64",
+                "method": "command/exec/write",
+                "params": {"processId": "proc-1", "deltaBase64": "not base64"},
+            },
+            env,
+        )
+        assert bad_write_delta["id"] == "command-exec-write-bad-base64"
+        assert bad_write_delta["error"]["code"] == -32602
+        assert "invalid deltaBase64" in bad_write_delta["error"]["message"]
+
         followup = request_stdio_app_server(
             binary,
             {
@@ -3807,8 +3852,50 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             env,
         )
         assert followup["id"] == "command-exec-write"
-        assert followup["error"]["code"] == -32603
-        assert "parsed but not implemented yet" in followup["error"]["message"]
+        assert followup["error"]["code"] == -32600
+        assert 'no active command/exec for process id "proc-1"' in followup["error"]["message"]
+
+        terminate = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-terminate",
+                "method": "command/exec/terminate",
+                "params": {"processId": "proc-1"},
+            },
+            env,
+        )
+        assert terminate["id"] == "command-exec-terminate"
+        assert terminate["error"]["code"] == -32600
+        assert 'no active command/exec for process id "proc-1"' in terminate["error"]["message"]
+
+        bad_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-resize-bad-size",
+                "method": "command/exec/resize",
+                "params": {"processId": "proc-1", "size": {"rows": 0, "cols": 80}},
+            },
+            env,
+        )
+        assert bad_resize["id"] == "command-exec-resize-bad-size"
+        assert bad_resize["error"]["code"] == -32602
+        assert "rows and cols must be greater than 0" in bad_resize["error"]["message"]
+
+        resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-resize",
+                "method": "command/exec/resize",
+                "params": {"processId": "proc-1", "size": {"rows": 24, "cols": 80}},
+            },
+            env,
+        )
+        assert resize["id"] == "command-exec-resize"
+        assert resize["error"]["code"] == -32600
+        assert 'no active command/exec for process id "proc-1"' in resize["error"]["message"]
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
