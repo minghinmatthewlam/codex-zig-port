@@ -3786,6 +3786,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'writable_roots = ["/tmp/codex-zig-project-root"]',
                 "network_access = false",
                 "",
+                "[tools.web_search]",
+                'context_size = "low"',
+                'location = { region = "NY" }',
+                "",
+                "[tools]",
+                "view_image = true",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -4073,6 +4080,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
         assert project_config_body["service_tier"] == "priority"
+        assert project_config_body["tools"] == {
+            "web_search": {
+                "context_size": "low",
+                "allowed_domains": ["example.com"],
+                "location": {
+                    "country": "US",
+                    "region": "NY",
+                    "city": "New York, NY",
+                    "timezone": "America/New_York",
+                },
+            },
+            "view_image": True,
+        }
         assert project_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-project-root"],
             "network_access": False,
@@ -4092,10 +4112,21 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search",
             "model_reasoning_effort",
             "service_tier",
+            "tools.web_search.context_size",
+            "tools.web_search.location.region",
+            "tools.view_image",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
         ]:
             assert project_origins[key]["name"] == project_source
+            assert project_origins[key]["version"].startswith("sha256:")
+        for key in [
+            "tools.web_search.allowed_domains.0",
+            "tools.web_search.location.country",
+            "tools.web_search.location.city",
+            "tools.web_search.location.timezone",
+        ]:
+            assert project_origins[key]["name"] == {"type": "user", "file": config_path}
             assert project_origins[key]["version"].startswith("sha256:")
         assert project_origins["profile"]["name"] == {"type": "user", "file": config_path}
         assert project_origins["sandbox_workspace_write.exclude_slash_tmp"]["name"] == {
@@ -4120,6 +4151,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "exclude_tmpdir_env_var": False,
                 "exclude_slash_tmp": False,
             },
+            "tools": {
+                "web_search": {
+                    "context_size": "low",
+                    "allowed_domains": None,
+                    "location": {
+                        "country": None,
+                        "region": "NY",
+                        "city": None,
+                        "timezone": None,
+                    },
+                },
+                "view_image": True,
+            },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
         assert project_layers[2]["name"] == system_source
@@ -4137,6 +4181,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
         assert nested_config_body["service_tier"] == "flex"
+        assert nested_config_body["tools"] == {
+            "web_search": {
+                "context_size": "low",
+                "allowed_domains": ["example.com"],
+                "location": {
+                    "country": "US",
+                    "region": "NY",
+                    "city": "New York, NY",
+                    "timezone": "America/New_York",
+                },
+            },
+            "view_image": True,
+        }
         assert nested_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-project-root"],
             "network_access": False,
@@ -4153,6 +4210,13 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["approval_policy"]["name"] == child_project_source
         assert nested_origins["sandbox_mode"]["name"] == project_source
         assert nested_origins["web_search"]["name"] == project_source
+        assert nested_origins["tools.web_search.context_size"]["name"] == project_source
+        assert nested_origins["tools.web_search.location.region"]["name"] == project_source
+        assert nested_origins["tools.view_image"]["name"] == project_source
+        assert nested_origins["tools.web_search.allowed_domains.0"]["name"] == {
+            "type": "user",
+            "file": config_path,
+        }
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
         assert nested_origins["service_tier"]["name"] == child_project_source
         assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
@@ -4191,6 +4255,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "network_access": False,
                 "exclude_tmpdir_env_var": False,
                 "exclude_slash_tmp": False,
+            },
+            "tools": {
+                "web_search": {
+                    "context_size": "low",
+                    "allowed_domains": None,
+                    "location": {
+                        "country": None,
+                        "region": "NY",
+                        "city": None,
+                        "timezone": None,
+                    },
+                },
+                "view_image": True,
             },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
