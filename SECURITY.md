@@ -21,4 +21,3 @@ Useful reports include:
 
 Please include the affected command or workflow, the expected behavior, and the
 smallest reproduction you can share safely.
-

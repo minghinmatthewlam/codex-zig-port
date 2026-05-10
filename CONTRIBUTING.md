@@ -36,4 +36,3 @@ Include:
 - why it changed
 - which parity surface it affects
 - the verification commands you ran
-
