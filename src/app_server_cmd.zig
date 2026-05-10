@@ -3742,7 +3742,9 @@ fn renderConfigReadResponse(
     const web_search_mode = project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
-    try appendConfigReadAppsField(allocator, &result, &first, if (user_layer) |layer| layer.apps else null);
+    var apps = try effectiveConfigReadApps(allocator, user_layer, system_layer);
+    defer if (apps) |*value| value.deinit(allocator);
+    try appendConfigReadAppsField(allocator, &result, &first, apps);
     const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
     const model_reasoning_effort = project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
@@ -3834,6 +3836,7 @@ const ConfigReadSystemLayer = struct {
     model_reasoning_effort: ?config.ReasoningEffort,
     service_tier: ?[]const u8,
     tools: ConfigReadTools,
+    apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
 
     fn deinit(self: *ConfigReadSystemLayer, allocator: std.mem.Allocator) void {
@@ -3844,6 +3847,7 @@ const ConfigReadSystemLayer = struct {
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
+        self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
     }
 };
@@ -4037,7 +4041,7 @@ fn loadConfigReadUserLayer(
     }
     var tools = try loadConfigReadTools(allocator, bytes);
     errdefer tools.deinit(allocator);
-    var apps = try loadConfigReadUserApps(allocator, bytes);
+    var apps = try loadConfigReadApps(allocator, bytes);
     errdefer apps.deinit(allocator);
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, bytes);
     errdefer sandbox_workspace_write.deinit(allocator);
@@ -4197,6 +4201,119 @@ fn effectiveConfigReadTools(
     if (system_layer) |layer| mergeConfigReadTools(&tools, layer.tools);
     if (!tools.present) return null;
     return tools;
+}
+
+fn effectiveConfigReadApps(
+    allocator: std.mem.Allocator,
+    user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
+) !?ConfigReadApps {
+    var default_config: ?ConfigReadAppsDefault = null;
+    var items = std.ArrayList(ConfigReadApp).empty;
+    errdefer {
+        for (items.items) |*app| app.deinit(allocator);
+        items.deinit(allocator);
+    }
+
+    if (user_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
+    if (system_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
+    if (default_config == null and items.items.len == 0) return null;
+
+    return .{
+        .default_config = default_config,
+        .items = if (items.items.len == 0) &.{} else try items.toOwnedSlice(allocator),
+    };
+}
+
+fn mergeConfigReadApps(
+    allocator: std.mem.Allocator,
+    default_config: *?ConfigReadAppsDefault,
+    items: *std.ArrayList(ConfigReadApp),
+    source: ConfigReadApps,
+) !void {
+    if (source.default_config) |source_default| {
+        if (default_config.* == null) default_config.* = ConfigReadAppsDefault{};
+        mergeConfigReadAppsDefault(&default_config.*.?, source_default);
+    }
+    for (source.items) |source_app| {
+        const target_app = try ensureConfigReadApp(allocator, items, source_app.name);
+        try mergeConfigReadApp(allocator, target_app, source_app);
+    }
+}
+
+fn mergeConfigReadAppsDefault(target: *ConfigReadAppsDefault, source: ConfigReadAppsDefault) void {
+    if (!target.enabled_present and source.enabled_present) {
+        target.enabled = source.enabled;
+        target.enabled_present = true;
+    }
+    if (!target.destructive_enabled_present and source.destructive_enabled_present) {
+        target.destructive_enabled = source.destructive_enabled;
+        target.destructive_enabled_present = true;
+    }
+    if (!target.open_world_enabled_present and source.open_world_enabled_present) {
+        target.open_world_enabled = source.open_world_enabled;
+        target.open_world_enabled_present = true;
+    }
+}
+
+fn ensureConfigReadApp(
+    allocator: std.mem.Allocator,
+    items: *std.ArrayList(ConfigReadApp),
+    name: []const u8,
+) !*ConfigReadApp {
+    if (findConfigReadAppIndex(items.items, name)) |index| return &items.items[index];
+    const owned_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned_name);
+    try items.append(allocator, .{ .name = owned_name });
+    return &items.items[items.items.len - 1];
+}
+
+fn mergeConfigReadApp(
+    allocator: std.mem.Allocator,
+    target: *ConfigReadApp,
+    source: ConfigReadApp,
+) !void {
+    if (!target.has_enabled and source.has_enabled) {
+        target.enabled = source.enabled;
+        target.has_enabled = true;
+    }
+    if (target.destructive_enabled == null) target.destructive_enabled = source.destructive_enabled;
+    if (target.open_world_enabled == null) target.open_world_enabled = source.open_world_enabled;
+    if (target.default_tools_enabled == null) target.default_tools_enabled = source.default_tools_enabled;
+    if (target.default_tools_approval_mode == null) {
+        if (source.default_tools_approval_mode) |value| {
+            target.default_tools_approval_mode = try allocator.dupe(u8, value);
+        }
+    }
+    for (source.tools.items) |source_tool| {
+        const target_tool = try ensureConfigReadAppTool(allocator, &target.tools, source_tool.name);
+        try mergeConfigReadAppTool(allocator, target_tool, source_tool);
+    }
+}
+
+fn ensureConfigReadAppTool(
+    allocator: std.mem.Allocator,
+    tools: *std.ArrayList(ConfigReadAppTool),
+    name: []const u8,
+) !*ConfigReadAppTool {
+    if (findConfigReadAppToolIndex(tools.items, name)) |index| return &tools.items[index];
+    const owned_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned_name);
+    try tools.append(allocator, .{ .name = owned_name });
+    return &tools.items[tools.items.len - 1];
+}
+
+fn mergeConfigReadAppTool(
+    allocator: std.mem.Allocator,
+    target: *ConfigReadAppTool,
+    source: ConfigReadAppTool,
+) !void {
+    if (target.enabled == null) target.enabled = source.enabled;
+    if (target.approval_mode == null) {
+        if (source.approval_mode) |value| {
+            target.approval_mode = try allocator.dupe(u8, value);
+        }
+    }
 }
 
 fn mergeConfigReadTools(target: *ConfigReadTools, source: ConfigReadTools) void {
@@ -4431,7 +4548,7 @@ fn configReadLineIsExactSection(line: []const u8, section_name: []const u8) bool
     return std.mem.eql(u8, section, section_name);
 }
 
-fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadApps {
+fn loadConfigReadApps(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadApps {
     var apps = std.ArrayList(ConfigReadApp).empty;
     errdefer {
         for (apps.items) |*app| app.deinit(allocator);
@@ -4732,6 +4849,8 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     errdefer if (service_tier) |value| allocator.free(value);
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
+    var apps = ConfigReadApps.empty();
+    errdefer apps.deinit(allocator);
 
     if (try config.topLevelStringValue(allocator, payload, "model")) |value| {
         model = value;
@@ -4764,6 +4883,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     }
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
+    apps = try loadConfigReadApps(allocator, payload);
 
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, payload);
     errdefer sandbox_workspace_write.deinit(allocator);
@@ -4785,6 +4905,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
         .tools = tools,
+        .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
     };
 }
@@ -5194,6 +5315,7 @@ fn appendConfigReadOrigins(
             }
             try appendConfigReadSystemOrigin(allocator, result, &first, layer, key);
         }
+        try appendConfigReadSystemAppsOrigins(allocator, result, &first, user_layer, layer);
     }
     try result.append(allocator, '}');
 }
@@ -5297,6 +5419,92 @@ fn appendConfigReadUserAppsOrigins(
     }
 }
 
+fn appendConfigReadSystemAppsOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    user_layer: ?ConfigReadUserLayer,
+    layer: ConfigReadSystemLayer,
+) !void {
+    if (layer.apps.default_config) |default_config| {
+        if (default_config.enabled_present) {
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.enabled");
+        }
+        if (default_config.destructive_enabled_present) {
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.destructive_enabled");
+        }
+        if (default_config.open_world_enabled_present) {
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.open_world_enabled");
+        }
+    }
+    for (layer.apps.items) |app| {
+        if (app.has_enabled) {
+            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "enabled");
+        }
+        if (app.destructive_enabled != null) {
+            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "destructive_enabled");
+        }
+        if (app.open_world_enabled != null) {
+            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "open_world_enabled");
+        }
+        if (app.default_tools_approval_mode != null) {
+            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "default_tools_approval_mode");
+        }
+        if (app.default_tools_enabled != null) {
+            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "default_tools_enabled");
+        }
+        for (app.tools.items) |tool| {
+            if (tool.enabled != null) {
+                try appendConfigReadSystemAppToolOrigin(allocator, result, first, user_layer, layer, app.name, tool.name, "enabled");
+            }
+            if (tool.approval_mode != null) {
+                try appendConfigReadSystemAppToolOrigin(allocator, result, first, user_layer, layer, app.name, tool.name, "approval_mode");
+            }
+        }
+    }
+}
+
+fn appendConfigReadSystemAppOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    user_layer: ?ConfigReadUserLayer,
+    layer: ConfigReadSystemLayer,
+    app_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
+    defer allocator.free(key);
+    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, key);
+}
+
+fn appendConfigReadSystemAppToolOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    user_layer: ?ConfigReadUserLayer,
+    layer: ConfigReadSystemLayer,
+    app_name: []const u8,
+    tool_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
+    defer allocator.free(key);
+    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, key);
+}
+
+fn appendConfigReadSystemAppOriginIfVisible(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    user_layer: ?ConfigReadUserLayer,
+    layer: ConfigReadSystemLayer,
+    key: []const u8,
+) !void {
+    if (if (user_layer) |user| try configReadAppsHasOriginKey(allocator, user.apps, key) else false) return;
+    try appendConfigReadSystemOrigin(allocator, result, first, layer, key);
+}
+
 fn appendConfigReadUserAppOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
@@ -5322,6 +5530,53 @@ fn appendConfigReadUserAppToolOrigin(
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
     defer allocator.free(key);
     try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+}
+
+fn configReadAppsHasOriginKey(
+    allocator: std.mem.Allocator,
+    apps: ConfigReadApps,
+    key: []const u8,
+) !bool {
+    if (apps.default_config) |default_config| {
+        if (default_config.enabled_present and std.mem.eql(u8, key, "apps._default.enabled")) return true;
+        if (default_config.destructive_enabled_present and std.mem.eql(u8, key, "apps._default.destructive_enabled")) return true;
+        if (default_config.open_world_enabled_present and std.mem.eql(u8, key, "apps._default.open_world_enabled")) return true;
+    }
+    for (apps.items) |app| {
+        if (app.has_enabled and try configReadAppFieldOriginKeyMatches(allocator, key, app.name, "enabled")) return true;
+        if (app.destructive_enabled != null and try configReadAppFieldOriginKeyMatches(allocator, key, app.name, "destructive_enabled")) return true;
+        if (app.open_world_enabled != null and try configReadAppFieldOriginKeyMatches(allocator, key, app.name, "open_world_enabled")) return true;
+        if (app.default_tools_approval_mode != null and try configReadAppFieldOriginKeyMatches(allocator, key, app.name, "default_tools_approval_mode")) return true;
+        if (app.default_tools_enabled != null and try configReadAppFieldOriginKeyMatches(allocator, key, app.name, "default_tools_enabled")) return true;
+        for (app.tools.items) |tool| {
+            if (tool.enabled != null and try configReadAppToolFieldOriginKeyMatches(allocator, key, app.name, tool.name, "enabled")) return true;
+            if (tool.approval_mode != null and try configReadAppToolFieldOriginKeyMatches(allocator, key, app.name, tool.name, "approval_mode")) return true;
+        }
+    }
+    return false;
+}
+
+fn configReadAppFieldOriginKeyMatches(
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    app_name: []const u8,
+    field: []const u8,
+) !bool {
+    const candidate = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
+    defer allocator.free(candidate);
+    return std.mem.eql(u8, key, candidate);
+}
+
+fn configReadAppToolFieldOriginKeyMatches(
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    app_name: []const u8,
+    tool_name: []const u8,
+    field: []const u8,
+) !bool {
+    const candidate = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
+    defer allocator.free(candidate);
+    return std.mem.eql(u8, key, candidate);
 }
 
 fn appendConfigReadUserSandboxWorkspaceOrigins(
@@ -5755,6 +6010,10 @@ fn appendConfigReadSystemLayerConfig(
     if (layer.tools.present) {
         try appendJsonFieldName(allocator, result, &first, "tools");
         try appendConfigReadToolsObject(allocator, result, layer.tools);
+    }
+    if (!layer.apps.isEmpty()) {
+        try appendJsonFieldName(allocator, result, &first, "apps");
+        try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
     try result.append(allocator, '}');
 }
