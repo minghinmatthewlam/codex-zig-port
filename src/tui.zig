@@ -47,6 +47,8 @@ pub const Options = struct {
     no_alt_screen: bool = false,
     remote: ?[]const u8 = null,
     remote_auth_token_env: ?[]const u8 = null,
+    local_remote_control: bool = false,
+    remote_control_bind: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -145,11 +147,44 @@ fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) !?[]const u8 {
     return copy;
 }
 
+fn checkLocalRemoteControlOptions(enabled: bool, bind: ?[]const u8) !void {
+    if (bind != null and !enabled) {
+        return error.RemoteControlBindRequiresRemoteControl;
+    }
+}
+
+test "local remote-control bind requires flag" {
+    try checkLocalRemoteControlOptions(true, "127.0.0.1:0");
+    try checkLocalRemoteControlOptions(false, null);
+    try std.testing.expectError(
+        error.RemoteControlBindRequiresRemoteControl,
+        checkLocalRemoteControlOptions(false, "127.0.0.1:0"),
+    );
+}
+
+fn validateLocalRemoteControlOptions(enabled: bool, bind: ?[]const u8) !void {
+    checkLocalRemoteControlOptions(enabled, bind) catch |err| {
+        if (err == error.RemoteControlBindRequiresRemoteControl) {
+            std.debug.print("`--remote-control-bind` requires `--remote-control`.\n", .{});
+        }
+        return err;
+    };
+}
+
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     try validateRemoteOptions(allocator, options.remote, options.remote_auth_token_env);
     if (options.remote) |remote| {
         std.debug.print("remote app-server TUI is parsed but not implemented yet: {s}\n", .{remote});
         return error.RemoteAppServerTuiNotImplemented;
+    }
+    try validateLocalRemoteControlOptions(options.local_remote_control, options.remote_control_bind);
+    if (options.local_remote_control) {
+        if (options.remote_control_bind) |bind| {
+            std.debug.print("local remote control is parsed but not implemented yet: {s}\n", .{bind});
+        } else {
+            std.debug.print("local remote control is parsed but not implemented yet\n", .{});
+        }
+        return error.LocalRemoteControlNotImplemented;
     }
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });

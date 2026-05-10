@@ -5,12 +5,12 @@ const cli_utils = @import("cli_utils.zig");
 const top_level_commands =
     "a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update";
 const global_options =
-    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --no-alt-screen";
+    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
     "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'e' 'exec' 'exec-server' 'execpolicy' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'review' 'resume' 'sandbox' 'sessions' 'update'";
 const elvish_global_options =
-    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--remote' '--remote-auth-token-env' '--no-alt-screen'";
+    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
 
 const Shell = enum {
@@ -147,6 +147,10 @@ fn appendFishOptions(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !voi
         "complete -c codex-zig -s s -l sandbox -xa 'read-only workspace-write danger-full-access' -d 'Sandbox mode'\n",
         "complete -c codex-zig -l yolo -d 'Disable approvals and sandbox'\n",
         "complete -c codex-zig -l search -d 'Enable live web search'\n",
+        "complete -c codex-zig -l remote -r -d 'Connect interactive TUI to remote app-server'\n",
+        "complete -c codex-zig -l remote-auth-token-env -r -d 'Read remote app-server token from env'\n",
+        "complete -c codex-zig -l remote-control -d 'Start local remote-control server'\n",
+        "complete -c codex-zig -l remote-control-bind -r -d 'Bind local remote-control server'\n",
         "complete -c codex-zig -l no-alt-screen -d 'Disable alternate-screen TUI mode'\n",
     };
     for (lines) |line| try out.appendSlice(allocator, line);
@@ -201,6 +205,10 @@ fn renderZsh(allocator: std.mem.Allocator) ![]const u8 {
         \\        '(-s --sandbox)'{{-s,--sandbox}}'[Sandbox mode]:(read-only workspace-write danger-full-access)' \
         \\        '--yolo[Disable approvals and sandbox]' \
         \\        '--search[Enable live web search]' \
+        \\        '--remote[Connect interactive TUI to remote app-server]:addr:' \
+        \\        '--remote-auth-token-env[Read remote app-server token from env]:env:' \
+        \\        '--remote-control[Start local remote-control server]' \
+        \\        '--remote-control-bind[Bind local remote-control server]:addr:' \
         \\        '--no-alt-screen[Disable alternate-screen TUI mode]' \
         \\        '1:command:($commands)' \
         \\        '*::arg:_files'
@@ -238,6 +246,7 @@ test "completion renders bash by default shape" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "execpolicy") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-control") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-auth-token-env") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-control-bind") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "powershell") != null);
 }
 

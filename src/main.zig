@@ -39,6 +39,8 @@ const CliOverrides = struct {
     no_alt_screen: bool = false,
     remote: ?[]const u8 = null,
     remote_auth_token_env: ?[]const u8 = null,
+    local_remote_control: bool = false,
+    remote_control_bind: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -215,6 +217,18 @@ fn mainInner(init: std.process.Init) !void {
             overrides.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            overrides.local_remote_control = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control-bind")) {
+            overrides.remote_control_bind = args.next() orelse return error.MissingRemoteControlBindOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
+            overrides.remote_control_bind = arg["--remote-control-bind=".len..];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--no-alt-screen")) {
             overrides.no_alt_screen = true;
             continue;
@@ -259,6 +273,8 @@ fn mainInner(init: std.process.Init) !void {
             .no_alt_screen = overrides.no_alt_screen,
             .remote = overrides.remote,
             .remote_auth_token_env = overrides.remote_auth_token_env,
+            .local_remote_control = overrides.local_remote_control,
+            .remote_control_bind = overrides.remote_control_bind,
         });
         return;
     }
@@ -273,7 +289,13 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (commandRejectsRootRemote(cmd)) {
-            try rejectRemoteModeForSubcommand(overrides.remote, overrides.remote_auth_token_env, cmd);
+            try rejectRemoteModeForSubcommand(
+                overrides.remote,
+                overrides.remote_auth_token_env,
+                overrides.local_remote_control,
+                overrides.remote_control_bind,
+                cmd,
+            );
         }
         if (std.mem.eql(u8, cmd, "auth-status")) {
             if (args.next()) |value| {
@@ -415,6 +437,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
                 return;
             }
@@ -429,6 +453,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
             } else {
                 try runTuiWithImages(allocator, initial_image_files.items, .{
@@ -441,6 +467,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
             }
             return;
@@ -464,6 +492,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
                 return;
             }
@@ -478,6 +508,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
             } else {
                 try runTuiWithImages(allocator, initial_image_files.items, .{
@@ -490,6 +522,8 @@ fn mainInner(init: std.process.Init) !void {
                     .no_alt_screen = overrides.no_alt_screen,
                     .remote = parsed.remote orelse overrides.remote,
                     .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
+                    .local_remote_control = overrides.local_remote_control,
+                    .remote_control_bind = overrides.remote_control_bind,
                 });
             }
             return;
@@ -533,6 +567,8 @@ fn mainInner(init: std.process.Init) !void {
             .no_alt_screen = overrides.no_alt_screen,
             .remote = overrides.remote,
             .remote_auth_token_env = overrides.remote_auth_token_env,
+            .local_remote_control = overrides.local_remote_control,
+            .remote_control_bind = overrides.remote_control_bind,
         });
         return;
     }
@@ -546,6 +582,8 @@ fn mainInner(init: std.process.Init) !void {
         .no_alt_screen = overrides.no_alt_screen,
         .remote = overrides.remote,
         .remote_auth_token_env = overrides.remote_auth_token_env,
+        .local_remote_control = overrides.local_remote_control,
+        .remote_control_bind = overrides.remote_control_bind,
     });
 }
 
@@ -639,7 +677,13 @@ fn printKnownUnimplementedHelp(cmd: []const u8) void {
     , .{cmd});
 }
 
-fn rejectRemoteModeForSubcommand(remote: ?[]const u8, remote_auth_token_env: ?[]const u8, subcommand: []const u8) !void {
+fn rejectRemoteModeForSubcommand(
+    remote: ?[]const u8,
+    remote_auth_token_env: ?[]const u8,
+    local_remote_control: bool,
+    remote_control_bind: ?[]const u8,
+    subcommand: []const u8,
+) !void {
     if (remote) |value| {
         std.debug.print(
             "`--remote {s}` is only supported for interactive TUI commands, not `codex-zig {s}`\n",
@@ -653,6 +697,13 @@ fn rejectRemoteModeForSubcommand(remote: ?[]const u8, remote_auth_token_env: ?[]
             .{subcommand},
         );
         return error.RemoteModeUnsupportedForSubcommand;
+    }
+    if (local_remote_control or remote_control_bind != null) {
+        std.debug.print(
+            "`--remote-control` is only supported for interactive TUI commands, not `codex-zig {s}`\n",
+            .{subcommand},
+        );
+        return error.RemoteControlUnsupportedForSubcommand;
     }
 }
 
@@ -898,6 +949,10 @@ fn printHelp() !void {
         \\                          Parse remote app-server target for interactive TUI
         \\  codex-zig --remote-auth-token-env ENV_VAR
         \\                          Read bearer token env var for remote app-server
+        \\  codex-zig --remote-control
+        \\                          Parse local remote-control server mode
+        \\  codex-zig --remote-control-bind ADDR
+        \\                          Bind local remote-control server
         \\  codex-zig --no-alt-screen
         \\                          Disable alternate-screen TUI mode
         \\  codex-zig --version
