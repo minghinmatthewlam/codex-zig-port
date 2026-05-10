@@ -37,8 +37,10 @@ Current app-server `config/read` coverage also includes user
 `exclude_slash_tmp`, including user origins/layers and post-`config/batchWrite`
 reads. Legacy managed config reads now cover top-level `model`,
 `approval_policy`, and `sandbox_mode`, plus managed `sandbox_workspace_write`
-leaf precedence over user roots and booleans. System/project sandbox workspace
-precedence remains planned.
+leaf precedence over user roots and booleans. Trusted project
+`sandbox_workspace_write` reads now cover table and inline-object TOML shapes
+with project-over-user leaf precedence across nested project stacks. System
+sandbox workspace precedence remains planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
