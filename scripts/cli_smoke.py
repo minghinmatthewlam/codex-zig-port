@@ -387,9 +387,28 @@ def run_review_stdin_smoke(binary: Path) -> None:
     try:
         env = make_exec_mock_env(temp_root, base_url)
 
-        reviewed = subprocess.run(
+        rejected = subprocess.run(
             [str(binary.resolve()), "review", "-"],
             cwd=temp_root,
+            env=env,
+            input="focus on public API regressions\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert "Not inside a trusted directory and --skip-git-repo-check was not specified." in rejected.stderr
+        assert server.request_bodies == []
+
+        repo = temp_root / "repo"
+        repo.mkdir()
+        git(repo, "init", "--quiet")
+
+        reviewed = subprocess.run(
+            [str(binary.resolve()), "review", "-"],
+            cwd=repo,
             env=env,
             input="focus on public API regressions\n",
             text=True,
