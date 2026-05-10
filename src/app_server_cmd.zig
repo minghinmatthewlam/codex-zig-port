@@ -3173,6 +3173,7 @@ const ConfigRequirementsReadRequirements = struct {
     allowed_web_search_modes: ?config.StringList = null,
     feature_requirements: ?FeatureRequirementList = null,
     enforce_residency: ?[]const u8 = null,
+    network: ?NetworkRequirementScalars = null,
 
     fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
         if (self.allowed_approval_policies) |*value| value.deinit(allocator);
@@ -3190,7 +3191,8 @@ const ConfigRequirementsReadRequirements = struct {
             self.allowed_sandbox_modes == null and
             self.allowed_web_search_modes == null and
             self.feature_requirements == null and
-            self.enforce_residency == null;
+            self.enforce_residency == null and
+            self.network == null;
     }
 
     fn mergeUnset(self: *ConfigRequirementsReadRequirements, other: *ConfigRequirementsReadRequirements) void {
@@ -3218,6 +3220,10 @@ const ConfigRequirementsReadRequirements = struct {
             self.enforce_residency = other.enforce_residency;
             other.enforce_residency = null;
         }
+        if (self.network == null) {
+            self.network = other.network;
+            other.network = null;
+        }
     }
 };
 
@@ -3233,6 +3239,28 @@ const FeatureRequirementList = struct {
         for (self.items) |item| allocator.free(item.name);
         allocator.free(self.items);
         self.items = &.{};
+    }
+};
+
+const NetworkRequirementScalars = struct {
+    enabled: ?bool = null,
+    http_port: ?u16 = null,
+    socks_port: ?u16 = null,
+    allow_upstream_proxy: ?bool = null,
+    dangerously_allow_non_loopback_proxy: ?bool = null,
+    dangerously_allow_all_unix_sockets: ?bool = null,
+    managed_allowed_domains_only: ?bool = null,
+    allow_local_binding: ?bool = null,
+
+    fn isEmpty(self: NetworkRequirementScalars) bool {
+        return self.enabled == null and
+            self.http_port == null and
+            self.socks_port == null and
+            self.allow_upstream_proxy == null and
+            self.dangerously_allow_non_loopback_proxy == null and
+            self.dangerously_allow_all_unix_sockets == null and
+            self.managed_allowed_domains_only == null and
+            self.allow_local_binding == null;
     }
 };
 
@@ -3282,6 +3310,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
     requirements.feature_requirements = try parseFeatureRequirements(allocator, payload);
     requirements.enforce_residency = try parseResidencyRequirement(allocator, payload);
+    requirements.network = try parseNetworkRequirementScalars(payload);
 
     return requirements;
 }
@@ -3461,6 +3490,47 @@ fn parseResidencyRequirement(allocator: std.mem.Allocator, payload: []const u8) 
     return value;
 }
 
+fn parseNetworkRequirementScalars(payload: []const u8) !?NetworkRequirementScalars {
+    const section = "experimental_network";
+    var network = NetworkRequirementScalars{
+        .enabled = config.sectionBoolValue(payload, section, "enabled"),
+        .http_port = try sectionU16Value(payload, section, "http_port"),
+        .socks_port = try sectionU16Value(payload, section, "socks_port"),
+        .allow_upstream_proxy = config.sectionBoolValue(payload, section, "allow_upstream_proxy"),
+        .dangerously_allow_non_loopback_proxy = config.sectionBoolValue(payload, section, "dangerously_allow_non_loopback_proxy"),
+        .dangerously_allow_all_unix_sockets = config.sectionBoolValue(payload, section, "dangerously_allow_all_unix_sockets"),
+        .managed_allowed_domains_only = config.sectionBoolValue(payload, section, "managed_allowed_domains_only"),
+        .allow_local_binding = config.sectionBoolValue(payload, section, "allow_local_binding"),
+    };
+    if (network.isEmpty()) return null;
+    return network;
+}
+
+fn sectionU16Value(bytes: []const u8, section_name: []const u8, key: []const u8) !?u16 {
+    var in_section = false;
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_section = isExactTomlSection(line, section_name);
+            continue;
+        }
+        if (!in_section) continue;
+        if (tomlValueForKey(line, key)) |value| {
+            return std.fmt.parseUnsigned(u16, value, 10) catch error.InvalidNetworkRequirement;
+        }
+    }
+    return null;
+}
+
+fn tomlValueForKey(line: []const u8, key: []const u8) ?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    return std.mem.trim(u8, line[eq + 1 ..], " \t");
+}
+
 fn stringListFromLabels(allocator: std.mem.Allocator, labels: []const []const u8) !config.StringList {
     const items = try allocator.alloc([]const u8, labels.len);
     var copied: usize = 0;
@@ -3545,6 +3615,10 @@ fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requiremen
         try appendJsonFieldName(allocator, &result, &first, "enforceResidency");
         try appendJsonString(allocator, &result, enforce_residency);
     }
+    if (requirements.network) |network| {
+        try appendJsonFieldName(allocator, &result, &first, "network");
+        try appendNetworkRequirementScalarsObject(allocator, &result, network);
+    }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
 }
@@ -3562,6 +3636,37 @@ fn appendFeatureRequirementsObject(
         try result.appendSlice(allocator, if (entry.enabled) "true" else "false");
     }
     try result.appendSlice(allocator, "}");
+}
+
+fn appendNetworkRequirementScalarsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    network: NetworkRequirementScalars,
+) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    if (network.enabled) |value| try appendJsonBoolField(allocator, result, &first, "enabled", value);
+    if (network.http_port) |value| try appendJsonU16Field(allocator, result, &first, "httpPort", value);
+    if (network.socks_port) |value| try appendJsonU16Field(allocator, result, &first, "socksPort", value);
+    if (network.allow_upstream_proxy) |value| try appendJsonBoolField(allocator, result, &first, "allowUpstreamProxy", value);
+    if (network.dangerously_allow_non_loopback_proxy) |value| try appendJsonBoolField(allocator, result, &first, "dangerouslyAllowNonLoopbackProxy", value);
+    if (network.dangerously_allow_all_unix_sockets) |value| try appendJsonBoolField(allocator, result, &first, "dangerouslyAllowAllUnixSockets", value);
+    if (network.managed_allowed_domains_only) |value| try appendJsonBoolField(allocator, result, &first, "managedAllowedDomainsOnly", value);
+    if (network.allow_local_binding) |value| try appendJsonBoolField(allocator, result, &first, "allowLocalBinding", value);
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendJsonU16Field(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: u16,
+) !void {
+    try appendJsonFieldName(allocator, result, first, name);
+    const value_json = try std.fmt.allocPrint(allocator, "{d}", .{value});
+    defer allocator.free(value_json);
+    try result.appendSlice(allocator, value_json);
 }
 
 const ConfigRawEdit = struct {
