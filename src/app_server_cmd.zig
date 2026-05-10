@@ -3712,14 +3712,19 @@ fn renderConfigReadResponse(
 
     try result.appendSlice(allocator, "{\"config\":{");
     var first = true;
-    try appendJsonStringField(allocator, &result, &first, "model", cfg.model);
+    const model = project_layers.model() orelse cfg.model;
+    try appendJsonStringField(allocator, &result, &first, "model", model);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
-    try appendJsonStringField(allocator, &result, &first, "approval_policy", cfg.approval_policy.label());
-    try appendJsonStringField(allocator, &result, &first, "sandbox_mode", cfg.sandbox_mode.label());
-    try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (cfg.web_search_mode) |mode| mode.label() else null);
+    const approval_policy = project_layers.approvalPolicy() orelse cfg.approval_policy;
+    try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
+    const sandbox_mode = project_layers.sandboxMode() orelse cfg.sandbox_mode;
+    try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
+    const web_search_mode = project_layers.webSearchMode() orelse cfg.web_search_mode;
+    try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     const model_reasoning_effort = project_layers.modelReasoningEffort() orelse cfg.model_reasoning_effort;
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
-    try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", cfg.service_tier);
+    const service_tier = project_layers.serviceTier() orelse cfg.service_tier;
+    try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
@@ -3737,11 +3742,18 @@ const ConfigReadProjectLayer = struct {
     dot_codex_folder: []const u8,
     version: []const u8,
     origin_keys: []const []const u8,
+    model: ?[]const u8,
+    approval_policy: ?config.ApprovalPolicy,
+    sandbox_mode: ?config.SandboxMode,
+    web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
+    service_tier: ?[]const u8,
 
     fn deinit(self: *ConfigReadProjectLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.dot_codex_folder);
         allocator.free(self.version);
+        if (self.model) |value| allocator.free(value);
+        if (self.service_tier) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
     }
@@ -3759,9 +3771,44 @@ const ConfigReadProjectLayers = struct {
         if (self.items.len > 0) allocator.free(self.items);
     }
 
+    fn model(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.model) |value| return value;
+        }
+        return null;
+    }
+
+    fn approvalPolicy(self: ConfigReadProjectLayers) ?config.ApprovalPolicy {
+        for (self.items) |layer| {
+            if (layer.approval_policy) |policy| return policy;
+        }
+        return null;
+    }
+
+    fn sandboxMode(self: ConfigReadProjectLayers) ?config.SandboxMode {
+        for (self.items) |layer| {
+            if (layer.sandbox_mode) |mode| return mode;
+        }
+        return null;
+    }
+
+    fn webSearchMode(self: ConfigReadProjectLayers) ?config.WebSearchMode {
+        for (self.items) |layer| {
+            if (layer.web_search_mode) |mode| return mode;
+        }
+        return null;
+    }
+
     fn modelReasoningEffort(self: ConfigReadProjectLayers) ?config.ReasoningEffort {
         for (self.items) |layer| {
             if (layer.model_reasoning_effort) |effort| return effort;
+        }
+        return null;
+    }
+
+    fn serviceTier(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.service_tier) |value| return value;
         }
         return null;
     }
@@ -3907,13 +3954,43 @@ fn loadConfigReadProjectLayer(
         for (origin_keys.items) |key| allocator.free(key);
         origin_keys.deinit(allocator);
     }
+    var model: ?[]const u8 = null;
+    errdefer if (model) |value| allocator.free(value);
+    var approval_policy: ?config.ApprovalPolicy = null;
+    var sandbox_mode: ?config.SandboxMode = null;
+    var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var service_tier: ?[]const u8 = null;
+    errdefer if (service_tier) |value| allocator.free(value);
     if (project_config_bytes) |config_bytes| {
-        const effort_value = try config.topLevelStringValue(allocator, config_bytes, "model_reasoning_effort");
-        defer if (effort_value) |value| allocator.free(value);
-        if (effort_value) |value| {
+        if (try config.topLevelStringValue(allocator, config_bytes, "model")) |value| {
+            model = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "model");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "approval_policy")) |value| {
+            defer allocator.free(value);
+            approval_policy = try config.ApprovalPolicy.parse(value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "approval_policy");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "sandbox_mode")) |value| {
+            defer allocator.free(value);
+            sandbox_mode = try config.SandboxMode.parse(value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "sandbox_mode");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "web_search")) |value| {
+            defer allocator.free(value);
+            web_search_mode = try config.WebSearchMode.parse(value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "web_search");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "model_reasoning_effort")) |value| {
+            defer allocator.free(value);
             model_reasoning_effort = try config.ReasoningEffort.parse(value);
-            try origin_keys.append(allocator, try allocator.dupe(u8, "model_reasoning_effort"));
+            try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "service_tier")) |value| {
+            defer allocator.free(value);
+            service_tier = try config.normalizeServiceTier(allocator, value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
         }
     }
     const owned_origin_keys = if (origin_keys.items.len > 0)
@@ -3925,7 +4002,12 @@ fn loadConfigReadProjectLayer(
         .dot_codex_folder = dot_codex_folder,
         .version = version,
         .origin_keys = owned_origin_keys,
+        .model = model,
+        .approval_policy = approval_policy,
+        .sandbox_mode = sandbox_mode,
+        .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
+        .service_tier = service_tier,
     };
 }
 
@@ -4169,8 +4251,18 @@ fn appendConfigReadProjectLayerConfig(
     try result.append(allocator, '{');
     var first = true;
     for (layer.origin_keys) |key| {
-        if (std.mem.eql(u8, key, "model_reasoning_effort")) {
+        if (std.mem.eql(u8, key, "model")) {
+            if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
+        } else if (std.mem.eql(u8, key, "approval_policy")) {
+            if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
+        } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+            if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "web_search")) {
+            if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_reasoning_effort) |effort| effort.label() else null);
+        } else if (std.mem.eql(u8, key, "service_tier")) {
+            if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, key, value);
         }
     }
     try result.append(allocator, '}');
