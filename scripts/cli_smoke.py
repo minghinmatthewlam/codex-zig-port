@@ -1542,7 +1542,33 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert (workspace / "danger.txt").read_text(encoding="utf-8") == "ok"
         assert (outside / "danger.txt").read_text(encoding="utf-8") == "outside"
 
-        profile_unsupported = subprocess.run(
+        extra = temp_root / "extra"
+        extra.mkdir()
+        codex_home = Path(env["CODEX_HOME"])
+        codex_home.mkdir(parents=True, exist_ok=True)
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.custom-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = "write"',
+                    f"{json.dumps(str(extra))} = \"write\"",
+                    "",
+                    "[permissions.custom-profile.network]",
+                    "enabled = true",
+                    "",
+                    "[permissions.minimal-profile.filesystem]",
+                    '":minimal" = "read"',
+                    "",
+                    "[permissions.minimal-profile.network]",
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        custom_profile = subprocess.run(
             [
                 str(binary.resolve()),
                 "sandbox",
@@ -1550,7 +1576,34 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                 "--permissions-profile",
                 "custom-profile",
                 "--cd",
-                str(temp_root),
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                f"printf ok > custom.txt; printf extra > {extra / 'custom.txt'}; printf nope > {outside / 'custom-blocked.txt'}",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert custom_profile.returncode != 0
+        assert (workspace / "custom.txt").read_text(encoding="utf-8") == "ok"
+        assert (extra / "custom.txt").read_text(encoding="utf-8") == "extra"
+        assert not (outside / "custom-blocked.txt").exists()
+
+        profile_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "minimal-profile",
+                "--cd",
+                str(workspace),
                 "--",
                 "/bin/echo",
                 "ok",
