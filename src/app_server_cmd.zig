@@ -3742,7 +3742,7 @@ fn renderConfigReadResponse(
     const web_search_mode = project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
-    var apps = try effectiveConfigReadApps(allocator, user_layer, system_layer);
+    var apps = try effectiveConfigReadApps(allocator, project_layers, user_layer, system_layer);
     defer if (apps) |*value| value.deinit(allocator);
     try appendConfigReadAppsField(allocator, &result, &first, apps);
     const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
@@ -3811,6 +3811,7 @@ const ConfigReadProjectLayer = struct {
     model_reasoning_effort: ?config.ReasoningEffort,
     service_tier: ?[]const u8,
     tools: ConfigReadTools,
+    apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
 
     fn deinit(self: *ConfigReadProjectLayer, allocator: std.mem.Allocator) void {
@@ -3821,6 +3822,7 @@ const ConfigReadProjectLayer = struct {
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
+        self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
     }
 };
@@ -4205,6 +4207,7 @@ fn effectiveConfigReadTools(
 
 fn effectiveConfigReadApps(
     allocator: std.mem.Allocator,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     system_layer: ?ConfigReadSystemLayer,
 ) !?ConfigReadApps {
@@ -4215,6 +4218,7 @@ fn effectiveConfigReadApps(
         items.deinit(allocator);
     }
 
+    for (project_layers.items) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
     if (user_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
     if (system_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
     if (default_config == null and items.items.len == 0) return null;
@@ -5150,6 +5154,8 @@ fn loadConfigReadProjectLayer(
     errdefer if (service_tier) |value| allocator.free(value);
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
+    var apps = ConfigReadApps.empty();
+    errdefer apps.deinit(allocator);
     var sandbox_workspace_write = ConfigReadSandboxWorkspaceWrite{};
     errdefer sandbox_workspace_write.deinit(allocator);
     if (project_config_bytes) |config_bytes| {
@@ -5184,6 +5190,7 @@ fn loadConfigReadProjectLayer(
         }
         tools = try loadConfigReadTools(allocator, config_bytes);
         try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
+        apps = try loadConfigReadApps(allocator, config_bytes);
         sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, config_bytes);
         try appendConfigReadSandboxWorkspaceOriginKeys(allocator, &origin_keys, sandbox_workspace_write);
     }
@@ -5203,6 +5210,7 @@ fn loadConfigReadProjectLayer(
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
         .tools = tools,
+        .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
     };
 }
@@ -5287,6 +5295,7 @@ fn appendConfigReadOrigins(
             }
             try appendConfigReadProjectOrigin(allocator, result, &first, layer, key);
         }
+        try appendConfigReadProjectAppsOrigins(allocator, result, &first, project_layers.items[0..index], layer);
     }
     if (user_layer) |layer| {
         for (layer.origin_keys) |key| {
@@ -5295,7 +5304,7 @@ fn appendConfigReadOrigins(
             try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
         }
         try appendConfigReadUserToolsOrigins(allocator, result, &first, managed_layer, project_layers, layer);
-        try appendConfigReadUserAppsOrigins(allocator, result, &first, layer);
+        try appendConfigReadUserAppsOrigins(allocator, result, &first, project_layers, layer);
         try appendConfigReadUserSandboxWorkspaceOrigins(allocator, result, &first, managed_layer, project_layers, layer);
     }
     if (system_layer) |layer| {
@@ -5315,7 +5324,7 @@ fn appendConfigReadOrigins(
             }
             try appendConfigReadSystemOrigin(allocator, result, &first, layer, key);
         }
-        try appendConfigReadSystemAppsOrigins(allocator, result, &first, user_layer, layer);
+        try appendConfigReadSystemAppsOrigins(allocator, result, &first, project_layers, user_layer, layer);
     }
     try result.append(allocator, '}');
 }
@@ -5379,86 +5388,174 @@ fn appendConfigReadUserAppsOrigins(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
 ) !void {
     if (layer.apps.default_config) |default_config| {
         if (default_config.enabled_present) {
-            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.enabled");
+            try appendConfigReadUserAppOriginIfVisible(allocator, result, first, project_layers, layer, "apps._default.enabled");
         }
         if (default_config.destructive_enabled_present) {
-            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.destructive_enabled");
+            try appendConfigReadUserAppOriginIfVisible(allocator, result, first, project_layers, layer, "apps._default.destructive_enabled");
         }
         if (default_config.open_world_enabled_present) {
-            try appendConfigReadUserOrigin(allocator, result, first, layer, "apps._default.open_world_enabled");
+            try appendConfigReadUserAppOriginIfVisible(allocator, result, first, project_layers, layer, "apps._default.open_world_enabled");
         }
     }
     for (layer.apps.items) |app| {
         if (app.has_enabled) {
-            try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "enabled");
+            try appendConfigReadUserAppOrigin(allocator, result, first, project_layers, layer, app.name, "enabled");
         }
         if (app.destructive_enabled != null) {
-            try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "destructive_enabled");
+            try appendConfigReadUserAppOrigin(allocator, result, first, project_layers, layer, app.name, "destructive_enabled");
         }
         if (app.open_world_enabled != null) {
-            try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "open_world_enabled");
+            try appendConfigReadUserAppOrigin(allocator, result, first, project_layers, layer, app.name, "open_world_enabled");
         }
         if (app.default_tools_approval_mode != null) {
-            try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "default_tools_approval_mode");
+            try appendConfigReadUserAppOrigin(allocator, result, first, project_layers, layer, app.name, "default_tools_approval_mode");
         }
         if (app.default_tools_enabled != null) {
-            try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "default_tools_enabled");
+            try appendConfigReadUserAppOrigin(allocator, result, first, project_layers, layer, app.name, "default_tools_enabled");
         }
         for (app.tools.items) |tool| {
             if (tool.enabled != null) {
-                try appendConfigReadUserAppToolOrigin(allocator, result, first, layer, app.name, tool.name, "enabled");
+                try appendConfigReadUserAppToolOrigin(allocator, result, first, project_layers, layer, app.name, tool.name, "enabled");
             }
             if (tool.approval_mode != null) {
-                try appendConfigReadUserAppToolOrigin(allocator, result, first, layer, app.name, tool.name, "approval_mode");
+                try appendConfigReadUserAppToolOrigin(allocator, result, first, project_layers, layer, app.name, tool.name, "approval_mode");
             }
         }
     }
+}
+
+fn appendConfigReadProjectAppsOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    higher_layers: []const ConfigReadProjectLayer,
+    layer: ConfigReadProjectLayer,
+) !void {
+    if (layer.apps.default_config) |default_config| {
+        if (default_config.enabled_present) {
+            try appendConfigReadProjectAppOriginIfVisible(allocator, result, first, higher_layers, layer, "apps._default.enabled");
+        }
+        if (default_config.destructive_enabled_present) {
+            try appendConfigReadProjectAppOriginIfVisible(allocator, result, first, higher_layers, layer, "apps._default.destructive_enabled");
+        }
+        if (default_config.open_world_enabled_present) {
+            try appendConfigReadProjectAppOriginIfVisible(allocator, result, first, higher_layers, layer, "apps._default.open_world_enabled");
+        }
+    }
+    for (layer.apps.items) |app| {
+        if (app.has_enabled) {
+            try appendConfigReadProjectAppOrigin(allocator, result, first, higher_layers, layer, app.name, "enabled");
+        }
+        if (app.destructive_enabled != null) {
+            try appendConfigReadProjectAppOrigin(allocator, result, first, higher_layers, layer, app.name, "destructive_enabled");
+        }
+        if (app.open_world_enabled != null) {
+            try appendConfigReadProjectAppOrigin(allocator, result, first, higher_layers, layer, app.name, "open_world_enabled");
+        }
+        if (app.default_tools_approval_mode != null) {
+            try appendConfigReadProjectAppOrigin(allocator, result, first, higher_layers, layer, app.name, "default_tools_approval_mode");
+        }
+        if (app.default_tools_enabled != null) {
+            try appendConfigReadProjectAppOrigin(allocator, result, first, higher_layers, layer, app.name, "default_tools_enabled");
+        }
+        for (app.tools.items) |tool| {
+            if (tool.enabled != null) {
+                try appendConfigReadProjectAppToolOrigin(allocator, result, first, higher_layers, layer, app.name, tool.name, "enabled");
+            }
+            if (tool.approval_mode != null) {
+                try appendConfigReadProjectAppToolOrigin(allocator, result, first, higher_layers, layer, app.name, tool.name, "approval_mode");
+            }
+        }
+    }
+}
+
+fn appendConfigReadProjectAppOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    higher_layers: []const ConfigReadProjectLayer,
+    layer: ConfigReadProjectLayer,
+    app_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
+    defer allocator.free(key);
+    try appendConfigReadProjectAppOriginIfVisible(allocator, result, first, higher_layers, layer, key);
+}
+
+fn appendConfigReadProjectAppToolOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    higher_layers: []const ConfigReadProjectLayer,
+    layer: ConfigReadProjectLayer,
+    app_name: []const u8,
+    tool_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
+    defer allocator.free(key);
+    try appendConfigReadProjectAppOriginIfVisible(allocator, result, first, higher_layers, layer, key);
+}
+
+fn appendConfigReadProjectAppOriginIfVisible(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    higher_layers: []const ConfigReadProjectLayer,
+    layer: ConfigReadProjectLayer,
+    key: []const u8,
+) !void {
+    if (try configReadProjectSliceHasAppsOriginKey(allocator, higher_layers, key)) return;
+    try appendConfigReadProjectOrigin(allocator, result, first, layer, key);
 }
 
 fn appendConfigReadSystemAppsOrigins(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     layer: ConfigReadSystemLayer,
 ) !void {
     if (layer.apps.default_config) |default_config| {
         if (default_config.enabled_present) {
-            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.enabled");
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, project_layers, user_layer, layer, "apps._default.enabled");
         }
         if (default_config.destructive_enabled_present) {
-            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.destructive_enabled");
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, project_layers, user_layer, layer, "apps._default.destructive_enabled");
         }
         if (default_config.open_world_enabled_present) {
-            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, "apps._default.open_world_enabled");
+            try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, project_layers, user_layer, layer, "apps._default.open_world_enabled");
         }
     }
     for (layer.apps.items) |app| {
         if (app.has_enabled) {
-            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "enabled");
+            try appendConfigReadSystemAppOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, "enabled");
         }
         if (app.destructive_enabled != null) {
-            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "destructive_enabled");
+            try appendConfigReadSystemAppOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, "destructive_enabled");
         }
         if (app.open_world_enabled != null) {
-            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "open_world_enabled");
+            try appendConfigReadSystemAppOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, "open_world_enabled");
         }
         if (app.default_tools_approval_mode != null) {
-            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "default_tools_approval_mode");
+            try appendConfigReadSystemAppOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, "default_tools_approval_mode");
         }
         if (app.default_tools_enabled != null) {
-            try appendConfigReadSystemAppOrigin(allocator, result, first, user_layer, layer, app.name, "default_tools_enabled");
+            try appendConfigReadSystemAppOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, "default_tools_enabled");
         }
         for (app.tools.items) |tool| {
             if (tool.enabled != null) {
-                try appendConfigReadSystemAppToolOrigin(allocator, result, first, user_layer, layer, app.name, tool.name, "enabled");
+                try appendConfigReadSystemAppToolOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, tool.name, "enabled");
             }
             if (tool.approval_mode != null) {
-                try appendConfigReadSystemAppToolOrigin(allocator, result, first, user_layer, layer, app.name, tool.name, "approval_mode");
+                try appendConfigReadSystemAppToolOrigin(allocator, result, first, project_layers, user_layer, layer, app.name, tool.name, "approval_mode");
             }
         }
     }
@@ -5468,6 +5565,7 @@ fn appendConfigReadSystemAppOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     layer: ConfigReadSystemLayer,
     app_name: []const u8,
@@ -5475,13 +5573,14 @@ fn appendConfigReadSystemAppOrigin(
 ) !void {
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
     defer allocator.free(key);
-    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, key);
+    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, project_layers, user_layer, layer, key);
 }
 
 fn appendConfigReadSystemAppToolOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     layer: ConfigReadSystemLayer,
     app_name: []const u8,
@@ -5490,17 +5589,19 @@ fn appendConfigReadSystemAppToolOrigin(
 ) !void {
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
     defer allocator.free(key);
-    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, user_layer, layer, key);
+    try appendConfigReadSystemAppOriginIfVisible(allocator, result, first, project_layers, user_layer, layer, key);
 }
 
 fn appendConfigReadSystemAppOriginIfVisible(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     layer: ConfigReadSystemLayer,
     key: []const u8,
 ) !void {
+    if (try configReadProjectSliceHasAppsOriginKey(allocator, project_layers.items, key)) return;
     if (if (user_layer) |user| try configReadAppsHasOriginKey(allocator, user.apps, key) else false) return;
     try appendConfigReadSystemOrigin(allocator, result, first, layer, key);
 }
@@ -5509,19 +5610,21 @@ fn appendConfigReadUserAppOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
     app_name: []const u8,
     field: []const u8,
 ) !void {
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
     defer allocator.free(key);
-    try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+    try appendConfigReadUserAppOriginIfVisible(allocator, result, first, project_layers, layer, key);
 }
 
 fn appendConfigReadUserAppToolOrigin(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    project_layers: ConfigReadProjectLayers,
     layer: ConfigReadUserLayer,
     app_name: []const u8,
     tool_name: []const u8,
@@ -5529,7 +5632,30 @@ fn appendConfigReadUserAppToolOrigin(
 ) !void {
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
     defer allocator.free(key);
+    try appendConfigReadUserAppOriginIfVisible(allocator, result, first, project_layers, layer, key);
+}
+
+fn appendConfigReadUserAppOriginIfVisible(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    project_layers: ConfigReadProjectLayers,
+    layer: ConfigReadUserLayer,
+    key: []const u8,
+) !void {
+    if (try configReadProjectSliceHasAppsOriginKey(allocator, project_layers.items, key)) return;
     try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+}
+
+fn configReadProjectSliceHasAppsOriginKey(
+    allocator: std.mem.Allocator,
+    layers: []const ConfigReadProjectLayer,
+    key: []const u8,
+) !bool {
+    for (layers) |layer| {
+        if (try configReadAppsHasOriginKey(allocator, layer.apps, key)) return true;
+    }
+    return false;
 }
 
 fn configReadAppsHasOriginKey(
@@ -5956,6 +6082,10 @@ fn appendConfigReadProjectLayerConfig(
     if (layer.tools.present) {
         try appendJsonFieldName(allocator, result, &first, "tools");
         try appendConfigReadToolsObject(allocator, result, layer.tools);
+    }
+    if (!layer.apps.isEmpty()) {
+        try appendJsonFieldName(allocator, result, &first, "apps");
+        try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
     try result.append(allocator, '}');
 }
