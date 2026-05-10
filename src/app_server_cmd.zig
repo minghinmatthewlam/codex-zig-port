@@ -3171,12 +3171,14 @@ const ConfigRequirementsReadRequirements = struct {
     allowed_approvals_reviewers: ?config.StringList = null,
     allowed_sandbox_modes: ?config.StringList = null,
     allowed_web_search_modes: ?config.StringList = null,
+    feature_requirements: ?FeatureRequirementList = null,
 
     fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
         if (self.allowed_approval_policies) |*value| value.deinit(allocator);
         if (self.allowed_approvals_reviewers) |*value| value.deinit(allocator);
         if (self.allowed_sandbox_modes) |*value| value.deinit(allocator);
         if (self.allowed_web_search_modes) |*value| value.deinit(allocator);
+        if (self.feature_requirements) |*value| value.deinit(allocator);
         self.* = .{};
     }
 
@@ -3184,7 +3186,8 @@ const ConfigRequirementsReadRequirements = struct {
         return self.allowed_approval_policies == null and
             self.allowed_approvals_reviewers == null and
             self.allowed_sandbox_modes == null and
-            self.allowed_web_search_modes == null;
+            self.allowed_web_search_modes == null and
+            self.feature_requirements == null;
     }
 
     fn mergeUnset(self: *ConfigRequirementsReadRequirements, other: *ConfigRequirementsReadRequirements) void {
@@ -3204,6 +3207,25 @@ const ConfigRequirementsReadRequirements = struct {
             self.allowed_web_search_modes = other.allowed_web_search_modes;
             other.allowed_web_search_modes = null;
         }
+        if (self.feature_requirements == null) {
+            self.feature_requirements = other.feature_requirements;
+            other.feature_requirements = null;
+        }
+    }
+};
+
+const FeatureRequirement = struct {
+    name: []const u8,
+    enabled: bool,
+};
+
+const FeatureRequirementList = struct {
+    items: []FeatureRequirement,
+
+    fn deinit(self: *FeatureRequirementList, allocator: std.mem.Allocator) void {
+        for (self.items) |item| allocator.free(item.name);
+        allocator.free(self.items);
+        self.items = &.{};
     }
 };
 
@@ -3251,6 +3273,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.allowed_approvals_reviewers = try parseAllowedRequirementList(allocator, payload, "allowed_approvals_reviewers", .approvals_reviewer);
     requirements.allowed_sandbox_modes = try parseAllowedRequirementList(allocator, payload, "allowed_sandbox_modes", .sandbox_mode);
     requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
+    requirements.feature_requirements = try parseFeatureRequirements(allocator, payload);
 
     return requirements;
 }
@@ -3342,6 +3365,87 @@ fn requirementLabel(kind: RequirementListKind, value: []const u8) ![]const u8 {
     };
 }
 
+fn parseFeatureRequirements(allocator: std.mem.Allocator, payload: []const u8) !?FeatureRequirementList {
+    var entries = std.ArrayList(FeatureRequirement).empty;
+    errdefer {
+        deinitFeatureRequirementItems(allocator, entries.items);
+        entries.deinit(allocator);
+    }
+
+    try appendFeatureRequirementsSection(allocator, payload, "features", &entries);
+    try appendFeatureRequirementsSection(allocator, payload, "feature_requirements", &entries);
+
+    if (entries.items.len == 0) {
+        entries.deinit(allocator);
+        return null;
+    }
+
+    const items = try entries.toOwnedSlice(allocator);
+    std.mem.sort(FeatureRequirement, items, {}, featureRequirementLessThan);
+    return .{ .items = items };
+}
+
+fn appendFeatureRequirementsSection(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    section_name: []const u8,
+    entries: *std.ArrayList(FeatureRequirement),
+) !void {
+    var in_section = false;
+    var iter = std.mem.splitScalar(u8, payload, '\n');
+    while (iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_section = isExactTomlSection(line, section_name);
+            continue;
+        }
+        if (!in_section) continue;
+        if (try parseFeatureRequirementLine(allocator, line)) |entry| {
+            errdefer allocator.free(entry.name);
+            try entries.append(allocator, entry);
+        }
+    }
+}
+
+fn parseFeatureRequirementLine(allocator: std.mem.Allocator, line: []const u8) !?FeatureRequirement {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const raw_key = std.mem.trim(u8, line[0..eq], " \t");
+    const raw_value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (raw_key.len == 0) return error.InvalidFeatureRequirement;
+
+    const enabled = if (std.mem.eql(u8, raw_value, "true"))
+        true
+    else if (std.mem.eql(u8, raw_value, "false"))
+        false
+    else
+        return error.InvalidFeatureRequirement;
+
+    const name = try parseTomlKeyName(allocator, raw_key);
+    return .{ .name = name, .enabled = enabled };
+}
+
+fn parseTomlKeyName(allocator: std.mem.Allocator, raw_key: []const u8) ![]const u8 {
+    if (raw_key.len > 0 and raw_key[0] == '"') {
+        return try config.parseTomlString(allocator, raw_key) orelse error.InvalidFeatureRequirement;
+    }
+    return allocator.dupe(u8, raw_key);
+}
+
+fn isExactTomlSection(line: []const u8, section_name: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const name = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    return std.mem.eql(u8, name, section_name);
+}
+
+fn featureRequirementLessThan(_: void, lhs: FeatureRequirement, rhs: FeatureRequirement) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn deinitFeatureRequirementItems(allocator: std.mem.Allocator, items: []FeatureRequirement) void {
+    for (items) |item| allocator.free(item.name);
+}
+
 fn stringListFromLabels(allocator: std.mem.Allocator, labels: []const []const u8) !config.StringList {
     const items = try allocator.alloc([]const u8, labels.len);
     var copied: usize = 0;
@@ -3418,8 +3522,27 @@ fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requiremen
         try appendJsonFieldName(allocator, &result, &first, "allowedWebSearchModes");
         try appendJsonStringArray(allocator, &result, web_search_modes.items);
     }
+    if (requirements.feature_requirements) |feature_requirements| {
+        try appendJsonFieldName(allocator, &result, &first, "featureRequirements");
+        try appendFeatureRequirementsObject(allocator, &result, feature_requirements);
+    }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
+}
+
+fn appendFeatureRequirementsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    feature_requirements: FeatureRequirementList,
+) !void {
+    try result.appendSlice(allocator, "{");
+    for (feature_requirements.items, 0..) |entry, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendJsonString(allocator, result, entry.name);
+        try result.appendSlice(allocator, ":");
+        try result.appendSlice(allocator, if (entry.enabled) "true" else "false");
+    }
+    try result.appendSlice(allocator, "}");
 }
 
 const ConfigRawEdit = struct {
