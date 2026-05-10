@@ -856,12 +856,27 @@ const THREAD_SHELL_COMMAND_RESPONSE_TS =
     \\
     ;
 
+const THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadBackgroundTerminalsCleanParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadBackgroundTerminalsCleanResponse {}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -904,6 +919,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/shellCommand";
     \\      params: ThreadShellCommandParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/backgroundTerminals/clean";
+    \\      params: ThreadBackgroundTerminalsCleanParams;
     \\    };
     \\
     ;
@@ -914,6 +933,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -966,6 +986,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/shellCommand";
     \\      result: ThreadShellCommandResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/backgroundTerminals/clean";
+    \\      result: ThreadBackgroundTerminalsCleanResponse;
     \\    };
     \\
     ;
@@ -1023,6 +1048,8 @@ const V2_INDEX_TS =
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
+    \\export type { ThreadBackgroundTerminalsCleanParams } from "./ThreadBackgroundTerminalsCleanParams";
+    \\export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";
     \\export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
@@ -1748,6 +1775,30 @@ const THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsCleanParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsCleanResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2139,6 +2190,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadShellCommandResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadBackgroundTerminalsCleanParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadBackgroundTerminalsCleanResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2207,6 +2270,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadCompactStartResponse.json", .contents = THREAD_COMPACT_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadShellCommandParams.json", .contents = THREAD_SHELL_COMMAND_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadShellCommandResponse.json", .contents = THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsCleanParams.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsCleanResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2256,6 +2321,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadCompactStartResponse.ts", .contents = THREAD_COMPACT_START_RESPONSE_TS },
     .{ .name = "v2/ThreadShellCommandParams.ts", .contents = THREAD_SHELL_COMMAND_PARAMS_TS },
     .{ .name = "v2/ThreadShellCommandResponse.ts", .contents = THREAD_SHELL_COMMAND_RESPONSE_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
