@@ -5,6 +5,8 @@ The Rust Codex checkout at `~/dev/codex` is a behavioral reference only:
 runtime code in this repository must not import, link to, or shell out to the
 original implementation.
 
+This is an unofficial project and is not affiliated with or endorsed by OpenAI.
+
 ## First Milestone
 
 The first demo slice targets macOS and focuses on the interactive CLI surface:
@@ -73,6 +75,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - print general or command-specific help with `help [COMMAND]`
 
 Long-term exact parity is tracked in `docs/parity.md`.
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE`.
 
 ## Build
 

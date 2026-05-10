@@ -1,5 +1,7 @@
 .zig-cache/
 zig-out/
+__pycache__/
+.DS_Store
 codex_zig_mock_demo.txt
 codex_zig_apply_patch_demo.txt
 codex_zig_cua_patch_demo.txt
