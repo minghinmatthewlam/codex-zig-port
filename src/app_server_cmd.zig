@@ -6,6 +6,7 @@ const account_rate_limits = @import("account_rate_limits.zig");
 const auth_mod = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const config_requirements_hooks = @import("config_requirements_hooks.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
@@ -3172,6 +3173,7 @@ const ConfigRequirementsReadRequirements = struct {
     allowed_sandbox_modes: ?config.StringList = null,
     allowed_web_search_modes: ?config.StringList = null,
     feature_requirements: ?FeatureRequirementList = null,
+    hooks: ?config_requirements_hooks.ManagedHooksRequirements = null,
     enforce_residency: ?[]const u8 = null,
     network: ?NetworkRequirements = null,
 
@@ -3181,6 +3183,7 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.allowed_sandbox_modes) |*value| value.deinit(allocator);
         if (self.allowed_web_search_modes) |*value| value.deinit(allocator);
         if (self.feature_requirements) |*value| value.deinit(allocator);
+        if (self.hooks) |*value| value.deinit(allocator);
         if (self.enforce_residency) |value| allocator.free(value);
         if (self.network) |*value| value.deinit(allocator);
         self.* = .{};
@@ -3192,6 +3195,7 @@ const ConfigRequirementsReadRequirements = struct {
             self.allowed_sandbox_modes == null and
             self.allowed_web_search_modes == null and
             self.feature_requirements == null and
+            self.hooks == null and
             self.enforce_residency == null and
             self.network == null;
     }
@@ -3216,6 +3220,10 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.feature_requirements == null) {
             self.feature_requirements = other.feature_requirements;
             other.feature_requirements = null;
+        }
+        if (self.hooks == null) {
+            self.hooks = other.hooks;
+            other.hooks = null;
         }
         if (self.enforce_residency == null) {
             self.enforce_residency = other.enforce_residency;
@@ -3335,6 +3343,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.allowed_sandbox_modes = try parseAllowedRequirementList(allocator, payload, "allowed_sandbox_modes", .sandbox_mode);
     requirements.allowed_web_search_modes = try parseAllowedRequirementList(allocator, payload, "allowed_web_search_modes", .web_search_mode);
     requirements.feature_requirements = try parseFeatureRequirements(allocator, payload);
+    requirements.hooks = try config_requirements_hooks.parse(allocator, payload);
     requirements.enforce_residency = try parseResidencyRequirement(allocator, payload);
     requirements.network = try parseNetworkRequirements(allocator, payload);
 
@@ -3826,6 +3835,10 @@ fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requiremen
         try appendJsonFieldName(allocator, &result, &first, "featureRequirements");
         try appendFeatureRequirementsObject(allocator, &result, feature_requirements);
     }
+    if (requirements.hooks) |hooks| {
+        try appendJsonFieldName(allocator, &result, &first, "hooks");
+        try appendManagedHooksRequirementsObject(allocator, &result, hooks);
+    }
     if (requirements.enforce_residency) |enforce_residency| {
         try appendJsonFieldName(allocator, &result, &first, "enforceResidency");
         try appendJsonString(allocator, &result, enforce_residency);
@@ -3849,6 +3862,69 @@ fn appendFeatureRequirementsObject(
         try appendJsonString(allocator, result, entry.name);
         try result.appendSlice(allocator, ":");
         try result.appendSlice(allocator, if (entry.enabled) "true" else "false");
+    }
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendManagedHooksRequirementsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    hooks: config_requirements_hooks.ManagedHooksRequirements,
+) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    if (hooks.managed_dir) |value| try appendJsonStringField(allocator, result, &first, "managedDir", value);
+    if (hooks.windows_managed_dir) |value| try appendJsonStringField(allocator, result, &first, "windowsManagedDir", value);
+    for (config_requirements_hooks.EVENT_ORDER) |event| {
+        try appendJsonFieldName(allocator, result, &first, event.configLabel());
+        try appendHookMatcherGroupsArray(allocator, result, hooks.events[event.index()]);
+    }
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendHookMatcherGroupsArray(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    groups: config_requirements_hooks.MatcherGroupList,
+) !void {
+    try result.appendSlice(allocator, "[");
+    for (groups.items, 0..) |group, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendHookMatcherGroupObject(allocator, result, group);
+    }
+    try result.appendSlice(allocator, "]");
+}
+
+fn appendHookMatcherGroupObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    group: config_requirements_hooks.MatcherGroup,
+) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    if (group.matcher) |matcher| try appendJsonStringField(allocator, result, &first, "matcher", matcher);
+    try appendJsonFieldName(allocator, result, &first, "hooks");
+    try result.appendSlice(allocator, "[");
+    for (group.hooks, 0..) |hook, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendHookHandlerObject(allocator, result, hook);
+    }
+    try result.appendSlice(allocator, "]}");
+}
+
+fn appendHookHandlerObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    hook: config_requirements_hooks.HookHandler,
+) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    try appendJsonStringField(allocator, result, &first, "type", hook.kind.label());
+    if (hook.kind == .command) {
+        if (hook.command) |command| try appendJsonStringField(allocator, result, &first, "command", command);
+        if (hook.timeout_sec) |timeout_sec| try appendJsonU64Field(allocator, result, &first, "timeoutSec", timeout_sec);
+        try appendJsonBoolField(allocator, result, &first, "async", hook.async_handler);
+        if (hook.status_message) |status_message| try appendJsonStringField(allocator, result, &first, "statusMessage", status_message);
     }
     try result.appendSlice(allocator, "}");
 }
@@ -3941,6 +4017,19 @@ fn appendJsonU16Field(
     first: *bool,
     name: []const u8,
     value: u16,
+) !void {
+    try appendJsonFieldName(allocator, result, first, name);
+    const value_json = try std.fmt.allocPrint(allocator, "{d}", .{value});
+    defer allocator.free(value_json);
+    try result.appendSlice(allocator, value_json);
+}
+
+fn appendJsonU64Field(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: u64,
 ) !void {
     try appendJsonFieldName(allocator, result, first, name);
     const value_json = try std.fmt.allocPrint(allocator, "{d}", .{value});
