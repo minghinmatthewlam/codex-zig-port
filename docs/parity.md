@@ -57,6 +57,11 @@ config (`model`, `approval_policy`, `sandbox_mode`, `web_search`,
 precedence. Layer reads also preserve required empty user and system layers
 when the corresponding config files are absent.
 
+Current app-server TypeScript and JSON Schema generation coverage includes the
+minimal JSON-RPC envelope files plus command-exec request, response, follow-up,
+terminal-size, sandbox-policy, and output-delta notification artifacts. Full
+Rust generator parity remains planned.
+
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop, accepts an optional initial prompt, rejects unknown top-level flags, supports `--` before prompt text, exposes `help [COMMAND]`, includes top-level `apply` / `a`, recognizes planned Rust top-level commands (`remote-control`, `app`, `update`, `cloud` / `cloud-tasks`, hidden `responses-api-proxy`, and `exec-server`) with explicit not-implemented errors, rejects the removed Rust top-level `marketplace` namespace, and supports global `-m/--model`, `-i/--image`, `--enable`, `--disable`, `--oss`, `--local-provider`, `-p/--profile`, `-c/--config`, `-a/--ask-for-approval`, `-s/--sandbox`, `-C/--cd`, `--add-dir`, `--search`, `--remote`, `--remote-auth-token-env`, `--remote-control`, `--remote-control-bind`, `--no-alt-screen`, `--version`, and `--yolo` overrides, including Rust-compatible rejection when dangerous bypass is combined with an explicit approval policy. Remote app-server flags and local remote-control flags are parsed and rejected for non-interactive subcommands, but remote TUI transport and the local remote-control server are not implemented yet. Full command behavior parity is planned. |

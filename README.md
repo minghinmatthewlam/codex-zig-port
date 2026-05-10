@@ -99,8 +99,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   an `initialize` handshake
 - generate minimal app-server TypeScript bindings and JSON Schema bundles with
   `app-server generate-ts -o DIR [--experimental]` and
-  `app-server generate-json-schema -o DIR [--experimental]`, plus the hidden
-  internal `RolloutLine.json` schema with
+  `app-server generate-json-schema -o DIR [--experimental]`, including
+  command-exec request, response, follow-up, and output-delta notification
+  shapes in the public generated artifacts, plus the hidden internal
+  `RolloutLine.json` schema with
   `app-server generate-internal-json-schema -o DIR`
 - handle app-server filesystem JSON-RPC methods for read, write, mkdir,
   metadata, directory listing, remove, and copy
@@ -304,9 +306,10 @@ config-requirements RPCs against temporary config homes, including system
 requirements precedence and legacy managed-config requirements, and a mock
 backend, checks app-server experimental
 feature listing and runtime
-enablement patching against temporary config homes, verifies minimal app-server
-TypeScript/JSON Schema generation and the hidden internal `RolloutLine.json`
-schema generator, and checks app-server flag
+enablement patching against temporary config homes, verifies app-server
+TypeScript/JSON Schema generation including command-exec request/response,
+follow-up, and output-delta notification artifacts, verifies the hidden
+internal `RolloutLine.json` schema generator, and checks app-server flag
 compatibility for analytics defaults plus websocket auth parsing. It also runs
 CLI smokes for profile-scoped feature enablement writes and reads, `exec review`
 dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
