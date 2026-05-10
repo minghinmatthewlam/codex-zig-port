@@ -10,6 +10,7 @@ const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const memory_reset = @import("memory_reset.zig");
+const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
@@ -464,6 +465,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isPluginMethod(method)) {
         return try handlePluginMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (std.mem.eql(u8, method, "skills/list")) {
+        return try handleSkillsList(allocator, id_value.?, object.get("params"));
+    }
     if (isFsMethod(method)) {
         return try handleFsMethod(allocator, id_value.?, method, object.get("params"));
     }
@@ -871,6 +875,178 @@ fn isPluginMarketplaceKind(value: []const u8) bool {
     return std.mem.eql(u8, value, "local") or
         std.mem.eql(u8, value, "workspace-directory") or
         std.mem.eql(u8, value, "shared-with-me");
+}
+
+const ParsedSkillsListParams = struct {
+    cwds: []const []const u8,
+    extra_roots_by_cwd: []skills_list.ExtraRootsForCwd,
+
+    fn deinit(self: ParsedSkillsListParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwds);
+        for (self.extra_roots_by_cwd) |entry| allocator.free(entry.roots);
+        allocator.free(self.extra_roots_by_cwd);
+    }
+};
+
+fn handleSkillsList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parseSkillsListParams(allocator, params_value) catch |err| switch (err) {
+        error.InvalidSkillsListParams => return renderJsonRpcError(allocator, id_value, -32602, "skills/list params must be an object"),
+        error.InvalidSkillsListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
+        error.InvalidSkillsListForceReload => return renderJsonRpcError(allocator, id_value, -32602, "forceReload must be a boolean or null"),
+        error.InvalidSkillsListExtraRoots => return renderJsonRpcError(allocator, id_value, -32602, "perCwdExtraUserRoots must be an array or null"),
+        error.InvalidSkillsListExtraRootEntry => return renderJsonRpcError(allocator, id_value, -32602, "perCwdExtraUserRoots entries must include cwd and extraUserRoots"),
+        error.InvalidSkillsListExtraRootPath => return renderJsonRpcError(allocator, id_value, -32602, "skills/list extraUserRoots paths must be absolute"),
+        else => return err,
+    };
+    defer params.deinit(allocator);
+
+    var listed = skills_list.list(allocator, params.cwds, params.extra_roots_by_cwd) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
+    };
+    defer listed.deinit(allocator);
+
+    const result = try renderSkillsListResponse(allocator, listed);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn parseSkillsListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedSkillsListParams {
+    const empty = ParsedSkillsListParams{ .cwds = &.{}, .extra_roots_by_cwd = &.{} };
+    const params = params_value orelse return empty;
+    if (params == .null) return empty;
+    if (params != .object) return error.InvalidSkillsListParams;
+
+    if (params.object.get("forceReload")) |force_reload| {
+        if (force_reload != .null and force_reload != .bool) return error.InvalidSkillsListForceReload;
+    }
+
+    const cwds = try parseOptionalStringArray(allocator, params.object.get("cwds"), error.InvalidSkillsListCwds);
+    errdefer allocator.free(cwds);
+    const extra_roots = try parseSkillsListExtraRoots(allocator, params.object.get("perCwdExtraUserRoots"));
+    errdefer {
+        for (extra_roots) |entry| allocator.free(entry.roots);
+        allocator.free(extra_roots);
+    }
+
+    return .{ .cwds = cwds, .extra_roots_by_cwd = extra_roots };
+}
+
+fn parseOptionalStringArray(
+    allocator: std.mem.Allocator,
+    value_opt: ?std.json.Value,
+    comptime invalid_error: anyerror,
+) ![]const []const u8 {
+    const value = value_opt orelse return &.{};
+    if (value == .null) return &.{};
+    if (value != .array) return invalid_error;
+    const items = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(items);
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string) return invalid_error;
+        items[index] = item.string;
+    }
+    return items;
+}
+
+fn parseSkillsListExtraRoots(allocator: std.mem.Allocator, value_opt: ?std.json.Value) ![]skills_list.ExtraRootsForCwd {
+    const value = value_opt orelse return &.{};
+    if (value == .null) return &.{};
+    if (value != .array) return error.InvalidSkillsListExtraRoots;
+
+    const entries = try allocator.alloc(skills_list.ExtraRootsForCwd, value.array.items.len);
+    errdefer allocator.free(entries);
+    var initialized: usize = 0;
+    errdefer {
+        for (entries[0..initialized]) |entry| allocator.free(entry.roots);
+    }
+
+    for (value.array.items, 0..) |item, index| {
+        if (item != .object) return error.InvalidSkillsListExtraRootEntry;
+        const cwd_value = item.object.get("cwd") orelse return error.InvalidSkillsListExtraRootEntry;
+        const roots_value = item.object.get("extraUserRoots") orelse return error.InvalidSkillsListExtraRootEntry;
+        if (cwd_value != .string or roots_value != .array) return error.InvalidSkillsListExtraRootEntry;
+
+        const roots = try allocator.alloc([]const u8, roots_value.array.items.len);
+        errdefer allocator.free(roots);
+        for (roots_value.array.items, 0..) |root_value, root_index| {
+            if (root_value != .string) return error.InvalidSkillsListExtraRootEntry;
+            if (!std.fs.path.isAbsolute(root_value.string)) return error.InvalidSkillsListExtraRootPath;
+            roots[root_index] = root_value.string;
+        }
+        entries[index] = .{ .cwd = cwd_value.string, .roots = roots };
+        initialized += 1;
+    }
+
+    return entries;
+}
+
+fn renderSkillsListResponse(allocator: std.mem.Allocator, result: skills_list.Result) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"data\":[");
+    for (result.entries, 0..) |entry, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendSkillsListEntryJson(allocator, &out, entry);
+    }
+    try out.appendSlice(allocator, "]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendSkillsListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), entry: skills_list.Entry) !void {
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, entry.cwd, .{});
+    defer allocator.free(cwd_json);
+    try out.appendSlice(allocator, "{\"cwd\":");
+    try out.appendSlice(allocator, cwd_json);
+    try out.appendSlice(allocator, ",\"skills\":[");
+    for (entry.skills, 0..) |skill, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendSkillMetadataJson(allocator, out, skill);
+    }
+    try out.appendSlice(allocator, "],\"errors\":[");
+    for (entry.errors, 0..) |skill_error, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendSkillErrorJson(allocator, out, skill_error);
+    }
+    try out.appendSlice(allocator, "]}");
+}
+
+fn appendSkillMetadataJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill: skills_list.Skill) !void {
+    const name_json = try std.json.Stringify.valueAlloc(allocator, skill.name, .{});
+    defer allocator.free(name_json);
+    const description_json = try std.json.Stringify.valueAlloc(allocator, skill.description, .{});
+    defer allocator.free(description_json);
+    const path_json = try std.json.Stringify.valueAlloc(allocator, skill.path, .{});
+    defer allocator.free(path_json);
+    const scope_json = try std.json.Stringify.valueAlloc(allocator, skill.scope, .{});
+    defer allocator.free(scope_json);
+
+    try out.appendSlice(allocator, "{\"name\":");
+    try out.appendSlice(allocator, name_json);
+    try out.appendSlice(allocator, ",\"description\":");
+    try out.appendSlice(allocator, description_json);
+    if (skill.short_description) |short_description| {
+        const short_description_json = try std.json.Stringify.valueAlloc(allocator, short_description, .{});
+        defer allocator.free(short_description_json);
+        try out.appendSlice(allocator, ",\"shortDescription\":");
+        try out.appendSlice(allocator, short_description_json);
+    }
+    try out.appendSlice(allocator, ",\"path\":");
+    try out.appendSlice(allocator, path_json);
+    try out.appendSlice(allocator, ",\"scope\":");
+    try out.appendSlice(allocator, scope_json);
+    try out.appendSlice(allocator, ",\"enabled\":true}");
+}
+
+fn appendSkillErrorJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), skill_error: skills_list.SkillError) !void {
+    const path_json = try std.json.Stringify.valueAlloc(allocator, skill_error.path, .{});
+    defer allocator.free(path_json);
+    const message_json = try std.json.Stringify.valueAlloc(allocator, skill_error.message, .{});
+    defer allocator.free(message_json);
+    try out.appendSlice(allocator, "{\"path\":");
+    try out.appendSlice(allocator, path_json);
+    try out.appendSlice(allocator, ",\"message\":");
+    try out.appendSlice(allocator, message_json);
+    try out.appendSlice(allocator, "}");
 }
 
 const FS_ABSOLUTE_PATH_MESSAGE = "Invalid request: AbsolutePathBuf deserialized without a base path";
