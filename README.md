@@ -120,7 +120,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   and apps config including app defaults, policy flags, and per-app tool
   overrides, trusted project-stack scalar, tool, app, and sandbox workspace
   layers, system scalar/tool/app/sandbox workspace precedence, required empty
-  user/system layers, and legacy managed scalar/tool/sandbox overrides with
+  user/system layers, and legacy managed scalar/tool/app/sandbox overrides with
   `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
@@ -270,7 +270,7 @@ sandbox workspace settings, tools/apps config including app defaults, policy
 flags, and per-app tool overrides, trusted project scalar, tool, app, and
 sandbox workspace layers, system scalar/tool/app/sandbox workspace
 precedence, required empty user/system layers, and legacy managed
-scalar/tool/sandbox overrides,
+scalar/tool/app/sandbox overrides,
 config-value-write including table-object merge/replace behavior,
 config-batch-write including table-object merge/replace behavior, and
 config-requirements RPCs against temporary config homes, including legacy
