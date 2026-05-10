@@ -98,12 +98,18 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
     }
 
+    const effective_oss = options.oss or parsed.oss;
+    const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
+    const effective_cwd = parsed.cwd orelse options.cwd;
+    if (effective_cwd) |cwd| try workdir.change(cwd);
+
     if (parsed.review_mode) {
+        try enforceTrustedGitRepository(allocator, parsed.skip_git_repo_check or parsed.dangerously_bypass_approvals_and_sandbox);
         try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
             .profile = parsed.profile,
             .runtime_overrides = mergedReviewOverrides(options.runtime_overrides, parsed),
-            .oss = options.oss or parsed.oss,
-            .oss_provider = parsed.oss_provider orelse options.oss_provider,
+            .oss = effective_oss,
+            .oss_provider = effective_oss_provider,
             .ignore_user_config = parsed.ignore_user_config,
         });
         return;
@@ -116,11 +122,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     }
     const should_append_piped_stdin = !stdin_is_tty and !parsed.read_stdin and parsed.prompt != null and parsed.resume_target == null;
     const should_read_stdin = parsed.read_stdin or parsed.prompt == null or should_append_piped_stdin;
-    const effective_oss = options.oss or parsed.oss;
-    const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
-
-    const effective_cwd = parsed.cwd orelse options.cwd;
-    if (effective_cwd) |cwd| try workdir.change(cwd);
 
     const additional_writable_roots = try cli_utils.mergeStringSlices(
         allocator,
