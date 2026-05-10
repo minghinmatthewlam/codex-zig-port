@@ -49,8 +49,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - inspect configured MCP servers from the interactive TUI with `/mcp`
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
-- run a minimal app-server stdio JSON-RPC transport with an `initialize`
-  handshake
+- run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
+  an `initialize` handshake
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
@@ -83,10 +83,13 @@ The `e2e` step starts a local mock Responses server, launches the real
 `/debug-config` effective values plus config-source status, `/keymap`, `/plan` tool omission and proposed-plan rendering, `/title` item selection and persistence, `/statusline`, `/theme`, `/personality`, persisted `/rename` metadata, `/sessions`, `/fast`, `/copy`, `/raw`, `/vim`, `/mention`, `/side`, `/mcp`, `!COMMAND`, `/model`, `/permissions`, `/history`, model-requested `update_plan`, `exec_command`, and
 `apply_patch` tool calls with approval, `/ps`, `/clean`, and `/quit`, then checks
 the captured terminal transcript, API request count, propagated model override,
-propagated service tier, and the file created in the temporary workspace. It also launches
-the TUI without `--no-alt-screen` to verify alternate-screen enter/leave
-escape sequences, checks `tui.alternate_screen = "never"` stays inline, then launches `codex-zig app-server` as a subprocess and verifies a newline-delimited
-JSON-RPC stdio initialize request and unsupported-method error. Run
+propagated service tier, and the file created in the temporary workspace. It
+also launches the TUI without `--no-alt-screen` to verify alternate-screen
+enter/leave escape sequences, checks `tui.alternate_screen = "never"` stays
+inline, then launches `codex-zig app-server` as a subprocess and verifies
+newline-delimited JSON-RPC initialize requests and unsupported-method errors
+over stdio, an explicit Unix socket, and the default
+`CODEX_HOME/app-server-control/app-server-control.sock` socket. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
 
@@ -135,8 +138,8 @@ The port reads `model`, `model_provider`, `openai_base_url`,
 `chatgpt_base_url`, `approval_policy`, `sandbox_mode`, `oss_provider`,
 `personality`, and `profile` from top-level keys in
 `$CODEX_HOME/config.toml`. It also supports `[profiles.<name>]` sections for
-those same fields, reads `[tui].theme`, `[tui].status_line`, and
-`[tui].terminal_title` for TUI preferences, and reads
+those same fields, reads `[tui].theme`, `[tui].status_line`,
+`[tui].terminal_title`, and `[tui].alternate_screen` for TUI preferences, and reads
 `[model_providers.<name>].base_url` for custom Responses-compatible providers.
 
 ```sh
@@ -175,4 +178,5 @@ codex-zig review --commit HEAD
 `CODEX_OSS_BASE_URL` or `CODEX_OSS_PORT` override the local OSS Responses endpoint.
 The Rust-compatible `-c/--config key=value` path currently accepts supported
 scalar keys: `profile`, `model`, `openai_base_url`, `chatgpt_base_url`,
-`oss_provider`, `approval_policy`, `sandbox_mode`, and `web_search`.
+`oss_provider`, `approval_policy`, `sandbox_mode`, `web_search`, and
+`tui.alternate_screen`.
