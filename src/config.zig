@@ -688,6 +688,10 @@ pub fn readConfigTomlFile(allocator: std.mem.Allocator, path: []const u8) !?[]co
     };
 }
 
+pub fn topLevelStringValue(allocator: std.mem.Allocator, bytes: []const u8, key: []const u8) !?[]const u8 {
+    return (ConfigView{ .bytes = bytes }).getTopLevelString(allocator, key);
+}
+
 pub fn persistTuiTheme(allocator: std.mem.Allocator, codex_home: []const u8, name: []const u8) !void {
     const bytes = try readConfigToml(allocator, codex_home);
     defer if (bytes) |value| allocator.free(value);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const account_nudge = @import("account_nudge.zig");
 const account_rate_limits = @import("account_rate_limits.zig");
@@ -22,6 +23,8 @@ const skills_list = @import("skills_list.zig");
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
+const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
+const UNIX_MANAGED_CONFIG_SYSTEM_PATH = "/etc/codex/managed_config.toml";
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -3150,7 +3153,103 @@ fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json
             return renderJsonRpcError(allocator, id_value, -32602, "configRequirements/read params must be null or omitted");
         }
     }
-    return renderJsonRpcResult(allocator, id_value, "{\"requirements\":null}");
+    const requirements = loadLegacyManagedConfigRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "configRequirements/read failed to load managed config requirements", err);
+    };
+    const result = try renderConfigRequirementsReadResponse(allocator, requirements);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+const LegacyManagedConfigRequirements = struct {
+    approval_policy: ?config.ApprovalPolicy = null,
+    approvals_reviewer: ?ApprovalsReviewer = null,
+    sandbox_mode: ?config.SandboxMode = null,
+
+    fn isEmpty(self: LegacyManagedConfigRequirements) bool {
+        return self.approval_policy == null and
+            self.approvals_reviewer == null and
+            self.sandbox_mode == null;
+    }
+};
+
+const ApprovalsReviewer = enum {
+    user,
+    auto_review,
+
+    fn parse(value: []const u8) !ApprovalsReviewer {
+        if (std.mem.eql(u8, value, "user")) return .user;
+        if (std.mem.eql(u8, value, "auto_review") or std.mem.eql(u8, value, "guardian_subagent")) return .auto_review;
+        return error.InvalidApprovalsReviewer;
+    }
+
+};
+
+fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !LegacyManagedConfigRequirements {
+    const path = try managedConfigPath(allocator);
+    defer allocator.free(path);
+
+    const bytes = try config.readConfigTomlFile(allocator, path);
+    defer if (bytes) |payload| allocator.free(payload);
+    const payload = bytes orelse return .{};
+
+    var requirements = LegacyManagedConfigRequirements{};
+    if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
+        defer allocator.free(value);
+        requirements.approval_policy = try config.ApprovalPolicy.parse(value);
+    }
+    if (try config.topLevelStringValue(allocator, payload, "approvals_reviewer")) |value| {
+        defer allocator.free(value);
+        requirements.approvals_reviewer = try ApprovalsReviewer.parse(value);
+    }
+    if (try config.topLevelStringValue(allocator, payload, "sandbox_mode")) |value| {
+        defer allocator.free(value);
+        requirements.sandbox_mode = try config.SandboxMode.parse(value);
+    }
+    return requirements;
+}
+
+fn managedConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, MANAGED_CONFIG_PATH_ENV_VAR)) |path| {
+        if (path.len > 0) return path;
+        allocator.free(path);
+    }
+    if (builtin.os.tag == .windows) {
+        const codex_home = try resolveCodexHome(allocator);
+        defer allocator.free(codex_home);
+        return std.fs.path.join(allocator, &.{ codex_home, "managed_config.toml" });
+    }
+    return allocator.dupe(u8, UNIX_MANAGED_CONFIG_SYSTEM_PATH);
+}
+
+fn renderConfigRequirementsReadResponse(allocator: std.mem.Allocator, requirements: LegacyManagedConfigRequirements) ![]const u8 {
+    if (requirements.isEmpty()) return allocator.dupe(u8, "{\"requirements\":null}");
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"requirements\":{");
+    var first = true;
+    if (requirements.approval_policy) |approval_policy| {
+        try appendJsonFieldName(allocator, &result, &first, "allowedApprovalPolicies");
+        try appendJsonStringArray(allocator, &result, &.{approval_policy.label()});
+    }
+    if (requirements.approvals_reviewer) |approvals_reviewer| {
+        try appendJsonFieldName(allocator, &result, &first, "allowedApprovalsReviewers");
+        switch (approvals_reviewer) {
+            .user => try appendJsonStringArray(allocator, &result, &.{"user"}),
+            .auto_review => try appendJsonStringArray(allocator, &result, &.{ "guardian_subagent", "user" }),
+        }
+    }
+    if (requirements.sandbox_mode) |sandbox_mode| {
+        try appendJsonFieldName(allocator, &result, &first, "allowedSandboxModes");
+        switch (sandbox_mode) {
+            .read_only => try appendJsonStringArray(allocator, &result, &.{"read-only"}),
+            .workspace_write => try appendJsonStringArray(allocator, &result, &.{ "read-only", "workspace-write" }),
+            .danger_full_access => try appendJsonStringArray(allocator, &result, &.{ "read-only", "danger-full-access" }),
+        }
+    }
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
 }
 
 const ConfigRawEdit = struct {
