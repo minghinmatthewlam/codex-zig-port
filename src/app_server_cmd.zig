@@ -519,6 +519,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isModelMethod(method)) {
         return try handleModelMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (isCollaborationModeMethod(method)) {
+        return try handleCollaborationModeMethod(allocator, id_value.?, method, object.get("params"));
+    }
     if (isExperimentalFeatureMethod(method)) {
         return try handleExperimentalFeatureMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -2994,6 +2997,37 @@ fn handleModelProviderCapabilitiesRead(allocator: std.mem.Allocator, id_value: s
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
+fn isCollaborationModeMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "collaborationMode/list");
+}
+
+fn handleCollaborationModeMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "collaborationMode/list")) {
+        return handleCollaborationModeList(allocator, id_value, params_value);
+    }
+    return renderJsonRpcError(allocator, id_value, -32601, "unknown collaboration mode method");
+}
+
+fn handleCollaborationModeList(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (validateOptionalObjectParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+
+    const result =
+        \\{"data":[{"name":"Plan","mode":"plan","model":null,"reasoning_effort":"medium"},{"name":"Default","mode":"default","model":null,"reasoning_effort":null}]}
+    ;
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
 fn isExperimentalFeatureMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "experimentalFeature/list") or
         std.mem.eql(u8, method, "experimentalFeature/enablement/set");
@@ -3754,6 +3788,45 @@ test "app-server plugin methods validate params and return not implemented" {
     );
     defer allocator.free(invalid_kind.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid_kind.?, "\"code\":-32602") != null);
+}
+
+test "app-server collaboration mode list returns built-in presets" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"collaboration-modes\",\"method\":\"collaborationMode/list\",\"params\":{}}",
+    );
+    defer allocator.free(response.?);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response.?, .{});
+    defer parsed.deinit();
+
+    const data = parsed.value.object.get("result").?.object.get("data").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), data.len);
+
+    const plan = data[0].object;
+    try std.testing.expectEqualStrings("Plan", plan.get("name").?.string);
+    try std.testing.expectEqualStrings("plan", plan.get("mode").?.string);
+    try std.testing.expect(plan.get("model").? == .null);
+    try std.testing.expectEqualStrings("medium", plan.get("reasoning_effort").?.string);
+
+    const default = data[1].object;
+    try std.testing.expectEqualStrings("Default", default.get("name").?.string);
+    try std.testing.expectEqualStrings("default", default.get("mode").?.string);
+    try std.testing.expect(default.get("model").? == .null);
+    try std.testing.expect(default.get("reasoning_effort").? == .null);
+
+    const invalid = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-collaboration-modes\",\"method\":\"collaborationMode/list\",\"params\":[]}",
+    );
+    defer allocator.free(invalid.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.?, "\"code\":-32602") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
