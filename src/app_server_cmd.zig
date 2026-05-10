@@ -1335,6 +1335,7 @@ fn appendJsonFieldName(
 
 fn isAccountMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "account/read") or
+        std.mem.eql(u8, method, "account/login/start") or
         std.mem.eql(u8, method, "account/logout");
 }
 
@@ -1347,10 +1348,51 @@ fn handleAccountMethod(
     if (std.mem.eql(u8, method, "account/read")) {
         return handleAccountRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "account/login/start")) {
+        return handleAccountLoginStart(allocator, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "account/logout")) {
         return handleAccountLogout(allocator, id_value, params_value);
     }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown account method");
+}
+
+fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "account/login/start params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "account/login/start params must be an object");
+    const object = params.object;
+
+    const type_value = object.get("type") orelse return renderJsonRpcError(allocator, id_value, -32602, "type must be a string");
+    if (type_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "type must be a string");
+
+    const login_type = type_value.string;
+    if (!std.mem.eql(u8, login_type, "apiKey")) {
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "account/login/start type {s} is parsed but not implemented yet",
+            .{login_type},
+        );
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32603, message);
+    }
+
+    const api_key_value = object.get("apiKey") orelse return renderJsonRpcError(allocator, id_value, -32602, "apiKey must be a non-empty string");
+    if (api_key_value != .string or api_key_value.string.len == 0) {
+        return renderJsonRpcError(allocator, id_value, -32602, "apiKey must be a non-empty string");
+    }
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    auth_mod.saveApiKeyAuthJson(allocator, cfg.codex_home, api_key_value.string) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save API key", err);
+    };
+
+    const response = try renderJsonRpcResult(allocator, id_value, "{\"type\":\"apiKey\"}");
+    defer allocator.free(response);
+    return renderResultWithApiKeyLoginNotifications(allocator, response);
 }
 
 fn handleAccountLogout(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -1468,6 +1510,14 @@ fn renderResultWithAccountUpdatedNotification(allocator: std.mem.Allocator, resp
     return std.fmt.allocPrint(
         allocator,
         "{s}\n{{\"method\":\"account/updated\",\"params\":{{\"authMode\":null,\"planType\":null}}}}",
+        .{response},
+    );
+}
+
+fn renderResultWithApiKeyLoginNotifications(allocator: std.mem.Allocator, response: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n{{\"method\":\"account/login/completed\",\"params\":{{\"loginId\":null,\"success\":true,\"error\":null}}}}\n{{\"method\":\"account/updated\",\"params\":{{\"authMode\":\"apikey\",\"planType\":null}}}}",
         .{response},
     );
 }
