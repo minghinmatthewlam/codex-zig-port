@@ -111,7 +111,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     const stdin_is_tty = isStdinTty();
     if (parsed.prompt == null and !parsed.read_stdin and stdin_is_tty) {
-        std.debug.print("codex-zig exec requires a prompt or - for stdin\n", .{});
+        try cli_utils.writeStderr("No prompt provided. Either specify one as an argument or pipe the prompt into stdin.\n");
         return error.MissingExecPrompt;
     }
     const should_append_piped_stdin = !stdin_is_tty and !parsed.read_stdin and parsed.prompt != null and parsed.resume_target == null;
@@ -129,10 +129,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     );
     defer allocator.free(additional_writable_roots);
 
-    const prompt = if (should_read_stdin)
-        try readPromptFromStdin(allocator, parsed.prompt, !should_append_piped_stdin)
-    else
-        try allocator.dupe(u8, parsed.prompt.?);
+    const prompt = if (should_read_stdin) prompt: {
+        if (should_append_piped_stdin) {
+            try cli_utils.writeStderr("Reading additional input from stdin...\n");
+        } else if (parsed.prompt == null and !parsed.read_stdin) {
+            try cli_utils.writeStderr("Reading prompt from stdin...\n");
+        }
+        break :prompt try readPromptFromStdin(allocator, parsed.prompt, !should_append_piped_stdin);
+    } else try allocator.dupe(u8, parsed.prompt.?);
     defer allocator.free(prompt);
 
     var cfg = try config.loadWithOptions(allocator, .{

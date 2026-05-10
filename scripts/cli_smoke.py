@@ -376,6 +376,7 @@ def run_exec_stdin_smoke(binary: Path) -> None:
             check=True,
         )
         assert stdin_only.stdout == "stored reply\n"
+        assert stdin_only.stderr == "Reading prompt from stdin...\n"
         assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "stdin only prompt"
 
         prompt_with_context = subprocess.run(
@@ -390,6 +391,7 @@ def run_exec_stdin_smoke(binary: Path) -> None:
             check=True,
         )
         assert prompt_with_context.stdout == "stored reply\n"
+        assert prompt_with_context.stderr == "Reading additional input from stdin...\n"
         assert (
             server.request_bodies[1]["input"][-1]["content"][0]["text"]
             == "summarize\n\n<stdin>\nextra context\n</stdin>"
