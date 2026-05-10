@@ -890,6 +890,11 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "alpha.txt").write_text("file match\n", encoding="utf-8")
         (search_root / "beta.txt").write_text("not a match\n", encoding="utf-8")
         (search_root / "alpha_dir").mkdir()
+        (search_root / "abc").write_text("prefix non-match\n", encoding="utf-8")
+        (search_root / "abcde").write_text("spread match\n", encoding="utf-8")
+        (search_root / "abexy").write_text("best match\n", encoding="utf-8")
+        (search_root / "sub").mkdir()
+        (search_root / "sub" / "abce").write_text("nested match\n", encoding="utf-8")
 
         env = os.environ.copy()
         env.pop("OPENAI_API_KEY", None)
@@ -921,6 +926,44 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert isinstance(by_path["alpha_dir"]["score"], int)
         assert by_path["alpha_dir"]["score"] > 0
         assert "beta.txt" not in by_path
+
+        sorted_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-sorted",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "abe", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert sorted_search["id"] == "fuzzy-search-sorted"
+        assert sorted_search["result"]["files"] == [
+            {
+                "root": str(search_root),
+                "path": "abexy",
+                "match_type": "file",
+                "file_name": "abexy",
+                "score": 84,
+                "indices": [0, 1, 2],
+            },
+            {
+                "root": str(search_root),
+                "path": "sub/abce",
+                "match_type": "file",
+                "file_name": "abce",
+                "score": 72,
+                "indices": [4, 5, 7],
+            },
+            {
+                "root": str(search_root),
+                "path": "abcde",
+                "match_type": "file",
+                "file_name": "abcde",
+                "score": 71,
+                "indices": [0, 1, 4],
+            },
+        ]
 
         empty_query = request_stdio_app_server(
             binary,
