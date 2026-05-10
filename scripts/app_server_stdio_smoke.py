@@ -179,13 +179,10 @@ def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -
 
 
 def git(repo: Path, *args: str) -> None:
-    git_env = os.environ.copy()
-    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
-    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
     subprocess.run(
         ["git", *args],
         cwd=repo,
-        env=git_env,
+        env=clean_git_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -194,19 +191,23 @@ def git(repo: Path, *args: str) -> None:
 
 
 def git_output(repo: Path, *args: str) -> str:
-    git_env = os.environ.copy()
-    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
-    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
     result = subprocess.run(
         ["git", *args],
         cwd=repo,
-        env=git_env,
+        env=clean_git_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         check=True,
     )
     return result.stdout.strip()
+
+
+def clean_git_env() -> dict[str, str]:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return git_env
 
 
 def assert_empty_dir(path: Path) -> None:
