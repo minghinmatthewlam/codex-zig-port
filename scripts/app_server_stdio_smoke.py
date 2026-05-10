@@ -3824,6 +3824,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[tools]",
                 "view_image = false",
                 "",
+                "[apps._default]",
+                "enabled = false",
+                "destructive_enabled = false",
+                "open_world_enabled = true",
+                "",
                 "[apps.app1]",
                 "enabled = false",
                 "destructive_enabled = false",
@@ -3896,7 +3901,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "view_image": False,
         }
         assert config_body["apps"] == {
-            "_default": None,
+            "_default": {
+                "enabled": False,
+                "destructive_enabled": False,
+                "open_world_enabled": True,
+            },
             "app1": {
                 "enabled": False,
                 "destructive_enabled": False,
@@ -3927,6 +3936,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "tools.web_search.location.city",
             "tools.web_search.location.timezone",
             "tools.view_image",
+            "apps._default.enabled",
+            "apps._default.destructive_enabled",
+            "apps._default.open_world_enabled",
             "apps.app1.enabled",
             "apps.app1.destructive_enabled",
             "apps.app1.default_tools_approval_mode",
@@ -3964,7 +3976,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "view_image": False,
             },
             "apps": {
-                "_default": None,
+                "_default": {
+                    "enabled": False,
+                    "destructive_enabled": False,
+                    "open_world_enabled": True,
+                },
                 "app1": {
                     "enabled": False,
                     "destructive_enabled": False,
