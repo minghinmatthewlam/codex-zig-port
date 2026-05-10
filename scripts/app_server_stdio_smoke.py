@@ -3901,7 +3901,29 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
 def run_config_value_write_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-write-", dir="/tmp"))
     config_path = codex_home / "config.toml"
-    config_path.write_text('model = "gpt-old"\n\n[features]\ngoals = false\n', encoding="utf-8")
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-old"',
+                "",
+                "[features]",
+                "goals = false",
+                "",
+                "[mcp_servers.linear]",
+                'bearer_token_env_var = "TOKEN"',
+                'name = "linear"',
+                'url = "https://linear.example"',
+                "",
+                "[mcp_servers.linear.env_http_headers]",
+                'existing = "keep"',
+                "",
+                "[mcp_servers.linear.http_headers]",
+                'alpha = "a"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
@@ -3960,6 +3982,60 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         after_feature = rpc("config-read-after-feature-write", "config/read", {})
         assert after_feature["id"] == "config-read-after-feature-write"
         assert after_feature["result"]["config"]["features"]["goals"] is True
+
+        table_upsert = rpc(
+            "config-write-table-upsert",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "mcp_servers.linear",
+                "value": {
+                    "bearer_token_env_var": "NEW_TOKEN",
+                    "http_headers": {
+                        "alpha": "updated",
+                        "beta": "b",
+                    },
+                    "name": "linear",
+                    "url": "https://linear.example",
+                },
+                "mergeStrategy": "upsert",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert table_upsert["id"] == "config-write-table-upsert"
+        assert table_upsert["result"]["status"] == "ok"
+        upserted_contents = config_path.read_text(encoding="utf-8")
+        assert 'bearer_token_env_var = "NEW_TOKEN"' in upserted_contents
+        assert '[mcp_servers.linear.env_http_headers]\nexisting = "keep"' in upserted_contents
+        assert 'alpha = "updated"' in upserted_contents
+        assert 'beta = "b"' in upserted_contents
+
+        table_replace = rpc(
+            "config-write-table-replace",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "mcp_servers.linear",
+                "value": {
+                    "bearer_token_env_var": "REPLACED_TOKEN",
+                    "http_headers": {
+                        "alpha": "replaced",
+                    },
+                    "name": "linear",
+                    "url": "https://linear.example",
+                },
+                "mergeStrategy": "replace",
+                "expectedVersion": table_upsert["result"]["version"],
+            },
+        )
+        assert table_replace["id"] == "config-write-table-replace"
+        assert table_replace["result"]["status"] == "ok"
+        replaced_contents = config_path.read_text(encoding="utf-8")
+        assert 'bearer_token_env_var = "REPLACED_TOKEN"' in replaced_contents
+        assert 'alpha = "replaced"' in replaced_contents
+        assert "[mcp_servers.linear.env_http_headers]" not in replaced_contents
+        assert 'existing = "keep"' not in replaced_contents
+        assert 'beta = "b"' not in replaced_contents
 
         conflict = rpc(
             "config-write-conflict",
