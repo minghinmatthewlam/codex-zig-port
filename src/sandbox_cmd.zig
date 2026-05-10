@@ -6,6 +6,12 @@ const config = @import("config.zig");
 const sandbox = @import("sandbox.zig");
 const workdir = @import("workdir.zig");
 
+const SandboxKind = enum {
+    macos,
+    linux,
+    windows,
+};
+
 const SandboxArgs = struct {
     help: bool = false,
     mode: ?config.SandboxMode = null,
@@ -46,9 +52,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         printHelp();
         return;
     }
-    if (!std.mem.eql(u8, subcommand, "macos") and !std.mem.eql(u8, subcommand, "seatbelt")) {
-        return error.UnknownSandboxSubcommand;
-    }
+    const kind = parseSandboxKind(subcommand) orelse return error.UnknownSandboxSubcommand;
 
     var parsed = try parseMacosArgs(allocator, raw_args.items[1..]);
     defer parsed.deinit(allocator);
@@ -58,7 +62,11 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (parsed.command.len == 0) return error.MissingSandboxCommand;
-    if (builtin.os.tag != .macos) return error.SeatbeltUnsupported;
+    switch (kind) {
+        .macos => if (builtin.os.tag != .macos) return error.SeatbeltUnsupported,
+        .linux => return error.LinuxSandboxUnsupported,
+        .windows => return error.WindowsSandboxUnsupported,
+    }
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -76,6 +84,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer allocator.free(additional_writable_roots);
 
     try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots);
+}
+
+fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
+    if (std.mem.eql(u8, subcommand, "macos") or std.mem.eql(u8, subcommand, "seatbelt")) return .macos;
+    if (std.mem.eql(u8, subcommand, "linux") or std.mem.eql(u8, subcommand, "landlock")) return .linux;
+    if (std.mem.eql(u8, subcommand, "windows")) return .windows;
+    return null;
 }
 
 fn parseMacosArgs(allocator: std.mem.Allocator, args: []const []const u8) !SandboxArgs {
@@ -189,6 +204,8 @@ pub fn printHelp() void {
         \\
         \\Subcommands:
         \\  macos, seatbelt  Run a command under macOS Seatbelt
+        \\  linux, landlock  Recognized Rust-compatible Linux sandbox command
+        \\  windows          Recognized Rust-compatible Windows sandbox command
         \\
     , .{});
 }
@@ -225,4 +242,19 @@ test "sandbox macos args parse help" {
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.help);
+}
+
+test "sandbox kind recognizes Rust platform aliases" {
+    try std.testing.expectEqual(SandboxKind.macos, parseSandboxKind("macos").?);
+    try std.testing.expectEqual(SandboxKind.macos, parseSandboxKind("seatbelt").?);
+    try std.testing.expectEqual(SandboxKind.linux, parseSandboxKind("linux").?);
+    try std.testing.expectEqual(SandboxKind.linux, parseSandboxKind("landlock").?);
+    try std.testing.expectEqual(SandboxKind.windows, parseSandboxKind("windows").?);
+    try std.testing.expect(parseSandboxKind("other") == null);
+}
+
+test "sandbox args reject removed full auto flag" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--full-auto", "--" };
+    try std.testing.expectError(error.UnknownSandboxOption, parseMacosArgs(allocator, argv[0..]));
 }
