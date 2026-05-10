@@ -3787,6 +3787,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
     )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
+    managed_config_path = codex_home / "managed_config.toml"
+    env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -3858,6 +3860,30 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         )
         assert config_requirements_null["id"] == "config-requirements-read-null"
         assert config_requirements_null["result"] == {"requirements": None}
+
+        managed_config_path.write_text(
+            "\n".join(
+                [
+                    'approval_policy = "never"',
+                    'approvals_reviewer = "auto_review"',
+                    'sandbox_mode = "workspace-write"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_requirements_managed = rpc_without_params(
+            "config-requirements-read-managed",
+            "configRequirements/read",
+        )
+        assert config_requirements_managed["id"] == "config-requirements-read-managed"
+        assert config_requirements_managed["result"] == {
+            "requirements": {
+                "allowedApprovalPolicies": ["never"],
+                "allowedApprovalsReviewers": ["guardian_subagent", "user"],
+                "allowedSandboxModes": ["read-only", "workspace-write"],
+            }
+        }
 
         feature_enablement = rpc(
             "config-feature-enable",
