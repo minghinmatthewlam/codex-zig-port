@@ -3691,6 +3691,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         "\n".join(
             [
                 'model = "gpt-config"',
+                'profile = "work"',
                 'approval_policy = "never"',
                 'sandbox_mode = "danger-full-access"',
                 'web_search = "live"',
@@ -3698,6 +3699,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "",
                 "[features]",
                 "apps = false",
+                "",
+                "[profiles.work.features]",
+                "goals = true",
                 "",
             ]
         ),
@@ -3735,6 +3739,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["web_search"] == "live"
         assert config_body["service_tier"] == "flex"
         assert config_body["features"]["apps"] is False
+        assert config_body["features"]["goals"] is True
         assert config_body["features"]["memories"] is False
         assert config_read["result"]["origins"] == {}
         assert config_read["result"]["layers"] == []
@@ -3765,6 +3770,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         after_enablement = rpc("config-read-after-enable", "config/read", {})
         after_features = after_enablement["result"]["config"]["features"]
         assert after_features["apps"] is False
+        assert after_features["goals"] is True
         assert after_features["memories"] is True
         assert after_enablement["result"]["layers"] is None
 
@@ -4928,7 +4934,18 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         assert invalid_cursor["error"]["message"] == "invalid cursor: bad"
 
         (codex_home / "config.toml").write_text(
-            "[features]\napps = false\ngoals = true\n",
+            "\n".join(
+                [
+                    'profile = "work"',
+                    "[features]",
+                    "apps = true",
+                    "goals = false",
+                    "[profiles.work.features]",
+                    "apps = false",
+                    "goals = true",
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
         all_features = rpc("feature-list-all", "experimentalFeature/list", {})

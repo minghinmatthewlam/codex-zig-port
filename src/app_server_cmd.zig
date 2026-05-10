@@ -3319,7 +3319,7 @@ fn handleConfigRead(
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    var feature_overrides = features_cmd.loadFeatureOverrides(allocator, cfg.codex_home) catch |err| {
+    var feature_overrides = features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load feature config", err);
     };
     defer feature_overrides.deinit(allocator);
@@ -4388,7 +4388,7 @@ fn handleExperimentalFeatureList(
         return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    var feature_overrides = features_cmd.loadFeatureOverrides(allocator, cfg.codex_home) catch |err| {
+    var feature_overrides = features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load feature config", err);
     };
     defer feature_overrides.deinit(allocator);
