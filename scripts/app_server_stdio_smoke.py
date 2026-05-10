@@ -465,6 +465,110 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_token["id"] == "fuzzy-invalid-token"
         assert invalid_token["error"]["code"] == -32602
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-start",
+                    "method": "fuzzyFileSearch/sessionStart",
+                    "params": {"sessionId": "session-1", "roots": [str(search_root)]},
+                },
+            )
+            session_start = read_json_line(proc, 5)
+            assert session_start["id"] == "fuzzy-session-start"
+            assert session_start["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-1", "query": "ALP"},
+                },
+            )
+            session_update = read_json_line(proc, 5)
+            assert session_update["id"] == "fuzzy-session-update"
+            assert session_update["result"] == {}
+            updated = read_json_line(proc, 5)
+            assert updated["method"] == "fuzzyFileSearch/sessionUpdated"
+            assert updated["params"]["sessionId"] == "session-1"
+            assert updated["params"]["query"] == "ALP"
+            by_session_path = {item["path"]: item for item in updated["params"]["files"]}
+            assert by_session_path["alpha.txt"]["root"] == str(search_root)
+            assert by_session_path["alpha.txt"]["indices"] == [0, 1, 2]
+            completed = read_json_line(proc, 5)
+            assert completed == {
+                "jsonrpc": "2.0",
+                "method": "fuzzyFileSearch/sessionCompleted",
+                "params": {"sessionId": "session-1"},
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-empty-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-1", "query": "zzzz"},
+                },
+            )
+            empty_update = read_json_line(proc, 5)
+            assert empty_update["id"] == "fuzzy-session-empty-update"
+            assert empty_update["result"] == {}
+            empty_updated = read_json_line(proc, 5)
+            assert empty_updated["method"] == "fuzzyFileSearch/sessionUpdated"
+            assert empty_updated["params"] == {"sessionId": "session-1", "query": "zzzz", "files": []}
+            empty_completed = read_json_line(proc, 5)
+            assert empty_completed["method"] == "fuzzyFileSearch/sessionCompleted"
+            assert empty_completed["params"]["sessionId"] == "session-1"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-stop",
+                    "method": "fuzzyFileSearch/sessionStop",
+                    "params": {"sessionId": "session-1"},
+                },
+            )
+            session_stop = read_json_line(proc, 5)
+            assert session_stop["id"] == "fuzzy-session-stop"
+            assert session_stop["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-missing",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-1", "query": "alp"},
+                },
+            )
+            missing_session = read_json_line(proc, 5)
+            assert missing_session["id"] == "fuzzy-session-missing"
+            assert missing_session["error"]["code"] == -32600
+            assert missing_session["error"]["message"] == "fuzzy file search session not found: session-1"
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

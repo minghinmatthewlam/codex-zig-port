@@ -64,7 +64,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - answer app-server model catalog and provider-capability JSON-RPC methods
 - compute legacy app-server `gitDiffToRemote` responses against a remote branch
 - answer legacy app-server `fuzzyFileSearch` requests with local file and
-  directory matches
+  directory matches plus connection-local `fuzzyFileSearch/session*`
+  notifications
 - report app-server account state with `account/read` for no-auth, API-key,
   ChatGPT, Bedrock, custom no-auth provider, and local-OSS cases
 - report legacy app-server auth status with `getAuthStatus`
@@ -174,7 +175,8 @@ app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations and unwatch cleanup,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
-git-diff-to-remote, fuzzy-file-search, account-read, get-auth-status,
+git-diff-to-remote, fuzzy-file-search one-shot and session notifications,
+account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read, config-value-write, config-batch-write,
 and config-requirements RPCs against temporary config homes and a
