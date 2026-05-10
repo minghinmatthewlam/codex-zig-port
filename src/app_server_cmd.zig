@@ -3957,10 +3957,24 @@ const ConfigReadApp = struct {
     open_world_enabled: ?bool = null,
     default_tools_approval_mode: ?[]const u8 = null,
     default_tools_enabled: ?bool = null,
+    tools: std.ArrayList(ConfigReadAppTool) = .empty,
 
     fn deinit(self: *ConfigReadApp, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.default_tools_approval_mode) |value| allocator.free(value);
+        for (self.tools.items) |*tool| tool.deinit(allocator);
+        self.tools.deinit(allocator);
+    }
+};
+
+const ConfigReadAppTool = struct {
+    name: []const u8,
+    enabled: ?bool = null,
+    approval_mode: ?[]const u8 = null,
+
+    fn deinit(self: *ConfigReadAppTool, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.approval_mode) |value| allocator.free(value);
     }
 };
 
@@ -4180,6 +4194,8 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
     var default_config: ?ConfigReadAppsDefault = null;
     var in_default_section = false;
     var current_app_index: ?usize = null;
+    var current_tool_app_index: ?usize = null;
+    var current_tool_index: ?usize = null;
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
         const line = std.mem.trim(u8, line_raw, " \t\r");
@@ -4187,6 +4203,38 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
         if (line[0] == '[') {
             in_default_section = false;
             current_app_index = null;
+            current_tool_app_index = null;
+            current_tool_index = null;
+            if (try parseConfigReadAppToolSection(allocator, line)) |section| {
+                var owned_app_name: ?[]const u8 = section.app_name;
+                var owned_tool_name: ?[]const u8 = section.tool_name;
+                errdefer if (owned_app_name) |value| allocator.free(value);
+                errdefer if (owned_tool_name) |value| allocator.free(value);
+
+                if (std.mem.eql(u8, section.app_name, "_default")) {
+                    allocator.free(section.app_name);
+                    allocator.free(section.tool_name);
+                    continue;
+                }
+
+                current_tool_app_index = findConfigReadAppIndex(apps.items, section.app_name);
+                if (current_tool_app_index == null) {
+                    try apps.append(allocator, .{ .name = section.app_name });
+                    current_tool_app_index = apps.items.len - 1;
+                    owned_app_name = null;
+                }
+                if (owned_app_name) |value| allocator.free(value);
+
+                const app_index = current_tool_app_index.?;
+                current_tool_index = findConfigReadAppToolIndex(apps.items[app_index].tools.items, section.tool_name);
+                if (current_tool_index == null) {
+                    try apps.items[app_index].tools.append(allocator, .{ .name = section.tool_name });
+                    current_tool_index = apps.items[app_index].tools.items.len - 1;
+                    owned_tool_name = null;
+                }
+                if (owned_tool_name) |value| allocator.free(value);
+                continue;
+            }
             if (try parseConfigReadAppSectionName(allocator, line)) |name| {
                 var owned_name: ?[]const u8 = name;
                 errdefer if (owned_name) |value| allocator.free(value);
@@ -4211,6 +4259,12 @@ fn loadConfigReadUserApps(allocator: std.mem.Allocator, bytes: []const u8) !Conf
             try applyConfigReadAppsDefaultLine(&default_config.?, line);
             continue;
         }
+        if (current_tool_app_index) |app_index| {
+            if (current_tool_index) |tool_index| {
+                try applyConfigReadAppToolLine(allocator, &apps.items[app_index].tools.items[tool_index], line);
+                continue;
+            }
+        }
         const app_index = current_app_index orelse continue;
         try applyConfigReadAppLine(allocator, &apps.items[app_index], line);
     }
@@ -4228,6 +4282,33 @@ fn parseConfigReadAppSectionName(allocator: std.mem.Allocator, line: []const u8)
     const prefix = "apps.";
     if (!std.mem.startsWith(u8, section, prefix)) return null;
     const raw_name = section[prefix.len..];
+    return parseConfigReadAppPathComponent(allocator, raw_name);
+}
+
+const ConfigReadAppToolSection = struct {
+    app_name: []const u8,
+    tool_name: []const u8,
+};
+
+fn parseConfigReadAppToolSection(allocator: std.mem.Allocator, line: []const u8) !?ConfigReadAppToolSection {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "apps.";
+    if (!std.mem.startsWith(u8, section, prefix)) return null;
+    const marker = ".tools.";
+    const marker_index = std.mem.indexOf(u8, section, marker) orelse return null;
+    const raw_app_name = section[prefix.len..marker_index];
+    const raw_tool_name = section[marker_index + marker.len ..];
+    const app_name = (try parseConfigReadAppPathComponent(allocator, raw_app_name)) orelse return null;
+    errdefer allocator.free(app_name);
+    const tool_name = (try parseConfigReadAppPathComponent(allocator, raw_tool_name)) orelse {
+        allocator.free(app_name);
+        return null;
+    };
+    return .{ .app_name = app_name, .tool_name = tool_name };
+}
+
+fn parseConfigReadAppPathComponent(allocator: std.mem.Allocator, raw_name: []const u8) !?[]const u8 {
     if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '.') != null) return null;
     if (raw_name[0] == '"') {
         return try config.parseTomlString(allocator, raw_name) orelse error.InvalidConfigReadAppSection;
@@ -4238,6 +4319,13 @@ fn parseConfigReadAppSectionName(allocator: std.mem.Allocator, line: []const u8)
 fn findConfigReadAppIndex(apps: []const ConfigReadApp, name: []const u8) ?usize {
     for (apps, 0..) |app, index| {
         if (std.mem.eql(u8, app.name, name)) return index;
+    }
+    return null;
+}
+
+fn findConfigReadAppToolIndex(tools: []const ConfigReadAppTool, name: []const u8) ?usize {
+    for (tools, 0..) |tool, index| {
+        if (std.mem.eql(u8, tool.name, name)) return index;
     }
     return null;
 }
@@ -4255,6 +4343,21 @@ fn applyConfigReadAppsDefaultLine(default_config: *ConfigReadAppsDefault, line: 
     } else if (std.mem.eql(u8, key, "open_world_enabled")) {
         default_config.open_world_enabled = try parseConfigReadBool(rhs);
         default_config.open_world_enabled_present = true;
+    }
+}
+
+fn applyConfigReadAppToolLine(allocator: std.mem.Allocator, tool: *ConfigReadAppTool, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (std.mem.eql(u8, key, "enabled")) {
+        tool.enabled = try parseConfigReadBool(rhs);
+    } else if (std.mem.eql(u8, key, "approval_mode")) {
+        const value = try config.parseTomlString(allocator, rhs) orelse return error.InvalidConfigReadAppToolApproval;
+        errdefer allocator.free(value);
+        if (!isConfigReadAppToolApproval(value)) return error.InvalidConfigReadAppToolApproval;
+        if (tool.approval_mode) |existing| allocator.free(existing);
+        tool.approval_mode = value;
     }
 }
 
@@ -4790,6 +4893,14 @@ fn appendConfigReadUserAppsOrigins(
         if (app.default_tools_enabled != null) {
             try appendConfigReadUserAppOrigin(allocator, result, first, layer, app.name, "default_tools_enabled");
         }
+        for (app.tools.items) |tool| {
+            if (tool.enabled != null) {
+                try appendConfigReadUserAppToolOrigin(allocator, result, first, layer, app.name, tool.name, "enabled");
+            }
+            if (tool.approval_mode != null) {
+                try appendConfigReadUserAppToolOrigin(allocator, result, first, layer, app.name, tool.name, "approval_mode");
+            }
+        }
     }
 }
 
@@ -4802,6 +4913,20 @@ fn appendConfigReadUserAppOrigin(
     field: []const u8,
 ) !void {
     const key = try std.fmt.allocPrint(allocator, "apps.{s}.{s}", .{ app_name, field });
+    defer allocator.free(key);
+    try appendConfigReadUserOrigin(allocator, result, first, layer, key);
+}
+
+fn appendConfigReadUserAppToolOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+    app_name: []const u8,
+    tool_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "apps.{s}.tools.{s}.{s}", .{ app_name, tool_name, field });
     defer allocator.free(key);
     try appendConfigReadUserOrigin(allocator, result, first, layer, key);
 }
@@ -5357,7 +5482,37 @@ fn appendConfigReadAppObject(
     try appendJsonMaybeStringField(allocator, result, &first, "default_tools_approval_mode", app.default_tools_approval_mode);
     try appendJsonMaybeBoolField(allocator, result, &first, "default_tools_enabled", app.default_tools_enabled);
     try appendJsonFieldName(allocator, result, &first, "tools");
-    try result.appendSlice(allocator, "null");
+    if (app.tools.items.len > 0) {
+        try appendConfigReadAppToolsObject(allocator, result, app.tools.items);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadAppToolsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    tools: []const ConfigReadAppTool,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    for (tools) |tool| {
+        try appendJsonFieldName(allocator, result, &first, tool.name);
+        try appendConfigReadAppToolObject(allocator, result, tool);
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadAppToolObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    tool: ConfigReadAppTool,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonMaybeBoolField(allocator, result, &first, "enabled", tool.enabled);
+    try appendJsonMaybeStringField(allocator, result, &first, "approval_mode", tool.approval_mode);
     try result.append(allocator, '}');
 }
 
