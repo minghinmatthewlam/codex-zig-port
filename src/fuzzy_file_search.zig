@@ -49,12 +49,14 @@ const FuzzyMatch = struct {
 };
 
 pub fn search(allocator: std.mem.Allocator, query: []const u8, roots: []const []const u8) !Results {
-    if (query.len == 0 or roots.len == 0) return .{ .files = &.{} };
-
     var matches = std.ArrayList(Match).empty;
     errdefer {
         for (matches.items) |*file| file.deinit(allocator);
         matches.deinit(allocator);
+    }
+
+    if (query.len == 0 or roots.len == 0) {
+        return .{ .files = try matches.toOwnedSlice(allocator) };
     }
 
     var state = ScanState{};
@@ -104,12 +106,14 @@ fn scanDir(
 
         state.scanned_entries += 1;
         const relative_path = try relativeChildPath(allocator, relative_dir, child.name);
-        errdefer allocator.free(relative_path);
+        var owns_relative_path = true;
+        errdefer if (owns_relative_path) allocator.free(relative_path);
 
         const full_path = try std.fs.path.join(allocator, &.{ root, relative_path });
         defer allocator.free(full_path);
         const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch {
             allocator.free(relative_path);
+            owns_relative_path = false;
             continue;
         };
 
@@ -134,11 +138,14 @@ fn scanDir(
                     .score = fuzzy.score,
                     .indices = owned_indices,
                 });
+                owns_relative_path = false;
             } else {
                 allocator.free(relative_path);
+                owns_relative_path = false;
             }
         } else {
             allocator.free(relative_path);
+            owns_relative_path = false;
         }
 
         if (stat.kind == .directory) {
@@ -199,7 +206,8 @@ fn scoreMatch(path: []const u8, query: []const u8, indices: []const u32) u32 {
     if (startsWithIgnoreCase(basename, query)) score += 40;
     if (containsIgnoreCase(path, query)) score += 20;
     if (indices.len > 0) {
-        score += if (indices[0] == 0) 16 else @as(u32, @intCast(@max(0, 16 - @as(i32, @intCast(indices[0])))));
+        const leading_gap = if (indices[0] > 16) 16 else indices[0];
+        score += 16 - leading_gap;
     }
 
     var contiguous_bonus: u32 = 0;
@@ -208,10 +216,12 @@ fn scoreMatch(path: []const u8, query: []const u8, indices: []const u32) u32 {
     }
     score += contiguous_bonus;
 
-    const gap_penalty = if (indices.len == 0)
-        0
-    else
-        @as(u32, @intCast(@min(path.len, indices[indices.len - 1] + 1 - indices.len)));
+    const gap_penalty: u32 = if (indices.len == 0) 0 else penalty: {
+        const last_index: usize = @intCast(indices[indices.len - 1]);
+        const spread = last_index + 1 - indices.len;
+        const capped = @min(path.len, spread);
+        break :penalty @intCast(@min(capped, std.math.maxInt(u32)));
+    };
     return if (score > gap_penalty) score - gap_penalty else 1;
 }
 

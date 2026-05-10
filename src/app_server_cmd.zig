@@ -562,10 +562,10 @@ fn handleFuzzyFileSearch(allocator: std.mem.Allocator, id_value: std.json.Value,
         }
     }
 
-    var files = try fuzzy_file_search.search(allocator, query_value.string, roots);
-    defer files.deinit(allocator);
+    var results = try fuzzy_file_search.search(allocator, query_value.string, roots);
+    defer results.deinit(allocator);
 
-    const result = try renderFuzzyFileSearchResult(allocator, files);
+    const result = try renderFuzzyFileSearchResult(allocator, results);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -624,8 +624,8 @@ fn appendFuzzyFileSearchMatch(allocator: std.mem.Allocator, out: *std.ArrayList(
 }
 
 fn appendInt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: anytype) !void {
-    const rendered = try std.fmt.allocPrint(allocator, "{}", .{value});
-    defer allocator.free(rendered);
+    var buffer: [64]u8 = undefined;
+    const rendered = try std.fmt.bufPrint(&buffer, "{}", .{value});
     try out.appendSlice(allocator, rendered);
 }
 

@@ -417,9 +417,14 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert by_path["alpha.txt"]["root"] == str(search_root)
         assert by_path["alpha.txt"]["match_type"] == "file"
         assert by_path["alpha.txt"]["file_name"] == "alpha.txt"
+        assert isinstance(by_path["alpha.txt"]["score"], int)
+        assert by_path["alpha.txt"]["score"] > 0
         assert by_path["alpha.txt"]["indices"] == [0, 1, 2]
+        assert by_path["alpha_dir"]["root"] == str(search_root)
         assert by_path["alpha_dir"]["match_type"] == "directory"
         assert by_path["alpha_dir"]["file_name"] == "alpha_dir"
+        assert isinstance(by_path["alpha_dir"]["score"], int)
+        assert by_path["alpha_dir"]["score"] > 0
         assert "beta.txt" not in by_path
 
         empty_query = request_stdio_app_server(
