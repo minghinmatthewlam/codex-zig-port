@@ -1378,19 +1378,14 @@ fn parseSkillsConfigWriteParams(object: std.json.ObjectMap) !ParsedSkillsConfigW
         .missing => null,
     };
 
-    const selector = if (path_opt) |path|
-        blk: {
-            if (name_opt != null) return error.InvalidSkillsConfigSelector;
-            if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.InvalidSkillsConfigPath;
-            break :blk skills_list.ConfigSelector{ .path = path };
-        }
-    else if (name_opt) |name|
-        blk: {
-            if (std.mem.trim(u8, name, " \t\r\n").len == 0) return error.InvalidSkillsConfigSelector;
-            break :blk skills_list.ConfigSelector{ .name = name };
-        }
-    else
-        return error.InvalidSkillsConfigSelector;
+    const selector = if (path_opt) |path| blk: {
+        if (name_opt != null) return error.InvalidSkillsConfigSelector;
+        if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.InvalidSkillsConfigPath;
+        break :blk skills_list.ConfigSelector{ .path = path };
+    } else if (name_opt) |name| blk: {
+        if (std.mem.trim(u8, name, " \t\r\n").len == 0) return error.InvalidSkillsConfigSelector;
+        break :blk skills_list.ConfigSelector{ .name = name };
+    } else return error.InvalidSkillsConfigSelector;
 
     return .{ .selector = selector, .enabled = enabled_value.bool };
 }
