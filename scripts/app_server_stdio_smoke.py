@@ -879,6 +879,25 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-memory-mode-ephemeral",
+                "method": "thread/memoryMode/set",
+                "params": {
+                    "threadId": thread_id,
+                    "mode": "disabled",
+                },
+            }
+        )
+        thread_memory_mode_ephemeral = read_line()
+        assert thread_memory_mode_ephemeral["id"] == "thread-memory-mode-ephemeral"
+        assert thread_memory_mode_ephemeral["error"]["code"] == -32600
+        assert (
+            f"ephemeral thread does not support memory mode updates: {thread_id}"
+            in thread_memory_mode_ephemeral["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork",
                 "method": "thread/fork",
                 "params": {
@@ -2694,6 +2713,22 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert (
                     read_after_metadata["result"]["thread"]["gitInfo"]
                     == expected_git_info
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-memory-mode-loaded",
+                        "method": "thread/memoryMode/set",
+                        "params": {"threadId": thread_id, "mode": "disabled"},
+                    },
+                )
+                memory_mode_loaded = read_json_line(proc, 5)
+                assert memory_mode_loaded["id"] == "thread-memory-mode-loaded"
+                assert memory_mode_loaded["result"] == {}
+                assert '"memory_mode":"disabled"' in rollout_path.read_text(
+                    encoding="utf-8"
                 )
 
                 local_image_path = codex_home / "local-smoke.png"
