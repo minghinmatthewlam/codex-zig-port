@@ -48,6 +48,13 @@ EXPECTED_REALTIME_VOICES = {
 EXPECTED_REALTIME_VOICE_ENUM = sorted(
     EXPECTED_REALTIME_VOICES["v1"] + EXPECTED_REALTIME_VOICES["v2"]
 )
+EXPECTED_REALTIME_AUDIO_CHUNK = {
+    "data": "BQYH",
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "samplesPerChannel": 480,
+    "itemId": None,
+}
 
 
 def toml_quoted_key(value: str) -> str:
@@ -1700,6 +1707,116 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert (
         "thread not found: 00000000-0000-0000-0000-000000000015"
         in thread_realtime_append_text_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-audio-invalid-params",
+            "method": "thread/realtime/appendAudio",
+            "params": [],
+        }
+    )
+    thread_realtime_append_audio_invalid_params = read_line()
+    assert (
+        thread_realtime_append_audio_invalid_params["id"]
+        == "thread-realtime-append-audio-invalid-params"
+    )
+    assert thread_realtime_append_audio_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/realtime/appendAudio params must be an object"
+        in thread_realtime_append_audio_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-audio-invalid-audio",
+            "method": "thread/realtime/appendAudio",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000016",
+                "audio": "not-a-chunk",
+            },
+        }
+    )
+    thread_realtime_append_audio_invalid_audio = read_line()
+    assert (
+        thread_realtime_append_audio_invalid_audio["id"]
+        == "thread-realtime-append-audio-invalid-audio"
+    )
+    assert thread_realtime_append_audio_invalid_audio["error"]["code"] == -32602
+    assert (
+        "audio must be an object"
+        in thread_realtime_append_audio_invalid_audio["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-audio-invalid-sample-rate",
+            "method": "thread/realtime/appendAudio",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000016",
+                "audio": {
+                    **EXPECTED_REALTIME_AUDIO_CHUNK,
+                    "sampleRate": -1,
+                },
+            },
+        }
+    )
+    thread_realtime_append_audio_invalid_sample_rate = read_line()
+    assert (
+        thread_realtime_append_audio_invalid_sample_rate["id"]
+        == "thread-realtime-append-audio-invalid-sample-rate"
+    )
+    assert thread_realtime_append_audio_invalid_sample_rate["error"]["code"] == -32602
+    assert (
+        "audio.sampleRate must be a non-negative integer"
+        in thread_realtime_append_audio_invalid_sample_rate["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-audio-invalid-thread",
+            "method": "thread/realtime/appendAudio",
+            "params": {
+                "threadId": "not-a-uuid",
+                "audio": EXPECTED_REALTIME_AUDIO_CHUNK,
+            },
+        }
+    )
+    thread_realtime_append_audio_invalid_thread = read_line()
+    assert (
+        thread_realtime_append_audio_invalid_thread["id"]
+        == "thread-realtime-append-audio-invalid-thread"
+    )
+    assert thread_realtime_append_audio_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_realtime_append_audio_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-audio-missing",
+            "method": "thread/realtime/appendAudio",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000016",
+                "audio": EXPECTED_REALTIME_AUDIO_CHUNK,
+            },
+        }
+    )
+    thread_realtime_append_audio_missing = read_line()
+    assert (
+        thread_realtime_append_audio_missing["id"]
+        == "thread-realtime-append-audio-missing"
+    )
+    assert thread_realtime_append_audio_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000016"
+        in thread_realtime_append_audio_missing["error"]["message"]
     )
 
 
@@ -9205,6 +9322,32 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_realtime_append_text_response["additionalProperties"] is False
+        thread_realtime_audio_chunk = json.loads(
+            (out_dir / "ThreadRealtimeAudioChunk.json").read_text(encoding="utf-8")
+        )
+        assert thread_realtime_audio_chunk["required"] == [
+            "data",
+            "numChannels",
+            "sampleRate",
+        ]
+        assert thread_realtime_audio_chunk["properties"]["sampleRate"]["maximum"] == 4294967295
+        assert thread_realtime_audio_chunk["properties"]["numChannels"]["maximum"] == 65535
+        thread_realtime_append_audio = json.loads(
+            (out_dir / "ThreadRealtimeAppendAudioParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_audio["required"] == ["threadId", "audio"]
+        assert (
+            thread_realtime_append_audio["properties"]["audio"]["$ref"]
+            == "#/$defs/ThreadRealtimeAudioChunk"
+        )
+        thread_realtime_append_audio_response = json.loads(
+            (out_dir / "ThreadRealtimeAppendAudioResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_audio_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -9237,6 +9380,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadRealtimeListVoicesResponse" in bundle["$defs"]
         assert "ThreadRealtimeStopResponse" in bundle["$defs"]
         assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
+        assert "ThreadRealtimeAudioChunk" in bundle["$defs"]
+        assert "ThreadRealtimeAppendAudioResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -9362,6 +9507,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRealtimeStopParams;" in client_request
         assert 'method: "thread/realtime/appendText";' in client_request
         assert "params: ThreadRealtimeAppendTextParams;" in client_request
+        assert 'method: "thread/realtime/appendAudio";' in client_request
+        assert "params: ThreadRealtimeAppendAudioParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
@@ -9403,6 +9550,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadRealtimeStopResponse;" in client_response
         assert 'method: "thread/realtime/appendText";' in client_response
         assert "result: ThreadRealtimeAppendTextResponse;" in client_response
+        assert 'method: "thread/realtime/appendAudio";' in client_response
+        assert "result: ThreadRealtimeAppendAudioResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -9695,6 +9844,24 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadRealtimeAppendTextResponse {}"
             in thread_realtime_append_text_response
         )
+        thread_realtime_audio_chunk = (
+            out_dir / "v2" / "ThreadRealtimeAudioChunk.ts"
+        ).read_text(encoding="utf-8")
+        assert "data: string;" in thread_realtime_audio_chunk
+        assert "sampleRate: number;" in thread_realtime_audio_chunk
+        assert "samplesPerChannel?: number | null;" in thread_realtime_audio_chunk
+        thread_realtime_append_audio = (
+            out_dir / "v2" / "ThreadRealtimeAppendAudioParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";' in thread_realtime_append_audio
+        assert "audio: ThreadRealtimeAudioChunk;" in thread_realtime_append_audio
+        thread_realtime_append_audio_response = (
+            out_dir / "v2" / "ThreadRealtimeAppendAudioResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadRealtimeAppendAudioResponse {}"
+            in thread_realtime_append_audio_response
+        )
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -9792,6 +9959,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadRealtimeAppendTextResponse } from "./ThreadRealtimeAppendTextResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendAudioParams } from "./ThreadRealtimeAppendAudioParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendAudioResponse } from "./ThreadRealtimeAppendAudioResponse";'
             in v2_index
         )
         assert (
