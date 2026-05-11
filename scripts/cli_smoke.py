@@ -110,6 +110,98 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
     base_url: str
 
 
+class StreamableMcpToolHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        request = json.loads(body)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_bodies.append(request)
+
+        method = request.get("method")
+        request_id = request.get("id")
+        if method == "notifications/initialized":
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if method == "initialize":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "streamable-tool-smoke", "version": "0.1.0"},
+                    },
+                }
+            )
+            return
+        if method == "tools/list":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "echo",
+                                "description": "Echo a message from streamable HTTP.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"message": {"type": "string"}},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ]
+                    },
+                }
+            )
+            return
+        if method == "tools/call":
+            params = request.get("params", {})
+            arguments = params.get("arguments", {})
+            message = arguments.get("message", "") if isinstance(arguments, dict) else ""
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"http echo: {message}"}],
+                        "structuredContent": {"transport": "streamable_http"},
+                        "isError": False,
+                    },
+                }
+            )
+            return
+        self.write_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"unknown method: {method}"},
+            }
+        )
+
+    def write_rpc(self, payload: dict) -> None:
+        encoded = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class StreamableMcpToolServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[dict]
+
+
 def default_exec_response_payload() -> bytes:
     return (
         b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
@@ -148,6 +240,15 @@ def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
     server.base_url = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"{server.base_url}/mcp"
+
+
+def start_streamable_mcp_tool_server() -> tuple[StreamableMcpToolServer, str]:
+    server = StreamableMcpToolServer(("127.0.0.1", 0), StreamableMcpToolHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_bodies = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/mcp"
 
 
 def make_exec_mock_env(temp_root: Path, base_url: str) -> dict[str, str]:
@@ -1491,6 +1592,86 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_streamable_http_mcp_tool_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-http-mcp-tool-", dir="/tmp"))
+    responses_server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
+    responses_server.response_payloads = [
+        function_call_response_payload(
+            "call-http-tool",
+            "mcp__remote_tools__echo",
+            {"message": "hello from http mcp"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"http mcp done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    codex_home = temp_root / "codex-home"
+    try:
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-http-mcp-tool"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[mcp_servers.remote-tools]",
+                    f"url = {json.dumps(mcp_url)}",
+                    'bearer_token_env_var = "STREAMABLE_MCP_TOKEN"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env["STREAMABLE_MCP_TOKEN"] = "streamable-token"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "http", "mcp", "tool"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "http mcp done\n"
+        assert len(responses_server.request_bodies) == 2
+        first_tools = {
+            tool.get("name")
+            for tool in responses_server.request_bodies[0]["tools"]
+            if tool.get("type") == "function"
+        }
+        assert "mcp__remote_tools__echo" in first_tools
+        tool_output = responses_server.request_bodies[1]["input"][-1]["output"]
+        assert tool_output == "http echo: hello from http mcp"
+
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert mcp_server.request_bodies[-1]["params"]["arguments"] == {
+            "message": "hello from http mcp"
+        }
+        assert mcp_server.request_headers[2]["Authorization"] == "Bearer streamable-token"
+        assert mcp_server.request_headers[-1]["Authorization"] == "Bearer streamable-token"
+    finally:
+        responses_server.shutdown()
+        responses_server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def mcp_oauth_store_key(name: str, url: str) -> str:
     payload = json.dumps(
         {"headers": {}, "type": "http", "url": url},
@@ -2383,6 +2564,7 @@ def main() -> None:
     run_exec_provider_command_auth_refresh_smoke(binary)
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
     run_exec_mcp_resource_tools_smoke(binary)
+    run_exec_streamable_http_mcp_tool_smoke(binary)
     run_mcp_oauth_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -2406,6 +2588,7 @@ def main() -> None:
     print("cli-exec-provider-command-auth-refresh-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
     print("cli-exec-mcp-resource-tools-e2e: ok")
+    print("cli-exec-streamable-http-mcp-tool-e2e: ok")
     print("cli-mcp-oauth-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
