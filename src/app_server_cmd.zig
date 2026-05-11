@@ -112,6 +112,7 @@ const LoadedThread = struct {
     token_usage: ?session_mod.TokenUsageInfo,
     token_usage_turn_id: ?[]const u8,
     name: ?[]const u8,
+    elicitation_count: u64,
     transcript: session_mod.Transcript,
     turns_json: []const u8,
     created_at: i64,
@@ -7268,7 +7269,33 @@ fn handleThreadMethod(
     if (std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation"))
     {
-        return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        if (std.mem.eql(u8, method, "thread/increment_elicitation")) {
+            if (thread.elicitation_count == std.math.maxInt(u64)) {
+                return renderJsonRpcError(allocator, id_value, -32603, "failed to increment out-of-band elicitation counter: out-of-band elicitation count overflowed");
+            }
+            thread.elicitation_count += 1;
+        } else {
+            if (thread.elicitation_count == 0) {
+                return renderJsonRpcError(allocator, id_value, -32600, "out-of-band elicitation count is already zero");
+            }
+            thread.elicitation_count -= 1;
+        }
+        const result = try renderThreadElicitationResponse(allocator, thread.elicitation_count);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/rollback")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -7805,6 +7832,7 @@ fn createLoadedThreadFromStartParams(
         .token_usage = null,
         .token_usage_turn_id = null,
         .name = null,
+        .elicitation_count = 0,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -7894,6 +7922,7 @@ fn createLoadedThreadFromHistoryParams(
         .token_usage = null,
         .token_usage_turn_id = null,
         .name = null,
+        .elicitation_count = 0,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -7990,6 +8019,7 @@ fn createLoadedThreadFromResumeParams(
         .token_usage = transcript.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
         .name = name,
+        .elicitation_count = 0,
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .created_at = now,
@@ -8110,6 +8140,7 @@ fn createLoadedThreadFromForkParams(
         .token_usage = source.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
         .name = null,
+        .elicitation_count = 0,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8406,6 +8437,17 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"thread\":");
     try appendLoadedThreadJson(allocator, &result, thread, include_turns);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderThreadElicitationResponse(allocator: std.mem.Allocator, count: u64) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"count\":");
+    try appendInt(allocator, &result, count);
+    try result.appendSlice(allocator, ",\"paused\":");
+    try result.appendSlice(allocator, if (count > 0) "true" else "false");
     try result.appendSlice(allocator, "}");
     return result.toOwnedSlice(allocator);
 }
