@@ -278,7 +278,7 @@ fn listResourcesForModelHttpServer(
     kind: ResourceInventoryKind,
 ) ![]const u8 {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
     try client.initialize();
     var next_id: i64 = 2;
     var page = try listModelResourcePageHttp(allocator, &client, &next_id, server.name, kind, cursor);
@@ -362,7 +362,7 @@ fn appendAllModelResourceItemsHttp(
     first: *bool,
 ) !void {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
     try client.initialize();
     var next_id: i64 = 2;
     var seen_cursors = std.ArrayList([]const u8).empty;
@@ -762,7 +762,7 @@ fn callHttpServerTool(
     arguments_json: []const u8,
 ) !CallOutput {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
 
     try client.initialize();
     const params = try buildCallToolParams(allocator, raw_tool_name, arguments_json);
@@ -796,7 +796,7 @@ fn appendHttpServerTools(
     specs: *std.ArrayList(ToolSpec),
 ) !void {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
 
     try client.initialize();
     var response = try client.request(2, "tools/list", null);
@@ -856,7 +856,7 @@ fn readHttpServerResource(
     uri: []const u8,
 ) ![]const u8 {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
 
     try client.initialize();
     const params = try buildReadResourceParams(allocator, uri);
@@ -878,7 +878,7 @@ fn callHttpServerToolJson(
     meta_json: ?[]const u8,
 ) ![]const u8 {
     var client = try HttpClient.start(allocator, codex_home, server);
-    defer client.deinit();
+    defer client.close();
 
     try client.initialize();
     const params = try buildCallToolParamsWithMeta(allocator, raw_tool_name, arguments_json, meta_json);
@@ -1033,6 +1033,11 @@ const HttpClient = struct {
         };
     }
 
+    fn close(self: *HttpClient) void {
+        self.deleteSession() catch {};
+        self.deinit();
+    }
+
     fn deinit(self: *HttpClient) void {
         if (self.session_id) |session_id| self.allocator.free(session_id);
         if (self.authorization_header) |header| self.allocator.free(header);
@@ -1065,10 +1070,25 @@ const HttpClient = struct {
     }
 
     fn postJson(self: *HttpClient, payload: []const u8) ![]const u8 {
+        return self.sendHttp(.POST, payload);
+    }
+
+    fn deleteSession(self: *HttpClient) !void {
+        if (self.session_id == null) return;
+        const response = self.sendHttp(.DELETE, null) catch |err| switch (err) {
+            error.McpHttpMethodNotAllowed => return,
+            else => |e| return e,
+        };
+        self.allocator.free(response);
+    }
+
+    fn sendHttp(self: *HttpClient, method: std.http.Method, payload: ?[]const u8) ![]const u8 {
         var headers = std.ArrayList(std.http.Header).empty;
         defer headers.deinit(self.allocator);
-        try headers.append(self.allocator, .{ .name = "Content-Type", .value = "application/json" });
-        try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+        if (payload != null) {
+            try headers.append(self.allocator, .{ .name = "Content-Type", .value = "application/json" });
+            try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+        }
         try headers.append(self.allocator, .{ .name = "MCP-Protocol-Version", .value = "2025-03-26" });
         try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
         if (self.session_id) |session_id| {
@@ -1085,23 +1105,28 @@ const HttpClient = struct {
         defer client.deinit();
 
         const uri = try std.Uri.parse(self.url);
-        var req = try client.request(.POST, uri, .{
+        var req = try client.request(method, uri, .{
             .redirect_behavior = .unhandled,
             .extra_headers = headers.items,
         });
         defer req.deinit();
 
-        req.transfer_encoding = .{ .content_length = payload.len };
-        var request_body = try req.sendBodyUnflushed(&.{});
-        try request_body.writer.writeAll(payload);
-        try request_body.end();
-        try req.connection.?.flush();
+        if (payload) |body| {
+            req.transfer_encoding = .{ .content_length = body.len };
+            var request_body = try req.sendBodyUnflushed(&.{});
+            try request_body.writer.writeAll(body);
+            try request_body.end();
+            try req.connection.?.flush();
+        } else {
+            try req.sendBodiless();
+        }
 
         var response_head_buffer: [8192]u8 = undefined;
         var response = try req.receiveHead(&response_head_buffer);
         try self.captureSessionId(response.head);
 
         const status = @intFromEnum(response.head.status);
+        if (method == .DELETE and status == 405) return error.McpHttpMethodNotAllowed;
         if (status < 200 or status >= 300) return error.McpHttpStatus;
 
         var response_body: std.Io.Writer.Allocating = .init(self.allocator);
