@@ -860,6 +860,25 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-metadata-ephemeral",
+                "method": "thread/metadata/update",
+                "params": {
+                    "threadId": thread_id,
+                    "gitInfo": {"branch": "main"},
+                },
+            }
+        )
+        thread_metadata_ephemeral = read_line()
+        assert thread_metadata_ephemeral["id"] == "thread-metadata-ephemeral"
+        assert thread_metadata_ephemeral["error"]["code"] == -32600
+        assert (
+            f"ephemeral thread does not support metadata updates: {thread_id}"
+            in thread_metadata_ephemeral["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork",
                 "method": "thread/fork",
                 "params": {
@@ -2631,6 +2650,51 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 rollout_path = Path(thread["path"])
                 assert rollout_path.name == f"rollout-{thread_id}.jsonl"
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-metadata-loaded",
+                        "method": "thread/metadata/update",
+                        "params": {
+                            "threadId": thread_id,
+                            "gitInfo": {
+                                "sha": None,
+                                "branch": "  feature/app-server-smoke  ",
+                                "originUrl": "https://example.test/codex-zig.git",
+                            },
+                        },
+                    },
+                )
+                metadata_loaded = read_json_line(proc, 5)
+                assert metadata_loaded["id"] == "thread-metadata-loaded"
+                expected_git_info = {
+                    "sha": None,
+                    "branch": "feature/app-server-smoke",
+                    "originUrl": "https://example.test/codex-zig.git",
+                }
+                assert (
+                    metadata_loaded["result"]["thread"]["gitInfo"]
+                    == expected_git_info
+                )
+                assert metadata_loaded["result"]["thread"]["turns"] == []
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-metadata",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": False},
+                    },
+                )
+                read_after_metadata = read_json_line(proc, 5)
+                assert read_after_metadata["id"] == "thread-read-after-metadata"
+                assert (
+                    read_after_metadata["result"]["thread"]["gitInfo"]
+                    == expected_git_info
+                )
 
                 local_image_path = codex_home / "local-smoke.png"
                 local_image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-smoke")
