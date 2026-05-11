@@ -116,3 +116,5 @@ Additional app-server thread item-injection coverage: `thread/inject_items` vali
 Additional app-server thread naming coverage: `thread/name/set` validates `threadId`, trims and rejects empty names with Rust-shaped errors, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
 
 Additional app-server thread memory-mode coverage: `thread/memoryMode/set` validates `threadId` and the `enabled` / `disabled` mode enum, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
+
+Additional app-server thread metadata coverage: `thread/metadata/update` validates `threadId`, requires `gitInfo` to include at least one Git field, rejects empty string metadata fields with Rust-shaped errors, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation with an opaque thread response until full thread schema parity lands.
