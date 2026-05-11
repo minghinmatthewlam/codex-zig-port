@@ -826,6 +826,33 @@ const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const CHATGPT_AUTH_TOKENS_REFRESH_REASON_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ChatgptAuthTokensRefreshReason = "unauthorized";
+    \\
+    ;
+
+const CHATGPT_AUTH_TOKENS_REFRESH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ChatgptAuthTokensRefreshReason } from "./ChatgptAuthTokensRefreshReason";
+    \\
+    \\export interface ChatgptAuthTokensRefreshParams {
+    \\  reason: ChatgptAuthTokensRefreshReason;
+    \\  previousAccountId?: string | null;
+    \\}
+    \\
+    ;
+
+const CHATGPT_AUTH_TOKENS_REFRESH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ChatgptAuthTokensRefreshResponse {
+    \\  accessToken: string;
+    \\  chatgptAccountId: string;
+    \\  chatgptPlanType: string | null;
+    \\}
+    \\
+    ;
+
 const RATE_LIMIT_REACHED_TYPE_TS =
     GENERATED_TS_HEADER ++
     \\export type RateLimitReachedType =
@@ -3732,6 +3759,9 @@ const V2_INDEX_TS =
     \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
     \\export type { CancelLoginAccountResponse } from "./CancelLoginAccountResponse";
     \\export type { CancelLoginAccountStatus } from "./CancelLoginAccountStatus";
+    \\export type { ChatgptAuthTokensRefreshParams } from "./ChatgptAuthTokensRefreshParams";
+    \\export type { ChatgptAuthTokensRefreshReason } from "./ChatgptAuthTokensRefreshReason";
+    \\export type { ChatgptAuthTokensRefreshResponse } from "./ChatgptAuthTokensRefreshResponse";
     \\export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
     \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
     \\export type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -4415,6 +4445,61 @@ const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\    "loginId": { "type": ["string", "null"] },
     \\    "success": { "type": "boolean" },
     \\    "error": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CHATGPT_AUTH_TOKENS_REFRESH_REASON_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ChatgptAuthTokensRefreshReason",
+    \\  "oneOf": [
+    \\    {
+    \\      "enum": ["unauthorized"],
+    \\      "type": "string"
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const CHATGPT_AUTH_TOKENS_REFRESH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ChatgptAuthTokensRefreshParams",
+    \\  "type": "object",
+    \\  "required": ["reason"],
+    \\  "properties": {
+    \\    "reason": { "$ref": "#/$defs/ChatgptAuthTokensRefreshReason" },
+    \\    "previousAccountId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ChatgptAuthTokensRefreshReason": {
+    \\      "oneOf": [
+    \\        {
+    \\          "enum": ["unauthorized"],
+    \\          "type": "string"
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CHATGPT_AUTH_TOKENS_REFRESH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ChatgptAuthTokensRefreshResponse",
+    \\  "type": "object",
+    \\  "required": ["accessToken", "chatgptAccountId"],
+    \\  "properties": {
+    \\    "accessToken": { "type": "string" },
+    \\    "chatgptAccountId": { "type": "string" },
+    \\    "chatgptPlanType": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -9392,6 +9477,33 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ChatgptAuthTokensRefreshReason": {
+    \\      "oneOf": [
+    \\        {
+    \\          "enum": ["unauthorized"],
+    \\          "type": "string"
+    \\        }
+    \\      ]
+    \\    },
+    \\    "ChatgptAuthTokensRefreshParams": {
+    \\      "type": "object",
+    \\      "required": ["reason"],
+    \\      "properties": {
+    \\        "reason": { "$ref": "#/$defs/ChatgptAuthTokensRefreshReason" },
+    \\        "previousAccountId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ChatgptAuthTokensRefreshResponse": {
+    \\      "type": "object",
+    \\      "required": ["accessToken", "chatgptAccountId"],
+    \\      "properties": {
+    \\        "accessToken": { "type": "string" },
+    \\        "chatgptAccountId": { "type": "string" },
+    \\        "chatgptPlanType": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "RateLimitReachedType": {
     \\      "enum": [
     \\        "rate_limit_reached",
@@ -10893,6 +11005,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CancelLoginAccountResponse.json", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA },
     .{ .name = "LogoutAccountResponse.json", .contents = LOGOUT_ACCOUNT_RESPONSE_JSON_SCHEMA },
     .{ .name = "AccountLoginCompletedNotification.json", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ChatgptAuthTokensRefreshReason.json", .contents = CHATGPT_AUTH_TOKENS_REFRESH_REASON_JSON_SCHEMA },
+    .{ .name = "ChatgptAuthTokensRefreshParams.json", .contents = CHATGPT_AUTH_TOKENS_REFRESH_PARAMS_JSON_SCHEMA },
+    .{ .name = "ChatgptAuthTokensRefreshResponse.json", .contents = CHATGPT_AUTH_TOKENS_REFRESH_RESPONSE_JSON_SCHEMA },
     .{ .name = "RateLimitReachedType.json", .contents = RATE_LIMIT_REACHED_TYPE_JSON_SCHEMA },
     .{ .name = "RateLimitWindow.json", .contents = RATE_LIMIT_WINDOW_JSON_SCHEMA },
     .{ .name = "CreditsSnapshot.json", .contents = CREDITS_SNAPSHOT_JSON_SCHEMA },
@@ -11133,6 +11248,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CancelLoginAccountResponse.ts", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_TS },
     .{ .name = "v2/LogoutAccountResponse.ts", .contents = LOGOUT_ACCOUNT_RESPONSE_TS },
     .{ .name = "v2/AccountLoginCompletedNotification.ts", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/ChatgptAuthTokensRefreshReason.ts", .contents = CHATGPT_AUTH_TOKENS_REFRESH_REASON_TS },
+    .{ .name = "v2/ChatgptAuthTokensRefreshParams.ts", .contents = CHATGPT_AUTH_TOKENS_REFRESH_PARAMS_TS },
+    .{ .name = "v2/ChatgptAuthTokensRefreshResponse.ts", .contents = CHATGPT_AUTH_TOKENS_REFRESH_RESPONSE_TS },
     .{ .name = "v2/RateLimitReachedType.ts", .contents = RATE_LIMIT_REACHED_TYPE_TS },
     .{ .name = "v2/RateLimitWindow.ts", .contents = RATE_LIMIT_WINDOW_TS },
     .{ .name = "v2/CreditsSnapshot.ts", .contents = CREDITS_SNAPSHOT_TS },
