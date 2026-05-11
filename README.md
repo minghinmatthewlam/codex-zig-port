@@ -77,8 +77,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   and resource-template inventory plus streamable HTTP bearer-token,
   file-backed OAuth, and OAuth-discovery not-logged-in auth state
 - read resources with and without loaded thread IDs, and call tools on
-  configured stdio MCP servers through app-server `mcpServer/resource/read`
-  and `mcpServer/tool/call`
+  configured stdio and streamable HTTP MCP servers through app-server
+  `mcpServer/resource/read` and `mcpServer/tool/call`
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in
@@ -299,6 +299,8 @@ raw stdio tool/resource/resource-template inventory, bearer-token,
 file-backed OAuth, and OAuth-discovery not-logged-in auth reporting,
 config-backed stdio resource reads with and without loaded thread IDs,
 loaded-thread stdio tool calls including non-object argument pass-through, and
+app-server streamable HTTP MCP resource reads and tool calls with bearer-token
+and file-backed OAuth auth,
 model-facing stdio MCP resource
 list/template/read tool calls, verifies
 file-backed MCP OAuth logout for streamable HTTP servers, verifies
