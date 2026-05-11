@@ -616,6 +616,15 @@ def write_json_line(proc: subprocess.Popen[str], payload: dict) -> None:
     proc.stdin.flush()
 
 
+def assert_thread_started_notification(notification: dict, expected_thread: dict) -> None:
+    assert notification["jsonrpc"] == "2.0"
+    assert notification["method"] == "thread/started"
+    notification_thread = notification["params"]["thread"]
+    expected_notification_thread = dict(expected_thread)
+    expected_notification_thread["turns"] = []
+    assert notification_thread == expected_notification_thread
+
+
 def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
@@ -730,6 +739,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert start_result["approvalPolicy"] == "never"
         assert start_result["approvalsReviewer"] == "user"
         assert start_result["sandbox"] == {"type": "dangerFullAccess"}
+        assert_thread_started_notification(read_line(), started_thread)
 
         write_line(
             {
@@ -776,6 +786,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert forked_thread["turns"] == []
         assert fork_result["model"] == "gpt-fork"
         assert fork_result["modelProvider"] == "mock_provider"
+        assert_thread_started_notification(read_line(), forked_thread)
 
         write_line(
             {
@@ -2399,6 +2410,68 @@ def run_stdio_smoke(binary: Path) -> None:
             proc.wait(timeout=5)
 
 
+def run_thread_started_opt_out_smoke(binary: Path) -> None:
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": ["thread/started"],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-opted-out",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-opted-out"
+        thread_id = started["result"]["thread"]["id"]
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-after-opted-out-start",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded = read_json_line(proc, 5)
+        assert loaded["id"] == "loaded-after-opted-out-start"
+        assert loaded["result"] == {"data": [thread_id], "nextCursor": None}
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 def run_thread_resume_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
     try:
@@ -2643,6 +2716,25 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-fork-include-turns",
+                    "method": "thread/fork",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            fork_included = read_json_line(proc, 5)
+            assert fork_included["id"] == "thread-fork-include-turns"
+            fork_included_thread = fork_included["result"]["thread"]
+            assert fork_included_thread["forkedFromId"] == resume_thread_id
+            assert (
+                fork_included_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert_thread_started_notification(read_json_line(proc, 5), fork_included_thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-fork-exclude-turns",
                     "method": "thread/fork",
                     "params": {
@@ -2658,6 +2750,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             forked_thread_id = forked_thread["id"]
             assert forked_thread["forkedFromId"] == resume_thread_id
             assert forked_thread["turns"] == []
+            assert_thread_started_notification(read_json_line(proc, 5), forked_thread)
 
             write_json_line(
                 proc,
@@ -9875,6 +9968,11 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
         )
         assert thread_start_response_schema["required"][0] == "thread"
+        thread_started_notification_schema = json.loads(
+            (out_dir / "ThreadStartedNotification.json").read_text(encoding="utf-8")
+        )
+        assert thread_started_notification_schema["title"] == "ThreadStartedNotification"
+        assert thread_started_notification_schema["required"] == ["thread"]
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -10458,6 +10556,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRealtimeAppendTextParams;" in client_request
         assert 'method: "thread/realtime/appendAudio";' in client_request
         assert "params: ThreadRealtimeAppendAudioParams;" in client_request
+        server_notification = (out_dir / "ServerNotification.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'method: "thread/started";' in server_notification
+        assert "params: ThreadStartedNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
@@ -10586,6 +10689,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ThreadStartResponse" in thread_start_response
         assert "thread: unknown;" in thread_start_response
         assert "modelProvider: string;" in thread_start_response
+        thread_started_notification = (
+            out_dir / "v2" / "ThreadStartedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadStartedNotification" in thread_started_notification
+        assert "thread: unknown;" in thread_started_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -10938,6 +11046,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
+        assert (
+            'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
+            in v2_index
+        )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
@@ -11201,6 +11313,8 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_stdio_smoke(binary)
     print("app-server-stdio-e2e: ok")
+    run_thread_started_opt_out_smoke(binary)
+    print("app-server-thread-started-opt-out-e2e: ok")
     run_thread_resume_rpc_smoke(binary)
     print("app-server-thread-resume-rpc-e2e: ok")
     run_goal_feature_gate_smoke(binary)
