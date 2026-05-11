@@ -687,6 +687,118 @@ const PLAN_TYPE_TS =
     \\
     ;
 
+const AGENT_PATH_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AgentPath = string;
+    \\
+    ;
+
+const THREAD_ID_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadId = string;
+    \\
+    ;
+
+const FORCED_LOGIN_METHOD_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ForcedLoginMethod = "chatgpt" | "api";
+    \\
+    ;
+
+const IMAGE_DETAIL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ImageDetail = "auto" | "low" | "high" | "original";
+    \\
+    ;
+
+const INPUT_MODALITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type InputModality = "text" | "image";
+    \\
+    ;
+
+const MESSAGE_PHASE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type MessagePhase = "commentary" | "final_answer";
+    \\
+    ;
+
+const PERSONALITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type Personality = "none" | "friendly" | "pragmatic";
+    \\
+    ;
+
+const REASONING_EFFORT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    \\
+    ;
+
+const REASONING_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
+    \\
+    ;
+
+const REALTIME_CONVERSATION_VERSION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RealtimeConversationVersion = "v1" | "v2";
+    \\
+    ;
+
+const VERBOSITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type Verbosity = "low" | "medium" | "high";
+    \\
+    ;
+
+const WEB_SEARCH_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WebSearchAction =
+    \\  | { type: "search"; query?: string; queries?: string[] }
+    \\  | { type: "open_page"; url?: string }
+    \\  | { type: "find_in_page"; url?: string; pattern?: string }
+    \\  | { type: "other" };
+    \\
+    ;
+
+const WEB_SEARCH_CONTEXT_SIZE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WebSearchContextSize = "low" | "medium" | "high";
+    \\
+    ;
+
+const WEB_SEARCH_LOCATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WebSearchLocation = {
+    \\  country: string | null;
+    \\  region: string | null;
+    \\  city: string | null;
+    \\  timezone: string | null;
+    \\};
+    \\
+    ;
+
+const WEB_SEARCH_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WebSearchMode = "disabled" | "cached" | "live";
+    \\
+    ;
+
+const WEB_SEARCH_TOOL_CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WebSearchContextSize } from "./WebSearchContextSize";
+    \\import type { WebSearchLocation } from "./WebSearchLocation";
+    \\
+    \\export type WebSearchToolConfig = {
+    \\  context_size: WebSearchContextSize | null;
+    \\  allowed_domains: string[] | null;
+    \\  location: WebSearchLocation | null;
+    \\};
+    \\
+    ;
+
 const GET_AUTH_STATUS_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface GetAuthStatusParams {
@@ -3748,14 +3860,30 @@ const INDEX_TS =
     \\export type { JSONRPCRequest } from "./JSONRPCRequest";
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
+    \\export type { AgentPath } from "./AgentPath";
     \\export type { AuthMode } from "./AuthMode";
+    \\export type { ForcedLoginMethod } from "./ForcedLoginMethod";
+    \\export type { ImageDetail } from "./ImageDetail";
+    \\export type { InputModality } from "./InputModality";
+    \\export type { MessagePhase } from "./MessagePhase";
+    \\export type { Personality } from "./Personality";
     \\export type { PlanType } from "./PlanType";
+    \\export type { ReasoningEffort } from "./ReasoningEffort";
+    \\export type { ReasoningSummary } from "./ReasoningSummary";
     \\export type { RequestId } from "./RequestId";
+    \\export type { RealtimeConversationVersion } from "./RealtimeConversationVersion";
     \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
     \\export type { ServerNotification } from "./ServerNotification";
+    \\export type { ThreadId } from "./ThreadId";
     \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
+    \\export type { Verbosity } from "./Verbosity";
+    \\export type { WebSearchAction } from "./WebSearchAction";
+    \\export type { WebSearchContextSize } from "./WebSearchContextSize";
+    \\export type { WebSearchLocation } from "./WebSearchLocation";
+    \\export type { WebSearchMode } from "./WebSearchMode";
+    \\export type { WebSearchToolConfig } from "./WebSearchToolConfig";
     \\export * as v2 from "./v2";
     \\
     ;
@@ -11310,9 +11438,25 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
+    .{ .name = "AgentPath.ts", .contents = AGENT_PATH_TS },
     .{ .name = "AuthMode.ts", .contents = AUTH_MODE_TS },
+    .{ .name = "ForcedLoginMethod.ts", .contents = FORCED_LOGIN_METHOD_TS },
+    .{ .name = "ImageDetail.ts", .contents = IMAGE_DETAIL_TS },
+    .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
+    .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
+    .{ .name = "Personality.ts", .contents = PERSONALITY_TS },
     .{ .name = "PlanType.ts", .contents = PLAN_TYPE_TS },
+    .{ .name = "ReasoningEffort.ts", .contents = REASONING_EFFORT_TS },
+    .{ .name = "ReasoningSummary.ts", .contents = REASONING_SUMMARY_TS },
+    .{ .name = "RealtimeConversationVersion.ts", .contents = REALTIME_CONVERSATION_VERSION_TS },
+    .{ .name = "ThreadId.ts", .contents = THREAD_ID_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
+    .{ .name = "Verbosity.ts", .contents = VERBOSITY_TS },
+    .{ .name = "WebSearchAction.ts", .contents = WEB_SEARCH_ACTION_TS },
+    .{ .name = "WebSearchContextSize.ts", .contents = WEB_SEARCH_CONTEXT_SIZE_TS },
+    .{ .name = "WebSearchLocation.ts", .contents = WEB_SEARCH_LOCATION_TS },
+    .{ .name = "WebSearchMode.ts", .contents = WEB_SEARCH_MODE_TS },
+    .{ .name = "WebSearchToolConfig.ts", .contents = WEB_SEARCH_TOOL_CONFIG_TS },
     .{ .name = "RealtimeVoice.ts", .contents = REALTIME_VOICE_TS },
     .{ .name = "RealtimeOutputModality.ts", .contents = REALTIME_OUTPUT_MODALITY_TS },
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
