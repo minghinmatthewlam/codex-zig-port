@@ -82,6 +82,19 @@ def default_exec_response_payload() -> bytes:
     )
 
 
+def function_call_response_payload(call_id: str, name: str, arguments: dict) -> bytes:
+    event = {
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": json.dumps(arguments, separators=(",", ":")),
+        },
+    }
+    return f"data: {json.dumps(event, separators=(',', ':'))}\n\ndata: [DONE]\n\n".encode()
+
+
 def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server = ExecResponsesServer(("127.0.0.1", 0), ExecResponsesHandler)
     server.request_paths = []
@@ -1225,6 +1238,216 @@ def run_exec_provider_command_auth_refresh_interval_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-resources-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    server.response_payloads = [
+        function_call_response_payload("call-resources", "list_mcp_resources", {}),
+        function_call_response_payload("call-templates", "list_mcp_resource_templates", {"server": "docs"}),
+        function_call_response_payload(
+            "call-read",
+            "read_mcp_resource",
+            {"server": "docs", "uri": "file:///tmp/codex-resource.md"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"resource done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    codex_home = temp_root / "codex-home"
+    server_path = temp_root / "resource_server.py"
+    try:
+        codex_home.mkdir()
+        server_path.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}, 'resources': {}},",
+                    "                'serverInfo': {'name': 'resource-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/list':",
+                    "        write({'jsonrpc': '2.0', 'id': request_id, 'result': {'tools': [], 'nextCursor': None}})",
+                    "    elif method == 'resources/list':",
+                    "        cursor = request.get('params', {}).get('cursor')",
+                    "        if cursor == 'next':",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'result': {",
+                    "                    'resources': [",
+                    "                        {",
+                    "                            'uri': 'file:///tmp/codex-resource-second.md',",
+                    "                            'name': 'second-resource',",
+                    "                            'mimeType': 'text/markdown',",
+                    "                        }",
+                    "                    ],",
+                    "                    'nextCursor': None,",
+                    "                },",
+                    "            })",
+                    "        else:",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'result': {",
+                    "                    'resources': [",
+                    "                        {",
+                    "                            'uri': 'file:///tmp/codex-resource.md',",
+                    "                            'name': 'primary-resource',",
+                    "                            'description': 'Primary MCP resource.',",
+                    "                            'mimeType': 'text/plain',",
+                    "                        },",
+                    "                        {'name': 'missing-uri'},",
+                    "                    ],",
+                    "                    'nextCursor': 'next',",
+                    "                },",
+                    "            })",
+                    "    elif method == 'resources/templates/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'resourceTemplates': [",
+                    "                    {",
+                    "                        'uriTemplate': 'file:///tmp/{name}.md',",
+                    "                        'name': 'file-template',",
+                    "                        'description': 'File template.',",
+                    "                    },",
+                    "                    {'name': 'missing-template'},",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    elif method == 'resources/read':",
+                    "        uri = request.get('params', {}).get('uri')",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'contents': [",
+                    "                    {",
+                    "                        'uri': uri,",
+                    "                        'mimeType': 'text/plain',",
+                    "                        'text': 'resource body',",
+                    "                    }",
+                    "                ]",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-mcp-resources"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[mcp_servers.docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "mcp", "resources"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "resource done\n"
+        assert len(server.request_bodies) == 4
+        first_tools = {tool.get("name") for tool in server.request_bodies[0]["tools"] if tool.get("type") == "function"}
+        assert "list_mcp_resources" in first_tools
+        assert "list_mcp_resource_templates" in first_tools
+        assert "read_mcp_resource" in first_tools
+
+        resources_output = json.loads(server.request_bodies[1]["input"][-1]["output"])
+        assert resources_output["resources"] == [
+            {
+                "server": "docs",
+                "uri": "file:///tmp/codex-resource.md",
+                "name": "primary-resource",
+                "description": "Primary MCP resource.",
+                "mimeType": "text/plain",
+            },
+            {
+                "server": "docs",
+                "uri": "file:///tmp/codex-resource-second.md",
+                "name": "second-resource",
+                "mimeType": "text/markdown",
+            },
+        ]
+
+        templates_output = json.loads(server.request_bodies[2]["input"][-1]["output"])
+        assert templates_output == {
+            "server": "docs",
+            "resourceTemplates": [
+                {
+                    "server": "docs",
+                    "uriTemplate": "file:///tmp/{name}.md",
+                    "name": "file-template",
+                    "description": "File template.",
+                }
+            ],
+        }
+
+        read_output = json.loads(server.request_bodies[3]["input"][-1]["output"])
+        assert read_output == {
+            "server": "docs",
+            "uri": "file:///tmp/codex-resource.md",
+            "contents": [
+                {
+                    "uri": "file:///tmp/codex-resource.md",
+                    "mimeType": "text/plain",
+                    "text": "resource body",
+                }
+            ],
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -1963,6 +2186,7 @@ def main() -> None:
     run_exec_provider_command_auth_smoke(binary)
     run_exec_provider_command_auth_refresh_smoke(binary)
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
+    run_exec_mcp_resource_tools_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -1984,6 +2208,7 @@ def main() -> None:
     print("cli-exec-provider-command-auth-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
+    print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
