@@ -132,3 +132,5 @@ Additional app-server Guardian approval coverage: `thread/approveGuardianDeniedA
 Additional app-server thread turns-list coverage: `thread/turns/list` validates `threadId`, cursor, limit, and sort direction, returns Rust-shaped `thread not loaded` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation with opaque turn items until full turn schema and thread lifecycle parity land.
 
 Additional app-server realtime voice list coverage: `thread/realtime/listVoices` validates object params, returns the Rust built-in v1/v2 realtime voice lists with default voices, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
+
+Additional app-server realtime stop coverage: `thread/realtime/stop` validates `threadId`, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
