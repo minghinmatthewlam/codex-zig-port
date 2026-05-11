@@ -64,7 +64,7 @@ filesystem-path helper, absolute-path, network-access, and output-delta
 notification artifacts, model-provider capabilities read artifacts, thread
 token-usage notification artifacts, collaboration-mode list artifacts, and
 model-list catalog artifacts, plus experimental-feature list/enablement
-artifacts and memory-reset response artifacts, in
+artifacts, memory-reset response artifacts, and git-diff-to-remote artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
@@ -125,6 +125,8 @@ Additional app-server model-list generation coverage: `model/list` is included i
 Additional app-server experimental-feature generation coverage: `experimentalFeature/list` and `experimentalFeature/enablement/set` are included in current TypeScript and JSON schema generation with cursor/limit params, Rust-shaped paginated feature rows, runtime enablement maps, and enablement set params/responses until broader experimental feature protocol generation parity lands.
 
 Additional app-server memory-reset generation coverage: `memory/reset` is included in current TypeScript and JSON schema generation as a no-params request with an empty Rust-shaped response object until broader app-server utility RPC generation parity lands.
+
+Additional app-server git-diff-to-remote generation coverage: `gitDiffToRemote` is included in current TypeScript and JSON schema generation with required `cwd` params and Rust-shaped `sha`/`diff` response fields until broader legacy desktop utility RPC generation parity lands.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
