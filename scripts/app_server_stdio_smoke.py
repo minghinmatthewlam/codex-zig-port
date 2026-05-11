@@ -793,6 +793,73 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-increment-elicitation-loaded",
+                "method": "thread/increment_elicitation",
+                "params": {"threadId": thread_id},
+            }
+        )
+        increment_loaded = read_line()
+        assert increment_loaded["id"] == "thread-increment-elicitation-loaded"
+        assert increment_loaded["result"] == {"count": 1, "paused": True}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-increment-elicitation-loaded-again",
+                "method": "thread/increment_elicitation",
+                "params": {"threadId": thread_id},
+            }
+        )
+        increment_loaded_again = read_line()
+        assert increment_loaded_again["id"] == "thread-increment-elicitation-loaded-again"
+        assert increment_loaded_again["result"] == {"count": 2, "paused": True}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-decrement-elicitation-loaded",
+                "method": "thread/decrement_elicitation",
+                "params": {"threadId": thread_id},
+            }
+        )
+        decrement_loaded = read_line()
+        assert decrement_loaded["id"] == "thread-decrement-elicitation-loaded"
+        assert decrement_loaded["result"] == {"count": 1, "paused": True}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-decrement-elicitation-loaded-zero",
+                "method": "thread/decrement_elicitation",
+                "params": {"threadId": thread_id},
+            }
+        )
+        decrement_loaded_zero = read_line()
+        assert decrement_loaded_zero["id"] == "thread-decrement-elicitation-loaded-zero"
+        assert decrement_loaded_zero["result"] == {"count": 0, "paused": False}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-decrement-elicitation-loaded-underflow",
+                "method": "thread/decrement_elicitation",
+                "params": {"threadId": thread_id},
+            }
+        )
+        decrement_loaded_underflow = read_line()
+        assert (
+            decrement_loaded_underflow["id"]
+            == "thread-decrement-elicitation-loaded-underflow"
+        )
+        assert decrement_loaded_underflow["error"]["code"] == -32600
+        assert (
+            "out-of-band elicitation count is already zero"
+            in decrement_loaded_underflow["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork",
                 "method": "thread/fork",
                 "params": {
