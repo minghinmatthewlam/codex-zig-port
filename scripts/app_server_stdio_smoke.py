@@ -11147,6 +11147,78 @@ def run_json_schema_smoke(binary: Path) -> None:
             hooks_list_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/HooksListEntry"
         )
+        skills_extra_roots = json.loads(
+            (out_dir / "SkillsListExtraRootsForCwd.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert skills_extra_roots["required"] == ["cwd", "extraUserRoots"]
+        skills_list_params = json.loads(
+            (out_dir / "SkillsListParams.json").read_text(encoding="utf-8")
+        )
+        assert skills_list_params["properties"]["cwds"]["type"] == ["array", "null"]
+        assert skills_list_params["properties"]["forceReload"]["type"] == [
+            "boolean",
+            "null",
+        ]
+        assert (
+            skills_list_params["properties"]["perCwdExtraUserRoots"]["items"]["$ref"]
+            == "#/$defs/SkillsListExtraRootsForCwd"
+        )
+        skill_interface = json.loads(
+            (out_dir / "SkillInterface.json").read_text(encoding="utf-8")
+        )
+        assert "displayName" in skill_interface["properties"]
+        skill_tool_dependency = json.loads(
+            (out_dir / "SkillToolDependency.json").read_text(encoding="utf-8")
+        )
+        assert skill_tool_dependency["required"] == ["type", "value"]
+        skill_dependencies = json.loads(
+            (out_dir / "SkillDependencies.json").read_text(encoding="utf-8")
+        )
+        assert (
+            skill_dependencies["properties"]["tools"]["items"]["$ref"]
+            == "#/$defs/SkillToolDependency"
+        )
+        skill = json.loads((out_dir / "Skill.json").read_text(encoding="utf-8"))
+        assert skill["required"] == ["name", "description", "path", "scope", "enabled"]
+        assert skill["properties"]["interface"]["$ref"] == "#/$defs/SkillInterface"
+        assert (
+            skill["properties"]["dependencies"]["$ref"]
+            == "#/$defs/SkillDependencies"
+        )
+        skill_error = json.loads(
+            (out_dir / "SkillError.json").read_text(encoding="utf-8")
+        )
+        assert skill_error["required"] == ["path", "message"]
+        skills_list_entry = json.loads(
+            (out_dir / "SkillsListEntry.json").read_text(encoding="utf-8")
+        )
+        assert skills_list_entry["required"] == ["cwd", "skills", "errors"]
+        assert (
+            skills_list_entry["properties"]["skills"]["items"]["$ref"]
+            == "#/$defs/Skill"
+        )
+        skills_list_response = json.loads(
+            (out_dir / "SkillsListResponse.json").read_text(encoding="utf-8")
+        )
+        assert (
+            skills_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/SkillsListEntry"
+        )
+        skills_config_params = json.loads(
+            (out_dir / "SkillsConfigWriteParams.json").read_text(encoding="utf-8")
+        )
+        assert skills_config_params["required"] == ["enabled"]
+        assert len(skills_config_params["oneOf"]) == 2
+        skills_config_response = json.loads(
+            (out_dir / "SkillsConfigWriteResponse.json").read_text(encoding="utf-8")
+        )
+        assert skills_config_response["required"] == ["effectiveEnabled"]
+        skills_changed = json.loads(
+            (out_dir / "SkillsChangedNotification.json").read_text(encoding="utf-8")
+        )
+        assert skills_changed["additionalProperties"] is False
         mcp_reload_params = json.loads(
             (out_dir / "ConfigMcpServerReloadParams.json").read_text(
                 encoding="utf-8"
@@ -12044,6 +12116,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "Hook" in bundle["$defs"]
         assert "HooksListEntry" in bundle["$defs"]
         assert "HooksListResponse" in bundle["$defs"]
+        assert "SkillsListExtraRootsForCwd" in bundle["$defs"]
+        assert "SkillsListParams" in bundle["$defs"]
+        assert "SkillInterface" in bundle["$defs"]
+        assert "SkillToolDependency" in bundle["$defs"]
+        assert "SkillDependencies" in bundle["$defs"]
+        assert "Skill" in bundle["$defs"]
+        assert "SkillError" in bundle["$defs"]
+        assert "SkillsListEntry" in bundle["$defs"]
+        assert "SkillsListResponse" in bundle["$defs"]
+        assert "SkillsConfigWriteParams" in bundle["$defs"]
+        assert "SkillsConfigWriteResponse" in bundle["$defs"]
+        assert "SkillsChangedNotification" in bundle["$defs"]
         assert "ConfigMcpServerReloadParams" in bundle["$defs"]
         assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
         assert "McpServerStatusDetail" in bundle["$defs"]
@@ -12187,6 +12271,43 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "$ref"
             ]
             == "#/$defs/HooksListEntry"
+        )
+        assert bundle["$defs"]["SkillsListParams"]["properties"]["forceReload"][
+            "type"
+        ] == ["boolean", "null"]
+        assert (
+            bundle["$defs"]["SkillsListParams"]["properties"][
+                "perCwdExtraUserRoots"
+            ]["items"]["$ref"]
+            == "#/$defs/SkillsListExtraRootsForCwd"
+        )
+        assert (
+            bundle["$defs"]["Skill"]["properties"]["interface"]["$ref"]
+            == "#/$defs/SkillInterface"
+        )
+        assert (
+            bundle["$defs"]["Skill"]["properties"]["dependencies"]["$ref"]
+            == "#/$defs/SkillDependencies"
+        )
+        assert (
+            bundle["$defs"]["SkillsListEntry"]["properties"]["skills"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/Skill"
+        )
+        assert (
+            bundle["$defs"]["SkillsListResponse"]["properties"]["data"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/SkillsListEntry"
+        )
+        assert len(bundle["$defs"]["SkillsConfigWriteParams"]["oneOf"]) == 2
+        assert bundle["$defs"]["SkillsConfigWriteResponse"]["properties"][
+            "effectiveEnabled"
+        ]["type"] == "boolean"
+        assert (
+            bundle["$defs"]["SkillsChangedNotification"]["additionalProperties"]
+            is False
         )
         assert (
             bundle["$defs"]["ConfigMcpServerReloadResponse"][
@@ -12381,6 +12502,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FuzzyFileSearchSessionStopParams;" in client_request
         assert 'method: "hooks/list";' in client_request
         assert "params?: HooksListParams | null;" in client_request
+        assert 'method: "skills/list";' in client_request
+        assert "params?: SkillsListParams | null;" in client_request
+        assert 'method: "skills/config/write";' in client_request
+        assert "params: SkillsConfigWriteParams;" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
@@ -12480,6 +12605,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params: FuzzyFileSearchSessionCompletedNotification;"
             in server_notification
         )
+        assert 'method: "skills/changed";' in server_notification
+        assert "params: SkillsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
@@ -12515,6 +12642,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: FuzzyFileSearchSessionStopResponse;" in client_response
         assert 'method: "hooks/list";' in client_response
         assert "result: HooksListResponse;" in client_response
+        assert 'method: "skills/list";' in client_response
+        assert "result: SkillsListResponse;" in client_response
+        assert 'method: "skills/config/write";' in client_response
+        assert "result: SkillsConfigWriteResponse;" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
         assert 'method: "mcpServerStatus/list";' in client_response
@@ -12745,6 +12876,82 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             hooks_list_response
         )
         assert "data: HooksListEntry[];" in hooks_list_response
+        skills_extra_roots = (
+            out_dir / "v2" / "SkillsListExtraRootsForCwd.ts"
+        ).read_text(encoding="utf-8")
+        assert "cwd: string;" in skills_extra_roots
+        assert "extraUserRoots: string[];" in skills_extra_roots
+        skills_list_params = (out_dir / "v2" / "SkillsListParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            'import type { SkillsListExtraRootsForCwd } from "./SkillsListExtraRootsForCwd";'
+            in skills_list_params
+        )
+        assert "cwds?: string[] | null;" in skills_list_params
+        assert "forceReload?: boolean | null;" in skills_list_params
+        assert (
+            "perCwdExtraUserRoots?: SkillsListExtraRootsForCwd[] | null;"
+            in skills_list_params
+        )
+        skill_interface = (out_dir / "v2" / "SkillInterface.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "displayName?: string;" in skill_interface
+        assert "defaultPrompt?: string;" in skill_interface
+        skill_tool_dependency = (
+            out_dir / "v2" / "SkillToolDependency.ts"
+        ).read_text(encoding="utf-8")
+        assert "type: string;" in skill_tool_dependency
+        assert "value: string;" in skill_tool_dependency
+        assert "transport?: string;" in skill_tool_dependency
+        skill_dependencies = (out_dir / "v2" / "SkillDependencies.ts").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            'import type { SkillToolDependency } from "./SkillToolDependency";'
+            in skill_dependencies
+        )
+        assert "tools: SkillToolDependency[];" in skill_dependencies
+        skill = (out_dir / "v2" / "Skill.ts").read_text(encoding="utf-8")
+        assert 'import type { SkillDependencies } from "./SkillDependencies";' in skill
+        assert 'import type { SkillInterface } from "./SkillInterface";' in skill
+        assert "shortDescription?: string;" in skill
+        assert "interface?: SkillInterface;" in skill
+        assert "dependencies?: SkillDependencies;" in skill
+        assert "enabled: boolean;" in skill
+        skill_error = (out_dir / "v2" / "SkillError.ts").read_text(encoding="utf-8")
+        assert "path: string;" in skill_error
+        assert "message: string;" in skill_error
+        skills_list_entry = (out_dir / "v2" / "SkillsListEntry.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { Skill } from "./Skill";' in skills_list_entry
+        assert 'import type { SkillError } from "./SkillError";' in skills_list_entry
+        assert "skills: Skill[];" in skills_list_entry
+        assert "errors: SkillError[];" in skills_list_entry
+        skills_list_response = (out_dir / "v2" / "SkillsListResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { SkillsListEntry } from "./SkillsListEntry";' in (
+            skills_list_response
+        )
+        assert "data: SkillsListEntry[];" in skills_list_response
+        skills_config_params = (
+            out_dir / "v2" / "SkillsConfigWriteParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "export type SkillsConfigWriteParams =" in skills_config_params
+        assert "name: string;" in skills_config_params
+        assert "path: string;" in skills_config_params
+        assert "enabled: boolean;" in skills_config_params
+        skills_config_response = (
+            out_dir / "v2" / "SkillsConfigWriteResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "effectiveEnabled: boolean;" in skills_config_response
+        skills_changed = (
+            out_dir / "v2" / "SkillsChangedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface SkillsChangedNotification {}" in skills_changed
         mcp_reload_params = (
             out_dir / "v2" / "ConfigMcpServerReloadParams.ts"
         ).read_text(encoding="utf-8")
@@ -13453,6 +13660,42 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { HooksListResponse } from "./HooksListResponse";'
+            in v2_index
+        )
+        assert 'export type { Skill } from "./Skill";' in v2_index
+        assert 'export type { SkillDependencies } from "./SkillDependencies";' in v2_index
+        assert 'export type { SkillError } from "./SkillError";' in v2_index
+        assert 'export type { SkillInterface } from "./SkillInterface";' in v2_index
+        assert (
+            'export type { SkillToolDependency } from "./SkillToolDependency";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsChangedNotification } from "./SkillsChangedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsConfigWriteParams } from "./SkillsConfigWriteParams";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsConfigWriteResponse } from "./SkillsConfigWriteResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsListEntry } from "./SkillsListEntry";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsListExtraRootsForCwd } from "./SkillsListExtraRootsForCwd";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsListParams } from "./SkillsListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsListResponse } from "./SkillsListResponse";'
             in v2_index
         )
         assert (
