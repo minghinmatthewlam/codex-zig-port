@@ -1184,8 +1184,8 @@ const THREAD_REALTIME_AUDIO_CHUNK_TS =
     \\  data: string;
     \\  sampleRate: number;
     \\  numChannels: number;
-    \\  samplesPerChannel?: number | null;
-    \\  itemId?: string | null;
+    \\  samplesPerChannel: number | null;
+    \\  itemId: string | null;
     \\}
     \\
     ;

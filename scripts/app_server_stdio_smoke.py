@@ -9849,7 +9849,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "data: string;" in thread_realtime_audio_chunk
         assert "sampleRate: number;" in thread_realtime_audio_chunk
-        assert "samplesPerChannel?: number | null;" in thread_realtime_audio_chunk
+        assert "samplesPerChannel: number | null;" in thread_realtime_audio_chunk
+        assert "itemId: string | null;" in thread_realtime_audio_chunk
         thread_realtime_append_audio = (
             out_dir / "v2" / "ThreadRealtimeAppendAudioParams.ts"
         ).read_text(encoding="utf-8")
