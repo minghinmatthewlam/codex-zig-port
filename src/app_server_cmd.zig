@@ -777,6 +777,18 @@ const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const CONFIG_MCP_SERVER_RELOAD_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ConfigMcpServerReloadParams {}
+    \\
+    ;
+
+const CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ConfigMcpServerReloadResponse {}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -2092,6 +2104,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
+    \\import type { ConfigMcpServerReloadParams } from "./v2/ConfigMcpServerReloadParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { FuzzyFileSearchParams } from "./v2/FuzzyFileSearchParams";
@@ -2160,6 +2173,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      params: FuzzyFileSearchSessionStopParams;
+    \\    }
+    \\  | {
+    \\      method: "config/mcpServer/reload";
+    \\      params?: ConfigMcpServerReloadParams | null;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -2327,6 +2344,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
+    \\import type { ConfigMcpServerReloadResponse } from "./v2/ConfigMcpServerReloadResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { FuzzyFileSearchResponse } from "./v2/FuzzyFileSearchResponse";
@@ -2405,6 +2423,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      result: FuzzyFileSearchSessionStopResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "config/mcpServer/reload";
+    \\      result: ConfigMcpServerReloadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2714,6 +2737,8 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
+    \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
@@ -3244,6 +3269,26 @@ const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\  "properties": {
     \\    "sessionId": { "type": "string" }
     \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigMcpServerReloadParams",
+    \\  "type": "object",
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigMcpServerReloadResponse",
+    \\  "type": "object",
     \\  "additionalProperties": false
     \\}
     \\
@@ -6052,6 +6097,14 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ConfigMcpServerReloadParams": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ConfigMcpServerReloadResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -7473,6 +7526,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "FuzzyFileSearchSessionStopResponse.json", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_JSON_SCHEMA },
     .{ .name = "FuzzyFileSearchSessionUpdatedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "FuzzyFileSearchSessionCompletedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
+    .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -7639,6 +7694,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/FuzzyFileSearchSessionStopResponse.ts", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
+    .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
