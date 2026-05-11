@@ -119,6 +119,16 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
 
 
 class StreamableMcpHandler(BaseHTTPRequestHandler):
+    def do_DELETE(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append({"method": "DELETE"})
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -7633,6 +7643,7 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             "initialize",
             "notifications/initialized",
             "resources/read",
+            "DELETE",
         ]
         assert "mcp-session-id" not in streamable_server.request_headers[0]
         assert (
@@ -7643,7 +7654,11 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             streamable_server.request_headers[2]["mcp-session-id"]
             == "streamable-session-1"
         )
-        assert streamable_server.request_bodies[-1]["params"]["uri"] == "test://codex/resource"
+        assert (
+            streamable_server.request_headers[3]["mcp-session-id"]
+            == "streamable-session-1"
+        )
+        assert streamable_server.request_bodies[-2]["params"]["uri"] == "test://codex/resource"
         assert streamable_server.request_headers[-1]["authorization"] == "Bearer resource-token"
         assert streamable_server.request_headers[-1]["mcp-protocol-version"] == "2025-03-26"
     finally:
@@ -7969,6 +7984,7 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 "initialize",
                 "notifications/initialized",
                 "tools/call",
+                "DELETE",
             ]
             assert "mcp-session-id" not in streamable_server.request_headers[0]
             assert (
@@ -7979,9 +7995,13 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 streamable_server.request_headers[2]["mcp-session-id"]
                 == "streamable-session-1"
             )
-            assert streamable_server.request_bodies[-1]["params"]["name"] == "echo"
+            assert (
+                streamable_server.request_headers[3]["mcp-session-id"]
+                == "streamable-session-1"
+            )
+            assert streamable_server.request_bodies[-2]["params"]["name"] == "echo"
             assert streamable_server.request_headers[-1]["authorization"] == "Bearer oauth-tool-token"
-            assert streamable_server.request_headers[-1]["accept"] == "application/json, text/event-stream"
+            assert streamable_server.request_headers[-2]["accept"] == "application/json, text/event-stream"
 
             assert proc.stdin is not None
             proc.stdin.close()

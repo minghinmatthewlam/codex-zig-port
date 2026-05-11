@@ -118,6 +118,14 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
 
 
 class StreamableMcpToolHandler(BaseHTTPRequestHandler):
+    def do_DELETE(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_bodies.append({"method": "DELETE"})
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -1704,27 +1712,35 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
             "initialize",
             "notifications/initialized",
             "tools/list",
+            "DELETE",
             "initialize",
             "notifications/initialized",
             "resources/list",
+            "DELETE",
             "initialize",
             "notifications/initialized",
             "resources/templates/list",
+            "DELETE",
             "initialize",
             "notifications/initialized",
             "resources/read",
+            "DELETE",
         ]
-        for index in (0, 3, 6, 9):
+        for index in (0, 4, 8, 12):
             assert header_value(mcp_server.request_headers[index], "Mcp-Session-Id") is None
-        for index in (1, 2, 4, 5, 7, 8, 10, 11):
+        for index in (1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15):
             assert (
                 header_value(mcp_server.request_headers[index], "Mcp-Session-Id")
                 == "streamable-session-1"
             )
         assert mcp_server.request_headers[2]["Authorization"] == "Bearer resource-http-token"
-        assert mcp_server.request_headers[5]["Authorization"] == "Bearer resource-http-token"
-        assert mcp_server.request_headers[8]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[3]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[6]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[7]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[10]["Authorization"] == "Bearer resource-http-token"
         assert mcp_server.request_headers[11]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[14]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[15]["Authorization"] == "Bearer resource-http-token"
     finally:
         server.shutdown()
         server.server_close()
@@ -1796,21 +1812,24 @@ def run_exec_streamable_http_mcp_tool_smoke(binary: Path) -> None:
             "initialize",
             "notifications/initialized",
             "tools/list",
+            "DELETE",
             "initialize",
             "notifications/initialized",
             "tools/call",
+            "DELETE",
         ]
         assert header_value(mcp_server.request_headers[0], "Mcp-Session-Id") is None
-        assert header_value(mcp_server.request_headers[3], "Mcp-Session-Id") is None
-        for index in (1, 2, 4, 5):
+        assert header_value(mcp_server.request_headers[4], "Mcp-Session-Id") is None
+        for index in (1, 2, 3, 5, 6, 7):
             assert (
                 header_value(mcp_server.request_headers[index], "Mcp-Session-Id")
                 == "streamable-session-1"
             )
-        assert mcp_server.request_bodies[-1]["params"]["arguments"] == {
+        assert mcp_server.request_bodies[-2]["params"]["arguments"] == {
             "message": "hello from http mcp"
         }
         assert mcp_server.request_headers[2]["Authorization"] == "Bearer streamable-token"
+        assert mcp_server.request_headers[3]["Authorization"] == "Bearer streamable-token"
         assert mcp_server.request_headers[-1]["Authorization"] == "Bearer streamable-token"
     finally:
         responses_server.shutdown()
