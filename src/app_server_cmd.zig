@@ -789,6 +789,58 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS =
     \\
     ;
 
+const MCP_SERVER_STATUS_DETAIL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpServerStatusDetail = "full" | "toolsAndAuthOnly";
+    \\
+    ;
+
+const MCP_SERVER_STATUS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerStatusDetail } from "./McpServerStatusDetail";
+    \\
+    \\export interface McpServerStatusListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  detail?: McpServerStatusDetail | null;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_AUTH_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpServerAuthStatus =
+    \\  | "bearerToken"
+    \\  | "notLoggedIn"
+    \\  | "unsupported";
+    \\
+    ;
+
+const MCP_SERVER_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerAuthStatus } from "./McpServerAuthStatus";
+    \\
+    \\export interface McpServerStatus {
+    \\  name: string;
+    \\  tools: Record<string, unknown>;
+    \\  resources: unknown[];
+    \\  resourceTemplates: unknown[];
+    \\  authStatus: McpServerAuthStatus;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_STATUS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerStatus } from "./McpServerStatus";
+    \\
+    \\export interface McpServerStatusListResponse {
+    \\  data: McpServerStatus[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -2112,6 +2164,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
     \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
+    \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
@@ -2177,6 +2230,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "config/mcpServer/reload";
     \\      params?: ConfigMcpServerReloadParams | null;
+    \\    }
+    \\  | {
+    \\      method: "mcpServerStatus/list";
+    \\      params?: McpServerStatusListParams | null;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -2352,6 +2409,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
+    \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
@@ -2428,6 +2486,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "config/mcpServer/reload";
     \\      result: ConfigMcpServerReloadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "mcpServerStatus/list";
+    \\      result: McpServerStatusListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2739,6 +2802,11 @@ const V2_INDEX_TS =
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { McpServerAuthStatus } from "./McpServerAuthStatus";
+    \\export type { McpServerStatus } from "./McpServerStatus";
+    \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
+    \\export type { McpServerStatusListParams } from "./McpServerStatusListParams";
+    \\export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
@@ -3289,6 +3357,109 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ConfigMcpServerReloadResponse",
     \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStatusDetail",
+    \\  "type": "string",
+    \\  "enum": ["full", "toolsAndAuthOnly"]
+    \\}
+    \\
+;
+
+const MCP_SERVER_STATUS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStatusListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "detail": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/McpServerStatusDetail" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "McpServerStatusDetail": {
+    \\      "type": "string",
+    \\      "enum": ["full", "toolsAndAuthOnly"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MCP_SERVER_AUTH_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerAuthStatus",
+    \\  "type": "string",
+    \\  "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\}
+    \\
+;
+
+const MCP_SERVER_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStatus",
+    \\  "type": "object",
+    \\  "required": ["name", "tools", "resources", "resourceTemplates", "authStatus"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "tools": { "type": "object", "additionalProperties": true },
+    \\    "resources": { "type": "array", "items": true },
+    \\    "resourceTemplates": { "type": "array", "items": true },
+    \\    "authStatus": { "$ref": "#/$defs/McpServerAuthStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "McpServerAuthStatus": {
+    \\      "type": "string",
+    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStatusListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/McpServerStatus" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "McpServerAuthStatus": {
+    \\      "type": "string",
+    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\    },
+    \\    "McpServerStatus": {
+    \\      "type": "object",
+    \\      "required": ["name", "tools", "resources", "resourceTemplates", "authStatus"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "tools": { "type": "object", "additionalProperties": true },
+    \\        "resources": { "type": "array", "items": true },
+    \\        "resourceTemplates": { "type": "array", "items": true },
+    \\        "authStatus": { "$ref": "#/$defs/McpServerAuthStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -6105,6 +6276,49 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "McpServerStatusDetail": {
+    \\      "type": "string",
+    \\      "enum": ["full", "toolsAndAuthOnly"]
+    \\    },
+    \\    "McpServerStatusListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "detail": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/McpServerStatusDetail" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpServerAuthStatus": {
+    \\      "type": "string",
+    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\    },
+    \\    "McpServerStatus": {
+    \\      "type": "object",
+    \\      "required": ["name", "tools", "resources", "resourceTemplates", "authStatus"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "tools": { "type": "object", "additionalProperties": true },
+    \\        "resources": { "type": "array", "items": true },
+    \\        "resourceTemplates": { "type": "array", "items": true },
+    \\        "authStatus": { "$ref": "#/$defs/McpServerAuthStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "McpServerStatusListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/McpServerStatus" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -7528,6 +7742,11 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "FuzzyFileSearchSessionCompletedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerStatusDetail.json", .contents = MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA },
+    .{ .name = "McpServerStatusListParams.json", .contents = MCP_SERVER_STATUS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "McpServerAuthStatus.json", .contents = MCP_SERVER_AUTH_STATUS_JSON_SCHEMA },
+    .{ .name = "McpServerStatus.json", .contents = MCP_SERVER_STATUS_JSON_SCHEMA },
+    .{ .name = "McpServerStatusListResponse.json", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -7696,6 +7915,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
+    .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
+    .{ .name = "v2/McpServerStatusListParams.ts", .contents = MCP_SERVER_STATUS_LIST_PARAMS_TS },
+    .{ .name = "v2/McpServerAuthStatus.ts", .contents = MCP_SERVER_AUTH_STATUS_TS },
+    .{ .name = "v2/McpServerStatus.ts", .contents = MCP_SERVER_STATUS_TS },
+    .{ .name = "v2/McpServerStatusListResponse.ts", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
