@@ -66,9 +66,17 @@ token-usage notification artifacts, collaboration-mode list artifacts, and
 model-list catalog artifacts, plus experimental-feature list/enablement
 artifacts, memory-reset response artifacts, git-diff-to-remote artifacts,
 fuzzy-file-search artifacts, hooks-list artifacts, skills list/config artifacts,
-MCP config reload artifacts, and MCP server status artifacts, in
+filesystem RPC artifacts, MCP config reload artifacts, and MCP server status
+artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
+
+Additional app-server filesystem generation coverage: `fs/readFile`,
+`fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,
+`fs/remove`, `fs/copy`, `fs/watch`, `fs/unwatch`, and `fs/changed` now have
+generated TypeScript and JSON Schema artifacts for absolute path params, base64
+payloads, empty mutation responses, metadata responses, directory entries, watch
+params/responses, and change-notification payloads.
 
 Additional app-server hooks generation coverage: `hooks/list` now has generated
 TypeScript and JSON Schema artifacts for optional `cwds` params, response
