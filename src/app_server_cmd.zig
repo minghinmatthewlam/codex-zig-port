@@ -621,23 +621,27 @@ const JSONRPC_MESSAGE_TS =
     \\
     ;
 
+const CLIENT_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ClientInfo = { name: string; title: string | null; version: string };
+    \\
+    ;
+
+const INITIALIZE_CAPABILITIES_TS =
+    GENERATED_TS_HEADER ++
+    \\export type InitializeCapabilities = {
+    \\  experimentalApi: boolean;
+    \\  optOutNotificationMethods?: string[] | null;
+    \\};
+    \\
+    ;
+
 const INITIALIZE_PARAMS_TS =
     GENERATED_TS_HEADER ++
-    \\export interface ClientInfo {
-    \\  name: string;
-    \\  title?: string | null;
-    \\  version: string;
-    \\}
+    \\import type { ClientInfo } from "./ClientInfo";
+    \\import type { InitializeCapabilities } from "./InitializeCapabilities";
     \\
-    \\export interface InitializeCapabilities {
-    \\  experimentalApi?: boolean;
-    \\  optOutNotificationMethods?: string[] | null;
-    \\}
-    \\
-    \\export interface InitializeParams {
-    \\  clientInfo: ClientInfo;
-    \\  capabilities?: InitializeCapabilities | null;
-    \\}
+    \\export type InitializeParams = { clientInfo: ClientInfo; capabilities: InitializeCapabilities | null };
     \\
     ;
 
@@ -3733,7 +3737,9 @@ const INDEX_TS =
     \\export type { ClientNotification } from "./ClientNotification";
     \\export type { ClientRequest } from "./ClientRequest";
     \\export type { ClientResponse } from "./ClientResponse";
-    \\export type { InitializeCapabilities, InitializeParams, ClientInfo } from "./InitializeParams";
+    \\export type { ClientInfo } from "./ClientInfo";
+    \\export type { InitializeCapabilities } from "./InitializeCapabilities";
+    \\export type { InitializeParams } from "./InitializeParams";
     \\export type { InitializeResponse, ServerInfo } from "./InitializeResponse";
     \\export type { JSONRPCError } from "./JSONRPCError";
     \\export type { JSONRPCErrorError } from "./JSONRPCErrorError";
@@ -4099,9 +4105,8 @@ const INITIALIZE_PARAMS_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "InitializeParams",
     \\  "type": "object",
-    \\  "required": ["clientInfo"],
-    \\  "properties": {
-    \\    "clientInfo": {
+    \\  "$defs": {
+    \\    "ClientInfo": {
     \\      "type": "object",
     \\      "required": ["name", "version"],
     \\      "properties": {
@@ -4111,16 +4116,26 @@ const INITIALIZE_PARAMS_JSON_SCHEMA =
     \\      },
     \\      "additionalProperties": true
     \\    },
-    \\    "capabilities": {
-    \\      "type": ["object", "null"],
+    \\    "InitializeCapabilities": {
+    \\      "type": "object",
     \\      "properties": {
-    \\        "experimentalApi": { "type": "boolean" },
+    \\        "experimentalApi": { "type": "boolean", "default": false },
     \\        "optOutNotificationMethods": {
     \\          "type": ["array", "null"],
     \\          "items": { "type": "string" }
     \\        }
     \\      },
     \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "required": ["clientInfo"],
+    \\  "properties": {
+    \\    "clientInfo": { "$ref": "#/$defs/ClientInfo" },
+    \\    "capabilities": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/InitializeCapabilities" },
+    \\        { "type": "null" }
+    \\      ]
     \\    }
     \\  },
     \\  "additionalProperties": true
@@ -8708,12 +8723,38 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ClientInfo": {
+    \\      "type": "object",
+    \\      "required": ["name", "version"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "title": { "type": ["string", "null"] },
+    \\        "version": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "InitializeCapabilities": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "experimentalApi": { "type": "boolean", "default": false },
+    \\        "optOutNotificationMethods": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "type": "string" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "InitializeParams": {
     \\      "type": "object",
     \\      "required": ["clientInfo"],
     \\      "properties": {
-    \\        "clientInfo": { "type": "object" },
-    \\        "capabilities": { "type": ["object", "null"] }
+    \\        "clientInfo": { "$ref": "#/$defs/ClientInfo" },
+    \\        "capabilities": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/InitializeCapabilities" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -11260,6 +11301,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCResponse.ts", .contents = JSONRPC_RESPONSE_TS },
     .{ .name = "JSONRPCError.ts", .contents = JSONRPC_ERROR_TS },
     .{ .name = "JSONRPCErrorError.ts", .contents = JSONRPC_ERROR_ERROR_TS },
+    .{ .name = "ClientInfo.ts", .contents = CLIENT_INFO_TS },
+    .{ .name = "InitializeCapabilities.ts", .contents = INITIALIZE_CAPABILITIES_TS },
     .{ .name = "InitializeParams.ts", .contents = INITIALIZE_PARAMS_TS },
     .{ .name = "InitializeResponse.ts", .contents = INITIALIZE_RESPONSE_TS },
     .{ .name = "ClientRequest.ts", .contents = CLIENT_REQUEST_TS },
