@@ -1178,6 +1178,35 @@ const THREAD_REALTIME_APPEND_TEXT_RESPONSE_TS =
     \\
     ;
 
+const THREAD_REALTIME_AUDIO_CHUNK_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeAudioChunk {
+    \\  data: string;
+    \\  sampleRate: number;
+    \\  numChannels: number;
+    \\  samplesPerChannel?: number | null;
+    \\  itemId?: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_APPEND_AUDIO_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
+    \\
+    \\export interface ThreadRealtimeAppendAudioParams {
+    \\  threadId: string;
+    \\  audio: ThreadRealtimeAudioChunk;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_APPEND_AUDIO_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeAppendAudioResponse {}
+    \\
+    ;
+
 const THREAD_REALTIME_STOP_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadRealtimeStopParams {
@@ -1220,6 +1249,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
     \\import type { ThreadReadParams } from "./v2/ThreadReadParams";
+    \\import type { ThreadRealtimeAppendAudioParams } from "./v2/ThreadRealtimeAppendAudioParams";
     \\import type { ThreadRealtimeAppendTextParams } from "./v2/ThreadRealtimeAppendTextParams";
     \\import type { ThreadRealtimeListVoicesParams } from "./v2/ThreadRealtimeListVoicesParams";
     \\import type { ThreadRealtimeStopParams } from "./v2/ThreadRealtimeStopParams";
@@ -1333,6 +1363,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadRealtimeAppendTextParams;
     \\    }
     \\  | {
+    \\      method: "thread/realtime/appendAudio";
+    \\      params: ThreadRealtimeAppendAudioParams;
+    \\    }
+    \\  | {
     \\      method: "thread/realtime/stop";
     \\      params: ThreadRealtimeStopParams;
     \\    };
@@ -1357,6 +1391,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
     \\import type { ThreadReadResponse } from "./v2/ThreadReadResponse";
+    \\import type { ThreadRealtimeAppendAudioResponse } from "./v2/ThreadRealtimeAppendAudioResponse";
     \\import type { ThreadRealtimeAppendTextResponse } from "./v2/ThreadRealtimeAppendTextResponse";
     \\import type { ThreadRealtimeListVoicesResponse } from "./v2/ThreadRealtimeListVoicesResponse";
     \\import type { ThreadRealtimeStopResponse } from "./v2/ThreadRealtimeStopResponse";
@@ -1497,6 +1532,11 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/realtime/appendAudio";
+    \\      result: ThreadRealtimeAppendAudioResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/realtime/stop";
     \\      result: ThreadRealtimeStopResponse;
     \\    };
@@ -1585,8 +1625,11 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
+    \\export type { ThreadRealtimeAppendAudioParams } from "./ThreadRealtimeAppendAudioParams";
+    \\export type { ThreadRealtimeAppendAudioResponse } from "./ThreadRealtimeAppendAudioResponse";
     \\export type { ThreadRealtimeAppendTextParams } from "./ThreadRealtimeAppendTextParams";
     \\export type { ThreadRealtimeAppendTextResponse } from "./ThreadRealtimeAppendTextResponse";
+    \\export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
     \\export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";
     \\export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";
     \\export type { ThreadRealtimeStopParams } from "./ThreadRealtimeStopParams";
@@ -2882,6 +2925,63 @@ const THREAD_REALTIME_APPEND_TEXT_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_REALTIME_AUDIO_CHUNK_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeAudioChunk",
+    \\  "type": "object",
+    \\  "required": ["data", "numChannels", "sampleRate"],
+    \\  "properties": {
+    \\    "data": { "type": "string" },
+    \\    "sampleRate": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\    "numChannels": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\    "samplesPerChannel": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "itemId": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_APPEND_AUDIO_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeAppendAudioParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "audio"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "audio": { "$ref": "#/$defs/ThreadRealtimeAudioChunk" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadRealtimeAudioChunk": {
+    \\      "type": "object",
+    \\      "required": ["data", "numChannels", "sampleRate"],
+    \\      "properties": {
+    \\        "data": { "type": "string" },
+    \\        "sampleRate": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "numChannels": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\        "samplesPerChannel": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "itemId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_APPEND_AUDIO_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeAppendAudioResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_REALTIME_STOP_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3646,6 +3746,31 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadRealtimeAudioChunk": {
+    \\      "type": "object",
+    \\      "required": ["data", "numChannels", "sampleRate"],
+    \\      "properties": {
+    \\        "data": { "type": "string" },
+    \\        "sampleRate": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "numChannels": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\        "samplesPerChannel": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "itemId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeAppendAudioParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "audio"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "audio": { "$ref": "#/$defs/ThreadRealtimeAudioChunk" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeAppendAudioResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadRealtimeStopParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -3764,6 +3889,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadRealtimeListVoicesResponse.json", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextParams.json", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextResponse.json", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeAudioChunk.json", .contents = THREAD_REALTIME_AUDIO_CHUNK_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeAppendAudioParams.json", .contents = THREAD_REALTIME_APPEND_AUDIO_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeAppendAudioResponse.json", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeStopParams.json", .contents = THREAD_REALTIME_STOP_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeStopResponse.json", .contents = THREAD_REALTIME_STOP_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
@@ -3854,6 +3982,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRealtimeListVoicesResponse.ts", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextParams.ts", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextResponse.ts", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeAudioChunk.ts", .contents = THREAD_REALTIME_AUDIO_CHUNK_TS },
+    .{ .name = "v2/ThreadRealtimeAppendAudioParams.ts", .contents = THREAD_REALTIME_APPEND_AUDIO_PARAMS_TS },
+    .{ .name = "v2/ThreadRealtimeAppendAudioResponse.ts", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeStopParams.ts", .contents = THREAD_REALTIME_STOP_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeStopResponse.ts", .contents = THREAD_REALTIME_STOP_RESPONSE_TS },
 };
