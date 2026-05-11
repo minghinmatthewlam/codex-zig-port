@@ -13068,6 +13068,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";'
             in client_request
         )
+        assert (
+            'import type { GetAuthStatusParams } from "./GetAuthStatusParams";'
+            in client_request
+        )
+        assert (
+            'import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";'
+            in client_request
+        )
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
         assert 'method: "memory/reset";' in client_request
@@ -13250,6 +13258,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert (
             'import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";'
+            in client_response
+        )
+        assert (
+            'import type { GetAuthStatusResponse } from "./GetAuthStatusResponse";'
+            in client_response
+        )
+        assert (
+            'import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
             in client_response
         )
         assert 'method: "memory/reset";' in client_response
@@ -13452,6 +13468,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert '"chatgptAuthTokens"' in auth_mode
         plan_type = (out_dir / "PlanType.ts").read_text(encoding="utf-8")
         assert '"enterprise"' in plan_type
+        top_level_get_auth_status_params = (
+            out_dir / "GetAuthStatusParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "includeToken: boolean | null;" in top_level_get_auth_status_params
+        assert "refreshToken: boolean | null;" in top_level_get_auth_status_params
+        top_level_get_auth_status_response = (
+            out_dir / "GetAuthStatusResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { AuthMode } from "./AuthMode";' in (
+            top_level_get_auth_status_response
+        )
+        assert "authMethod: AuthMode | null;" in top_level_get_auth_status_response
         get_auth_status_params = (
             out_dir / "v2" / "GetAuthStatusParams.ts"
         ).read_text(encoding="utf-8")
@@ -13585,6 +13613,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "sha: string;" in git_diff_response
         assert "diff: string;" in git_diff_response
+        git_sha = (out_dir / "GitSha.ts").read_text(encoding="utf-8")
+        assert "export type GitSha = string;" in git_sha
+        top_level_git_diff_params = (
+            out_dir / "GitDiffToRemoteParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "cwd: string" in top_level_git_diff_params
+        top_level_git_diff_response = (
+            out_dir / "GitDiffToRemoteResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { GitSha } from "./GitSha";' in top_level_git_diff_response
+        assert "sha: GitSha" in top_level_git_diff_response
         top_level_fuzzy_params = (out_dir / "FuzzyFileSearchParams.ts").read_text(
             encoding="utf-8"
         )
@@ -14443,6 +14482,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";' in index
         assert 'export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";' in index
         assert 'export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";' in index
+        assert 'export type { GetAuthStatusParams } from "./GetAuthStatusParams";' in index
+        assert 'export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";' in index
+        assert 'export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";' in index
+        assert 'export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";' in index
+        assert 'export type { GitSha } from "./GitSha";' in index
         assert 'export type { ImageDetail } from "./ImageDetail";' in index
         assert 'export type { InitializeCapabilities } from "./InitializeCapabilities";' in index
         assert 'export type { InitializeParams } from "./InitializeParams";' in index
