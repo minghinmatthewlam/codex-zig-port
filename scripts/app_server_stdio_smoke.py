@@ -11154,6 +11154,48 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "ThreadGoalClearedNotification"
         )
         assert thread_goal_cleared_notification_schema["required"] == ["threadId"]
+        thread_token_usage_breakdown_schema = json.loads(
+            (out_dir / "ThreadTokenUsageBreakdown.json").read_text(encoding="utf-8")
+        )
+        assert thread_token_usage_breakdown_schema["required"] == [
+            "totalTokens",
+            "inputTokens",
+            "cachedInputTokens",
+            "outputTokens",
+            "reasoningOutputTokens",
+        ]
+        thread_token_usage_schema = json.loads(
+            (out_dir / "ThreadTokenUsage.json").read_text(encoding="utf-8")
+        )
+        assert thread_token_usage_schema["required"] == [
+            "total",
+            "last",
+            "modelContextWindow",
+        ]
+        assert (
+            thread_token_usage_schema["properties"]["total"]["$ref"]
+            == "#/$defs/ThreadTokenUsageBreakdown"
+        )
+        thread_token_usage_updated_notification_schema = json.loads(
+            (out_dir / "ThreadTokenUsageUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_token_usage_updated_notification_schema["title"]
+            == "ThreadTokenUsageUpdatedNotification"
+        )
+        assert thread_token_usage_updated_notification_schema["required"] == [
+            "threadId",
+            "turnId",
+            "tokenUsage",
+        ]
+        assert (
+            thread_token_usage_updated_notification_schema["properties"]["tokenUsage"][
+                "$ref"
+            ]
+            == "#/$defs/ThreadTokenUsage"
+        )
         turn_start_params_schema = json.loads(
             (out_dir / "TurnStartParams.json").read_text(encoding="utf-8")
         )
@@ -11705,12 +11747,24 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadNameUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalClearedNotification" in bundle["$defs"]
+        assert "ThreadTokenUsageBreakdown" in bundle["$defs"]
+        assert "ThreadTokenUsage" in bundle["$defs"]
+        assert "ThreadTokenUsageUpdatedNotification" in bundle["$defs"]
         assert (
             bundle["$defs"]["ThreadGoalUpdatedNotification"]["properties"]["goal"][
                 "$ref"
             ]
             == "#/$defs/ThreadGoal"
         )
+        assert (
+            bundle["$defs"]["ThreadTokenUsageUpdatedNotification"]["properties"][
+                "tokenUsage"
+            ]["$ref"]
+            == "#/$defs/ThreadTokenUsage"
+        )
+        assert bundle["$defs"]["ThreadTokenUsage"]["properties"][
+            "modelContextWindow"
+        ]["type"] == ["integer", "null"]
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -11869,6 +11923,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadGoalUpdatedNotification;" in server_notification
         assert 'method: "thread/goal/cleared";' in server_notification
         assert "params: ThreadGoalClearedNotification;" in server_notification
+        assert 'method: "thread/tokenUsage/updated";' in server_notification
+        assert "params: ThreadTokenUsageUpdatedNotification;" in server_notification
         assert 'method: "turn/started";' in server_notification
         assert "params: TurnStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
@@ -12045,6 +12101,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in thread_goal_cleared_notification
         )
         assert "threadId: string;" in thread_goal_cleared_notification
+        thread_token_usage = (out_dir / "v2" / "ThreadTokenUsage.ts").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            'import type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";'
+            in thread_token_usage
+        )
+        assert "total: ThreadTokenUsageBreakdown;" in thread_token_usage
+        assert "last: ThreadTokenUsageBreakdown;" in thread_token_usage
+        assert "modelContextWindow: number | null;" in thread_token_usage
+        thread_token_usage_updated_notification = (
+            out_dir / "v2" / "ThreadTokenUsageUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadTokenUsage } from "./ThreadTokenUsage";'
+            in thread_token_usage_updated_notification
+        )
+        assert "turnId: string;" in thread_token_usage_updated_notification
+        assert "tokenUsage: ThreadTokenUsage;" in thread_token_usage_updated_notification
         turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
             encoding="utf-8"
         )
@@ -12460,6 +12535,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadGoalClearedNotification } from "./ThreadGoalClearedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadTokenUsage } from "./ThreadTokenUsage";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";'
             in v2_index
         )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
