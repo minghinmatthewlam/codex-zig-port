@@ -8,7 +8,7 @@ pub const ServerKind = enum { unknown, stdio, streamable_http };
 
 const McpOAuthCredentialsStore = enum { auto, file, keyring };
 
-const McpAuthStatus = enum {
+pub const McpAuthStatus = enum {
     unsupported,
     not_logged_in,
     bearer_token,
@@ -147,9 +147,13 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
 pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpServers {
     const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
-    var servers = try parseServers(allocator, config_bytes orelse "");
+    return loadServersFromConfig(allocator, codex_home, config_bytes orelse "");
+}
+
+pub fn loadServersFromConfig(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8) !McpServers {
+    var servers = try parseServers(allocator, config_bytes);
     errdefer servers.deinit(allocator);
-    try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+    try appendPluginMcpServers(allocator, codex_home, config_bytes, &servers);
     return servers;
 }
 
@@ -397,7 +401,7 @@ fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ home, ".codex" });
 }
 
-fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+pub fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
     defer allocator.free(path);
     return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 512)) catch |err| switch (err) {
@@ -511,7 +515,7 @@ fn hasMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const 
     return parsed.value.object.get(key) != null;
 }
 
-fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: McpServer) !McpAuthStatus {
+pub fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: McpServer) !McpAuthStatus {
     if (!server.enabled) return .unsupported;
     if (server.kind != .streamable_http) return .unsupported;
     if (server.bearer_token_env_var != null) return .bearer_token;

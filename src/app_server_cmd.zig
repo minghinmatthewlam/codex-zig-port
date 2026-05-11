@@ -1887,9 +1887,10 @@ const MCP_SERVER_STATUS_LIST_PARAMS_TS =
 const MCP_SERVER_AUTH_STATUS_TS =
     GENERATED_TS_HEADER ++
     \\export type McpServerAuthStatus =
-    \\  | "bearerToken"
+    \\  | "unsupported"
     \\  | "notLoggedIn"
-    \\  | "unsupported";
+    \\  | "bearerToken"
+    \\  | "oAuth";
     \\
     ;
 
@@ -7187,7 +7188,7 @@ const MCP_SERVER_AUTH_STATUS_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "McpServerAuthStatus",
     \\  "type": "string",
-    \\  "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\  "enum": ["unsupported", "notLoggedIn", "bearerToken", "oAuth"]
     \\}
     \\
 ;
@@ -7208,7 +7209,7 @@ const MCP_SERVER_STATUS_JSON_SCHEMA =
     \\  "$defs": {
     \\    "McpServerAuthStatus": {
     \\      "type": "string",
-    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\      "enum": ["unsupported", "notLoggedIn", "bearerToken", "oAuth"]
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -7229,7 +7230,7 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA =
     \\  "$defs": {
     \\    "McpServerAuthStatus": {
     \\      "type": "string",
-    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\      "enum": ["unsupported", "notLoggedIn", "bearerToken", "oAuth"]
     \\    },
     \\    "McpServerStatus": {
     \\      "type": "object",
@@ -11295,7 +11296,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "McpServerAuthStatus": {
     \\      "type": "string",
-    \\      "enum": ["bearerToken", "notLoggedIn", "unsupported"]
+    \\      "enum": ["unsupported", "notLoggedIn", "bearerToken", "oAuth"]
     \\    },
     \\    "McpServerStatus": {
     \\      "type": "object",
@@ -27892,13 +27893,17 @@ fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Va
     };
     defer allocator.free(codex_home);
 
-    var servers = mcp_cmd.loadServers(allocator, codex_home) catch |err| {
+    const config_bytes = mcp_cmd.readConfigToml(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServerStatus/list failed to load MCP config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    var servers = mcp_cmd.loadServersFromConfig(allocator, codex_home, config_bytes orelse "") catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServerStatus/list failed to load MCP servers", err);
     };
     defer servers.deinit(allocator);
     std.mem.sort(mcp_cmd.McpServer, servers.items.items, {}, mcpServerNameLessThan);
 
-    const result = renderMcpServerStatusListResponse(allocator, servers, params) catch |err| switch (err) {
+    const result = renderMcpServerStatusListResponse(allocator, codex_home, config_bytes orelse "", servers, params) catch |err| switch (err) {
         error.McpStatusCursorOutOfRange => return renderJsonRpcError(allocator, id_value, -32602, "cursor exceeds total MCP servers"),
         else => return err,
     };
@@ -28121,6 +28126,8 @@ fn renderMcpToolCallMeta(allocator: std.mem.Allocator, thread_id: []const u8, me
 
 fn renderMcpServerStatusListResponse(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
     servers: mcp_cmd.McpServers,
     params: McpStatusParams,
 ) ![]const u8 {
@@ -28137,7 +28144,7 @@ fn renderMcpServerStatusListResponse(
     try out.appendSlice(allocator, "{\"data\":[");
     for (servers.items.items[start..end], 0..) |server, index| {
         if (index > 0) try out.appendSlice(allocator, ",");
-        try appendMcpServerStatusJson(allocator, &out, server, params.detail == .full);
+        try appendMcpServerStatusJson(allocator, &out, codex_home, config_bytes, server, params.detail == .full);
     }
     try out.appendSlice(allocator, "],\"nextCursor\":");
     if (end < total) {
@@ -28156,12 +28163,14 @@ fn renderMcpServerStatusListResponse(
 fn appendMcpServerStatusJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
+    codex_home: []const u8,
+    config_bytes: []const u8,
     server: mcp_cmd.McpServer,
     include_resource_inventory: bool,
 ) !void {
     const name_json = try std.json.Stringify.valueAlloc(allocator, server.name, .{});
     defer allocator.free(name_json);
-    const auth_status = try mcpAuthStatus(allocator, server);
+    const auth_status = try mcpAuthStatus(allocator, codex_home, config_bytes, server);
     defer allocator.free(auth_status);
     const auth_status_json = try std.json.Stringify.valueAlloc(allocator, auth_status, .{});
     defer allocator.free(auth_status_json);
@@ -28181,12 +28190,20 @@ fn appendMcpServerStatusJson(
     try out.appendSlice(allocator, "}");
 }
 
-fn mcpAuthStatus(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) ![]const u8 {
-    if (server.kind == .streamable_http and server.bearer_token_env_var != null) {
-        if (try envVarIsSet(allocator, server.bearer_token_env_var.?)) {
-            return allocator.dupe(u8, "bearerToken");
+fn mcpAuthStatus(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: mcp_cmd.McpServer) ![]const u8 {
+    if (server.kind == .streamable_http) {
+        if (server.bearer_token_env_var) |bearer_token_env_var| {
+            if (try envVarIsSet(allocator, bearer_token_env_var)) {
+                return allocator.dupe(u8, "bearerToken");
+            }
+            return allocator.dupe(u8, "notLoggedIn");
         }
-        return allocator.dupe(u8, "notLoggedIn");
+        return switch (try mcp_cmd.mcpAuthStatusForServer(allocator, codex_home, config_bytes, server)) {
+            .oauth => allocator.dupe(u8, "oAuth"),
+            .not_logged_in => allocator.dupe(u8, "notLoggedIn"),
+            .bearer_token => allocator.dupe(u8, "bearerToken"),
+            .unsupported => allocator.dupe(u8, "unsupported"),
+        };
     }
     return allocator.dupe(u8, "unsupported");
 }
