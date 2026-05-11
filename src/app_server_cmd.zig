@@ -1163,6 +1163,20 @@ const THREAD_REALTIME_LIST_VOICES_PARAMS_TS =
     \\
     ;
 
+const THREAD_REALTIME_STOP_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeStopParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_STOP_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeStopResponse {}
+    \\
+    ;
+
 const THREAD_REALTIME_LIST_VOICES_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\import type { RealtimeVoicesList } from "../RealtimeVoicesList";
@@ -1192,6 +1206,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
     \\import type { ThreadReadParams } from "./v2/ThreadReadParams";
     \\import type { ThreadRealtimeListVoicesParams } from "./v2/ThreadRealtimeListVoicesParams";
+    \\import type { ThreadRealtimeStopParams } from "./v2/ThreadRealtimeStopParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -1296,6 +1311,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/realtime/listVoices";
     \\      params: ThreadRealtimeListVoicesParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/stop";
+    \\      params: ThreadRealtimeStopParams;
     \\    };
     \\
     ;
@@ -1319,6 +1338,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
     \\import type { ThreadReadResponse } from "./v2/ThreadReadResponse";
     \\import type { ThreadRealtimeListVoicesResponse } from "./v2/ThreadRealtimeListVoicesResponse";
+    \\import type { ThreadRealtimeStopResponse } from "./v2/ThreadRealtimeStopResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -1448,6 +1468,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/realtime/listVoices";
     \\      result: ThreadRealtimeListVoicesResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/realtime/stop";
+    \\      result: ThreadRealtimeStopResponse;
     \\    };
     \\
     ;
@@ -1536,6 +1561,8 @@ const V2_INDEX_TS =
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
     \\export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";
     \\export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";
+    \\export type { ThreadRealtimeStopParams } from "./ThreadRealtimeStopParams";
+    \\export type { ThreadRealtimeStopResponse } from "./ThreadRealtimeStopResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
@@ -2802,6 +2829,30 @@ const THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_REALTIME_STOP_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStopParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_STOP_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStopResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3528,6 +3579,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "voices": { "$ref": "#/$defs/RealtimeVoicesList" }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadRealtimeStopParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeStopResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -3633,6 +3696,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadTurnsListResponse.json", .contents = THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesParams.json", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesResponse.json", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStopParams.json", .contents = THREAD_REALTIME_STOP_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStopResponse.json", .contents = THREAD_REALTIME_STOP_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -3719,6 +3784,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadTurnsListResponse.ts", .contents = THREAD_TURNS_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesParams.ts", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesResponse.ts", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeStopParams.ts", .contents = THREAD_REALTIME_STOP_PARAMS_TS },
+    .{ .name = "v2/ThreadRealtimeStopResponse.ts", .contents = THREAD_REALTIME_STOP_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
