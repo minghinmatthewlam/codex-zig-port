@@ -1078,6 +1078,73 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_memory_mode_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-metadata-no-git-info",
+            "method": "thread/metadata/update",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
+        }
+    )
+    thread_metadata_no_git_info = read_line()
+    assert thread_metadata_no_git_info["id"] == "thread-metadata-no-git-info"
+    assert thread_metadata_no_git_info["error"]["code"] == -32600
+    assert (
+        "gitInfo must include at least one field"
+        in thread_metadata_no_git_info["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-metadata-empty-sha",
+            "method": "thread/metadata/update",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "gitInfo": {"sha": "   "},
+            },
+        }
+    )
+    thread_metadata_empty_sha = read_line()
+    assert thread_metadata_empty_sha["id"] == "thread-metadata-empty-sha"
+    assert thread_metadata_empty_sha["error"]["code"] == -32600
+    assert (
+        "gitInfo.sha must not be empty"
+        in thread_metadata_empty_sha["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-metadata-invalid",
+            "method": "thread/metadata/update",
+            "params": {"threadId": "not-a-uuid", "gitInfo": {"branch": "main"}},
+        }
+    )
+    thread_metadata_invalid = read_line()
+    assert thread_metadata_invalid["id"] == "thread-metadata-invalid"
+    assert thread_metadata_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_metadata_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-metadata-missing",
+            "method": "thread/metadata/update",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "gitInfo": {"originUrl": "https://example.test/repo.git"},
+            },
+        }
+    )
+    thread_metadata_missing = read_line()
+    assert thread_metadata_missing["id"] == "thread-metadata-missing"
+    assert thread_metadata_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000011"
+        in thread_metadata_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
