@@ -7206,6 +7206,21 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
 
+        expected_resource_response = {
+            "contents": [
+                {
+                    "uri": "test://codex/resource",
+                    "mimeType": "text/markdown",
+                    "text": "Resource body from the MCP server.",
+                },
+                {
+                    "uri": "test://codex/resource.bin",
+                    "mimeType": "application/octet-stream",
+                    "blob": "YmluYXJ5LXJlc291cmNl",
+                },
+            ]
+        }
+
         resource_read = request_stdio_app_server(
             binary,
             {
@@ -7220,20 +7235,68 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             env,
         )
         assert resource_read["id"] == "mcp-resource-read"
-        assert resource_read["result"] == {
-            "contents": [
+        assert resource_read["result"] == expected_resource_response
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
                 {
-                    "uri": "test://codex/resource",
-                    "mimeType": "text/markdown",
-                    "text": "Resource body from the MCP server.",
+                    "jsonrpc": "2.0",
+                    "id": "mcp-resource-thread-start",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(codex_home),
+                        "model": "gpt-test",
+                        "modelProvider": "mock_provider",
+                        "approvalPolicy": "never",
+                        "approvalsReviewer": "user",
+                        "sandbox": "danger-full-access",
+                        "ephemeral": True,
+                        "threadSource": "user",
+                    },
                 },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "mcp-resource-thread-start"
+            loaded_thread = thread_start["result"]["thread"]
+            thread_id = loaded_thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), loaded_thread)
+
+            write_json_line(
+                proc,
                 {
-                    "uri": "test://codex/resource.bin",
-                    "mimeType": "application/octet-stream",
-                    "blob": "YmluYXJ5LXJlc291cmNl",
+                    "jsonrpc": "2.0",
+                    "id": "mcp-resource-read-loaded-thread",
+                    "method": "mcpServer/resource/read",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "resource_docs",
+                        "uri": "test://codex/resource",
+                    },
                 },
-            ]
-        }
+            )
+            thread_resource_read = read_json_line(proc, 5)
+            assert thread_resource_read["id"] == "mcp-resource-read-loaded-thread"
+            assert thread_resource_read["result"] == expected_resource_response
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
         invalid_params = request_stdio_app_server(
             binary,
