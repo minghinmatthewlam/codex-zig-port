@@ -14137,6 +14137,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isMcpServerMethod(method)) {
         return try handleMcpServerMethod(allocator, id_value.?, method, object.get("params"));
     }
+    if (isWindowsSandboxMethod(method)) {
+        return try handleWindowsSandboxMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
 
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
     defer allocator.free(message);
@@ -21395,6 +21398,99 @@ fn commandExecExitCode(term: std.process.Child.Term) i32 {
         .stopped => |sig| 128 + @as(i32, @intCast(@intFromEnum(sig))),
         .unknown => |code| @intCast(code),
     };
+}
+
+fn isWindowsSandboxMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "windowsSandbox/readiness") or
+        std.mem.eql(u8, method, "windowsSandbox/setupStart");
+}
+
+fn handleWindowsSandboxMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "windowsSandbox/readiness")) {
+        return handleWindowsSandboxReadiness(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "windowsSandbox/setupStart")) {
+        return handleWindowsSandboxSetupStart(allocator, state, id_value, params_value);
+    }
+    return renderJsonRpcError(allocator, id_value, -32601, "unknown windows sandbox method");
+}
+
+fn handleWindowsSandboxReadiness(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null) {
+            return renderJsonRpcError(allocator, id_value, -32602, "windowsSandbox/readiness params must be null or omitted");
+        }
+    }
+    return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notConfigured\"}");
+}
+
+fn handleWindowsSandboxSetupStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "windowsSandbox/setupStart params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "windowsSandbox/setupStart params must be an object");
+
+    const mode_value = params.object.get("mode") orelse return renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    if (mode_value != .string) return renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    const mode = mode_value.string;
+    if (!std.mem.eql(u8, mode, "elevated") and !std.mem.eql(u8, mode, "unelevated")) {
+        return renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    }
+
+    if (params.object.get("cwd")) |cwd_value| {
+        if (cwd_value != .null) {
+            if (cwd_value != .string) return renderJsonRpcError(allocator, id_value, -32600, FS_ABSOLUTE_PATH_MESSAGE);
+            if (!std.fs.path.isAbsolute(cwd_value.string)) return renderJsonRpcError(allocator, id_value, -32600, FS_ABSOLUTE_PATH_MESSAGE);
+        }
+    }
+
+    const error_message = windowsSandboxSetupError(mode);
+    try queueWindowsSandboxSetupCompletedNotification(allocator, state, mode, error_message == null, error_message);
+    return renderJsonRpcResult(allocator, id_value, "{\"started\":true}");
+}
+
+fn windowsSandboxSetupError(mode: []const u8) ?[]const u8 {
+    if (builtin.os.tag == .windows) return "Windows sandbox setup is parsed but not implemented yet";
+    if (std.mem.eql(u8, mode, "elevated")) return "elevated Windows sandbox setup is only supported on Windows";
+    return "legacy Windows sandbox setup is only supported on Windows";
+}
+
+fn queueWindowsSandboxSetupCompletedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    mode: []const u8,
+    success: bool,
+    error_message: ?[]const u8,
+) !void {
+    const mode_json = try std.json.Stringify.valueAlloc(allocator, mode, .{});
+    defer allocator.free(mode_json);
+
+    const error_json = if (error_message) |message|
+        try std.json.Stringify.valueAlloc(allocator, message, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(error_json);
+
+    const notification = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"windowsSandbox/setupCompleted\",\"params\":{{\"mode\":{s},\"success\":{s},\"error\":{s}}}}}",
+        .{ mode_json, if (success) "true" else "false", error_json },
+    );
+    errdefer allocator.free(notification);
+    try state.pending_notifications.append(allocator, notification);
 }
 
 fn processOptionalOutputBytesCap(object: std.json.ObjectMap, field: []const u8, default: usize) !?usize {
