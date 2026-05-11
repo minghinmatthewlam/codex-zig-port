@@ -28140,10 +28140,14 @@ fn appendMcpServerStatusJson(allocator: std.mem.Allocator, out: *std.ArrayList(u
     defer allocator.free(auth_status);
     const auth_status_json = try std.json.Stringify.valueAlloc(allocator, auth_status, .{});
     defer allocator.free(auth_status_json);
+    const tools_json = mcp_runtime.serverToolsStatusJson(allocator, server) catch try allocator.dupe(u8, "{}");
+    defer allocator.free(tools_json);
 
     try out.appendSlice(allocator, "{\"name\":");
     try out.appendSlice(allocator, name_json);
-    try out.appendSlice(allocator, ",\"tools\":{},\"resources\":[],\"resourceTemplates\":[],\"authStatus\":");
+    try out.appendSlice(allocator, ",\"tools\":");
+    try out.appendSlice(allocator, tools_json);
+    try out.appendSlice(allocator, ",\"resources\":[],\"resourceTemplates\":[],\"authStatus\":");
     try out.appendSlice(allocator, auth_status_json);
     try out.appendSlice(allocator, "}");
 }

@@ -106,6 +106,22 @@ pub fn callToolByName(
     return callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json);
 }
 
+pub fn serverToolsStatusJson(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) ![]const u8 {
+    if (!server.enabled or server.kind != .stdio) return allocator.dupe(u8, "{}");
+    var client = try StdioClient.start(allocator, server);
+    defer client.deinit();
+
+    try client.initialize();
+    var response = try client.request(2, "tools/list", null);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    const tools = result.object.get("tools") orelse return error.InvalidMcpResponse;
+    if (tools != .array) return error.InvalidMcpResponse;
+    return renderStatusTools(allocator, tools);
+}
+
 fn appendServerTools(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
@@ -512,6 +528,30 @@ fn renderResourceReadResult(allocator: std.mem.Allocator, result: std.json.Value
     return std.fmt.allocPrint(allocator, "{{\"contents\":{s}}}", .{contents_json});
 }
 
+fn renderStatusTools(allocator: std.mem.Allocator, tools: std.json.Value) ![]const u8 {
+    if (tools != .array) return error.InvalidMcpResponse;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '{');
+    var first = true;
+    for (tools.array.items) |tool| {
+        if (tool != .object) continue;
+        const name = tool.object.get("name") orelse continue;
+        if (name != .string or name.string.len == 0) continue;
+        if (!first) try out.append(allocator, ',');
+        first = false;
+        const name_json = try std.json.Stringify.valueAlloc(allocator, name.string, .{});
+        defer allocator.free(name_json);
+        const tool_json = try std.json.Stringify.valueAlloc(allocator, tool, .{});
+        defer allocator.free(tool_json);
+        try out.appendSlice(allocator, name_json);
+        try out.append(allocator, ':');
+        try out.appendSlice(allocator, tool_json);
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderToolCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
     if (result != .object) return error.InvalidMcpResponse;
     const content = result.object.get("content") orelse return error.InvalidMcpResponse;
@@ -628,6 +668,24 @@ test "mcp resource read result keeps contents only" {
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings(
         "{\"contents\":[{\"uri\":\"test://resource\",\"mimeType\":\"text/markdown\",\"text\":\"body\"}]}",
+        rendered,
+    );
+}
+
+test "mcp status tools are keyed by raw tool name" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"tools\":[{\"name\":\"look-up.raw\",\"description\":\"Look up test data.\",\"inputSchema\":{\"type\":\"object\"}},{\"description\":\"missing name\"}]}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    const rendered = try renderStatusTools(allocator, parsed.value.object.get("tools").?);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"look-up.raw\":{\"name\":\"look-up.raw\",\"description\":\"Look up test data.\",\"inputSchema\":{\"type\":\"object\"}}}",
         rendered,
     );
 }
