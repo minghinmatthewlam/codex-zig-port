@@ -11028,6 +11028,36 @@ def run_json_schema_smoke(binary: Path) -> None:
             model_provider_capabilities_response["properties"]["namespaceTools"]["type"]
             == "boolean"
         )
+        collaboration_mode_params = json.loads(
+            (out_dir / "CollaborationModeListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert collaboration_mode_params["title"] == "CollaborationModeListParams"
+        assert collaboration_mode_params["type"] == "object"
+        collaboration_mode = json.loads(
+            (out_dir / "CollaborationMode.json").read_text(encoding="utf-8")
+        )
+        assert collaboration_mode["required"] == [
+            "name",
+            "mode",
+            "model",
+            "reasoning_effort",
+        ]
+        assert collaboration_mode["properties"]["mode"]["enum"] == [
+            "plan",
+            "default",
+        ]
+        collaboration_mode_response = json.loads(
+            (out_dir / "CollaborationModeListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert collaboration_mode_response["required"] == ["data"]
+        assert (
+            collaboration_mode_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/CollaborationMode"
+        )
 
         command_exec = json.loads((out_dir / "CommandExecParams.json").read_text(encoding="utf-8"))
         assert command_exec["title"] == "CommandExecParams"
@@ -11669,6 +11699,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "InitializeResponse" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
+        assert "CollaborationModeListParams" in bundle["$defs"]
+        assert "CollaborationMode" in bundle["$defs"]
+        assert "CollaborationModeListResponse" in bundle["$defs"]
         assert "CommandExecTerminalSize" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecWriteParams" in bundle["$defs"]
@@ -11726,6 +11759,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ModelProviderCapabilitiesReadResponse"][
             "properties"
         ]["webSearch"]["type"] == "boolean"
+        assert bundle["$defs"]["CollaborationModeListResponse"]["properties"][
+            "data"
+        ]["items"]["$ref"] == "#/$defs/CollaborationMode"
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
@@ -11879,6 +11915,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params?: ModelProviderCapabilitiesReadParams | null;"
             in client_request
         )
+        assert 'method: "collaborationMode/list";' in client_request
+        assert "params?: CollaborationModeListParams | null;" in client_request
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -11973,6 +12011,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
         )
+        assert 'method: "collaborationMode/list";' in client_response
+        assert "result: CollaborationModeListResponse;" in client_response
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
@@ -12056,6 +12096,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "namespaceTools: boolean;" in model_provider_capabilities_response
         assert "imageGeneration: boolean;" in model_provider_capabilities_response
         assert "webSearch: boolean;" in model_provider_capabilities_response
+        collaboration_mode_params = (
+            out_dir / "v2" / "CollaborationModeListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface CollaborationModeListParams {}"
+            in collaboration_mode_params
+        )
+        collaboration_mode = (out_dir / "v2" / "CollaborationMode.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface CollaborationMode" in collaboration_mode
+        assert 'mode: "plan" | "default";' in collaboration_mode
+        assert "reasoning_effort: string | null;" in collaboration_mode
+        collaboration_mode_response = (
+            out_dir / "v2" / "CollaborationModeListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { CollaborationMode } from "./CollaborationMode";' in (
+            collaboration_mode_response
+        )
+        assert "data: CollaborationMode[];" in collaboration_mode_response
         permission_profile = (out_dir / "v2" / "PermissionProfile.ts").read_text(
             encoding="utf-8"
         )
@@ -12580,6 +12640,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { CollaborationMode } from "./CollaborationMode";'
+            in v2_index
+        )
+        assert (
+            'export type { CollaborationModeListParams } from "./CollaborationModeListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";'
             in v2_index
         )
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
