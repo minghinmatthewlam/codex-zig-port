@@ -1063,6 +1063,15 @@ const HttpClient = struct {
     authorization_header: ?[]const u8,
     session_id: ?[]const u8,
 
+    const Response = struct {
+        status: u16,
+        body: []const u8,
+
+        fn deinit(self: Response, allocator: std.mem.Allocator) void {
+            allocator.free(self.body);
+        }
+    };
+
     fn start(allocator: std.mem.Allocator, codex_home: []const u8, server: mcp_cmd.McpServer) !HttpClient {
         const url = server.url orelse return error.MissingMcpUrl;
         const url_copy = try allocator.dupe(u8, url);
@@ -1099,7 +1108,7 @@ const HttpClient = struct {
         const notification = try buildNotificationPayload(self.allocator, "notifications/initialized", null);
         defer self.allocator.free(notification);
         const notification_response = try self.postJson(notification);
-        defer self.allocator.free(notification_response);
+        defer notification_response.deinit(self.allocator);
     }
 
     fn request(
@@ -1110,12 +1119,15 @@ const HttpClient = struct {
     ) !std.json.Parsed(std.json.Value) {
         const payload = try buildRequestPayload(self.allocator, id, method, params_json);
         defer self.allocator.free(payload);
-        const body = try self.postJson(payload);
-        defer self.allocator.free(body);
-        return parseHttpResponse(self.allocator, body, id);
+        const response = try self.postJson(payload);
+        defer response.deinit(self.allocator);
+        if (response.status == 202 or response.status == 204) {
+            return self.getStreamResponse(id);
+        }
+        return parseHttpResponse(self.allocator, response.body, id);
     }
 
-    fn postJson(self: *HttpClient, payload: []const u8) ![]const u8 {
+    fn postJson(self: *HttpClient, payload: []const u8) !Response {
         return self.sendHttp(.POST, payload);
     }
 
@@ -1125,15 +1137,17 @@ const HttpClient = struct {
             error.McpHttpMethodNotAllowed => return,
             else => |e| return e,
         };
-        self.allocator.free(response);
+        response.deinit(self.allocator);
     }
 
-    fn sendHttp(self: *HttpClient, method: std.http.Method, payload: ?[]const u8) ![]const u8 {
+    fn sendHttp(self: *HttpClient, method: std.http.Method, payload: ?[]const u8) !Response {
         var headers = std.ArrayList(std.http.Header).empty;
         defer headers.deinit(self.allocator);
+        if (method == .GET or payload != null) {
+            try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+        }
         if (payload != null) {
             try headers.append(self.allocator, .{ .name = "Content-Type", .value = "application/json" });
-            try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
         }
         try headers.append(self.allocator, .{ .name = "MCP-Protocol-Version", .value = "2025-03-26" });
         try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
@@ -1191,7 +1205,73 @@ const HttpClient = struct {
             error.ReadFailed => return response.bodyErr().?,
             else => |e| return e,
         };
-        return response_body.toOwnedSlice();
+        return .{
+            .status = status,
+            .body = try response_body.toOwnedSlice(),
+        };
+    }
+
+    fn getStreamResponse(self: *HttpClient, id: i64) !std.json.Parsed(std.json.Value) {
+        if (self.session_id == null) return error.McpResponseNotFound;
+        var headers = std.ArrayList(std.http.Header).empty;
+        defer headers.deinit(self.allocator);
+        try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+        try headers.append(self.allocator, .{ .name = "MCP-Protocol-Version", .value = "2025-03-26" });
+        try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+        if (self.session_id) |session_id| {
+            try headers.append(self.allocator, .{ .name = "Mcp-Session-Id", .value = session_id });
+        }
+        if (self.authorization_header) |authorization| {
+            try headers.append(self.allocator, .{ .name = "Authorization", .value = authorization });
+        }
+
+        var io_instance: std.Io.Threaded = .init(self.allocator, .{});
+        defer io_instance.deinit();
+
+        var client = std.http.Client{ .allocator = self.allocator, .io = io_instance.io() };
+        defer client.deinit();
+
+        const uri = try std.Uri.parse(self.url);
+        var req = try client.request(.GET, uri, .{
+            .redirect_behavior = .unhandled,
+            .extra_headers = headers.items,
+        });
+        defer req.deinit();
+        try req.sendBodiless();
+
+        var response_head_buffer: [8192]u8 = undefined;
+        var response = try req.receiveHead(&response_head_buffer);
+        try self.captureSessionId(response.head);
+
+        const status: u16 = @intFromEnum(response.head.status);
+        if (status < 200 or status >= 300) return error.McpHttpStatus;
+
+        const content_type = response.head.content_type;
+        var response_body: std.Io.Writer.Allocating = .init(self.allocator);
+        defer response_body.deinit();
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try self.allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try self.allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return error.UnsupportedCompressionMethod,
+        };
+        defer if (response.head.content_encoding != .identity) self.allocator.free(decompress_buffer);
+        var transfer_buffer: [8192]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+        if (content_type) |value| {
+            if (std.mem.startsWith(u8, value, "application/json")) {
+                _ = reader.streamRemaining(&response_body.writer) catch |err| switch (err) {
+                    error.ReadFailed => return response.bodyErr().?,
+                    else => |e| return e,
+                };
+                return parseHttpResponse(self.allocator, response_body.written(), id);
+            }
+        }
+        return parseSseResponseFromReader(self.allocator, reader, id) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
     }
 
     fn captureSessionId(self: *HttpClient, head: std.http.Client.Response.Head) !void {
@@ -1268,6 +1348,62 @@ fn parseSseResponse(allocator: std.mem.Allocator, body: []const u8, id: i64) !st
     return error.McpResponseNotFound;
 }
 
+fn parseSseResponseFromReader(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    id: i64,
+) !std.json.Parsed(std.json.Value) {
+    var event_data = std.ArrayList(u8).empty;
+    defer event_data.deinit(allocator);
+    var line_data: std.Io.Writer.Allocating = .init(allocator);
+    defer line_data.deinit();
+
+    var observed_bytes: usize = 0;
+    const max_observed_bytes = 8 * 1024 * 1024;
+    while (true) {
+        const remaining_limit = max_observed_bytes -| observed_bytes;
+        const line_len = reader.streamDelimiterLimit(&line_data.writer, '\n', .limited(remaining_limit)) catch |err| switch (err) {
+            error.StreamTooLong => return error.McpResponseTooLarge,
+            else => |e| return e,
+        };
+        observed_bytes += line_len;
+        const ended = blk: {
+            _ = reader.peek(1) catch |err| switch (err) {
+                error.EndOfStream => break :blk true,
+                error.ReadFailed => return error.ReadFailed,
+            };
+            reader.toss(1);
+            observed_bytes += 1;
+            break :blk false;
+        };
+
+        const line = std.mem.trim(u8, line_data.written(), "\r");
+        if (line.len == 0) {
+            line_data.clearRetainingCapacity();
+            if (event_data.items.len > 0) {
+                if (try parseSseEvent(allocator, event_data.items, id)) |parsed| return parsed;
+                event_data.clearRetainingCapacity();
+            }
+            if (ended) return error.McpResponseNotFound;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "data:")) {
+            const data = std.mem.trim(u8, line["data:".len..], " ");
+            if (!std.mem.eql(u8, data, "[DONE]")) {
+                if (event_data.items.len > 0) try event_data.append(allocator, '\n');
+                try event_data.appendSlice(allocator, data);
+            }
+        }
+        if (ended) {
+            if (event_data.items.len > 0) {
+                if (try parseSseEvent(allocator, event_data.items, id)) |parsed| return parsed;
+            }
+            return error.McpResponseNotFound;
+        }
+        line_data.clearRetainingCapacity();
+    }
+}
+
 fn parseSseEvent(allocator: std.mem.Allocator, data: []const u8, id: i64) !?std.json.Parsed(std.json.Value) {
     const trimmed = std.mem.trim(u8, data, " \t\r\n");
     if (trimmed.len == 0 or !std.mem.startsWith(u8, trimmed, "{")) return null;
@@ -1325,7 +1461,6 @@ fn buildSpawnArgv(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) !Spaw
         argv[index] = arg;
         index += 1;
     }
-
     return .{ .argv = argv, .owned = owned[0..owned_count] };
 }
 
@@ -1772,6 +1907,27 @@ test "mcp http response parser reads SSE JSON-RPC events" {
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings(
         "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}",
+        rendered,
+    );
+}
+
+test "mcp http stream parser waits for matching SSE JSON-RPC id" {
+    const allocator = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed(
+        "event: message\n" ++
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ignored\":true}}\n\n" ++
+            "event: message\n" ++
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"from get\"}]}}\n\n",
+    );
+    var parsed = try parseSseResponseFromReader(allocator, &reader, 2);
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result").?;
+    try std.testing.expect(result == .object);
+    const rendered = try renderToolCallResult(allocator, result);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"content\":[{\"type\":\"text\",\"text\":\"from get\"}]}",
         rendered,
     );
 }
