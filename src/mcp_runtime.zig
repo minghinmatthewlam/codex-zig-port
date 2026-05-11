@@ -626,12 +626,58 @@ pub fn callToolByName(
 
 pub fn serverStatusInventoryJson(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
     server: mcp_cmd.McpServer,
     include_resource_inventory: bool,
 ) !ServerStatusInventoryJson {
-    if (!server.enabled or server.kind != .stdio) return ServerStatusInventoryJson.empty(allocator);
+    if (!server.enabled) return ServerStatusInventoryJson.empty(allocator);
+    return switch (server.kind) {
+        .stdio => serverStatusInventoryJsonStdio(allocator, server, include_resource_inventory),
+        .streamable_http => serverStatusInventoryJsonHttp(allocator, codex_home, server, include_resource_inventory),
+        else => ServerStatusInventoryJson.empty(allocator),
+    };
+}
+
+fn serverStatusInventoryJsonStdio(
+    allocator: std.mem.Allocator,
+    server: mcp_cmd.McpServer,
+    include_resource_inventory: bool,
+) !ServerStatusInventoryJson {
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
+
+    try client.initialize();
+    var next_id: i64 = 2;
+
+    const tools_json = listStatusTools(allocator, &client, &next_id) catch try allocator.dupe(u8, "{}");
+    errdefer allocator.free(tools_json);
+
+    const resources_json = if (include_resource_inventory)
+        listStatusResources(allocator, &client, &next_id) catch try allocator.dupe(u8, "[]")
+    else
+        try allocator.dupe(u8, "[]");
+    errdefer allocator.free(resources_json);
+
+    const resource_templates_json = if (include_resource_inventory)
+        listStatusResourceTemplates(allocator, &client, &next_id) catch try allocator.dupe(u8, "[]")
+    else
+        try allocator.dupe(u8, "[]");
+
+    return .{
+        .tools = tools_json,
+        .resources = resources_json,
+        .resource_templates = resource_templates_json,
+    };
+}
+
+fn serverStatusInventoryJsonHttp(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    include_resource_inventory: bool,
+) !ServerStatusInventoryJson {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.close();
 
     try client.initialize();
     var next_id: i64 = 2;
@@ -1391,30 +1437,34 @@ fn renderCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]con
     return std.json.Stringify.valueAlloc(allocator, result, .{});
 }
 
-fn listStatusTools(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+fn listStatusTools(allocator: std.mem.Allocator, client: anytype, next_id: *i64) ![]const u8 {
     const id = next_id.*;
     next_id.* += 1;
     var response = try client.request(id, "tools/list", null);
     defer response.deinit();
+    return renderStatusToolsFromResponse(allocator, response.value);
+}
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+fn renderStatusToolsFromResponse(allocator: std.mem.Allocator, response_value: std.json.Value) ![]const u8 {
+    if (response_value != .object) return error.InvalidMcpResponse;
+    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
     if (result != .object) return error.InvalidMcpResponse;
     const tools = result.object.get("tools") orelse return error.InvalidMcpResponse;
     if (tools != .array) return error.InvalidMcpResponse;
     return renderStatusTools(allocator, tools);
 }
 
-fn listStatusResources(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+fn listStatusResources(allocator: std.mem.Allocator, client: anytype, next_id: *i64) ![]const u8 {
     return listStatusItems(allocator, client, next_id, "resources/list", "resources", null, "name", "uri");
 }
 
-fn listStatusResourceTemplates(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+fn listStatusResourceTemplates(allocator: std.mem.Allocator, client: anytype, next_id: *i64) ![]const u8 {
     return listStatusItems(allocator, client, next_id, "resources/templates/list", "resourceTemplates", "resource_templates", "name", "uriTemplate");
 }
 
 fn listStatusItems(
     allocator: std.mem.Allocator,
-    client: *StdioClient,
+    client: anytype,
     next_id: *i64,
     method: []const u8,
     primary_items_key: []const u8,
@@ -1446,30 +1496,22 @@ fn listStatusItems(
         var response = try client.request(id, method, params);
         defer response.deinit();
 
-        const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-        if (result != .object) return error.InvalidMcpResponse;
-        const items = result.object.get(primary_items_key) orelse if (alternate_items_key) |key|
-            result.object.get(key) orelse return error.InvalidMcpResponse
-        else
-            return error.InvalidMcpResponse;
-        if (items != .array) return error.InvalidMcpResponse;
+        try appendStatusItemsFromResponse(
+            allocator,
+            &out,
+            response.value,
+            primary_items_key,
+            alternate_items_key,
+            first_required_string,
+            second_required_string,
+            &first_item,
+        );
 
-        for (items.array.items) |item| {
-            if (!isStatusItemWithRequiredStrings(item, first_required_string, second_required_string)) continue;
-            if (!first_item) try out.append(allocator, ',');
-            first_item = false;
-            const item_json = try std.json.Stringify.valueAlloc(allocator, item, .{});
-            defer allocator.free(item_json);
-            try out.appendSlice(allocator, item_json);
-        }
-
-        const next_cursor = result.object.get("nextCursor") orelse result.object.get("next_cursor") orelse break;
-        if (next_cursor == .null) break;
-        if (next_cursor != .string) return error.InvalidMcpResponse;
+        const next_cursor = (try statusNextCursor(response.value)) orelse break;
         for (seen_cursors.items) |seen| {
-            if (std.mem.eql(u8, seen, next_cursor.string)) return error.InvalidMcpResponse;
+            if (std.mem.eql(u8, seen, next_cursor)) return error.InvalidMcpResponse;
         }
-        const cursor_copy = try allocator.dupe(u8, next_cursor.string);
+        const cursor_copy = try allocator.dupe(u8, next_cursor);
         errdefer allocator.free(cursor_copy);
         try seen_cursors.append(allocator, cursor_copy);
         cursor = cursor_copy;
@@ -1477,6 +1519,45 @@ fn listStatusItems(
 
     try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
+}
+
+fn appendStatusItemsFromResponse(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    response_value: std.json.Value,
+    primary_items_key: []const u8,
+    alternate_items_key: ?[]const u8,
+    first_required_string: []const u8,
+    second_required_string: []const u8,
+    first_item: *bool,
+) !void {
+    if (response_value != .object) return error.InvalidMcpResponse;
+    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    const items = result.object.get(primary_items_key) orelse if (alternate_items_key) |key|
+        result.object.get(key) orelse return error.InvalidMcpResponse
+    else
+        return error.InvalidMcpResponse;
+    if (items != .array) return error.InvalidMcpResponse;
+
+    for (items.array.items) |item| {
+        if (!isStatusItemWithRequiredStrings(item, first_required_string, second_required_string)) continue;
+        if (!first_item.*) try out.append(allocator, ',');
+        first_item.* = false;
+        const item_json = try std.json.Stringify.valueAlloc(allocator, item, .{});
+        defer allocator.free(item_json);
+        try out.appendSlice(allocator, item_json);
+    }
+}
+
+fn statusNextCursor(response_value: std.json.Value) !?[]const u8 {
+    if (response_value != .object) return error.InvalidMcpResponse;
+    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    const next_cursor = result.object.get("nextCursor") orelse result.object.get("next_cursor") orelse return null;
+    if (next_cursor == .null) return null;
+    if (next_cursor != .string) return error.InvalidMcpResponse;
+    return next_cursor.string;
 }
 
 fn isStatusItemWithRequiredStrings(item: std.json.Value, first_required_string: []const u8, second_required_string: []const u8) bool {

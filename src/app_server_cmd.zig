@@ -28174,7 +28174,7 @@ fn appendMcpServerStatusJson(
     defer allocator.free(auth_status);
     const auth_status_json = try std.json.Stringify.valueAlloc(allocator, auth_status, .{});
     defer allocator.free(auth_status_json);
-    const inventory = mcp_runtime.serverStatusInventoryJson(allocator, server, include_resource_inventory) catch try mcp_runtime.ServerStatusInventoryJson.empty(allocator);
+    const inventory = mcp_runtime.serverStatusInventoryJson(allocator, codex_home, server, include_resource_inventory) catch try mcp_runtime.ServerStatusInventoryJson.empty(allocator);
     defer inventory.deinit(allocator);
 
     try out.appendSlice(allocator, "{\"name\":");
