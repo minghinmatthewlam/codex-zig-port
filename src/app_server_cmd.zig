@@ -1052,6 +1052,25 @@ const THREAD_MEMORY_MODE_TS =
     \\
     ;
 
+const REALTIME_VOICE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RealtimeVoice = "alloy" | "arbor" | "ash" | "ballad" | "breeze" | "cedar" | "coral" | "cove" | "echo" | "ember" | "juniper" | "maple" | "marin" | "sage" | "shimmer" | "sol" | "spruce" | "vale" | "verse";
+    \\
+    ;
+
+const REALTIME_VOICES_LIST_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RealtimeVoice } from "./RealtimeVoice";
+    \\
+    \\export interface RealtimeVoicesList {
+    \\  v1: RealtimeVoice[];
+    \\  v2: RealtimeVoice[];
+    \\  defaultV1: RealtimeVoice;
+    \\  defaultV2: RealtimeVoice;
+    \\}
+    \\
+    ;
+
 const THREAD_MEMORY_MODE_SET_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { ThreadMemoryMode } from "../ThreadMemoryMode";
@@ -1138,6 +1157,22 @@ const THREAD_TURNS_LIST_RESPONSE_TS =
     \\
     ;
 
+const THREAD_REALTIME_LIST_VOICES_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeListVoicesParams {}
+    \\
+    ;
+
+const THREAD_REALTIME_LIST_VOICES_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RealtimeVoicesList } from "../RealtimeVoicesList";
+    \\
+    \\export interface ThreadRealtimeListVoicesResponse {
+    \\  voices: RealtimeVoicesList;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -1156,6 +1191,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
     \\import type { ThreadReadParams } from "./v2/ThreadReadParams";
+    \\import type { ThreadRealtimeListVoicesParams } from "./v2/ThreadRealtimeListVoicesParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -1256,6 +1292,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/turns/list";
     \\      params: ThreadTurnsListParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/listVoices";
+    \\      params: ThreadRealtimeListVoicesParams;
     \\    };
     \\
     ;
@@ -1278,6 +1318,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
     \\import type { ThreadReadResponse } from "./v2/ThreadReadResponse";
+    \\import type { ThreadRealtimeListVoicesResponse } from "./v2/ThreadRealtimeListVoicesResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -1402,6 +1443,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/turns/list";
     \\      result: ThreadTurnsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/realtime/listVoices";
+    \\      result: ThreadRealtimeListVoicesResponse;
     \\    };
     \\
     ;
@@ -1432,6 +1478,8 @@ const INDEX_TS =
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
     \\export type { RequestId } from "./RequestId";
+    \\export type { RealtimeVoice } from "./RealtimeVoice";
+    \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
     \\export type { ServerNotification } from "./ServerNotification";
     \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
     \\export * as v2 from "./v2";
@@ -1486,6 +1534,8 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
+    \\export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";
+    \\export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
@@ -2551,6 +2601,39 @@ const THREAD_MEMORY_MODE_JSON_SCHEMA =
     \\
 ;
 
+const REALTIME_VOICE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RealtimeVoice",
+    \\  "type": "string",
+    \\  "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\}
+    \\
+;
+
+const REALTIME_VOICES_LIST_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RealtimeVoicesList",
+    \\  "type": "object",
+    \\  "required": ["v1", "v2", "defaultV1", "defaultV2"],
+    \\  "properties": {
+    \\    "v1": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\    "v2": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\    "defaultV1": { "$ref": "#/$defs/RealtimeVoice" },
+    \\    "defaultV2": { "$ref": "#/$defs/RealtimeVoice" }
+    \\  },
+    \\  "$defs": {
+    \\    "RealtimeVoice": {
+    \\      "type": "string",
+    \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2703,6 +2786,47 @@ const THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA =
     \\    "data": { "type": "array", "items": true },
     \\    "nextCursor": { "type": ["string", "null"] },
     \\    "backwardsCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeListVoicesParams",
+    \\  "type": "object",
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeListVoicesResponse",
+    \\  "type": "object",
+    \\  "required": ["voices"],
+    \\  "properties": {
+    \\    "voices": { "$ref": "#/$defs/RealtimeVoicesList" }
+    \\  },
+    \\  "$defs": {
+    \\    "RealtimeVoice": {
+    \\      "type": "string",
+    \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\    },
+    \\    "RealtimeVoicesList": {
+    \\      "type": "object",
+    \\      "required": ["v1", "v2", "defaultV1", "defaultV2"],
+    \\      "properties": {
+    \\        "v1": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\        "v2": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\        "defaultV1": { "$ref": "#/$defs/RealtimeVoice" },
+    \\        "defaultV2": { "$ref": "#/$defs/RealtimeVoice" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -3377,6 +3501,33 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "backwardsCursor": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "RealtimeVoice": {
+    \\      "type": "string",
+    \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\    },
+    \\    "RealtimeVoicesList": {
+    \\      "type": "object",
+    \\      "required": ["v1", "v2", "defaultV1", "defaultV2"],
+    \\      "properties": {
+    \\        "v1": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\        "v2": { "type": "array", "items": { "$ref": "#/$defs/RealtimeVoice" } },
+    \\        "defaultV1": { "$ref": "#/$defs/RealtimeVoice" },
+    \\        "defaultV2": { "$ref": "#/$defs/RealtimeVoice" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadRealtimeListVoicesParams": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeListVoicesResponse": {
+    \\      "type": "object",
+    \\      "required": ["voices"],
+    \\      "properties": {
+    \\        "voices": { "$ref": "#/$defs/RealtimeVoicesList" }
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -3469,6 +3620,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadSetNameResponse.json", .contents = THREAD_SET_NAME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadMemoryMode.json", .contents = THREAD_MEMORY_MODE_JSON_SCHEMA },
+    .{ .name = "RealtimeVoice.json", .contents = REALTIME_VOICE_JSON_SCHEMA },
+    .{ .name = "RealtimeVoicesList.json", .contents = REALTIME_VOICES_LIST_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetParams.json", .contents = THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetResponse.json", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadMetadataGitInfoUpdateParams.json", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_JSON_SCHEMA },
@@ -3478,6 +3631,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadReadResponse.json", .contents = THREAD_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadTurnsListParams.json", .contents = THREAD_TURNS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadTurnsListResponse.json", .contents = THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeListVoicesParams.json", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeListVoicesResponse.json", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -3498,6 +3653,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
+    .{ .name = "RealtimeVoice.ts", .contents = REALTIME_VOICE_TS },
+    .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
@@ -3560,6 +3717,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadReadResponse.ts", .contents = THREAD_READ_RESPONSE_TS },
     .{ .name = "v2/ThreadTurnsListParams.ts", .contents = THREAD_TURNS_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadTurnsListResponse.ts", .contents = THREAD_TURNS_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeListVoicesParams.ts", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_TS },
+    .{ .name = "v2/ThreadRealtimeListVoicesResponse.ts", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
