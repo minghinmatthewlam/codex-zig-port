@@ -912,6 +912,15 @@ const THREAD_STARTED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_NAME_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadNameUpdatedNotification = {
+    \\  threadId: string;
+    \\  threadName?: string;
+    \\};
+    \\
+    ;
+
 const BYTE_RANGE_TS =
     GENERATED_TS_HEADER ++
     \\export interface ByteRange {
@@ -2073,6 +2082,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+    \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
@@ -2085,6 +2095,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/started";
     \\      params: ThreadStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/name/updated";
+    \\      params: ThreadNameUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "turn/started";
@@ -2193,6 +2207,7 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
     \\export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
+    \\export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
     \\export type { ThreadRealtimeAppendAudioParams } from "./ThreadRealtimeAppendAudioParams";
@@ -2891,6 +2906,21 @@ const THREAD_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["thread"],
     \\  "properties": {
     \\    "thread": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadNameUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "threadName": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4767,6 +4797,15 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadNameUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "threadName": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ByteRange": {
     \\      "type": "object",
     \\      "required": ["start", "end"],
@@ -5599,6 +5638,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
     .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
@@ -5725,6 +5765,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
     .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
