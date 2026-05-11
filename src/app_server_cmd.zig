@@ -778,6 +778,79 @@ const MODEL_LIST_RESPONSE_TS =
     \\
     ;
 
+const EXPERIMENTAL_FEATURE_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ExperimentalFeatureListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\}
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_STAGE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ExperimentalFeatureStage =
+    \\  | "beta"
+    \\  | "underDevelopment"
+    \\  | "stable"
+    \\  | "deprecated"
+    \\  | "removed";
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
+    \\
+    \\export interface ExperimentalFeature {
+    \\  name: string;
+    \\  stage: ExperimentalFeatureStage;
+    \\  displayName: string | null;
+    \\  description: string | null;
+    \\  announcement: string | null;
+    \\  enabled: boolean;
+    \\  defaultEnabled: boolean;
+    \\}
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExperimentalFeature } from "./ExperimentalFeature";
+    \\
+    \\export interface ExperimentalFeatureListResponse {
+    \\  data: ExperimentalFeature[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ExperimentalFeatureEnablement = Record<string, boolean>;
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_SET_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";
+    \\
+    \\export interface ExperimentalFeatureEnablementSetParams {
+    \\  enablement: ExperimentalFeatureEnablement;
+    \\}
+    \\
+    ;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";
+    \\
+    \\export interface ExperimentalFeatureEnablementSetResponse {
+    \\  enablement: ExperimentalFeatureEnablement;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_TERMINAL_SIZE_TS =
     GENERATED_TS_HEADER ++
     \\export interface CommandExecTerminalSize {
@@ -1891,6 +1964,8 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
+    \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
+    \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
@@ -1941,6 +2016,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "model/list";
     \\      params?: ModelListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "experimentalFeature/list";
+    \\      params?: ExperimentalFeatureListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "experimentalFeature/enablement/set";
+    \\      params: ExperimentalFeatureEnablementSetParams;
     \\    }
     \\  | {
     \\      method: "command/exec";
@@ -2088,6 +2171,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
+    \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
+    \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
@@ -2143,6 +2228,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "model/list";
     \\      result: ModelListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "experimentalFeature/list";
+    \\      result: ExperimentalFeatureListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "experimentalFeature/enablement/set";
+    \\      result: ExperimentalFeatureEnablementSetResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2420,6 +2515,13 @@ const V2_INDEX_TS =
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
+    \\export type { ExperimentalFeature } from "./ExperimentalFeature";
+    \\export type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";
+    \\export type { ExperimentalFeatureEnablementSetParams } from "./ExperimentalFeatureEnablementSetParams";
+    \\export type { ExperimentalFeatureEnablementSetResponse } from "./ExperimentalFeatureEnablementSetResponse";
+    \\export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";
+    \\export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";
+    \\export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
     \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
@@ -3002,6 +3104,141 @@ const MODEL_LIST_RESPONSE_JSON_SCHEMA =
     \\        "description": { "type": "string" }
     \\      },
     \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_STAGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureStage",
+    \\  "type": "string",
+    \\  "enum": ["beta", "underDevelopment", "stable", "deprecated", "removed"]
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeature",
+    \\  "type": "object",
+    \\  "required": ["name", "stage", "displayName", "description", "announcement", "enabled", "defaultEnabled"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "stage": { "$ref": "#/$defs/ExperimentalFeatureStage" },
+    \\    "displayName": { "type": ["string", "null"] },
+    \\    "description": { "type": ["string", "null"] },
+    \\    "announcement": { "type": ["string", "null"] },
+    \\    "enabled": { "type": "boolean" },
+    \\    "defaultEnabled": { "type": "boolean" }
+    \\  },
+    \\  "$defs": {
+    \\    "ExperimentalFeatureStage": {
+    \\      "type": "string",
+    \\      "enum": ["beta", "underDevelopment", "stable", "deprecated", "removed"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/ExperimentalFeature" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ExperimentalFeatureStage": {
+    \\      "type": "string",
+    \\      "enum": ["beta", "underDevelopment", "stable", "deprecated", "removed"]
+    \\    },
+    \\    "ExperimentalFeature": {
+    \\      "type": "object",
+    \\      "required": ["name", "stage", "displayName", "description", "announcement", "enabled", "defaultEnabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "stage": { "$ref": "#/$defs/ExperimentalFeatureStage" },
+    \\        "displayName": { "type": ["string", "null"] },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "announcement": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" },
+    \\        "defaultEnabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureEnablement",
+    \\  "type": "object",
+    \\  "additionalProperties": { "type": "boolean" }
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_SET_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureEnablementSetParams",
+    \\  "type": "object",
+    \\  "required": ["enablement"],
+    \\  "properties": {
+    \\    "enablement": { "$ref": "#/$defs/ExperimentalFeatureEnablement" }
+    \\  },
+    \\  "$defs": {
+    \\    "ExperimentalFeatureEnablement": {
+    \\      "type": "object",
+    \\      "additionalProperties": { "type": "boolean" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExperimentalFeatureEnablementSetResponse",
+    \\  "type": "object",
+    \\  "required": ["enablement"],
+    \\  "properties": {
+    \\    "enablement": { "$ref": "#/$defs/ExperimentalFeatureEnablement" }
+    \\  },
+    \\  "$defs": {
+    \\    "ExperimentalFeatureEnablement": {
+    \\      "type": "object",
+    \\      "additionalProperties": { "type": "boolean" }
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -5368,6 +5605,61 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ExperimentalFeatureListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExperimentalFeatureStage": {
+    \\      "type": "string",
+    \\      "enum": ["beta", "underDevelopment", "stable", "deprecated", "removed"]
+    \\    },
+    \\    "ExperimentalFeature": {
+    \\      "type": "object",
+    \\      "required": ["name", "stage", "displayName", "description", "announcement", "enabled", "defaultEnabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "stage": { "$ref": "#/$defs/ExperimentalFeatureStage" },
+    \\        "displayName": { "type": ["string", "null"] },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "announcement": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" },
+    \\        "defaultEnabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExperimentalFeatureListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ExperimentalFeature" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExperimentalFeatureEnablement": {
+    \\      "type": "object",
+    \\      "additionalProperties": { "type": "boolean" }
+    \\    },
+    \\    "ExperimentalFeatureEnablementSetParams": {
+    \\      "type": "object",
+    \\      "required": ["enablement"],
+    \\      "properties": {
+    \\        "enablement": { "$ref": "#/$defs/ExperimentalFeatureEnablement" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExperimentalFeatureEnablementSetResponse": {
+    \\      "type": "object",
+    \\      "required": ["enablement"],
+    \\      "properties": {
+    \\        "enablement": { "$ref": "#/$defs/ExperimentalFeatureEnablement" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
@@ -6603,6 +6895,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ModelServiceTier.json", .contents = MODEL_SERVICE_TIER_JSON_SCHEMA },
     .{ .name = "ModelListItem.json", .contents = MODEL_LIST_ITEM_JSON_SCHEMA },
     .{ .name = "ModelListResponse.json", .contents = MODEL_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureListParams.json", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureStage.json", .contents = EXPERIMENTAL_FEATURE_STAGE_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeature.json", .contents = EXPERIMENTAL_FEATURE_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureListResponse.json", .contents = EXPERIMENTAL_FEATURE_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureEnablement.json", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureEnablementSetParams.json", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_PARAMS_JSON_SCHEMA },
+    .{ .name = "ExperimentalFeatureEnablementSetResponse.json", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
@@ -6749,6 +7048,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ModelServiceTier.ts", .contents = MODEL_SERVICE_TIER_TS },
     .{ .name = "v2/ModelListItem.ts", .contents = MODEL_LIST_ITEM_TS },
     .{ .name = "v2/ModelListResponse.ts", .contents = MODEL_LIST_RESPONSE_TS },
+    .{ .name = "v2/ExperimentalFeatureListParams.ts", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_TS },
+    .{ .name = "v2/ExperimentalFeatureStage.ts", .contents = EXPERIMENTAL_FEATURE_STAGE_TS },
+    .{ .name = "v2/ExperimentalFeature.ts", .contents = EXPERIMENTAL_FEATURE_TS },
+    .{ .name = "v2/ExperimentalFeatureListResponse.ts", .contents = EXPERIMENTAL_FEATURE_LIST_RESPONSE_TS },
+    .{ .name = "v2/ExperimentalFeatureEnablement.ts", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_TS },
+    .{ .name = "v2/ExperimentalFeatureEnablementSetParams.ts", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_PARAMS_TS },
+    .{ .name = "v2/ExperimentalFeatureEnablementSetResponse.ts", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_TS },
     .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
     .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
     .{ .name = "v2/FileSystemAccessMode.ts", .contents = FILE_SYSTEM_ACCESS_MODE_TS },
