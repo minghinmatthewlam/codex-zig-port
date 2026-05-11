@@ -143,6 +143,12 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
         try session.appendResponseHistoryItem(allocator, transcript, payload);
         return;
     }
+
+    if (std.mem.eql(u8, line_type, "event_msg")) {
+        const payload = object.get("payload") orelse return;
+        applyRolloutEventMsg(transcript, payload);
+        return;
+    }
 }
 
 fn appendStoredMessage(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
@@ -195,6 +201,71 @@ fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn applyRolloutEventMsg(transcript: *session.Transcript, payload: std.json.Value) void {
+    if (payload != .object) return;
+    const object = payload.object;
+    const event_type = jsonStringField(object, "type") orelse return;
+    if (!std.mem.eql(u8, event_type, "token_count")) return;
+
+    const info_value = object.get("info") orelse return;
+    if (info_value != .object) return;
+    const info = parseTokenUsageInfo(info_value.object) orelse return;
+    transcript.token_usage = info;
+    transcript.token_usage_turn_index = lastMessageTurnIndex(transcript);
+}
+
+fn parseTokenUsageInfo(object: std.json.ObjectMap) ?session.TokenUsageInfo {
+    const total_value = object.get("total_token_usage") orelse return null;
+    if (total_value != .object) return null;
+    const last_value = object.get("last_token_usage") orelse return null;
+    if (last_value != .object) return null;
+
+    return .{
+        .total = parseTokenUsage(total_value.object) orelse return null,
+        .last = parseTokenUsage(last_value.object) orelse return null,
+        .model_context_window = jsonOptionalIntField(object, "model_context_window"),
+    };
+}
+
+fn parseTokenUsage(object: std.json.ObjectMap) ?session.TokenUsage {
+    return .{
+        .input_tokens = jsonIntField(object, "input_tokens") orelse return null,
+        .cached_input_tokens = jsonIntField(object, "cached_input_tokens") orelse return null,
+        .output_tokens = jsonIntField(object, "output_tokens") orelse return null,
+        .reasoning_output_tokens = jsonIntField(object, "reasoning_output_tokens") orelse return null,
+        .total_tokens = jsonIntField(object, "total_tokens") orelse return null,
+    };
+}
+
+fn jsonOptionalIntField(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    return jsonValueAsInt(value);
+}
+
+fn jsonIntField(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    return jsonValueAsInt(value);
+}
+
+fn jsonValueAsInt(value: std.json.Value) ?i64 {
+    return switch (value) {
+        .integer => |int| int,
+        else => null,
+    };
+}
+
+fn lastMessageTurnIndex(transcript: *const session.Transcript) ?usize {
+    var turn_index: usize = 0;
+    var last_index: ?usize = null;
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        last_index = turn_index;
+        turn_index += 1;
+    }
+    return last_index;
 }
 
 pub fn resolveResumePath(allocator: std.mem.Allocator, codex_home: []const u8, target: ?[]const u8) ![]const u8 {
@@ -730,6 +801,7 @@ test "load transcript accepts Rust rollout response items and session metadata" 
         .data =
         \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"22222222-2222-4222-8222-222222222222","timestamp":"2025-01-05T12:00:00Z","cwd":"/","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider"}}
         \\{"timestamp":"2025-01-05T12:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"rust hello"}]}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":150},"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":90},"model_context_window":200000},"rate_limits":null}}
         \\
         ,
     });
@@ -746,4 +818,12 @@ test "load transcript accepts Rust rollout response items and session metadata" 
     try std.testing.expectEqual(@as(usize, 1), loaded.history.items.len);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
     try std.testing.expectEqualStrings("rust hello", loaded.history.items[0].text.?);
+    try std.testing.expectEqual(@as(usize, 0), loaded.token_usage_turn_index.?);
+    try std.testing.expectEqual(@as(i64, 150), loaded.token_usage.?.total.total_tokens);
+    try std.testing.expectEqual(@as(i64, 120), loaded.token_usage.?.total.input_tokens);
+    try std.testing.expectEqual(@as(i64, 20), loaded.token_usage.?.total.cached_input_tokens);
+    try std.testing.expectEqual(@as(i64, 30), loaded.token_usage.?.total.output_tokens);
+    try std.testing.expectEqual(@as(i64, 10), loaded.token_usage.?.total.reasoning_output_tokens);
+    try std.testing.expectEqual(@as(i64, 90), loaded.token_usage.?.last.total_tokens);
+    try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
 }

@@ -16,6 +16,8 @@ pub const Transcript = struct {
     model_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     cli_version: ?[]const u8 = null,
+    token_usage: ?TokenUsageInfo = null,
+    token_usage_turn_index: ?usize = null,
     title: ?[]const u8 = null,
     history: std.ArrayList(api.HistoryItem) = .empty,
     plan: plan_tool.State = .{},
@@ -94,6 +96,8 @@ pub const Transcript = struct {
         if (self.model_provider) |value| try copy.setModelProvider(allocator, value);
         if (self.cwd) |value| try copy.setCwd(allocator, value);
         if (self.cli_version) |value| try copy.setCliVersion(allocator, value);
+        copy.token_usage = self.token_usage;
+        copy.token_usage_turn_index = self.token_usage_turn_index;
         if (self.title) |title| try copy.setTitle(allocator, title);
         copy.plan = try self.plan.clone(allocator);
         for (self.history.items) |item| try copy.appendHistoryItem(allocator, item);
@@ -193,6 +197,20 @@ pub const Transcript = struct {
         self.deinit(allocator);
         self.* = replacement;
     }
+};
+
+pub const TokenUsage = struct {
+    input_tokens: i64 = 0,
+    cached_input_tokens: i64 = 0,
+    output_tokens: i64 = 0,
+    reasoning_output_tokens: i64 = 0,
+    total_tokens: i64 = 0,
+};
+
+pub const TokenUsageInfo = struct {
+    total: TokenUsage,
+    last: TokenUsage,
+    model_context_window: ?i64 = null,
 };
 
 pub const TurnOptions = struct {

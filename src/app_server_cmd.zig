@@ -108,6 +108,8 @@ const LoadedThread = struct {
     source: []const u8,
     thread_source: ?[]const u8,
     cli_version: []const u8,
+    token_usage: ?session_mod.TokenUsageInfo,
+    token_usage_turn_id: ?[]const u8,
     name: ?[]const u8,
     turns_json: []const u8,
     created_at: i64,
@@ -130,6 +132,7 @@ const LoadedThread = struct {
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
         allocator.free(self.cli_version);
+        if (self.token_usage_turn_id) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
         allocator.free(self.turns_json);
     }
@@ -5999,6 +6002,7 @@ fn handleThreadResume(
 
             try upsertLoadedThread(allocator, state, thread);
             thread_moved = true;
+            if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
 
             return renderJsonRpcResult(allocator, id_value, result);
         }
@@ -6031,6 +6035,7 @@ fn handleThreadResume(
 
     try upsertLoadedThread(allocator, state, thread);
     thread_moved = true;
+    if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -6097,6 +6102,7 @@ fn handleThreadForkWithSource(
 
     try state.loaded_threads.append(allocator, thread);
     thread_moved = true;
+    if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
 
@@ -6196,6 +6202,8 @@ fn createLoadedThreadFromStartParams(
         .source = source,
         .thread_source = thread_source,
         .cli_version = cli_version,
+        .token_usage = null,
+        .token_usage_turn_id = null,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6276,6 +6284,8 @@ fn createLoadedThreadFromHistoryParams(
         .source = source,
         .thread_source = null,
         .cli_version = cli_version,
+        .token_usage = null,
+        .token_usage_turn_id = null,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6312,6 +6322,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer if (thread_source) |value| allocator.free(value);
     const cli_version = try allocator.dupe(u8, transcript.cli_version orelse "0.0.1");
     errdefer allocator.free(cli_version);
+    const token_usage_turn_id = try transcriptTokenUsageTurnId(allocator, transcript);
+    errdefer if (token_usage_turn_id) |value| allocator.free(value);
     const name = if (transcript.title) |title| try allocator.dupe(u8, title) else null;
     errdefer if (name) |value| allocator.free(value);
     const turns_json = try renderTranscriptTurnsJson(allocator, transcript, true);
@@ -6365,6 +6377,8 @@ fn createLoadedThreadFromResumeParams(
         .source = source,
         .thread_source = thread_source,
         .cli_version = cli_version,
+        .token_usage = transcript.token_usage,
+        .token_usage_turn_id = token_usage_turn_id,
         .name = name,
         .turns_json = turns_json,
         .created_at = now,
@@ -6405,6 +6419,8 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(source_label);
     const cli_version = try allocator.dupe(u8, "0.0.1");
     errdefer allocator.free(cli_version);
+    const token_usage_turn_id = if (source.token_usage_turn_id) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (token_usage_turn_id) |value| allocator.free(value);
     const turns_json = try allocator.dupe(u8, source.turns_json);
     errdefer allocator.free(turns_json);
 
@@ -6470,6 +6486,8 @@ fn createLoadedThreadFromForkParams(
         .source = source_label,
         .thread_source = thread_source,
         .cli_version = cli_version,
+        .token_usage = source.token_usage,
+        .token_usage_turn_id = token_usage_turn_id,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6517,6 +6535,13 @@ fn resumePreview(allocator: std.mem.Allocator, transcript: *const session_mod.Tr
         if (item.kind == .message and item.text != null) return allocator.dupe(u8, item.text.?);
     }
     return allocator.dupe(u8, "");
+}
+
+fn transcriptTokenUsageTurnId(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) !?[]const u8 {
+    if (transcript.token_usage == null) return null;
+    const turn_index = transcript.token_usage_turn_index orelse return null;
+    const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{turn_index});
+    return turn_id;
 }
 
 fn transcriptFromResponseHistory(allocator: std.mem.Allocator, history: []const std.json.Value) !session_mod.Transcript {
@@ -6761,6 +6786,53 @@ fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServe
         return;
     }
     try state.pending_notifications.append(allocator, notification);
+}
+
+fn queueThreadTokenUsageNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
+    if (notificationMethodOptedOut(state, "thread/tokenUsage/updated")) return;
+    const token_usage = thread.token_usage orelse return;
+    const turn_id = thread.token_usage_turn_id orelse return;
+
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread.id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"tokenUsage\":");
+    try appendThreadTokenUsageJson(allocator, &notification, token_usage);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
+}
+
+fn appendThreadTokenUsageJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), info: session_mod.TokenUsageInfo) !void {
+    try out.appendSlice(allocator, "{\"total\":");
+    try appendTokenUsageBreakdownJson(allocator, out, info.total);
+    try out.appendSlice(allocator, ",\"last\":");
+    try appendTokenUsageBreakdownJson(allocator, out, info.last);
+    try out.appendSlice(allocator, ",\"modelContextWindow\":");
+    if (info.model_context_window) |value| {
+        try appendInt(allocator, out, value);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendTokenUsageBreakdownJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), usage: session_mod.TokenUsage) !void {
+    try out.appendSlice(allocator, "{\"totalTokens\":");
+    try appendInt(allocator, out, usage.total_tokens);
+    try out.appendSlice(allocator, ",\"inputTokens\":");
+    try appendInt(allocator, out, usage.input_tokens);
+    try out.appendSlice(allocator, ",\"cachedInputTokens\":");
+    try appendInt(allocator, out, usage.cached_input_tokens);
+    try out.appendSlice(allocator, ",\"outputTokens\":");
+    try appendInt(allocator, out, usage.output_tokens);
+    try out.appendSlice(allocator, ",\"reasoningOutputTokens\":");
+    try appendInt(allocator, out, usage.reasoning_output_tokens);
+    try out.appendSlice(allocator, "}");
 }
 
 const ThreadTurnsCursor = struct {
