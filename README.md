@@ -83,7 +83,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - read resources with and without loaded thread IDs, and call tools on
   configured stdio and streamable HTTP MCP servers through app-server
   `mcpServer/resource/read` and `mcpServer/tool/call`, including streamable
-  HTTP GET SSE responses after accepted POSTs
+  HTTP GET SSE responses after accepted POSTs and forwarded MCP JSON-RPC
+  error code/message/data payloads
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in
