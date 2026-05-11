@@ -5898,6 +5898,16 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
 const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
     "{\"voices\":{\"v1\":[\"juniper\",\"maple\",\"spruce\",\"ember\",\"vale\",\"breeze\",\"arbor\",\"sol\",\"cove\"],\"v2\":[\"alloy\",\"ash\",\"ballad\",\"coral\",\"echo\",\"sage\",\"shimmer\",\"verse\",\"marin\",\"cedar\"],\"defaultV1\":\"cove\",\"defaultV2\":\"marin\"}}";
 
+const TurnStartInput = struct {
+    prompt: []const u8,
+    user_content_json: []const u8,
+
+    fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.prompt);
+        allocator.free(self.user_content_json);
+    }
+};
+
 fn isTurnMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "turn/start");
 }
@@ -5935,13 +5945,13 @@ fn handleTurnStart(
         return renderThreadNotFound(allocator, id_value, thread_id);
     };
 
-    const prompt = turnStartPrompt(allocator, object) catch |err| switch (err) {
+    var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
         error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text items"),
         error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text"),
         error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text turn/start input is implemented"),
         else => return err,
     };
-    defer allocator.free(prompt);
+    defer input.deinit(allocator);
 
     var cfg = config.load(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
@@ -5971,7 +5981,7 @@ fn handleTurnStart(
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
 
-    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt, .{
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, input.prompt, .{
         .prompt_for_approval = false,
         .output_schema = optionalJsonParam(object, "outputSchema"),
     }) catch |err| {
@@ -5985,7 +5995,7 @@ fn handleTurnStart(
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-    try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
+    try refreshLoadedThreadAfterTurn(allocator, thread, input.prompt);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -5995,8 +6005,8 @@ fn handleTurnStart(
     if (user_item_index < thread.transcript.history.items.len) {
         const user_item = thread.transcript.history.items[user_item_index];
         if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
-            try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, user_item, user_item_index, "startedAtMs", started_at_ms);
-            try queueItemNotificationFromHistory(allocator, state, "item/completed", thread.id, turn_id, user_item, user_item_index, "completedAtMs", currentUnixMilliseconds());
+            try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
+            try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
         }
     }
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
@@ -6015,12 +6025,15 @@ fn handleTurnStart(
     return renderJsonRpcResult(allocator, id_value, response);
 }
 
-fn turnStartPrompt(allocator: std.mem.Allocator, params: std.json.ObjectMap) ![]const u8 {
+fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap) !TurnStartInput {
     const input = params.get("input") orelse return error.InvalidTurnInput;
     if (input != .array) return error.InvalidTurnInput;
 
     var prompt = std.ArrayList(u8).empty;
     errdefer prompt.deinit(allocator);
+    var user_content = std.ArrayList(u8).empty;
+    errdefer user_content.deinit(allocator);
+    try user_content.append(allocator, '[');
     var text_items: usize = 0;
     for (input.array.items) |item| {
         if (item != .object) return error.InvalidTurnInput;
@@ -6031,10 +6044,39 @@ fn turnStartPrompt(allocator: std.mem.Allocator, params: std.json.ObjectMap) ![]
         if (text != .string) return error.InvalidTurnInput;
         if (text_items > 0) try prompt.append(allocator, '\n');
         try prompt.appendSlice(allocator, text.string);
+        if (text_items > 0) try user_content.append(allocator, ',');
+        try appendTurnStartTextInputJson(allocator, &user_content, item.object, text.string);
         text_items += 1;
     }
     if (text_items == 0 or prompt.items.len == 0) return error.EmptyTurnInput;
-    return prompt.toOwnedSlice(allocator);
+    try user_content.append(allocator, ']');
+    const prompt_owned = try prompt.toOwnedSlice(allocator);
+    errdefer allocator.free(prompt_owned);
+    const user_content_owned = try user_content.toOwnedSlice(allocator);
+    return .{
+        .prompt = prompt_owned,
+        .user_content_json = user_content_owned,
+    };
+}
+
+fn appendTurnStartTextInputJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    item: std.json.ObjectMap,
+    text: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, out, text);
+    try out.appendSlice(allocator, ",\"text_elements\":");
+    if (item.get("text_elements")) |text_elements| {
+        if (text_elements != .array) return error.InvalidTurnInput;
+        const text_elements_json = try std.json.Stringify.valueAlloc(allocator, text_elements, .{});
+        defer allocator.free(text_elements_json);
+        try out.appendSlice(allocator, text_elements_json);
+    } else {
+        try out.appendSlice(allocator, "[]");
+    }
+    try out.append(allocator, '}');
 }
 
 fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {
@@ -6128,6 +6170,54 @@ fn queueItemNotificationFromHistory(
     errdefer if (!notification_moved) allocator.free(notification);
     try queueTurnNotification(allocator, state, method, notification);
     notification_moved = true;
+}
+
+fn queueUserMessageItemNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    content_json: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) !void {
+    const notification = try renderUserMessageItemNotification(allocator, method, thread_id, turn_id, item_index, content_json, timestamp_field, timestamp_ms);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, method, notification);
+    notification_moved = true;
+}
+
+fn renderUserMessageItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    content_json: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":\"userMessage\",\"id\":\"item-");
+    try appendUsize(allocator, &notification, item_index);
+    try notification.appendSlice(allocator, "\",\"content\":");
+    try notification.appendSlice(allocator, content_json);
+    try notification.appendSlice(allocator, "},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn queueAgentMessageDeltaNotification(
