@@ -2567,6 +2567,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
 
                 local_image_path = codex_home / "local-smoke.png"
                 local_image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-smoke")
+                missing_local_image_path = codex_home / "missing-smoke.png"
                 input_items = [
                     {
                         "type": "text",
@@ -2585,6 +2586,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     {
                         "type": "localImage",
                         "path": str(local_image_path),
+                    },
+                    {
+                        "type": "localImage",
+                        "path": str(missing_local_image_path),
                     },
                     {
                         "type": "skill",
@@ -2638,6 +2643,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     input_items[2],
                     input_items[3],
                     input_items[4],
+                    input_items[5],
                     {
                         "type": "text",
                         "text": "second text item",
@@ -2683,7 +2689,12 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 request = server.request_bodies[0]
                 assert request["model"] == "gpt-turn-smoke"
                 request_content = request["input"][0]["content"]
-                assert request_content[0]["text"] == prompt
+                model_prompt = request_content[0]["text"]
+                missing_placeholder_prefix = (
+                    f"Codex could not read the local image at `{missing_local_image_path}`:"
+                )
+                assert model_prompt.startswith(f"{prompt}\n{missing_placeholder_prefix}")
+                assert "FileNotFound" in model_prompt
                 assert request_content[1] == {
                     "type": "input_image",
                     "image_url": "https://example.com/codex-zig-smoke.png",
@@ -2705,12 +2716,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 read_after_turn = read_json_line(proc, 5)
                 assert read_after_turn["id"] == "thread-read-after-turn"
                 loaded_thread = read_after_turn["result"]["thread"]
-                assert loaded_thread["preview"] == prompt
-                assert loaded_thread["turns"][0]["items"][0]["content"][0]["text"] == prompt
+                assert loaded_thread["preview"] == model_prompt
+                assert loaded_thread["turns"][0]["items"][0]["content"][0]["text"] == model_prompt
                 assert loaded_thread["turns"][1]["items"][0]["text"] == "app turn reply"
                 stored = rollout_path.read_text(encoding="utf-8")
                 assert "hello from app-server turn" in stored
                 assert "second text item" in stored
+                assert missing_placeholder_prefix in stored
                 assert "app turn reply" in stored
 
             assert proc.stdin is not None
