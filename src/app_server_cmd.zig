@@ -1117,6 +1117,57 @@ const FUZZY_FILE_SEARCH_MATCH_TYPE_TS =
     \\
     ;
 
+const FUZZY_FILE_SEARCH_PUBLIC_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FuzzyFileSearchParams = {
+    \\  query: string;
+    \\  roots: string[];
+    \\  cancellationToken: string | null;
+    \\};
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_RESULT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
+    \\
+    \\export type FuzzyFileSearchResult = {
+    \\  root: string;
+    \\  path: string;
+    \\  match_type: FuzzyFileSearchMatchType;
+    \\  file_name: string;
+    \\  score: number;
+    \\  indices: number[] | null;
+    \\};
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_PUBLIC_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";
+    \\
+    \\export type FuzzyFileSearchResponse = { files: FuzzyFileSearchResult[] };
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_PUBLIC_SESSION_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";
+    \\
+    \\export type FuzzyFileSearchSessionUpdatedNotification = {
+    \\  sessionId: string;
+    \\  query: string;
+    \\  files: FuzzyFileSearchResult[];
+    \\};
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_PUBLIC_SESSION_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FuzzyFileSearchSessionCompletedNotification = { sessionId: string };
+    \\
+    ;
+
 const FUZZY_FILE_SEARCH_MATCH_TS =
     GENERATED_TS_HEADER ++
     \\import type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
@@ -3012,7 +3063,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ConfigMcpServerReloadParams } from "./v2/ConfigMcpServerReloadParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
-    \\import type { FuzzyFileSearchParams } from "./v2/FuzzyFileSearchParams";
+    \\import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
@@ -3348,7 +3399,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ConfigMcpServerReloadResponse } from "./v2/ConfigMcpServerReloadResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
-    \\import type { FuzzyFileSearchResponse } from "./v2/FuzzyFileSearchResponse";
+    \\import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
@@ -3755,8 +3806,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
-    \\import type { FuzzyFileSearchSessionCompletedNotification } from "./v2/FuzzyFileSearchSessionCompletedNotification";
-    \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./v2/FuzzyFileSearchSessionUpdatedNotification";
+    \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
+    \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
@@ -3863,6 +3914,12 @@ const INDEX_TS =
     \\export type { AgentPath } from "./AgentPath";
     \\export type { AuthMode } from "./AuthMode";
     \\export type { ForcedLoginMethod } from "./ForcedLoginMethod";
+    \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
+    \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
+    \\export type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
+    \\export type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";
+    \\export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
+    \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\export type { ImageDetail } from "./ImageDetail";
     \\export type { InputModality } from "./InputModality";
     \\export type { MessagePhase } from "./MessagePhase";
@@ -11441,6 +11498,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "AgentPath.ts", .contents = AGENT_PATH_TS },
     .{ .name = "AuthMode.ts", .contents = AUTH_MODE_TS },
     .{ .name = "ForcedLoginMethod.ts", .contents = FORCED_LOGIN_METHOD_TS },
+    .{ .name = "FuzzyFileSearchMatchType.ts", .contents = FUZZY_FILE_SEARCH_MATCH_TYPE_TS },
+    .{ .name = "FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_PARAMS_TS },
+    .{ .name = "FuzzyFileSearchResponse.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_RESPONSE_TS },
+    .{ .name = "FuzzyFileSearchResult.ts", .contents = FUZZY_FILE_SEARCH_RESULT_TS },
+    .{ .name = "FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_SESSION_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_SESSION_UPDATED_NOTIFICATION_TS },
     .{ .name = "ImageDetail.ts", .contents = IMAGE_DETAIL_TS },
     .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
