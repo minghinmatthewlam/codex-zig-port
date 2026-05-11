@@ -211,6 +211,7 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             content_type = "application/json"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Mcp-Session-Id", self.server.session_id)
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -224,6 +225,7 @@ class StreamableMcpServer(ThreadingHTTPServer):
     request_headers: list[dict[str, str]]
     request_bodies: list[dict]
     sse: bool
+    session_id: str
 
 
 def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
@@ -249,6 +251,7 @@ def start_streamable_mcp_server(sse: bool = False) -> tuple[StreamableMcpServer,
     server.request_headers = []
     server.request_bodies = []
     server.sse = sse
+    server.session_id = "streamable-session-1"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}/mcp"
 
@@ -7631,6 +7634,15 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             "notifications/initialized",
             "resources/read",
         ]
+        assert "mcp-session-id" not in streamable_server.request_headers[0]
+        assert (
+            streamable_server.request_headers[1]["mcp-session-id"]
+            == "streamable-session-1"
+        )
+        assert (
+            streamable_server.request_headers[2]["mcp-session-id"]
+            == "streamable-session-1"
+        )
         assert streamable_server.request_bodies[-1]["params"]["uri"] == "test://codex/resource"
         assert streamable_server.request_headers[-1]["authorization"] == "Bearer resource-token"
         assert streamable_server.request_headers[-1]["mcp-protocol-version"] == "2025-03-26"
@@ -7958,6 +7970,15 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 "notifications/initialized",
                 "tools/call",
             ]
+            assert "mcp-session-id" not in streamable_server.request_headers[0]
+            assert (
+                streamable_server.request_headers[1]["mcp-session-id"]
+                == "streamable-session-1"
+            )
+            assert (
+                streamable_server.request_headers[2]["mcp-session-id"]
+                == "streamable-session-1"
+            )
             assert streamable_server.request_bodies[-1]["params"]["name"] == "echo"
             assert streamable_server.request_headers[-1]["authorization"] == "Bearer oauth-tool-token"
             assert streamable_server.request_headers[-1]["accept"] == "application/json, text/event-stream"
