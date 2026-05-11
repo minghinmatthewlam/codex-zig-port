@@ -4274,6 +4274,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/realtime/appendAudio") or
         std.mem.eql(u8, method, "thread/realtime/appendText") or
         std.mem.eql(u8, method, "thread/realtime/stop") or
         std.mem.eql(u8, method, "thread/realtime/listVoices");
@@ -4510,6 +4511,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/realtime/appendAudio")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (validateThreadRealtimeAudioParam(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -4666,6 +4682,11 @@ fn jsonRequiredU16FieldIsValid(object: std.json.ObjectMap, field: []const u8) bo
     return value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u16);
 }
 
+fn jsonRequiredU32FieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32);
+}
+
 fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
     const mode = object.get("mode") orelse return false;
     if (mode != .string) return false;
@@ -4690,6 +4711,29 @@ fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
     }
     if (object.get("sortDirection")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    return null;
+}
+
+fn validateThreadRealtimeAudioParam(object: std.json.ObjectMap) ?[]const u8 {
+    const audio = object.get("audio") orelse return "audio must be an object";
+    if (audio != .object) return "audio must be an object";
+    return validateThreadRealtimeAudioChunk(audio.object);
+}
+
+fn validateThreadRealtimeAudioChunk(object: std.json.ObjectMap) ?[]const u8 {
+    if (!jsonRequiredStringFieldIsValid(object, "data")) return "audio.data must be a string";
+    if (!jsonRequiredU32FieldIsValid(object, "sampleRate")) return "audio.sampleRate must be a non-negative integer";
+    if (!jsonRequiredU16FieldIsValid(object, "numChannels")) return "audio.numChannels must be a non-negative integer";
+    if (object.get("samplesPerChannel")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "audio.samplesPerChannel must be a non-negative integer or null",
+            else => return "audio.samplesPerChannel must be a non-negative integer or null",
+        }
+    }
+    if (object.get("itemId")) |value| {
+        if (!jsonOptionalStringValueIsValid(value)) return "audio.itemId must be a string or null";
     }
     return null;
 }
