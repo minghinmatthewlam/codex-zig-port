@@ -654,6 +654,61 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-list-empty",
+            "method": "thread/list",
+            "params": {
+                "cursor": None,
+                "limit": 2,
+                "sortKey": "updated_at",
+                "sortDirection": "asc",
+                "modelProviders": ["openai"],
+                "sourceKinds": ["cli", "appServer"],
+                "archived": False,
+                "cwd": ["/tmp"],
+                "useStateDbOnly": True,
+                "searchTerm": "demo",
+            },
+        }
+    )
+    thread_list_empty = read_line()
+    assert thread_list_empty == {
+        "jsonrpc": "2.0",
+        "id": "thread-list-empty",
+        "result": {"data": [], "nextCursor": None, "backwardsCursor": None},
+    }
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "bad-thread-list-sort",
+            "method": "thread/list",
+            "params": {"sortKey": "createdAt"},
+        }
+    )
+    bad_thread_list_sort = read_line()
+    assert bad_thread_list_sort["id"] == "bad-thread-list-sort"
+    assert bad_thread_list_sort["error"]["code"] == -32602
+    assert "sortKey must be created_at or updated_at" in bad_thread_list_sort["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "bad-thread-list-state-db-only",
+            "method": "thread/list",
+            "params": {"useStateDbOnly": None},
+        }
+    )
+    bad_thread_list_state_db_only = read_line()
+    assert bad_thread_list_state_db_only["id"] == "bad-thread-list-state-db-only"
+    assert bad_thread_list_state_db_only["error"]["code"] == -32602
+    assert (
+        "useStateDbOnly must be a boolean"
+        in bad_thread_list_state_db_only["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-unsubscribe",
             "method": "thread/unsubscribe",
             "params": {"threadId": "00000000-0000-0000-0000-000000000001"},
