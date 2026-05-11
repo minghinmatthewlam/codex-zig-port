@@ -7389,21 +7389,27 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     "                'error': {'code': -32602, 'message': 'unknown tool'},",
                     "            })",
                     "            continue",
-                    "        arguments = params.get('arguments') or {}",
+                    "        arguments = params.get('arguments') if 'arguments' in params else {}",
                     "        meta = params.get('_meta') or {}",
-                    "        message = arguments.get('message', '') if isinstance(arguments, dict) else ''",
+                    "        if isinstance(arguments, dict):",
+                    "            message = arguments.get('message', '')",
+                    "        else:",
+                    "            message = 'raw:' + json.dumps(arguments, separators=(',', ':'))",
                     "        thread_id = meta.get('threadId', '') if isinstance(meta, dict) else ''",
                     "        source = meta.get('source', '') if isinstance(meta, dict) else ''",
+                    "        structured = {",
+                    "            'echoed': message,",
+                    "            'threadId': thread_id,",
+                    "            'source': source,",
+                    "        }",
+                    "        if not isinstance(arguments, dict):",
+                    "            structured['rawArguments'] = arguments",
                     "        write({",
                     "            'jsonrpc': '2.0',",
                     "            'id': request_id,",
                     "            'result': {",
                     "                'content': [{'type': 'text', 'text': f'echo: {message}'}],",
-                    "                'structuredContent': {",
-                    "                    'echoed': message,",
-                    "                    'threadId': thread_id,",
-                    "                    'source': source,",
-                    "                },",
+                    "                'structuredContent': structured,",
                     "                'isError': False,",
                     "                '_meta': {'calledBy': 'tool-smoke', 'threadId': thread_id},",
                     "                'extra': True,",
@@ -7542,7 +7548,7 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
-                    "id": "mcp-tool-invalid-arguments",
+                    "id": "mcp-tool-string-arguments",
                     "method": "mcpServer/tool/call",
                     "params": {
                         "threadId": thread_id,
@@ -7552,12 +7558,19 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     },
                 },
             )
-            invalid_arguments = read_json_line(proc, 5)
-            assert invalid_arguments["id"] == "mcp-tool-invalid-arguments"
-            assert invalid_arguments["error"]["code"] == -32602
-            assert "arguments must be an object or null" in (
-                invalid_arguments["error"]["message"]
-            )
+            string_arguments = read_json_line(proc, 5)
+            assert string_arguments["id"] == "mcp-tool-string-arguments"
+            assert string_arguments["result"] == {
+                "content": [{"type": "text", "text": 'echo: raw:"not-an-object"'}],
+                "structuredContent": {
+                    "echoed": 'raw:"not-an-object"',
+                    "threadId": thread_id,
+                    "source": "",
+                    "rawArguments": "not-an-object",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "tool-smoke", "threadId": thread_id},
+            }
 
             write_json_line(
                 proc,
