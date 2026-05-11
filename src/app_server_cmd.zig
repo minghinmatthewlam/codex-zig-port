@@ -20,6 +20,7 @@ const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 const remote_plugin = @import("remote_plugin.zig");
 const sandbox_mod = @import("sandbox.zig");
+const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
@@ -55,6 +56,7 @@ const AppServerOptions = struct {
 
 const AppServerState = struct {
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
+    loaded_threads: std.ArrayList(LoadedThread) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
@@ -64,6 +66,8 @@ const AppServerState = struct {
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         self.runtime_feature_enablement.deinit(allocator);
+        for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
+        self.loaded_threads.deinit(allocator);
         for (self.fs_watches.items) |*watch| watch.deinit(allocator);
         self.fs_watches.deinit(allocator);
         for (self.fuzzy_search_sessions.items) |*session| session.deinit(allocator);
@@ -76,6 +80,39 @@ const AppServerState = struct {
         self.pre_response_notifications.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
+    }
+};
+
+const LoadedThread = struct {
+    id: []const u8,
+    session_id: []const u8,
+    model: []const u8,
+    model_provider: []const u8,
+    service_tier: ?[]const u8,
+    cwd: []const u8,
+    approval_policy: []const u8,
+    approvals_reviewer: []const u8,
+    sandbox_mode: []const u8,
+    reasoning_effort: ?[]const u8,
+    ephemeral: bool,
+    path: ?[]const u8,
+    thread_source: ?[]const u8,
+    created_at: i64,
+    updated_at: i64,
+
+    fn deinit(self: *LoadedThread, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.model);
+        allocator.free(self.model_provider);
+        if (self.service_tier) |value| allocator.free(value);
+        allocator.free(self.cwd);
+        allocator.free(self.approval_policy);
+        allocator.free(self.approvals_reviewer);
+        allocator.free(self.sandbox_mode);
+        if (self.reasoning_effort) |value| allocator.free(value);
+        if (self.path) |value| allocator.free(value);
+        if (self.thread_source) |value| allocator.free(value);
     }
 };
 
@@ -803,6 +840,45 @@ const THREAD_LOADED_LIST_RESPONSE_TS =
     \\
     ;
 
+const THREAD_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadStartParams {
+    \\  model?: string | null;
+    \\  modelProvider?: string | null;
+    \\  serviceTier?: string | null;
+    \\  cwd?: string | null;
+    \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
+    \\  approvalsReviewer?: "user" | "auto_review" | "guardian_subagent" | null;
+    \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
+    \\  config?: Record<string, unknown> | null;
+    \\  serviceName?: string | null;
+    \\  baseInstructions?: string | null;
+    \\  developerInstructions?: string | null;
+    \\  personality?: string | null;
+    \\  ephemeral?: boolean | null;
+    \\  sessionStartSource?: "startup" | "clear" | null;
+    \\  threadSource?: "user" | "subagent" | "memory_consolidation" | null;
+    \\}
+    \\
+    ;
+
+const THREAD_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadStartResponse {
+    \\  thread: unknown;
+    \\  model: string;
+    \\  modelProvider: string;
+    \\  serviceTier: string | null;
+    \\  cwd: string;
+    \\  instructionSources: string[];
+    \\  approvalPolicy: "untrusted" | "on-failure" | "on-request" | "never";
+    \\  approvalsReviewer: "user" | "auto_review" | "guardian_subagent";
+    \\  sandbox: unknown;
+    \\  reasoningEffort: string | null;
+    \\}
+    \\
+    ;
+
 const THREAD_UNSUBSCRIBE_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadUnsubscribeParams {
@@ -1380,6 +1456,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
+    \\import type { ThreadStartParams } from "./v2/ThreadStartParams";
     \\import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
     \\import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
@@ -1405,6 +1482,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "command/exec/resize";
     \\      params: CommandExecResizeParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/start";
+    \\      params?: ThreadStartParams | null;
     \\    }
     \\  | {
     \\      method: "thread/loaded/list";
@@ -1542,6 +1623,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
+    \\import type { ThreadStartResponse } from "./v2/ThreadStartResponse";
     \\import type { ThreadTurnsListResponse } from "./v2/ThreadTurnsListResponse";
     \\import type { ThreadUnarchiveResponse } from "./v2/ThreadUnarchiveResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
@@ -1573,6 +1655,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "command/exec/resize";
     \\      result: CommandExecResizeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/start";
+    \\      result: ThreadStartResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -1818,6 +1905,8 @@ const V2_INDEX_TS =
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadSortKey } from "./ThreadSortKey";
     \\export type { ThreadSourceKind } from "./ThreadSourceKind";
+    \\export type { ThreadStartParams } from "./ThreadStartParams";
+    \\export type { ThreadStartResponse } from "./ThreadStartResponse";
     \\export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";
     \\export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
     \\export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
@@ -2422,6 +2511,56 @@ const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\    "capReached": { "type": "boolean" }
     \\  },
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadStartParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "model": { "type": ["string", "null"] },
+    \\    "modelProvider": { "type": ["string", "null"] },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
+    \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\    "config": { "type": ["object", "null"] },
+    \\    "serviceName": { "type": ["string", "null"] },
+    \\    "baseInstructions": { "type": ["string", "null"] },
+    \\    "developerInstructions": { "type": ["string", "null"] },
+    \\    "personality": { "type": ["string", "null"] },
+    \\    "ephemeral": { "type": ["boolean", "null"] },
+    \\    "sessionStartSource": { "enum": ["startup", "clear", null] },
+    \\    "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadStartResponse",
+    \\  "type": "object",
+    \\  "required": ["thread", "model", "modelProvider", "serviceTier", "cwd", "instructionSources", "approvalPolicy", "approvalsReviewer", "sandbox", "reasoningEffort"],
+    \\  "properties": {
+    \\    "thread": true,
+    \\    "model": { "type": "string" },
+    \\    "modelProvider": { "type": "string" },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "cwd": { "type": "string" },
+    \\    "instructionSources": { "type": "array", "items": { "type": "string" } },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
+    \\    "sandbox": true,
+    \\    "reasoningEffort": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -3839,6 +3978,44 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "capReached": { "type": "boolean" }
     \\      }
     \\    },
+    \\    "ThreadStartParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "model": { "type": ["string", "null"] },
+    \\        "modelProvider": { "type": ["string", "null"] },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
+    \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\        "config": { "type": ["object", "null"] },
+    \\        "serviceName": { "type": ["string", "null"] },
+    \\        "baseInstructions": { "type": ["string", "null"] },
+    \\        "developerInstructions": { "type": ["string", "null"] },
+    \\        "personality": { "type": ["string", "null"] },
+    \\        "ephemeral": { "type": ["boolean", "null"] },
+    \\        "sessionStartSource": { "enum": ["startup", "clear", null] },
+    \\        "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadStartResponse": {
+    \\      "type": "object",
+    \\      "required": ["thread", "model", "modelProvider", "serviceTier", "cwd", "instructionSources", "approvalPolicy", "approvalsReviewer", "sandbox", "reasoningEffort"],
+    \\      "properties": {
+    \\        "thread": true,
+    \\        "model": { "type": "string" },
+    \\        "modelProvider": { "type": "string" },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "cwd": { "type": "string" },
+    \\        "instructionSources": { "type": "array", "items": { "type": "string" } },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
+    \\        "sandbox": true,
+    \\        "reasoningEffort": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadLoadedListParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -4444,6 +4621,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CommandExecOutputDeltaNotification.json", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListParams.json", .contents = THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadUnsubscribeParams.json", .contents = THREAD_UNSUBSCRIBE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadUnsubscribeStatus.json", .contents = THREAD_UNSUBSCRIBE_STATUS_JSON_SCHEMA },
     .{ .name = "ThreadUnsubscribeResponse.json", .contents = THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA },
@@ -4553,6 +4732,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ThreadLoadedListParams.ts", .contents = THREAD_LOADED_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
+    .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadUnsubscribeParams.ts", .contents = THREAD_UNSUBSCRIBE_PARAMS_TS },
     .{ .name = "v2/ThreadUnsubscribeStatus.ts", .contents = THREAD_UNSUBSCRIBE_STATUS_TS },
     .{ .name = "v2/ThreadUnsubscribeResponse.ts", .contents = THREAD_UNSUBSCRIBE_RESPONSE_TS },
@@ -5012,7 +5193,8 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
     "{\"voices\":{\"v1\":[\"juniper\",\"maple\",\"spruce\",\"ember\",\"vale\",\"breeze\",\"arbor\",\"sol\",\"cove\"],\"v2\":[\"alloy\",\"ash\",\"ballad\",\"coral\",\"echo\",\"sage\",\"shimmer\",\"verse\",\"marin\",\"cedar\"],\"defaultV1\":\"cove\",\"defaultV2\":\"marin\"}}";
 
 fn isThreadMethod(method: []const u8) bool {
-    return std.mem.eql(u8, method, "thread/loaded/list") or
+    return std.mem.eql(u8, method, "thread/start") or
+        std.mem.eql(u8, method, "thread/loaded/list") or
         std.mem.eql(u8, method, "thread/unsubscribe") or
         std.mem.eql(u8, method, "thread/archive") or
         std.mem.eql(u8, method, "thread/unarchive") or
@@ -5047,11 +5229,16 @@ fn handleThreadMethod(
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
+    if (std.mem.eql(u8, method, "thread/start")) {
+        return handleThreadStart(allocator, state, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "thread/loaded/list")) {
         if (validateThreadLoadedListParams(params_value)) |message| {
             return renderJsonRpcError(allocator, id_value, -32602, message);
         }
-        return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
+        const result = try renderThreadLoadedListResult(allocator, state, params_value);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/unsubscribe")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -5062,6 +5249,9 @@ fn handleThreadMethod(
         };
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (findLoadedThreadIndex(state, thread_id) != null) {
+            return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notSubscribed\"}");
         }
         return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notLoaded\"}");
     }
@@ -5265,6 +5455,11 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
+        if (findLoadedThread(state, thread_id)) |thread| {
+            const result = try renderThreadReadResponse(allocator, thread);
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
         return renderThreadNotLoaded(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/turns/list")) {
@@ -5336,6 +5531,319 @@ fn handleThreadMethod(
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
+}
+
+fn handleThreadStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (validateThreadStartParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const params = threadStartObjectParams(params_value);
+
+    var cfg = config.load(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var thread = createLoadedThreadFromStartParams(allocator, cfg, params) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to create thread", err);
+    };
+    var thread_moved = false;
+    errdefer if (!thread_moved) thread.deinit(allocator);
+
+    const result = try renderThreadStartResponse(allocator, &thread);
+    defer allocator.free(result);
+
+    try state.loaded_threads.append(allocator, thread);
+    thread_moved = true;
+
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn threadStartObjectParams(params_value: ?std.json.Value) ?std.json.ObjectMap {
+    const params = params_value orelse return null;
+    if (params != .object) return null;
+    return params.object;
+}
+
+fn createLoadedThreadFromStartParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: ?std.json.ObjectMap,
+) !LoadedThread {
+    const thread_id = try generateUuidString(allocator);
+    errdefer allocator.free(thread_id);
+    const session_id = try allocator.dupe(u8, thread_id);
+    errdefer allocator.free(session_id);
+
+    const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
+    errdefer allocator.free(model);
+
+    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+    defer if (configured_model_provider) |value| allocator.free(value);
+    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
+    errdefer allocator.free(model_provider);
+
+    const service_tier = try threadStartServiceTier(allocator, cfg, params);
+    errdefer if (service_tier) |value| allocator.free(value);
+
+    const cwd = try threadStartCwd(allocator, params);
+    errdefer allocator.free(cwd);
+
+    const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
+    errdefer allocator.free(approval_policy);
+
+    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse "user");
+    errdefer allocator.free(approvals_reviewer);
+
+    const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
+    errdefer allocator.free(sandbox_mode);
+
+    const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
+        try allocator.dupe(u8, effort.label())
+    else
+        null;
+    errdefer if (reasoning_effort) |value| allocator.free(value);
+
+    const ephemeral = optionalBoolParam(params, "ephemeral") orelse false;
+    const path = if (ephemeral)
+        null
+    else
+        try session_store.createSessionPathForId(allocator, cfg.codex_home, thread_id);
+    errdefer if (path) |value| allocator.free(value);
+
+    const thread_source = if (optionalStringParam(params, "threadSource")) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (thread_source) |value| allocator.free(value);
+
+    const now = currentUnixSeconds();
+    return .{
+        .id = thread_id,
+        .session_id = session_id,
+        .model = model,
+        .model_provider = model_provider,
+        .service_tier = service_tier,
+        .cwd = cwd,
+        .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
+        .sandbox_mode = sandbox_mode,
+        .reasoning_effort = reasoning_effort,
+        .ephemeral = ephemeral,
+        .path = path,
+        .thread_source = thread_source,
+        .created_at = now,
+        .updated_at = now,
+    };
+}
+
+fn threadStartServiceTier(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: ?std.json.ObjectMap,
+) !?[]const u8 {
+    if (params) |object| {
+        if (object.get("serviceTier")) |value| {
+            if (value == .null) return null;
+            return try allocator.dupe(u8, value.string);
+        }
+    }
+    if (cfg.service_tier) |value| return try allocator.dupe(u8, value);
+    return null;
+}
+
+fn threadStartCwd(allocator: std.mem.Allocator, params: ?std.json.ObjectMap) ![]const u8 {
+    const cwd = optionalStringParam(params, "cwd") orelse ".";
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd, allocator);
+}
+
+fn optionalStringParam(params: ?std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const object = params orelse return null;
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    return value.string;
+}
+
+fn optionalBoolParam(params: ?std.json.ObjectMap, name: []const u8) ?bool {
+    const object = params orelse return null;
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    return value.bool;
+}
+
+fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
+    var bytes: [16]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = "0123456789abcdef";
+    var out = try allocator.alloc(u8, 36);
+    var out_index: usize = 0;
+    for (bytes, 0..) |byte, byte_index| {
+        if (byte_index == 4 or byte_index == 6 or byte_index == 8 or byte_index == 10) {
+            out[out_index] = '-';
+            out_index += 1;
+        }
+        out[out_index] = hex[byte >> 4];
+        out[out_index + 1] = hex[byte & 0x0f];
+        out_index += 2;
+    }
+    return out;
+}
+
+fn currentUnixSeconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, 1_000_000_000));
+}
+
+fn findLoadedThread(state: *const AppServerState, thread_id: []const u8) ?*const LoadedThread {
+    const index = findLoadedThreadIndex(state, thread_id) orelse return null;
+    return &state.loaded_threads.items[index];
+}
+
+fn findLoadedThreadIndex(state: *const AppServerState, thread_id: []const u8) ?usize {
+    for (state.loaded_threads.items, 0..) |thread, index| {
+        if (std.mem.eql(u8, thread.id, thread_id)) return index;
+    }
+    return null;
+}
+
+fn renderThreadLoadedListResult(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    for (state.loaded_threads.items) |thread| try ids.append(allocator, thread.id);
+    std.mem.sort([]const u8, ids.items, {}, stringLessThan);
+
+    const cursor = threadLoadedListCursor(params_value);
+    const limit = threadLoadedListLimit(params_value);
+    var start: usize = 0;
+    if (cursor) |cursor_value| {
+        for (ids.items, 0..) |id, index| {
+            if (std.mem.eql(u8, id, cursor_value)) {
+                start = index + 1;
+                break;
+            }
+        }
+    }
+    const capped_end = if (limit) |value| @min(ids.items.len, start + value) else ids.items.len;
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (ids.items[start..capped_end], 0..) |thread_id, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendJsonString(allocator, &result, thread_id);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (capped_end < ids.items.len and capped_end > 0) {
+        try appendJsonString(allocator, &result, ids.items[capped_end - 1]);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn stringLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
+}
+
+fn threadLoadedListCursor(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params != .object) return null;
+    const cursor = params.object.get("cursor") orelse return null;
+    if (cursor == .null) return null;
+    return cursor.string;
+}
+
+fn threadLoadedListLimit(params_value: ?std.json.Value) ?usize {
+    const params = params_value orelse return null;
+    if (params != .object) return null;
+    const limit = params.object.get("limit") orelse return null;
+    if (limit == .null) return null;
+    return @intCast(limit.integer);
+}
+
+fn renderThreadStartResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "{\"thread\":");
+    try appendLoadedThreadJson(allocator, &result, thread);
+    try result.appendSlice(allocator, ",\"model\":");
+    try appendJsonString(allocator, &result, thread.model);
+    try result.appendSlice(allocator, ",\"modelProvider\":");
+    try appendJsonString(allocator, &result, thread.model_provider);
+    try result.appendSlice(allocator, ",\"serviceTier\":");
+    try appendOptionalJsonString(allocator, &result, thread.service_tier);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, &result, thread.cwd);
+    try result.appendSlice(allocator, ",\"instructionSources\":[],\"approvalPolicy\":");
+    try appendJsonString(allocator, &result, thread.approval_policy);
+    try result.appendSlice(allocator, ",\"approvalsReviewer\":");
+    try appendJsonString(allocator, &result, thread.approvals_reviewer);
+    try result.appendSlice(allocator, ",\"sandbox\":");
+    try appendSandboxPolicyJson(allocator, &result, thread.sandbox_mode);
+    try result.appendSlice(allocator, ",\"reasoningEffort\":");
+    try appendOptionalJsonString(allocator, &result, thread.reasoning_effort);
+    try result.appendSlice(allocator, "}");
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"thread\":");
+    try appendLoadedThreadJson(allocator, &result, thread);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    try result.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, result, thread.id);
+    try result.appendSlice(allocator, ",\"sessionId\":");
+    try appendJsonString(allocator, result, thread.session_id);
+    try result.appendSlice(allocator, ",\"forkedFromId\":null,\"preview\":\"\",\"ephemeral\":");
+    try result.appendSlice(allocator, if (thread.ephemeral) "true" else "false");
+    try result.appendSlice(allocator, ",\"modelProvider\":");
+    try appendJsonString(allocator, result, thread.model_provider);
+    try result.appendSlice(allocator, ",\"createdAt\":");
+    const created_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.created_at});
+    defer allocator.free(created_at);
+    try result.appendSlice(allocator, created_at);
+    try result.appendSlice(allocator, ",\"updatedAt\":");
+    const updated_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.updated_at});
+    defer allocator.free(updated_at);
+    try result.appendSlice(allocator, updated_at);
+    try result.appendSlice(allocator, ",\"status\":{\"type\":\"idle\"},\"path\":");
+    try appendOptionalJsonString(allocator, result, thread.path);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, result, thread.cwd);
+    try result.appendSlice(allocator, ",\"cliVersion\":\"0.0.1\",\"source\":\"appServer\",\"threadSource\":");
+    try appendOptionalJsonString(allocator, result, thread.thread_source);
+    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":null,\"name\":null,\"turns\":[]}");
+}
+
+fn appendSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), sandbox_mode: []const u8) !void {
+    if (std.mem.eql(u8, sandbox_mode, "danger-full-access")) {
+        try result.appendSlice(allocator, "{\"type\":\"dangerFullAccess\"}");
+    } else if (std.mem.eql(u8, sandbox_mode, "read-only")) {
+        try result.appendSlice(allocator, "{\"type\":\"readOnly\",\"networkAccess\":false}");
+    } else {
+        try result.appendSlice(allocator, "{\"type\":\"workspaceWrite\",\"writableRoots\":[],\"networkAccess\":false,\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
+    }
 }
 
 fn renderThreadNotFoundForThreadIdParam(
@@ -5687,6 +6195,43 @@ fn renderNoArchivedRolloutFoundForThreadId(allocator: std.mem.Allocator, id_valu
     const message = try std.fmt.allocPrint(allocator, "no archived rollout found for thread id {s}", .{thread_id});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn validateThreadStartParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return "thread/start params must be an object";
+    const object = params.object;
+
+    inline for (&.{ "model", "modelProvider", "serviceTier", "cwd", "serviceName", "baseInstructions", "developerInstructions" }) |name| {
+        if (object.get(name)) |value| {
+            if (value != .null and value != .string) return name ++ " must be a string or null";
+        }
+    }
+    if (object.get("approvalPolicy")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "untrusted", "on-failure", "on-request", "never" })) {
+            return "approvalPolicy must be a supported approval policy or null";
+        }
+    }
+    if (object.get("approvalsReviewer")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "user", "auto_review", "guardian_subagent" })) {
+            return "approvalsReviewer must be user, auto_review, guardian_subagent, or null";
+        }
+    }
+    if (object.get("sandbox")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "read-only", "workspace-write", "danger-full-access" })) {
+            return "sandbox must be read-only, workspace-write, danger-full-access, or null";
+        }
+    }
+    if (object.get("ephemeral")) |value| {
+        if (value != .null and value != .bool) return "ephemeral must be a boolean or null";
+    }
+    if (object.get("threadSource")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "user", "subagent", "memory_consolidation" })) {
+            return "threadSource must be user, subagent, memory_consolidation, or null";
+        }
+    }
+    return null;
 }
 
 fn validateThreadLoadedListParams(params_value: ?std.json.Value) ?[]const u8 {
