@@ -161,6 +161,88 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if method == "tools/list":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "echo",
+                                "description": "Echo a message over streamable HTTP.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"message": {"type": "string"}},
+                                },
+                                "annotations": {"readOnlyHint": True},
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+            return
+        if method == "resources/list":
+            cursor = request.get("params", {}).get("cursor")
+            if cursor == "next-http-resources":
+                self.write_rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "resources": [
+                                {
+                                    "uri": "test://codex/second-http-resource",
+                                    "name": "second-http-resource",
+                                    "title": "Second HTTP resource",
+                                    "mimeType": "text/plain",
+                                }
+                            ],
+                            "nextCursor": None,
+                        },
+                    }
+                )
+                return
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "resources": [
+                            {
+                                "uri": "test://codex/resource",
+                                "name": "remote-resource",
+                                "description": "Remote resource from streamable HTTP.",
+                                "mimeType": "text/plain",
+                            },
+                            {"name": "missing-uri"},
+                        ],
+                        "nextCursor": "next-http-resources",
+                    },
+                }
+            )
+            return
+        if method == "resources/templates/list":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "resourceTemplates": [
+                            {
+                                "uriTemplate": "test://codex/{slug}",
+                                "name": "remote-template",
+                                "description": "Remote resource template from streamable HTTP.",
+                                "mimeType": "text/plain",
+                            },
+                            {"name": "missing-template"},
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+            return
         if method == "resources/read":
             uri = request.get("params", {}).get("uri")
             self.write_rpc(
@@ -6944,7 +7026,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
     server_path = codex_home / "status_server.py"
     plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
     discovery_server, discovery_url = start_mcp_oauth_discovery_server()
-    oauth_url = "https://example.com/oauth"
+    streamable_server, streamable_url = start_streamable_mcp_server()
+    oauth_url = f"{discovery_url}/oauth"
     oauth_key = mcp_oauth_credential_key("oauth", oauth_url)
     try:
         server_path.write_text(
@@ -7068,7 +7151,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     '  "mcpServers": {',
                     '    "plugin_remote": {',
                     '      "type": "http",',
-                    '      "url": "https://plugin.example/mcp",',
+                    f'      "url": {json.dumps(discovery_url)},',
                     '      "bearerTokenEnvVar": "PLUGIN_MCP_TOKEN"',
                     "    }",
                     "  }",
@@ -7094,7 +7177,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     f"args = [{json.dumps(str(server_path))}]",
                     "",
                     "[mcp_servers.logged_out]",
-                    'url = "https://example.com/no-token"',
+                    f"url = {json.dumps(discovery_url)}",
                     'bearer_token_env_var = "MISSING_MCP_TOKEN"',
                     "",
                     "[mcp_servers.oauth]",
@@ -7104,7 +7187,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     f"url = {json.dumps(discovery_url)}",
                     "",
                     "[mcp_servers.remote]",
-                    'url = "https://example.com/mcp"',
+                    f"url = {json.dumps(streamable_url)}",
                     'bearer_token_env_var = "TEST_MCP_TOKEN"',
                     "",
                 ]
@@ -7244,9 +7327,56 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert second_entries[2]["resources"] == []
         assert second_entries[2]["resourceTemplates"] == []
         assert second_entries[3]["authStatus"] == "bearerToken"
-        assert second_entries[3]["tools"] == {}
-        assert second_entries[3]["resources"] == []
-        assert second_entries[3]["resourceTemplates"] == []
+        assert list(second_entries[3]["tools"].keys()) == ["echo"]
+        assert second_entries[3]["tools"]["echo"] == {
+            "name": "echo",
+            "description": "Echo a message over streamable HTTP.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+            },
+            "annotations": {"readOnlyHint": True},
+        }
+        assert second_entries[3]["resources"] == [
+            {
+                "uri": "test://codex/resource",
+                "name": "remote-resource",
+                "description": "Remote resource from streamable HTTP.",
+                "mimeType": "text/plain",
+            },
+            {
+                "uri": "test://codex/second-http-resource",
+                "name": "second-http-resource",
+                "title": "Second HTTP resource",
+                "mimeType": "text/plain",
+            },
+        ]
+        assert second_entries[3]["resourceTemplates"] == [
+            {
+                "uriTemplate": "test://codex/{slug}",
+                "name": "remote-template",
+                "description": "Remote resource template from streamable HTTP.",
+                "mimeType": "text/plain",
+            }
+        ]
+        assert [request["method"] for request in streamable_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/list",
+            "resources/templates/list",
+            "DELETE",
+        ]
+        assert "mcp-session-id" not in streamable_server.request_headers[0]
+        assert streamable_server.request_headers[1]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_headers[2]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_headers[3]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_headers[4]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_headers[5]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_headers[6]["mcp-session-id"] == "streamable-session-1"
+        assert streamable_server.request_bodies[4]["params"]["cursor"] == "next-http-resources"
+        assert streamable_server.request_headers[-1]["authorization"] == "Bearer test-token"
         assert "/.well-known/oauth-authorization-server/mcp" in discovery_server.request_paths
 
         zero_limit = request_stdio_app_server(
@@ -7328,6 +7458,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert invalid_reload["id"] == "mcp-reload-invalid-params"
         assert invalid_reload["error"]["code"] == -32602
     finally:
+        streamable_server.shutdown()
+        streamable_server.server_close()
         discovery_server.shutdown()
         discovery_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
