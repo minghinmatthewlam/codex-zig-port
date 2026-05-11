@@ -921,6 +921,21 @@ const THREAD_ROLLBACK_RESPONSE_TS =
     \\
     ;
 
+const THREAD_INJECT_ITEMS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadInjectItemsParams {
+    \\  threadId: string;
+    \\  items: unknown[];
+    \\}
+    \\
+    ;
+
+const THREAD_INJECT_ITEMS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadInjectItemsResponse {}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -930,6 +945,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
+    \\import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
@@ -989,6 +1005,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/rollback";
     \\      params: ThreadRollbackParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/inject_items";
+    \\      params: ThreadInjectItemsParams;
     \\    };
     \\
     ;
@@ -1002,6 +1022,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
+    \\import type { ThreadInjectItemsResponse } from "./v2/ThreadInjectItemsResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
@@ -1075,6 +1096,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/rollback";
     \\      result: ThreadRollbackResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/inject_items";
+    \\      result: ThreadInjectItemsResponse;
     \\    };
     \\
     ;
@@ -1138,6 +1164,8 @@ const V2_INDEX_TS =
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadDecrementElicitationParams } from "./ThreadDecrementElicitationParams";
     \\export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";
+    \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
+    \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
     \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
@@ -1976,6 +2004,31 @@ const THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_INJECT_ITEMS_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadInjectItemsParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "items"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "items": { "type": "array", "items": true }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadInjectItemsResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2430,6 +2483,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "thread": true
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadInjectItemsParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "items"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "items": { "type": "array", "items": true }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadInjectItemsResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2506,6 +2572,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadDecrementElicitationResponse.json", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRollbackParams.json", .contents = THREAD_ROLLBACK_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRollbackResponse.json", .contents = THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadInjectItemsParams.json", .contents = THREAD_INJECT_ITEMS_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2563,6 +2631,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadDecrementElicitationResponse.ts", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_TS },
     .{ .name = "v2/ThreadRollbackParams.ts", .contents = THREAD_ROLLBACK_PARAMS_TS },
     .{ .name = "v2/ThreadRollbackResponse.ts", .contents = THREAD_ROLLBACK_RESPONSE_TS },
+    .{ .name = "v2/ThreadInjectItemsParams.ts", .contents = THREAD_INJECT_ITEMS_PARAMS_TS },
+    .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
