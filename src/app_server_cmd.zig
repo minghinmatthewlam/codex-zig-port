@@ -870,6 +870,40 @@ const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS =
     \\
     ;
 
+const THREAD_INCREMENT_ELICITATION_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadIncrementElicitationParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_INCREMENT_ELICITATION_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadIncrementElicitationResponse {
+    \\  count: number;
+    \\  paused: boolean;
+    \\}
+    \\
+    ;
+
+const THREAD_DECREMENT_ELICITATION_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadDecrementElicitationParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_DECREMENT_ELICITATION_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadDecrementElicitationResponse {
+    \\  count: number;
+    \\  paused: boolean;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -878,6 +912,8 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
+    \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
+    \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
@@ -923,6 +959,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/backgroundTerminals/clean";
     \\      params: ThreadBackgroundTerminalsCleanParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/increment_elicitation";
+    \\      params: ThreadIncrementElicitationParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/decrement_elicitation";
+    \\      params: ThreadDecrementElicitationParams;
     \\    };
     \\
     ;
@@ -935,6 +979,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
+    \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
+    \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
@@ -991,6 +1037,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/backgroundTerminals/clean";
     \\      result: ThreadBackgroundTerminalsCleanResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/increment_elicitation";
+    \\      result: ThreadIncrementElicitationResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/decrement_elicitation";
+    \\      result: ThreadDecrementElicitationResponse;
     \\    };
     \\
     ;
@@ -1052,6 +1108,10 @@ const V2_INDEX_TS =
     \\export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";
     \\export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
+    \\export type { ThreadDecrementElicitationParams } from "./ThreadDecrementElicitationParams";
+    \\export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";
+    \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
+    \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
@@ -1799,6 +1859,64 @@ const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadIncrementElicitationParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_INCREMENT_ELICITATION_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadIncrementElicitationResponse",
+    \\  "type": "object",
+    \\  "required": ["count", "paused"],
+    \\  "properties": {
+    \\    "count": { "type": "integer", "minimum": 0 },
+    \\    "paused": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_DECREMENT_ELICITATION_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadDecrementElicitationParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadDecrementElicitationResponse",
+    \\  "type": "object",
+    \\  "required": ["count", "paused"],
+    \\  "properties": {
+    \\    "count": { "type": "integer", "minimum": 0 },
+    \\    "paused": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2202,6 +2320,40 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadBackgroundTerminalsCleanResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadIncrementElicitationParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadIncrementElicitationResponse": {
+    \\      "type": "object",
+    \\      "required": ["count", "paused"],
+    \\      "properties": {
+    \\        "count": { "type": "integer", "minimum": 0 },
+    \\        "paused": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadDecrementElicitationParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadDecrementElicitationResponse": {
+    \\      "type": "object",
+    \\      "required": ["count", "paused"],
+    \\      "properties": {
+    \\        "count": { "type": "integer", "minimum": 0 },
+    \\        "paused": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2272,6 +2424,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadShellCommandResponse.json", .contents = THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanParams.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadIncrementElicitationParams.json", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadIncrementElicitationResponse.json", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadDecrementElicitationParams.json", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadDecrementElicitationResponse.json", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2323,6 +2479,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadShellCommandResponse.ts", .contents = THREAD_SHELL_COMMAND_RESPONSE_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
+    .{ .name = "v2/ThreadIncrementElicitationParams.ts", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_TS },
+    .{ .name = "v2/ThreadIncrementElicitationResponse.ts", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_TS },
+    .{ .name = "v2/ThreadDecrementElicitationParams.ts", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_TS },
+    .{ .name = "v2/ThreadDecrementElicitationResponse.ts", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
