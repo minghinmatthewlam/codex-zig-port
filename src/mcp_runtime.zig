@@ -1015,6 +1015,7 @@ const HttpClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
     authorization_header: ?[]const u8,
+    session_id: ?[]const u8,
 
     fn start(allocator: std.mem.Allocator, codex_home: []const u8, server: mcp_cmd.McpServer) !HttpClient {
         const url = server.url orelse return error.MissingMcpUrl;
@@ -1028,10 +1029,12 @@ const HttpClient = struct {
             .allocator = allocator,
             .url = url_copy,
             .authorization_header = authorization_header,
+            .session_id = null,
         };
     }
 
     fn deinit(self: *HttpClient) void {
+        if (self.session_id) |session_id| self.allocator.free(session_id);
         if (self.authorization_header) |header| self.allocator.free(header);
         self.allocator.free(self.url);
     }
@@ -1068,6 +1071,9 @@ const HttpClient = struct {
         try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
         try headers.append(self.allocator, .{ .name = "MCP-Protocol-Version", .value = "2025-03-26" });
         try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+        if (self.session_id) |session_id| {
+            try headers.append(self.allocator, .{ .name = "Mcp-Session-Id", .value = session_id });
+        }
         if (self.authorization_header) |authorization| {
             try headers.append(self.allocator, .{ .name = "Authorization", .value = authorization });
         }
@@ -1078,18 +1084,57 @@ const HttpClient = struct {
         var client = std.http.Client{ .allocator = self.allocator, .io = io_instance.io() };
         defer client.deinit();
 
-        var response_body: std.Io.Writer.Allocating = .init(self.allocator);
-        defer response_body.deinit();
-        const result = try client.fetch(.{
-            .location = .{ .url = self.url },
-            .method = .POST,
-            .payload = payload,
-            .response_writer = &response_body.writer,
+        const uri = try std.Uri.parse(self.url);
+        var req = try client.request(.POST, uri, .{
+            .redirect_behavior = .unhandled,
             .extra_headers = headers.items,
         });
-        const status = @intFromEnum(result.status);
+        defer req.deinit();
+
+        req.transfer_encoding = .{ .content_length = payload.len };
+        var request_body = try req.sendBodyUnflushed(&.{});
+        try request_body.writer.writeAll(payload);
+        try request_body.end();
+        try req.connection.?.flush();
+
+        var response_head_buffer: [8192]u8 = undefined;
+        var response = try req.receiveHead(&response_head_buffer);
+        try self.captureSessionId(response.head);
+
+        const status = @intFromEnum(response.head.status);
         if (status < 200 or status >= 300) return error.McpHttpStatus;
+
+        var response_body: std.Io.Writer.Allocating = .init(self.allocator);
+        defer response_body.deinit();
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try self.allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try self.allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return error.UnsupportedCompressionMethod,
+        };
+        defer if (response.head.content_encoding != .identity) self.allocator.free(decompress_buffer);
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+        _ = reader.streamRemaining(&response_body.writer) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
         return response_body.toOwnedSlice();
+    }
+
+    fn captureSessionId(self: *HttpClient, head: std.http.Client.Response.Head) !void {
+        var iter = head.iterateHeaders();
+        while (iter.next()) |header| {
+            if (!std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) continue;
+            const trimmed = std.mem.trim(u8, header.value, " \t\r\n");
+            if (trimmed.len == 0) return;
+            const session_id = try self.allocator.dupe(u8, trimmed);
+            errdefer self.allocator.free(session_id);
+            if (self.session_id) |old| self.allocator.free(old);
+            self.session_id = session_id;
+            return;
+        }
     }
 };
 
