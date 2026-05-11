@@ -11056,6 +11056,54 @@ def run_json_schema_smoke(binary: Path) -> None:
             account_updated["properties"]["authMode"]["anyOf"][0]["$ref"]
             == "AuthMode.json"
         )
+        login_params = json.loads(
+            (out_dir / "LoginAccountParams.json").read_text(encoding="utf-8")
+        )
+        assert login_params["oneOf"][0]["properties"]["type"]["const"] == "apiKey"
+        assert (
+            login_params["oneOf"][3]["properties"]["type"]["const"]
+            == "chatgptAuthTokens"
+        )
+        assert login_params["oneOf"][3]["required"] == [
+            "type",
+            "accessToken",
+            "chatgptAccountId",
+        ]
+        login_response = json.loads(
+            (out_dir / "LoginAccountResponse.json").read_text(encoding="utf-8")
+        )
+        assert login_response["oneOf"][1]["properties"]["authUrl"]["type"] == "string"
+        assert (
+            login_response["oneOf"][2]["properties"]["type"]["const"]
+            == "chatgptDeviceCode"
+        )
+        cancel_login_params = json.loads(
+            (out_dir / "CancelLoginAccountParams.json").read_text(encoding="utf-8")
+        )
+        assert cancel_login_params["required"] == ["loginId"]
+        cancel_login_status = json.loads(
+            (out_dir / "CancelLoginAccountStatus.json").read_text(encoding="utf-8")
+        )
+        assert cancel_login_status["enum"] == ["canceled", "notFound"]
+        cancel_login_response = json.loads(
+            (out_dir / "CancelLoginAccountResponse.json").read_text(encoding="utf-8")
+        )
+        assert (
+            cancel_login_response["properties"]["status"]["$ref"]
+            == "#/$defs/CancelLoginAccountStatus"
+        )
+        logout_response = json.loads(
+            (out_dir / "LogoutAccountResponse.json").read_text(encoding="utf-8")
+        )
+        assert logout_response["additionalProperties"] is False
+        login_completed = json.loads(
+            (out_dir / "AccountLoginCompletedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert login_completed["required"] == ["success"]
+        assert login_completed["properties"]["loginId"]["type"] == ["string", "null"]
+        assert login_completed["properties"]["success"]["type"] == "boolean"
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -12245,6 +12293,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "GetAccountParams" in bundle["$defs"]
         assert "GetAccountResponse" in bundle["$defs"]
         assert "AccountUpdatedNotification" in bundle["$defs"]
+        assert "LoginAccountParams" in bundle["$defs"]
+        assert "LoginAccountResponse" in bundle["$defs"]
+        assert "CancelLoginAccountParams" in bundle["$defs"]
+        assert "CancelLoginAccountStatus" in bundle["$defs"]
+        assert "CancelLoginAccountResponse" in bundle["$defs"]
+        assert "LogoutAccountResponse" in bundle["$defs"]
+        assert "AccountLoginCompletedNotification" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -12417,6 +12472,38 @@ def run_json_schema_smoke(binary: Path) -> None:
             ][0]["$ref"]
             == "#/$defs/PlanType"
         )
+        assert (
+            bundle["$defs"]["LoginAccountParams"]["oneOf"][3]["properties"]["type"][
+                "const"
+            ]
+            == "chatgptAuthTokens"
+        )
+        assert (
+            bundle["$defs"]["LoginAccountResponse"]["oneOf"][1]["properties"][
+                "authUrl"
+            ]["type"]
+            == "string"
+        )
+        assert bundle["$defs"]["CancelLoginAccountStatus"]["enum"] == [
+            "canceled",
+            "notFound",
+        ]
+        assert (
+            bundle["$defs"]["CancelLoginAccountResponse"]["properties"]["status"][
+                "$ref"
+            ]
+            == "#/$defs/CancelLoginAccountStatus"
+        )
+        assert bundle["$defs"]["LogoutAccountResponse"]["additionalProperties"] is False
+        assert (
+            bundle["$defs"]["AccountLoginCompletedNotification"]["properties"][
+                "success"
+            ]["type"]
+            == "boolean"
+        )
+        assert bundle["$defs"]["AccountLoginCompletedNotification"]["required"] == [
+            "success"
+        ]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -12732,6 +12819,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: GetAccountParams | null;" in client_request
         assert 'method: "getAuthStatus";' in client_request
         assert "params?: GetAuthStatusParams | null;" in client_request
+        assert 'method: "account/login/start";' in client_request
+        assert "params: LoginAccountParams;" in client_request
+        assert 'method: "account/login/cancel";' in client_request
+        assert "params: CancelLoginAccountParams;" in client_request
+        assert 'method: "account/logout";' in client_request
         for method, params_type in [
             ("fs/readFile", "FsReadFileParams"),
             ("fs/writeFile", "FsWriteFileParams"),
@@ -12846,6 +12938,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "skills/changed";' in server_notification
         assert "params: SkillsChangedNotification;" in server_notification
+        assert 'method: "account/login/completed";' in server_notification
+        assert "params: AccountLoginCompletedNotification;" in server_notification
         assert 'method: "account/updated";' in server_notification
         assert "params: AccountUpdatedNotification;" in server_notification
         assert 'method: "fs/changed";' in server_notification
@@ -12893,6 +12987,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: GetAccountResponse;" in client_response
         assert 'method: "getAuthStatus";' in client_response
         assert "result: GetAuthStatusResponse;" in client_response
+        assert 'method: "account/login/start";' in client_response
+        assert "result: LoginAccountResponse;" in client_response
+        assert 'method: "account/login/cancel";' in client_response
+        assert "result: CancelLoginAccountResponse;" in client_response
+        assert 'method: "account/logout";' in client_response
+        assert "result: LogoutAccountResponse;" in client_response
         for method, response_type in [
             ("fs/readFile", "FsReadFileResponse"),
             ("fs/writeFile", "FsWriteFileResponse"),
@@ -13089,6 +13189,39 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "authMode: AuthMode | null;" in account_updated
         assert "planType: PlanType | null;" in account_updated
+        login_params = (
+            out_dir / "v2" / "LoginAccountParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "apiKey";' in login_params
+        assert "chatgptAccountId: string;" in login_params
+        assert "chatgptPlanType?: string | null;" in login_params
+        login_response = (
+            out_dir / "v2" / "LoginAccountResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "authUrl: string;" in login_response
+        assert "verificationUrl: string;" in login_response
+        cancel_login_params = (
+            out_dir / "v2" / "CancelLoginAccountParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "loginId: string;" in cancel_login_params
+        cancel_login_status = (
+            out_dir / "v2" / "CancelLoginAccountStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert '"canceled" | "notFound"' in cancel_login_status
+        cancel_login_response = (
+            out_dir / "v2" / "CancelLoginAccountResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "status: CancelLoginAccountStatus;" in cancel_login_response
+        logout_response = (
+            out_dir / "v2" / "LogoutAccountResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface LogoutAccountResponse {}" in logout_response
+        login_completed = (
+            out_dir / "v2" / "AccountLoginCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "loginId: string | null;" in login_completed
+        assert "success: boolean;" in login_completed
+        assert "error: string | null;" in login_completed
         git_diff_params = (out_dir / "v2" / "GitDiffToRemoteParams.ts").read_text(
             encoding="utf-8"
         )
@@ -13932,11 +14065,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         for account_export in [
             "Account",
+            "AccountLoginCompletedNotification",
             "AccountUpdatedNotification",
+            "CancelLoginAccountParams",
+            "CancelLoginAccountResponse",
+            "CancelLoginAccountStatus",
             "GetAccountParams",
             "GetAccountResponse",
             "GetAuthStatusParams",
             "GetAuthStatusResponse",
+            "LoginAccountParams",
+            "LoginAccountResponse",
+            "LogoutAccountResponse",
         ]:
             assert (
                 f'export type {{ {account_export} }} from "./{account_export}";'
