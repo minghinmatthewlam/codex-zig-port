@@ -272,8 +272,9 @@ parsing/rejection, verifies session-local `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
 verifies `debug clear-memories` against temporary memory roots with symlink-root
-rejection and SQLite state-db row cleanup, checks the planned debug app-server
-stub, verifies `debug trace-reduce` lifecycle replay against a temporary trace
+rejection and SQLite state-db row cleanup, checks the debug app-server
+send-message-v2 turn stream against a mock Responses backend, verifies
+`debug trace-reduce` lifecycle replay against a temporary trace
 bundle, runs the top-level `apply` command against a mock ChatGPT task backend
 and temporary git repository, then drives
 `/help`, `/status`,
