@@ -6785,7 +6785,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     "            'id': request_id,",
                     "            'result': {",
                     "                'protocolVersion': '2025-03-26',",
-                    "                'capabilities': {'tools': {}},",
+                    "                'capabilities': {'tools': {}, 'resources': {}},",
                     "                'serverInfo': {'name': 'status-smoke', 'version': '0.1.0'},",
                     "            },",
                     "        })",
@@ -6804,6 +6804,61 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     "                        },",
                     "                        'annotations': {'readOnlyHint': True},",
                     "                    }",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    elif method == 'resources/list':",
+                    "        cursor = request.get('params', {}).get('cursor')",
+                    "        if cursor == 'next-resources':",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'result': {",
+                    "                    'resources': [",
+                    "                        {",
+                    "                            'uri': 'file:///tmp/codex-status-second.md',",
+                    "                            'name': 'status-second',",
+                    "                            'title': 'Status second',",
+                    "                            'mimeType': 'text/markdown',",
+                    "                            'annotations': {'audience': ['assistant']},",
+                    "                        }",
+                    "                    ],",
+                    "                    'nextCursor': None,",
+                    "                },",
+                    "            })",
+                    "        else:",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'result': {",
+                    "                    'resources': [",
+                    "                        {",
+                    "                            'uri': 'file:///tmp/codex-status.md',",
+                    "                            'name': 'status-doc',",
+                    "                            'description': 'Status resource.',",
+                    "                            'mimeType': 'text/plain',",
+                    "                            '_meta': {'source': 'status-smoke'},",
+                    "                        },",
+                    "                        {'name': 'missing-uri'},",
+                    "                    ],",
+                    "                    'nextCursor': 'next-resources',",
+                    "                },",
+                    "            })",
+                    "    elif method == 'resources/templates/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'resourceTemplates': [",
+                    "                    {",
+                    "                        'uriTemplate': 'file:///tmp/codex-status/{slug}.md',",
+                    "                        'name': 'status-template',",
+                    "                        'description': 'Status template.',",
+                    "                        'mimeType': 'text/markdown',",
+                    "                        'annotations': {'audience': ['assistant']},",
+                    "                    },",
+                    "                    {'name': 'missing-template'},",
                     "                ],",
                     "                'nextCursor': None,",
                     "            },",
@@ -6880,6 +6935,46 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         )
         assert reload_response["id"] == "mcp-reload"
         assert reload_response["result"] == {}
+
+        full_inventory = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-full-inventory",
+                "method": "mcpServerStatus/list",
+                "params": {"limit": 1},
+            },
+            env,
+        )
+        assert full_inventory["id"] == "mcp-status-full-inventory"
+        full_entry = full_inventory["result"]["data"][0]
+        assert full_entry["name"] == "docs"
+        assert list(full_entry["tools"].keys()) == ["look-up.raw"]
+        assert full_entry["resources"] == [
+            {
+                "uri": "file:///tmp/codex-status.md",
+                "name": "status-doc",
+                "description": "Status resource.",
+                "mimeType": "text/plain",
+                "_meta": {"source": "status-smoke"},
+            },
+            {
+                "uri": "file:///tmp/codex-status-second.md",
+                "name": "status-second",
+                "title": "Status second",
+                "mimeType": "text/markdown",
+                "annotations": {"audience": ["assistant"]},
+            },
+        ]
+        assert full_entry["resourceTemplates"] == [
+            {
+                "uriTemplate": "file:///tmp/codex-status/{slug}.md",
+                "name": "status-template",
+                "description": "Status template.",
+                "mimeType": "text/markdown",
+                "annotations": {"audience": ["assistant"]},
+            }
+        ]
 
         first_page = request_stdio_app_server(
             binary,
