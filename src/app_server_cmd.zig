@@ -3109,7 +3109,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
         std.mem.eql(u8, method, "thread/rollback") or
         std.mem.eql(u8, method, "thread/inject_items") or
-        std.mem.eql(u8, method, "thread/name/set");
+        std.mem.eql(u8, method, "thread/name/set") or
+        std.mem.eql(u8, method, "thread/memoryMode/set");
 }
 
 fn handleThreadMethod(
@@ -3214,6 +3215,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/memoryMode/set")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!threadMemoryModeParamIsValid(object)) {
+            return renderJsonRpcError(allocator, id_value, -32602, "mode must be enabled or disabled");
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -3257,6 +3273,12 @@ fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
 fn threadItemsParamIsArray(object: std.json.ObjectMap) bool {
     const items = object.get("items") orelse return false;
     return items == .array;
+}
+
+fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
+    const mode = object.get("mode") orelse return false;
+    if (mode != .string) return false;
+    return std.mem.eql(u8, mode.string, "enabled") or std.mem.eql(u8, mode.string, "disabled");
 }
 
 fn renderThreadObjectParamsError(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
