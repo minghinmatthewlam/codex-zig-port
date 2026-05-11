@@ -8622,6 +8622,147 @@ def run_process_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_windows_sandbox_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(
+        tempfile.mkdtemp(prefix="codex-zig-app-server-windows-sandbox-", dir="/tmp")
+    )
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        readiness = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-readiness",
+                "method": "windowsSandbox/readiness",
+            },
+            env,
+        )
+        assert readiness["id"] == "windows-sandbox-readiness"
+        assert readiness["result"] == {"status": "notConfigured"}
+
+        readiness_null = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-readiness-null",
+                "method": "windowsSandbox/readiness",
+                "params": None,
+            },
+            env,
+        )
+        assert readiness_null["result"] == {"status": "notConfigured"}
+
+        readiness_invalid = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-readiness-invalid",
+                "method": "windowsSandbox/readiness",
+                "params": {},
+            },
+            env,
+        )
+        assert readiness_invalid["error"]["code"] == -32602
+        assert "params must be null or omitted" in readiness_invalid["error"]["message"]
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "windows-sandbox-setup",
+                    "method": "windowsSandbox/setupStart",
+                    "params": {"mode": "unelevated", "cwd": None},
+                },
+            )
+            setup_response = read_json_line(proc, 5)
+            setup_notification = read_json_line(proc, 5)
+            assert setup_response == {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-setup",
+                "result": {"started": True},
+            }
+            assert setup_notification == {
+                "jsonrpc": "2.0",
+                "method": "windowsSandbox/setupCompleted",
+                "params": {
+                    "mode": "unelevated",
+                    "success": False,
+                    "error": "legacy Windows sandbox setup is only supported on Windows",
+                },
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "windows-sandbox-setup-elevated",
+                    "method": "windowsSandbox/setupStart",
+                    "params": {"mode": "elevated"},
+                },
+            )
+            elevated_response = read_json_line(proc, 5)
+            elevated_notification = read_json_line(proc, 5)
+            assert elevated_response["result"] == {"started": True}
+            assert elevated_notification["params"] == {
+                "mode": "elevated",
+                "success": False,
+                "error": "elevated Windows sandbox setup is only supported on Windows",
+            }
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+        relative_cwd = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-relative-cwd",
+                "method": "windowsSandbox/setupStart",
+                "params": {"mode": "unelevated", "cwd": "relative-root"},
+            },
+            env,
+        )
+        assert relative_cwd["id"] == "windows-sandbox-relative-cwd"
+        assert relative_cwd["error"]["code"] == -32600
+        assert "Invalid request" in relative_cwd["error"]["message"]
+
+        invalid_mode = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "windows-sandbox-invalid-mode",
+                "method": "windowsSandbox/setupStart",
+                "params": {"mode": "restricted"},
+            },
+            env,
+        )
+        assert invalid_mode["id"] == "windows-sandbox-invalid-mode"
+        assert invalid_mode["error"]["code"] == -32600
+        assert "Invalid Request" in invalid_mode["error"]["message"]
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_model_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
 
@@ -12868,6 +13009,48 @@ def run_json_schema_smoke(binary: Path) -> None:
             "stderr",
             "stderrCapReached",
         ]
+        windows_sandbox_mode = json.loads(
+            (out_dir / "WindowsSandboxSetupMode.json").read_text(encoding="utf-8")
+        )
+        assert windows_sandbox_mode["enum"] == ["elevated", "unelevated"]
+        windows_sandbox_readiness = json.loads(
+            (out_dir / "WindowsSandboxReadiness.json").read_text(encoding="utf-8")
+        )
+        assert windows_sandbox_readiness["enum"] == [
+            "ready",
+            "notConfigured",
+            "updateRequired",
+        ]
+        windows_sandbox_setup_start = json.loads(
+            (out_dir / "WindowsSandboxSetupStartParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert windows_sandbox_setup_start["required"] == ["mode"]
+        assert (
+            windows_sandbox_setup_start["properties"]["mode"]["$ref"]
+            == "WindowsSandboxSetupMode.json"
+        )
+        windows_sandbox_readiness_response = json.loads(
+            (out_dir / "WindowsSandboxReadinessResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert windows_sandbox_readiness_response["required"] == ["status"]
+        assert (
+            windows_sandbox_readiness_response["properties"]["status"]["$ref"]
+            == "WindowsSandboxReadiness.json"
+        )
+        windows_sandbox_setup_completed = json.loads(
+            (out_dir / "WindowsSandboxSetupCompletedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert windows_sandbox_setup_completed["required"] == [
+            "mode",
+            "success",
+            "error",
+        ]
         command_exec_write_response = json.loads(
             (out_dir / "CommandExecWriteResponse.json").read_text(encoding="utf-8")
         )
@@ -14385,6 +14568,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert f'method: "{method}";' in client_request
             assert f"params: {params_type};" in client_request
+        assert 'method: "windowsSandbox/readiness";' in client_request
+        assert 'method: "windowsSandbox/setupStart";' in client_request
+        assert "params: WindowsSandboxSetupStartParams;" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
         assert 'method: "turn/start";' in client_request
@@ -14497,6 +14683,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ProcessOutputDeltaNotification;" in server_notification
         assert 'method: "process/exited";' in server_notification
         assert "params: ProcessExitedNotification;" in server_notification
+        assert 'method: "windowsSandbox/setupCompleted";' in server_notification
+        assert (
+            "params: WindowsSandboxSetupCompletedNotification;"
+            in server_notification
+        )
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -14698,6 +14889,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert f'method: "{method}";' in client_response
             assert f"result: {response_type};" in client_response
+        assert 'method: "windowsSandbox/readiness";' in client_response
+        assert "result: WindowsSandboxReadinessResponse;" in client_response
+        assert 'method: "windowsSandbox/setupStart";' in client_response
+        assert "result: WindowsSandboxSetupStartResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -15444,6 +15639,37 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ProcessExitedNotification" in process_exited
         assert "stdoutCapReached: boolean;" in process_exited
+        windows_sandbox_setup_mode = (
+            out_dir / "v2" / "WindowsSandboxSetupMode.ts"
+        ).read_text(encoding="utf-8")
+        assert '"elevated" | "unelevated"' in windows_sandbox_setup_mode
+        windows_sandbox_readiness = (
+            out_dir / "v2" / "WindowsSandboxReadiness.ts"
+        ).read_text(encoding="utf-8")
+        assert '"notConfigured"' in windows_sandbox_readiness
+        windows_sandbox_setup_start = (
+            out_dir / "v2" / "WindowsSandboxSetupStartParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { AbsolutePathBuf } from "../AbsolutePathBuf";'
+            in windows_sandbox_setup_start
+        )
+        assert "mode: WindowsSandboxSetupMode;" in windows_sandbox_setup_start
+        assert "cwd?: AbsolutePathBuf | null;" in windows_sandbox_setup_start
+        windows_sandbox_setup_start_response = (
+            out_dir / "v2" / "WindowsSandboxSetupStartResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "started: boolean;" in windows_sandbox_setup_start_response
+        windows_sandbox_readiness_response = (
+            out_dir / "v2" / "WindowsSandboxReadinessResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "status: WindowsSandboxReadiness;" in windows_sandbox_readiness_response
+        windows_sandbox_setup_completed = (
+            out_dir / "v2" / "WindowsSandboxSetupCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "mode: WindowsSandboxSetupMode;" in windows_sandbox_setup_completed
+        assert "success: boolean;" in windows_sandbox_setup_completed
+        assert "error: string | null;" in windows_sandbox_setup_completed
         assert (
             out_dir / "v2" / "CommandExecWriteResponse.ts"
         ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
@@ -16635,6 +16861,8 @@ def main() -> None:
     print("app-server-command-exec-rpc-e2e: ok")
     run_process_rpc_smoke(binary)
     print("app-server-process-rpc-e2e: ok")
+    run_windows_sandbox_rpc_smoke(binary)
+    print("app-server-windows-sandbox-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
     run_collaboration_mode_rpc_smoke(binary)
