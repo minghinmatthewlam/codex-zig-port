@@ -96,7 +96,7 @@ pub fn callToolByName(
     codex_home: []const u8,
     server_name: []const u8,
     raw_tool_name: []const u8,
-    arguments_json: []const u8,
+    arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
 ) ![]const u8 {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
@@ -215,7 +215,7 @@ fn callServerToolJson(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
     raw_tool_name: []const u8,
-    arguments_json: []const u8,
+    arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
 ) ![]const u8 {
     var client = try StdioClient.start(allocator, server);
@@ -450,28 +450,34 @@ fn buildCallToolParams(allocator: std.mem.Allocator, raw_tool_name: []const u8, 
 fn buildCallToolParamsWithMeta(
     allocator: std.mem.Allocator,
     raw_tool_name: []const u8,
-    arguments_json: []const u8,
+    arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
 ) ![]const u8 {
     const name_json = try std.json.Stringify.valueAlloc(allocator, raw_tool_name, .{});
     defer allocator.free(name_json);
 
-    const trimmed = std.mem.trim(u8, arguments_json, " \t\r\n");
-    const args_bytes = if (trimmed.len == 0) "{}" else trimmed;
-    var parsed_args = try std.json.parseFromSlice(std.json.Value, allocator, args_bytes, .{});
-    defer parsed_args.deinit();
-    if (parsed_args.value != .object) return error.InvalidMcpToolArguments;
-    const args_json = try std.json.Stringify.valueAlloc(allocator, parsed_args.value, .{});
-    defer allocator.free(args_json);
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"name\":");
+    try out.appendSlice(allocator, name_json);
 
-    if (meta_json) |meta| {
-        return std.fmt.allocPrint(
-            allocator,
-            "{{\"name\":{s},\"arguments\":{s},\"_meta\":{s}}}",
-            .{ name_json, args_json, meta },
-        );
+    if (arguments_json) |arguments| {
+        const trimmed = std.mem.trim(u8, arguments, " \t\r\n");
+        const args_bytes = if (trimmed.len == 0) "{}" else trimmed;
+        var parsed_args = try std.json.parseFromSlice(std.json.Value, allocator, args_bytes, .{});
+        defer parsed_args.deinit();
+        if (parsed_args.value != .object) return error.InvalidMcpToolArguments;
+        const args_json = try std.json.Stringify.valueAlloc(allocator, parsed_args.value, .{});
+        defer allocator.free(args_json);
+        try out.appendSlice(allocator, ",\"arguments\":");
+        try out.appendSlice(allocator, args_json);
     }
-    return std.fmt.allocPrint(allocator, "{{\"name\":{s},\"arguments\":{s}}}", .{ name_json, args_json });
+    if (meta_json) |meta| {
+        try out.appendSlice(allocator, ",\"_meta\":");
+        try out.appendSlice(allocator, meta);
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
 }
 
 fn buildReadResourceParams(allocator: std.mem.Allocator, uri: []const u8) ![]const u8 {

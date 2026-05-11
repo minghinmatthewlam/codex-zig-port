@@ -27938,8 +27938,8 @@ fn handleMcpServerToolCall(
     const arguments_json = if (params.arguments) |arguments|
         try std.json.Stringify.valueAlloc(allocator, arguments, .{})
     else
-        try allocator.dupe(u8, "{}");
-    defer allocator.free(arguments_json);
+        null;
+    defer if (arguments_json) |json| allocator.free(json);
 
     const meta_json = try renderMcpToolCallMeta(allocator, params.thread_id, params.meta);
     defer allocator.free(meta_json);

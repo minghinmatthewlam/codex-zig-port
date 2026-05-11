@@ -7354,6 +7354,32 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "mcp-tool-call-omitted-arguments",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "tool_docs",
+                        "tool": "echo",
+                    },
+                },
+            )
+            omitted_arguments = read_json_line(proc, 5)
+            assert omitted_arguments["id"] == "mcp-tool-call-omitted-arguments"
+            assert omitted_arguments["result"] == {
+                "content": [{"type": "text", "text": "echo: "}],
+                "structuredContent": {
+                    "echoed": "",
+                    "threadId": thread_id,
+                    "source": "",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "tool-smoke", "threadId": thread_id},
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "mcp-tool-invalid-arguments",
                     "method": "mcpServer/tool/call",
                     "params": {
