@@ -2882,6 +2882,91 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Smoke Renamed Thread" in stored_after_name
                 assert "Standalone Skill" not in stored_after_name
 
+                injected_text = "Injected assistant context for next turn"
+                injected_item = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": injected_text}],
+                }
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-inject-loaded",
+                        "method": "thread/inject_items",
+                        "params": {
+                            "threadId": thread_id,
+                            "items": [injected_item],
+                        },
+                    },
+                )
+                inject_loaded = read_json_line(proc, 5)
+                assert inject_loaded["id"] == "thread-inject-loaded"
+                assert inject_loaded["result"] == {}
+                stored_after_inject = rollout_path.read_text(encoding="utf-8")
+                assert injected_text in stored_after_inject
+
+                after_inject_prompt = "after injected context"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-after-inject",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": after_inject_prompt},
+                            ],
+                        },
+                    },
+                )
+                after_inject_turn_start = read_json_line(proc, 5)
+                assert after_inject_turn_start["id"] == "turn-start-after-inject"
+                assert (
+                    after_inject_turn_start["result"]["turn"]["status"]
+                    == "inProgress"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+
+                assert server.request_paths == ["/responses", "/responses", "/responses"]
+                after_inject_request = server.request_bodies[2]
+                after_inject_input = after_inject_request["input"]
+                injected_index = next(
+                    (
+                        index
+                        for index, item in enumerate(after_inject_input)
+                        if any(
+                            content.get("text") == injected_text
+                            for content in item.get("content", [])
+                        )
+                    ),
+                    None,
+                )
+                prompt_index = next(
+                    (
+                        index
+                        for index, item in enumerate(after_inject_input)
+                        if any(
+                            content.get("text") == after_inject_prompt
+                            for content in item.get("content", [])
+                        )
+                    ),
+                    None,
+                )
+                assert injected_index is not None
+                assert prompt_index is not None
+                assert injected_index < prompt_index
+                stored_after_inject_turn = rollout_path.read_text(encoding="utf-8")
+                assert injected_text in stored_after_inject_turn
+                assert after_inject_prompt in stored_after_inject_turn
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
