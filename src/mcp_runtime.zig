@@ -906,7 +906,6 @@ fn buildCallToolParamsWithMeta(
         const args_bytes = if (trimmed.len == 0) "{}" else trimmed;
         var parsed_args = try std.json.parseFromSlice(std.json.Value, allocator, args_bytes, .{});
         defer parsed_args.deinit();
-        if (parsed_args.value != .object) return error.InvalidMcpToolArguments;
         const args_json = try std.json.Stringify.valueAlloc(allocator, parsed_args.value, .{});
         defer allocator.free(args_json);
         try out.appendSlice(allocator, ",\"arguments\":");

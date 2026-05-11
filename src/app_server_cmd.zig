@@ -27935,7 +27935,6 @@ fn handleMcpServerToolCall(
         error.InvalidMcpToolCallThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
         error.InvalidMcpToolCallServer => return renderJsonRpcError(allocator, id_value, -32602, "server must be a string"),
         error.InvalidMcpToolCallTool => return renderJsonRpcError(allocator, id_value, -32602, "tool must be a string"),
-        error.InvalidMcpToolCallArguments => return renderJsonRpcError(allocator, id_value, -32602, "arguments must be an object or null"),
     };
 
     if (!isUuidString(params.thread_id)) return renderInvalidThreadId(allocator, id_value, params.thread_id);
@@ -27958,7 +27957,6 @@ fn handleMcpServerToolCall(
     const result = mcp_runtime.callToolByName(allocator, codex_home, params.server, params.tool, arguments_json, meta_json) catch |err| switch (err) {
         error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
         error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
-        error.InvalidMcpToolArguments => return renderJsonRpcError(allocator, id_value, -32602, "arguments must be an object or null"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/tool/call failed", err),
     };
     defer allocator.free(result);
@@ -28067,10 +28065,8 @@ fn parseMcpServerToolCallParams(params_value: ?std.json.Value) !McpServerToolCal
     if (object.get("arguments")) |arguments| {
         if (arguments == .null) {
             parsed.arguments = null;
-        } else if (arguments == .object) {
-            parsed.arguments = arguments;
         } else {
-            return error.InvalidMcpToolCallArguments;
+            parsed.arguments = arguments;
         }
     }
     if (object.get("_meta")) |meta| {
