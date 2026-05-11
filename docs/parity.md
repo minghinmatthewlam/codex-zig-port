@@ -61,8 +61,9 @@ Current app-server TypeScript and JSON Schema generation coverage includes the
 minimal JSON-RPC envelope files plus command-exec request, response, follow-up,
 terminal-size, sandbox-policy, permission-profile, permission-profile helper,
 filesystem-path helper, absolute-path, network-access, and output-delta
-notification artifacts, model-provider capabilities read artifacts, plus thread
-token-usage notification artifacts, and collaboration-mode list artifacts, in
+notification artifacts, model-provider capabilities read artifacts, thread
+token-usage notification artifacts, collaboration-mode list artifacts, and
+model-list catalog artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
@@ -117,6 +118,8 @@ Additional app-server thread-start coverage: `thread/start` now creates an in-me
 Additional app-server model-provider capabilities coverage: `modelProvider/capabilities/read` is included in current TypeScript and JSON schema generation with its optional params shape and Rust-shaped `namespaceTools`, `imageGeneration`, and `webSearch` response fields until broader model-provider protocol generation parity lands.
 
 Additional app-server collaboration mode generation coverage: `collaborationMode/list` is included in current TypeScript and JSON schema generation with its optional params shape and Rust-shaped `data` entries for the built-in Plan and Default presets until broader collaboration-mode protocol generation parity lands.
+
+Additional app-server model-list generation coverage: `model/list` is included in current TypeScript and JSON schema generation with cursor/limit/hidden params, Rust-shaped paginated `data`/`nextCursor` responses, and typed model catalog item fields for upgrade, availability nux, reasoning efforts, modalities, service tiers, and default markers until broader model catalog protocol generation parity lands.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
