@@ -64,6 +64,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio and streamable HTTP MCP tools as
   `mcp__server__tool` calls, including streamable HTTP MCP session-id reuse and
+  JSON-RPC responses delivered over GET SSE streams after accepted POSTs, plus
   best-effort session teardown
 - expose model-facing `list_mcp_resources`, `list_mcp_resource_templates`, and
   `read_mcp_resource` tools for configured stdio and streamable HTTP MCP
@@ -81,7 +82,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in auth state
 - read resources with and without loaded thread IDs, and call tools on
   configured stdio and streamable HTTP MCP servers through app-server
-  `mcpServer/resource/read` and `mcpServer/tool/call`
+  `mcpServer/resource/read` and `mcpServer/tool/call`, including streamable
+  HTTP GET SSE responses after accepted POSTs
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in
@@ -304,11 +306,11 @@ config-backed stdio resource reads with and without loaded thread IDs,
 loaded-thread stdio tool calls including non-object argument pass-through, and
 app-server streamable HTTP MCP resource reads and tool calls with bearer-token
 and file-backed OAuth auth plus streamable HTTP MCP session-id and teardown
-headers,
+headers and GET SSE responses after accepted POSTs,
 model-facing stdio and streamable HTTP MCP resource
 list/template/read tool calls, verifies model-facing streamable HTTP MCP tool
 discovery and execution with bearer-token auth plus session-id and teardown
-headers, verifies
+headers and GET SSE responses after accepted POSTs, verifies
 file-backed MCP OAuth logout for streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, and
 OAuth-discovery not-logged-in servers, verifies
