@@ -886,6 +886,22 @@ const THREAD_SHELL_COMMAND_RESPONSE_TS =
     \\
     ;
 
+const THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadApproveGuardianDeniedActionParams {
+    \\  threadId: string;
+    \\  /** Serialized `codex_protocol::protocol::GuardianAssessmentEvent`. */
+    \\  event: unknown;
+    \\}
+    \\
+    ;
+
+const THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadApproveGuardianDeniedActionResponse {}
+    \\
+    ;
+
 const THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadBackgroundTerminalsCleanParams {
@@ -1105,6 +1121,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
@@ -1169,6 +1186,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadShellCommandParams;
     \\    }
     \\  | {
+    \\      method: "thread/approveGuardianDeniedAction";
+    \\      params: ThreadApproveGuardianDeniedActionParams;
+    \\    }
+    \\  | {
     \\      method: "thread/backgroundTerminals/clean";
     \\      params: ThreadBackgroundTerminalsCleanParams;
     \\    }
@@ -1217,6 +1238,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
@@ -1291,6 +1313,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/shellCommand";
     \\      result: ThreadShellCommandResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/approveGuardianDeniedAction";
+    \\      result: ThreadApproveGuardianDeniedActionResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -1400,6 +1427,8 @@ const V2_INDEX_TS =
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
     \\export type { SortDirection } from "./SortDirection";
+    \\export type { ThreadApproveGuardianDeniedActionParams } from "./ThreadApproveGuardianDeniedActionParams";
+    \\export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveGuardianDeniedActionResponse";
     \\export type { ThreadArchiveParams } from "./ThreadArchiveParams";
     \\export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";
     \\export type { ThreadBackgroundTerminalsCleanParams } from "./ThreadBackgroundTerminalsCleanParams";
@@ -2204,6 +2233,33 @@ const THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadApproveGuardianDeniedActionParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "event"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "event": {
+    \\      "description": "Serialized `codex_protocol::protocol::GuardianAssessmentEvent`."
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadApproveGuardianDeniedActionResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2993,6 +3049,21 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadApproveGuardianDeniedActionParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "event"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "event": {
+    \\          "description": "Serialized `codex_protocol::protocol::GuardianAssessmentEvent`."
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadApproveGuardianDeniedActionResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadBackgroundTerminalsCleanParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -3272,6 +3343,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadCompactStartResponse.json", .contents = THREAD_COMPACT_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadShellCommandParams.json", .contents = THREAD_SHELL_COMMAND_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadShellCommandResponse.json", .contents = THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadApproveGuardianDeniedActionParams.json", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadApproveGuardianDeniedActionResponse.json", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanParams.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadIncrementElicitationParams.json", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
@@ -3351,6 +3424,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadCompactStartResponse.ts", .contents = THREAD_COMPACT_START_RESPONSE_TS },
     .{ .name = "v2/ThreadShellCommandParams.ts", .contents = THREAD_SHELL_COMMAND_PARAMS_TS },
     .{ .name = "v2/ThreadShellCommandResponse.ts", .contents = THREAD_SHELL_COMMAND_RESPONSE_TS },
+    .{ .name = "v2/ThreadApproveGuardianDeniedActionParams.ts", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_TS },
+    .{ .name = "v2/ThreadApproveGuardianDeniedActionResponse.ts", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
     .{ .name = "v2/ThreadIncrementElicitationParams.ts", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_TS },
