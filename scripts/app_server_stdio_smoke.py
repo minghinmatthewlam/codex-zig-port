@@ -7298,6 +7298,86 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert reload_response["id"] == "mcp-reload"
         assert reload_response["result"] == {}
 
+        oauth_invalid_params = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-oauth-invalid-params",
+                "method": "mcpServer/oauth/login",
+                "params": "bad",
+            },
+            env,
+        )
+        assert oauth_invalid_params["id"] == "mcp-oauth-invalid-params"
+        assert oauth_invalid_params["error"]["code"] == -32602
+        assert "params must be an object" in oauth_invalid_params["error"]["message"]
+
+        oauth_invalid_scopes = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-oauth-invalid-scopes",
+                "method": "mcpServer/oauth/login",
+                "params": {"name": "remote", "scopes": ["read", 3]},
+            },
+            env,
+        )
+        assert oauth_invalid_scopes["id"] == "mcp-oauth-invalid-scopes"
+        assert oauth_invalid_scopes["error"]["code"] == -32602
+        assert "scopes must be an array" in oauth_invalid_scopes["error"]["message"]
+
+        oauth_missing_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-oauth-missing-server",
+                "method": "mcpServer/oauth/login",
+                "params": {"name": "missing"},
+            },
+            env,
+        )
+        assert oauth_missing_server["id"] == "mcp-oauth-missing-server"
+        assert oauth_missing_server["error"]["code"] == -32600
+        assert "No MCP server named 'missing' found." in (
+            oauth_missing_server["error"]["message"]
+        )
+
+        oauth_stdio_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-oauth-stdio-server",
+                "method": "mcpServer/oauth/login",
+                "params": {"name": "docs"},
+            },
+            env,
+        )
+        assert oauth_stdio_server["id"] == "mcp-oauth-stdio-server"
+        assert oauth_stdio_server["error"]["code"] == -32600
+        assert "only supported for streamable HTTP servers" in (
+            oauth_stdio_server["error"]["message"]
+        )
+
+        oauth_http_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-oauth-http-server",
+                "method": "mcpServer/oauth/login",
+                "params": {
+                    "name": "remote",
+                    "scopes": ["read", "write"],
+                    "timeoutSecs": 1,
+                },
+            },
+            env,
+        )
+        assert oauth_http_server["id"] == "mcp-oauth-http-server"
+        assert oauth_http_server["error"]["code"] == -32603
+        assert "MCP OAuth login is not implemented" in (
+            oauth_http_server["error"]["message"]
+        )
+
         full_inventory = request_stdio_app_server(
             binary,
             {
@@ -14089,6 +14169,38 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert mcp_reload_response["additionalProperties"] is False
+        mcp_oauth_params = json.loads(
+            (out_dir / "McpServerOauthLoginParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_oauth_params["required"] == ["name"]
+        assert mcp_oauth_params["properties"]["scopes"]["type"] == [
+            "array",
+            "null",
+        ]
+        assert mcp_oauth_params["properties"]["timeoutSecs"]["type"] == [
+            "integer",
+            "null",
+        ]
+        assert mcp_oauth_params["properties"]["timeoutSecs"]["format"] == "int64"
+        mcp_oauth_response = json.loads(
+            (out_dir / "McpServerOauthLoginResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_oauth_response["required"] == ["authorizationUrl"]
+        mcp_oauth_completed = json.loads(
+            (
+                out_dir / "McpServerOauthLoginCompletedNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert mcp_oauth_completed["required"] == ["name", "success"]
+        assert mcp_oauth_completed["properties"]["success"]["type"] == "boolean"
+        assert mcp_oauth_completed["properties"]["error"]["type"] == [
+            "string",
+            "null",
+        ]
         external_item_type = json.loads(
             (out_dir / "ExternalAgentConfigMigrationItemType.json").read_text(
                 encoding="utf-8"
@@ -15350,6 +15462,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "SkillsChangedNotification" in bundle["$defs"]
         assert "ConfigMcpServerReloadParams" in bundle["$defs"]
         assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
+        assert "McpServerOauthLoginParams" in bundle["$defs"]
+        assert "McpServerOauthLoginResponse" in bundle["$defs"]
+        assert "McpServerOauthLoginCompletedNotification" in bundle["$defs"]
         assert "ExternalAgentConfigMigrationItemType" in bundle["$defs"]
         assert "ExternalAgentConfigMigrationItem" in bundle["$defs"]
         assert "ExternalAgentConfigDetectParams" in bundle["$defs"]
@@ -15762,6 +15877,21 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             is False
         )
+        assert bundle["$defs"]["McpServerOauthLoginParams"]["required"] == ["name"]
+        assert (
+            bundle["$defs"]["McpServerOauthLoginParams"]["properties"][
+                "timeoutSecs"
+            ]["format"]
+            == "int64"
+        )
+        assert (
+            bundle["$defs"]["McpServerOauthLoginResponse"]["required"]
+            == ["authorizationUrl"]
+        )
+        assert (
+            bundle["$defs"]["McpServerOauthLoginCompletedNotification"]["required"]
+            == ["name", "success"]
+        )
         assert (
             "MCP_SERVER_CONFIG"
             in bundle["$defs"]["ExternalAgentConfigMigrationItemType"]["enum"]
@@ -16159,6 +16289,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { McpServerOauthLoginParams } from "./v2/McpServerOauthLoginParams";'
+            in client_request
+        )
+        assert (
             'import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";'
             in client_request
         )
@@ -16220,6 +16354,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             assert f"params: {params_type};" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
+        assert 'method: "mcpServer/oauth/login";' in client_request
+        assert "params: McpServerOauthLoginParams;" in client_request
         assert 'method: "externalAgentConfig/detect";' in client_request
         assert "params?: ExternalAgentConfigDetectParams | null;" in client_request
         assert 'method: "externalAgentConfig/import";' in client_request
@@ -16344,6 +16480,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
             in server_notification
         )
+        assert (
+            'import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";'
+            in server_notification
+        )
         assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
         assert (
             "params: FuzzyFileSearchSessionUpdatedNotification;"
@@ -16356,6 +16496,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "skills/changed";' in server_notification
         assert "params: SkillsChangedNotification;" in server_notification
+        assert 'method: "mcpServer/oauthLogin/completed";' in server_notification
+        assert (
+            "params: McpServerOauthLoginCompletedNotification;"
+            in server_notification
+        )
         assert 'method: "account/login/completed";' in server_notification
         assert "params: AccountLoginCompletedNotification;" in server_notification
         assert 'method: "account/updated";' in server_notification
@@ -16440,6 +16585,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { McpServerOauthLoginResponse } from "./v2/McpServerOauthLoginResponse";'
+            in client_response
+        )
+        assert (
             'import type { McpServerToolCallResponse } from "./v2/McpServerToolCallResponse";'
             in client_response
         )
@@ -16502,6 +16651,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             assert f"result: {response_type};" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
+        assert 'method: "mcpServer/oauth/login";' in client_response
+        assert "result: McpServerOauthLoginResponse;" in client_response
         assert 'method: "externalAgentConfig/detect";' in client_response
         assert "result: ExternalAgentConfigDetectResponse;" in client_response
         assert 'method: "externalAgentConfig/import";' in client_response
@@ -17075,6 +17226,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ConfigMcpServerReloadResponse {}" in (
             mcp_reload_response
         )
+        mcp_oauth_params = (
+            out_dir / "v2" / "McpServerOauthLoginParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "name: string;" in mcp_oauth_params
+        assert "scopes?: string[] | null;" in mcp_oauth_params
+        assert "timeoutSecs?: number | null;" in mcp_oauth_params
+        mcp_oauth_response = (
+            out_dir / "v2" / "McpServerOauthLoginResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "authorizationUrl: string;" in mcp_oauth_response
+        mcp_oauth_completed = (
+            out_dir / "v2" / "McpServerOauthLoginCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "name: string;" in mcp_oauth_completed
+        assert "success: boolean;" in mcp_oauth_completed
+        assert "error?: string;" in mcp_oauth_completed
         external_type = (
             out_dir / "v2" / "ExternalAgentConfigMigrationItemType.ts"
         ).read_text(encoding="utf-8")
@@ -18094,6 +18261,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerOauthLoginParams } from "./McpServerOauthLoginParams";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse";'
             in v2_index
         )
         for external_agent_export in [
