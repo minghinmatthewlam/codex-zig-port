@@ -11072,6 +11072,81 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert fuzzy_session_completed["required"] == ["sessionId"]
+        hooks_list_params = json.loads(
+            (out_dir / "HooksListParams.json").read_text(encoding="utf-8")
+        )
+        assert hooks_list_params["properties"]["cwds"]["type"] == ["array", "null"]
+        hook_event_name = json.loads(
+            (out_dir / "HookEventName.json").read_text(encoding="utf-8")
+        )
+        assert hook_event_name["enum"] == [
+            "preToolUse",
+            "permissionRequest",
+            "postToolUse",
+            "preCompact",
+            "postCompact",
+            "sessionStart",
+            "userPromptSubmit",
+            "stop",
+        ]
+        hook_handler_type = json.loads(
+            (out_dir / "HookHandlerType.json").read_text(encoding="utf-8")
+        )
+        assert hook_handler_type["enum"] == ["command"]
+        hook_source = json.loads(
+            (out_dir / "HookSource.json").read_text(encoding="utf-8")
+        )
+        assert hook_source["enum"] == ["user", "project", "plugin"]
+        hook_trust_status = json.loads(
+            (out_dir / "HookTrustStatus.json").read_text(encoding="utf-8")
+        )
+        assert hook_trust_status["enum"] == ["untrusted", "trusted", "modified"]
+        hook_error = json.loads(
+            (out_dir / "HookError.json").read_text(encoding="utf-8")
+        )
+        assert hook_error["required"] == ["path", "message"]
+        hook = json.loads((out_dir / "Hook.json").read_text(encoding="utf-8"))
+        assert hook["required"] == [
+            "key",
+            "eventName",
+            "handlerType",
+            "matcher",
+            "command",
+            "timeoutSec",
+            "statusMessage",
+            "sourcePath",
+            "source",
+            "pluginId",
+            "displayOrder",
+            "enabled",
+            "isManaged",
+            "currentHash",
+            "trustStatus",
+        ]
+        assert hook["properties"]["eventName"]["$ref"] == "#/$defs/HookEventName"
+        assert hook["properties"]["handlerType"]["$ref"] == "#/$defs/HookHandlerType"
+        assert hook["properties"]["source"]["$ref"] == "#/$defs/HookSource"
+        assert hook["properties"]["trustStatus"]["$ref"] == "#/$defs/HookTrustStatus"
+        hooks_list_entry = json.loads(
+            (out_dir / "HooksListEntry.json").read_text(encoding="utf-8")
+        )
+        assert hooks_list_entry["required"] == ["cwd", "hooks", "warnings", "errors"]
+        assert (
+            hooks_list_entry["properties"]["hooks"]["items"]["$ref"]
+            == "#/$defs/Hook"
+        )
+        assert (
+            hooks_list_entry["properties"]["errors"]["items"]["$ref"]
+            == "#/$defs/HookError"
+        )
+        hooks_list_response = json.loads(
+            (out_dir / "HooksListResponse.json").read_text(encoding="utf-8")
+        )
+        assert hooks_list_response["required"] == ["data"]
+        assert (
+            hooks_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/HooksListEntry"
+        )
         mcp_reload_params = json.loads(
             (out_dir / "ConfigMcpServerReloadParams.json").read_text(
                 encoding="utf-8"
@@ -11960,6 +12035,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "FuzzyFileSearchSessionStopResponse" in bundle["$defs"]
         assert "FuzzyFileSearchSessionUpdatedNotification" in bundle["$defs"]
         assert "FuzzyFileSearchSessionCompletedNotification" in bundle["$defs"]
+        assert "HooksListParams" in bundle["$defs"]
+        assert "HookEventName" in bundle["$defs"]
+        assert "HookHandlerType" in bundle["$defs"]
+        assert "HookSource" in bundle["$defs"]
+        assert "HookTrustStatus" in bundle["$defs"]
+        assert "HookError" in bundle["$defs"]
+        assert "Hook" in bundle["$defs"]
+        assert "HooksListEntry" in bundle["$defs"]
+        assert "HooksListResponse" in bundle["$defs"]
         assert "ConfigMcpServerReloadParams" in bundle["$defs"]
         assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
         assert "McpServerStatusDetail" in bundle["$defs"]
@@ -12068,6 +12152,42 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["FuzzyFileSearchSessionUpdatedNotification"][
             "properties"
         ]["files"]["items"]["$ref"] == "#/$defs/FuzzyFileSearchMatch"
+        assert bundle["$defs"]["HooksListParams"]["properties"]["cwds"]["type"] == [
+            "array",
+            "null",
+        ]
+        assert bundle["$defs"]["HookEventName"]["enum"] == [
+            "preToolUse",
+            "permissionRequest",
+            "postToolUse",
+            "preCompact",
+            "postCompact",
+            "sessionStart",
+            "userPromptSubmit",
+            "stop",
+        ]
+        assert (
+            bundle["$defs"]["Hook"]["properties"]["eventName"]["$ref"]
+            == "#/$defs/HookEventName"
+        )
+        assert (
+            bundle["$defs"]["Hook"]["properties"]["handlerType"]["$ref"]
+            == "#/$defs/HookHandlerType"
+        )
+        assert (
+            bundle["$defs"]["Hook"]["properties"]["trustStatus"]["$ref"]
+            == "#/$defs/HookTrustStatus"
+        )
+        assert (
+            bundle["$defs"]["HooksListEntry"]["properties"]["hooks"]["items"]["$ref"]
+            == "#/$defs/Hook"
+        )
+        assert (
+            bundle["$defs"]["HooksListResponse"]["properties"]["data"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/HooksListEntry"
+        )
         assert (
             bundle["$defs"]["ConfigMcpServerReloadResponse"][
                 "additionalProperties"
@@ -12259,6 +12379,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FuzzyFileSearchSessionUpdateParams;" in client_request
         assert 'method: "fuzzyFileSearch/sessionStop";' in client_request
         assert "params: FuzzyFileSearchSessionStopParams;" in client_request
+        assert 'method: "hooks/list";' in client_request
+        assert "params?: HooksListParams | null;" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
@@ -12391,6 +12513,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: FuzzyFileSearchSessionUpdateResponse;" in client_response
         assert 'method: "fuzzyFileSearch/sessionStop";' in client_response
         assert "result: FuzzyFileSearchSessionStopResponse;" in client_response
+        assert 'method: "hooks/list";' in client_response
+        assert "result: HooksListResponse;" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
         assert 'method: "mcpServerStatus/list";' in client_response
@@ -12571,6 +12695,56 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "query: string;" in fuzzy_session_updated
         assert "files: FuzzyFileSearchMatch[];" in fuzzy_session_updated
+        hooks_list_params = (out_dir / "v2" / "HooksListParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "cwds?: string[] | null;" in hooks_list_params
+        hook_event_name = (out_dir / "v2" / "HookEventName.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"preToolUse"' in hook_event_name
+        assert '"userPromptSubmit"' in hook_event_name
+        hook_handler_type = (out_dir / "v2" / "HookHandlerType.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'export type HookHandlerType = "command";' in hook_handler_type
+        hook_source = (out_dir / "v2" / "HookSource.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"user" | "project" | "plugin"' in hook_source
+        hook_trust_status = (out_dir / "v2" / "HookTrustStatus.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"untrusted" | "trusted" | "modified"' in hook_trust_status
+        hook_error = (out_dir / "v2" / "HookError.ts").read_text(encoding="utf-8")
+        assert "path: string;" in hook_error
+        assert "message: string;" in hook_error
+        hook = (out_dir / "v2" / "Hook.ts").read_text(encoding="utf-8")
+        assert 'import type { HookEventName } from "./HookEventName";' in hook
+        assert 'import type { HookHandlerType } from "./HookHandlerType";' in hook
+        assert 'import type { HookSource } from "./HookSource";' in hook
+        assert 'import type { HookTrustStatus } from "./HookTrustStatus";' in hook
+        assert "eventName: HookEventName;" in hook
+        assert "handlerType: HookHandlerType;" in hook
+        assert "matcher: string | null;" in hook
+        assert "timeoutSec: number;" in hook
+        assert "source: HookSource;" in hook
+        assert "pluginId: string | null;" in hook
+        assert "trustStatus: HookTrustStatus;" in hook
+        hooks_list_entry = (out_dir / "v2" / "HooksListEntry.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { Hook } from "./Hook";' in hooks_list_entry
+        assert 'import type { HookError } from "./HookError";' in hooks_list_entry
+        assert "hooks: Hook[];" in hooks_list_entry
+        assert "errors: HookError[];" in hooks_list_entry
+        hooks_list_response = (out_dir / "v2" / "HooksListResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { HooksListEntry } from "./HooksListEntry";' in (
+            hooks_list_response
+        )
+        assert "data: HooksListEntry[];" in hooks_list_response
         mcp_reload_params = (
             out_dir / "v2" / "ConfigMcpServerReloadParams.ts"
         ).read_text(encoding="utf-8")
@@ -13261,6 +13435,24 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
+            in v2_index
+        )
+        assert 'export type { Hook } from "./Hook";' in v2_index
+        assert 'export type { HookError } from "./HookError";' in v2_index
+        assert 'export type { HookEventName } from "./HookEventName";' in v2_index
+        assert 'export type { HookHandlerType } from "./HookHandlerType";' in v2_index
+        assert 'export type { HookSource } from "./HookSource";' in v2_index
+        assert 'export type { HookTrustStatus } from "./HookTrustStatus";' in v2_index
+        assert (
+            'export type { HooksListEntry } from "./HooksListEntry";'
+            in v2_index
+        )
+        assert (
+            'export type { HooksListParams } from "./HooksListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { HooksListResponse } from "./HooksListResponse";'
             in v2_index
         )
         assert (
