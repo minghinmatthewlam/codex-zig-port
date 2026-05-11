@@ -114,3 +114,5 @@ Additional app-server thread rollback coverage: `thread/rollback` validates `thr
 Additional app-server thread item-injection coverage: `thread/inject_items` validates `threadId` and `items` array shape, returns Rust-shaped `thread not found` responses for unloaded threads before response-item validation, and is included in current TypeScript and JSON schema generation as an opaque item-list request until full response-item schema parity lands.
 
 Additional app-server thread naming coverage: `thread/name/set` validates `threadId`, trims and rejects empty names with Rust-shaped errors, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
+
+Additional app-server thread memory-mode coverage: `thread/memoryMode/set` validates `threadId` and the `enabled` / `disabled` mode enum, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
