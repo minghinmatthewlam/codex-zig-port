@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import difflib
+import hashlib
 import json
 import os
 import shutil
@@ -1448,6 +1449,110 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def mcp_oauth_store_key(name: str, url: str) -> str:
+    payload = json.dumps(
+        {"headers": {}, "type": "http", "url": url},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"{name}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
+
+
+def run_mcp_oauth_logout_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
+    try:
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir()
+        remote_url = "https://example.com/mcp"
+        other_url = "https://other.example/mcp"
+        remote_key = mcp_oauth_store_key("remote", remote_url)
+        other_key = mcp_oauth_store_key("other", other_url)
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'mcp_oauth_credentials_store = "file"',
+                    "",
+                    "[mcp_servers.remote]",
+                    f'url = "{remote_url}"',
+                    "",
+                    "[mcp_servers.docs]",
+                    'command = "docs-server"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    remote_key: {
+                        "server_name": "remote",
+                        "server_url": remote_url,
+                        "client_id": "client",
+                        "access_token": "access",
+                    },
+                    other_key: {
+                        "server_name": "other",
+                        "server_url": other_url,
+                        "client_id": "client",
+                        "access_token": "other",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        removed = subprocess.run(
+            [str(binary.resolve()), "mcp", "logout", "remote"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert removed.stdout == "Removed OAuth credentials for 'remote'.\n"
+        assert removed.stderr == ""
+        credentials = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
+        assert remote_key not in credentials
+        assert other_key in credentials
+
+        missing = subprocess.run(
+            [str(binary.resolve()), "mcp", "logout", "remote"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert missing.stdout == "No OAuth credentials stored for 'remote'.\n"
+        assert missing.stderr == ""
+
+        stdio_logout = subprocess.run(
+            [str(binary.resolve()), "mcp", "logout", "docs"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert stdio_logout.returncode != 0
+        assert "error: McpOAuthLogoutRequiresHttp" in stdio_logout.stderr
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_git_repo_check_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-git-check-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -2187,6 +2292,7 @@ def main() -> None:
     run_exec_provider_command_auth_refresh_smoke(binary)
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
     run_exec_mcp_resource_tools_smoke(binary)
+    run_mcp_oauth_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -2209,6 +2315,7 @@ def main() -> None:
     print("cli-exec-provider-command-auth-refresh-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
     print("cli-exec-mcp-resource-tools-e2e: ok")
+    print("cli-mcp-oauth-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
