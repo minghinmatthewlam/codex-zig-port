@@ -1475,6 +1475,10 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
                     "[mcp_servers.remote]",
                     f'url = "{remote_url}"',
                     "",
+                    "[mcp_servers.bearer]",
+                    'url = "https://bearer.example/mcp"',
+                    'bearer_token_env_var = "MCP_TOKEN"',
+                    "",
                     "[mcp_servers.docs]",
                     'command = "docs-server"',
                     "",
@@ -1508,6 +1512,35 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_ACCESS_TOKEN", None)
 
+        listed = subprocess.run(
+            [str(binary.resolve()), "mcp", "list", "--json"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        listed_entries = {entry["name"]: entry for entry in json.loads(listed.stdout)}
+        assert listed_entries["remote"]["auth_status"] == "OAuth"
+        assert listed_entries["bearer"]["auth_status"] == "BearerToken"
+        assert listed_entries["docs"]["auth_status"] == "Unsupported"
+
+        listed_text = subprocess.run(
+            [str(binary.resolve()), "mcp", "list"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "remote\tstreamable_http\tenabled\tOAuth" in listed_text.stdout
+        assert "bearer\tstreamable_http\tenabled\tBearer token" in listed_text.stdout
+        assert "docs\tstdio\tenabled\tUnsupported" in listed_text.stdout
+
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
             cwd=temp_root,
@@ -1523,6 +1556,19 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         credentials = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
         assert remote_key not in credentials
         assert other_key in credentials
+
+        relisted = subprocess.run(
+            [str(binary.resolve()), "mcp", "list", "--json"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        relisted_entries = {entry["name"]: entry for entry in json.loads(relisted.stdout)}
+        assert relisted_entries["remote"]["auth_status"] == "Unsupported"
 
         missing = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
