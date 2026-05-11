@@ -692,6 +692,92 @@ const COLLABORATION_MODE_LIST_RESPONSE_TS =
     \\
     ;
 
+const MODEL_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  includeHidden?: boolean;
+    \\}
+    \\
+    ;
+
+const MODEL_UPGRADE_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelUpgradeInfo {
+    \\  model: string;
+    \\  upgradeCopy: string | null;
+    \\  modelLink: string | null;
+    \\  migrationMarkdown: string | null;
+    \\}
+    \\
+    ;
+
+const MODEL_AVAILABILITY_NUX_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelAvailabilityNux {
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const MODEL_REASONING_EFFORT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelReasoningEffort {
+    \\  reasoningEffort: string;
+    \\  description: string;
+    \\}
+    \\
+    ;
+
+const MODEL_SERVICE_TIER_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelServiceTier {
+    \\  id: string;
+    \\  name: string;
+    \\  description: string;
+    \\}
+    \\
+    ;
+
+const MODEL_LIST_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
+    \\import type { ModelReasoningEffort } from "./ModelReasoningEffort";
+    \\import type { ModelServiceTier } from "./ModelServiceTier";
+    \\import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
+    \\
+    \\export interface ModelListItem {
+    \\  id: string;
+    \\  model: string;
+    \\  upgrade: string | null;
+    \\  upgradeInfo: ModelUpgradeInfo | null;
+    \\  availabilityNux: ModelAvailabilityNux | null;
+    \\  displayName: string;
+    \\  description: string;
+    \\  hidden: boolean;
+    \\  supportedReasoningEfforts: ModelReasoningEffort[];
+    \\  defaultReasoningEffort: string;
+    \\  inputModalities: string[];
+    \\  supportsPersonality: boolean;
+    \\  additionalSpeedTiers: string[];
+    \\  serviceTiers: ModelServiceTier[];
+    \\  isDefault: boolean;
+    \\}
+    \\
+    ;
+
+const MODEL_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModelListItem } from "./ModelListItem";
+    \\
+    \\export interface ModelListResponse {
+    \\  data: ModelListItem[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_TERMINAL_SIZE_TS =
     GENERATED_TS_HEADER ++
     \\export interface CommandExecTerminalSize {
@@ -1805,6 +1891,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
+    \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
@@ -1850,6 +1937,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "collaborationMode/list";
     \\      params?: CollaborationModeListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "model/list";
+    \\      params?: ModelListParams | null;
     \\    }
     \\  | {
     \\      method: "command/exec";
@@ -1997,6 +2088,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
+    \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
@@ -2046,6 +2138,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "collaborationMode/list";
     \\      result: CollaborationModeListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "model/list";
+    \\      result: ModelListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2329,8 +2426,15 @@ const V2_INDEX_TS =
     \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
     \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
+    \\export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
+    \\export type { ModelListItem } from "./ModelListItem";
+    \\export type { ModelListParams } from "./ModelListParams";
+    \\export type { ModelListResponse } from "./ModelListResponse";
     \\export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";
     \\export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";
+    \\export type { ModelReasoningEffort } from "./ModelReasoningEffort";
+    \\export type { ModelServiceTier } from "./ModelServiceTier";
+    \\export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
     \\export type { NetworkAccess } from "./NetworkAccess";
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
@@ -2654,6 +2758,248 @@ const COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA =
     \\        "mode": { "type": "string", "enum": ["plan", "default"] },
     \\        "model": { "type": ["string", "null"] },
     \\        "reasoning_effort": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "includeHidden": { "type": "boolean", "default": false }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MODEL_UPGRADE_INFO_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelUpgradeInfo",
+    \\  "type": "object",
+    \\  "required": ["model", "upgradeCopy", "modelLink", "migrationMarkdown"],
+    \\  "properties": {
+    \\    "model": { "type": "string" },
+    \\    "upgradeCopy": { "type": ["string", "null"] },
+    \\    "modelLink": { "type": ["string", "null"] },
+    \\    "migrationMarkdown": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_AVAILABILITY_NUX_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelAvailabilityNux",
+    \\  "type": "object",
+    \\  "required": ["message"],
+    \\  "properties": {
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_REASONING_EFFORT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelReasoningEffort",
+    \\  "type": "object",
+    \\  "required": ["reasoningEffort", "description"],
+    \\  "properties": {
+    \\    "reasoningEffort": { "type": "string" },
+    \\    "description": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_SERVICE_TIER_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelServiceTier",
+    \\  "type": "object",
+    \\  "required": ["id", "name", "description"],
+    \\  "properties": {
+    \\    "id": { "type": "string" },
+    \\    "name": { "type": "string" },
+    \\    "description": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_LIST_ITEM_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelListItem",
+    \\  "type": "object",
+    \\  "required": ["id", "model", "upgrade", "upgradeInfo", "availabilityNux", "displayName", "description", "hidden", "supportedReasoningEfforts", "defaultReasoningEffort", "inputModalities", "supportsPersonality", "additionalSpeedTiers", "serviceTiers", "isDefault"],
+    \\  "properties": {
+    \\    "id": { "type": "string" },
+    \\    "model": { "type": "string" },
+    \\    "upgrade": { "type": ["string", "null"] },
+    \\    "upgradeInfo": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ModelUpgradeInfo" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "availabilityNux": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ModelAvailabilityNux" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "displayName": { "type": "string" },
+    \\    "description": { "type": "string" },
+    \\    "hidden": { "type": "boolean" },
+    \\    "supportedReasoningEfforts": { "type": "array", "items": { "$ref": "#/$defs/ModelReasoningEffort" } },
+    \\    "defaultReasoningEffort": { "type": "string" },
+    \\    "inputModalities": { "type": "array", "items": { "type": "string" } },
+    \\    "supportsPersonality": { "type": "boolean" },
+    \\    "additionalSpeedTiers": { "type": "array", "items": { "type": "string" } },
+    \\    "serviceTiers": { "type": "array", "items": { "$ref": "#/$defs/ModelServiceTier" } },
+    \\    "isDefault": { "type": "boolean" }
+    \\  },
+    \\  "$defs": {
+    \\    "ModelUpgradeInfo": {
+    \\      "type": "object",
+    \\      "required": ["model", "upgradeCopy", "modelLink", "migrationMarkdown"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "upgradeCopy": { "type": ["string", "null"] },
+    \\        "modelLink": { "type": ["string", "null"] },
+    \\        "migrationMarkdown": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelAvailabilityNux": {
+    \\      "type": "object",
+    \\      "required": ["message"],
+    \\      "properties": {
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelReasoningEffort": {
+    \\      "type": "object",
+    \\      "required": ["reasoningEffort", "description"],
+    \\      "properties": {
+    \\        "reasoningEffort": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelServiceTier": {
+    \\      "type": "object",
+    \\      "required": ["id", "name", "description"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MODEL_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/ModelListItem" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ModelListItem": {
+    \\      "type": "object",
+    \\      "required": ["id", "model", "upgrade", "upgradeInfo", "availabilityNux", "displayName", "description", "hidden", "supportedReasoningEfforts", "defaultReasoningEffort", "inputModalities", "supportsPersonality", "additionalSpeedTiers", "serviceTiers", "isDefault"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "model": { "type": "string" },
+    \\        "upgrade": { "type": ["string", "null"] },
+    \\        "upgradeInfo": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ModelUpgradeInfo" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "availabilityNux": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ModelAvailabilityNux" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "displayName": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "hidden": { "type": "boolean" },
+    \\        "supportedReasoningEfforts": { "type": "array", "items": { "$ref": "#/$defs/ModelReasoningEffort" } },
+    \\        "defaultReasoningEffort": { "type": "string" },
+    \\        "inputModalities": { "type": "array", "items": { "type": "string" } },
+    \\        "supportsPersonality": { "type": "boolean" },
+    \\        "additionalSpeedTiers": { "type": "array", "items": { "type": "string" } },
+    \\        "serviceTiers": { "type": "array", "items": { "$ref": "#/$defs/ModelServiceTier" } },
+    \\        "isDefault": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelUpgradeInfo": {
+    \\      "type": "object",
+    \\      "required": ["model", "upgradeCopy", "modelLink", "migrationMarkdown"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "upgradeCopy": { "type": ["string", "null"] },
+    \\        "modelLink": { "type": ["string", "null"] },
+    \\        "migrationMarkdown": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelAvailabilityNux": {
+    \\      "type": "object",
+    \\      "required": ["message"],
+    \\      "properties": {
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelReasoningEffort": {
+    \\      "type": "object",
+    \\      "required": ["reasoningEffort", "description"],
+    \\      "properties": {
+    \\        "reasoningEffort": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelServiceTier": {
+    \\      "type": "object",
+    \\      "required": ["id", "name", "description"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" }
     \\      },
     \\      "additionalProperties": false
     \\    }
@@ -4934,6 +5280,94 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ModelListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "includeHidden": { "type": "boolean", "default": false }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ModelUpgradeInfo": {
+    \\      "type": "object",
+    \\      "required": ["model", "upgradeCopy", "modelLink", "migrationMarkdown"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "upgradeCopy": { "type": ["string", "null"] },
+    \\        "modelLink": { "type": ["string", "null"] },
+    \\        "migrationMarkdown": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelAvailabilityNux": {
+    \\      "type": "object",
+    \\      "required": ["message"],
+    \\      "properties": {
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelReasoningEffort": {
+    \\      "type": "object",
+    \\      "required": ["reasoningEffort", "description"],
+    \\      "properties": {
+    \\        "reasoningEffort": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelServiceTier": {
+    \\      "type": "object",
+    \\      "required": ["id", "name", "description"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelListItem": {
+    \\      "type": "object",
+    \\      "required": ["id", "model", "upgrade", "upgradeInfo", "availabilityNux", "displayName", "description", "hidden", "supportedReasoningEfforts", "defaultReasoningEffort", "inputModalities", "supportsPersonality", "additionalSpeedTiers", "serviceTiers", "isDefault"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "model": { "type": "string" },
+    \\        "upgrade": { "type": ["string", "null"] },
+    \\        "upgradeInfo": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ModelUpgradeInfo" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "availabilityNux": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ModelAvailabilityNux" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "displayName": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "hidden": { "type": "boolean" },
+    \\        "supportedReasoningEfforts": { "type": "array", "items": { "$ref": "#/$defs/ModelReasoningEffort" } },
+    \\        "defaultReasoningEffort": { "type": "string" },
+    \\        "inputModalities": { "type": "array", "items": { "type": "string" } },
+    \\        "supportsPersonality": { "type": "boolean" },
+    \\        "additionalSpeedTiers": { "type": "array", "items": { "type": "string" } },
+    \\        "serviceTiers": { "type": "array", "items": { "$ref": "#/$defs/ModelServiceTier" } },
+    \\        "isDefault": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ModelListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ModelListItem" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
@@ -6162,6 +6596,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "CollaborationMode.json", .contents = COLLABORATION_MODE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListResponse.json", .contents = COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ModelListParams.json", .contents = MODEL_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ModelUpgradeInfo.json", .contents = MODEL_UPGRADE_INFO_JSON_SCHEMA },
+    .{ .name = "ModelAvailabilityNux.json", .contents = MODEL_AVAILABILITY_NUX_JSON_SCHEMA },
+    .{ .name = "ModelReasoningEffort.json", .contents = MODEL_REASONING_EFFORT_JSON_SCHEMA },
+    .{ .name = "ModelServiceTier.json", .contents = MODEL_SERVICE_TIER_JSON_SCHEMA },
+    .{ .name = "ModelListItem.json", .contents = MODEL_LIST_ITEM_JSON_SCHEMA },
+    .{ .name = "ModelListResponse.json", .contents = MODEL_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
@@ -6301,6 +6742,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CollaborationModeListParams.ts", .contents = COLLABORATION_MODE_LIST_PARAMS_TS },
     .{ .name = "v2/CollaborationMode.ts", .contents = COLLABORATION_MODE_TS },
     .{ .name = "v2/CollaborationModeListResponse.ts", .contents = COLLABORATION_MODE_LIST_RESPONSE_TS },
+    .{ .name = "v2/ModelListParams.ts", .contents = MODEL_LIST_PARAMS_TS },
+    .{ .name = "v2/ModelUpgradeInfo.ts", .contents = MODEL_UPGRADE_INFO_TS },
+    .{ .name = "v2/ModelAvailabilityNux.ts", .contents = MODEL_AVAILABILITY_NUX_TS },
+    .{ .name = "v2/ModelReasoningEffort.ts", .contents = MODEL_REASONING_EFFORT_TS },
+    .{ .name = "v2/ModelServiceTier.ts", .contents = MODEL_SERVICE_TIER_TS },
+    .{ .name = "v2/ModelListItem.ts", .contents = MODEL_LIST_ITEM_TS },
+    .{ .name = "v2/ModelListResponse.ts", .contents = MODEL_LIST_RESPONSE_TS },
     .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
     .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
     .{ .name = "v2/FileSystemAccessMode.ts", .contents = FILE_SYSTEM_ACCESS_MODE_TS },
