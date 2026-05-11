@@ -4814,6 +4814,15 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        }
     \\      ]
     \\    },
+    \\    "CommandExecTerminalSize": {
+    \\      "type": "object",
+    \\      "required": ["rows", "cols"],
+    \\      "properties": {
+    \\        "rows": { "type": "integer", "minimum": 1 },
+    \\        "cols": { "type": "integer", "minimum": 1 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "CommandExecParams": {
     \\      "type": "object",
     \\      "required": ["command"],
@@ -4823,6 +4832,21 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "streamStdin": { "type": "boolean" },
     \\        "streamStdoutStderr": { "type": "boolean" },
     \\        "tty": { "type": "boolean" },
+    \\        "outputBytesCap": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "disableOutputCap": { "type": "boolean" },
+    \\        "disableTimeout": { "type": "boolean" },
+    \\        "timeoutMs": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "env": {
+    \\          "type": ["object", "null"],
+    \\          "additionalProperties": { "type": ["string", "null"] }
+    \\        },
+    \\        "size": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/CommandExecTerminalSize" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
     \\        "sandboxPolicy": {
     \\          "oneOf": [
     \\            { "$ref": "#/$defs/SandboxPolicy" },
@@ -4846,6 +4870,45 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "stdout": { "type": "string" },
     \\        "stderr": { "type": "string" }
     \\      }
+    \\    },
+    \\    "CommandExecWriteParams": {
+    \\      "type": "object",
+    \\      "required": ["processId"],
+    \\      "properties": {
+    \\        "processId": { "type": "string" },
+    \\        "deltaBase64": { "type": ["string", "null"] },
+    \\        "closeStdin": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecWriteResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "CommandExecTerminateParams": {
+    \\      "type": "object",
+    \\      "required": ["processId"],
+    \\      "properties": {
+    \\        "processId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecTerminateResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "CommandExecResizeParams": {
+    \\      "type": "object",
+    \\      "required": ["processId", "size"],
+    \\      "properties": {
+    \\        "processId": { "type": "string" },
+    \\        "size": { "$ref": "#/$defs/CommandExecTerminalSize" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecResizeResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    },
     \\    "CommandExecOutputDeltaNotification": {
     \\      "type": "object",
