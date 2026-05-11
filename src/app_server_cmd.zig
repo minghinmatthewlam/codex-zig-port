@@ -649,6 +649,97 @@ const INITIALIZE_RESPONSE_TS =
     \\
     ;
 
+const AUTH_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AuthMode =
+    \\  | "apikey"
+    \\  | "chatgpt"
+    \\  | "chatgptAuthTokens"
+    \\  | "agentIdentity";
+    \\
+    ;
+
+const PLAN_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PlanType =
+    \\  | "free"
+    \\  | "go"
+    \\  | "plus"
+    \\  | "pro"
+    \\  | "prolite"
+    \\  | "team"
+    \\  | "self_serve_business_usage_based"
+    \\  | "business"
+    \\  | "enterprise_cbp_usage_based"
+    \\  | "enterprise"
+    \\  | "edu"
+    \\  | "unknown";
+    \\
+    ;
+
+const GET_AUTH_STATUS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GetAuthStatusParams {
+    \\  includeToken?: boolean | null;
+    \\  refreshToken?: boolean | null;
+    \\}
+    \\
+    ;
+
+const GET_AUTH_STATUS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AuthMode } from "../AuthMode";
+    \\
+    \\export interface GetAuthStatusResponse {
+    \\  authMethod: AuthMode | null;
+    \\  authToken: string | null;
+    \\  requiresOpenaiAuth: boolean | null;
+    \\}
+    \\
+    ;
+
+const ACCOUNT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PlanType } from "../PlanType";
+    \\
+    \\export type Account =
+    \\  | { type: "apiKey" }
+    \\  | { type: "chatgpt"; email: string; planType: PlanType }
+    \\  | { type: "amazonBedrock" };
+    \\
+    ;
+
+const GET_ACCOUNT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GetAccountParams {
+    \\  refreshToken?: boolean;
+    \\}
+    \\
+    ;
+
+const GET_ACCOUNT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { Account } from "./Account";
+    \\
+    \\export interface GetAccountResponse {
+    \\  account: Account | null;
+    \\  requiresOpenaiAuth: boolean;
+    \\}
+    \\
+    ;
+
+const ACCOUNT_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AuthMode } from "../AuthMode";
+    \\import type { PlanType } from "../PlanType";
+    \\
+    \\export interface AccountUpdatedNotification {
+    \\  authMode: AuthMode | null;
+    \\  planType: PlanType | null;
+    \\}
+    \\
+    ;
+
 const MEMORY_RESET_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface MemoryResetResponse {}
@@ -2586,6 +2677,8 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
+    \\import type { GetAccountParams } from "./v2/GetAccountParams";
+    \\import type { GetAuthStatusParams } from "./v2/GetAuthStatusParams";
     \\import type { FsCopyParams } from "./v2/FsCopyParams";
     \\import type { FsCreateDirectoryParams } from "./v2/FsCreateDirectoryParams";
     \\import type { FsGetMetadataParams } from "./v2/FsGetMetadataParams";
@@ -2673,6 +2766,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "skills/config/write";
     \\      params: SkillsConfigWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "account/read";
+    \\      params?: GetAccountParams | null;
+    \\    }
+    \\  | {
+    \\      method: "getAuthStatus";
+    \\      params?: GetAuthStatusParams | null;
     \\    }
     \\  | {
     \\      method: "fs/readFile";
@@ -2891,6 +2992,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
+    \\import type { GetAccountResponse } from "./v2/GetAccountResponse";
+    \\import type { GetAuthStatusResponse } from "./v2/GetAuthStatusResponse";
     \\import type { FsCopyResponse } from "./v2/FsCopyResponse";
     \\import type { FsCreateDirectoryResponse } from "./v2/FsCreateDirectoryResponse";
     \\import type { FsGetMetadataResponse } from "./v2/FsGetMetadataResponse";
@@ -2991,6 +3094,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "skills/config/write";
     \\      result: SkillsConfigWriteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/read";
+    \\      result: GetAccountResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "getAuthStatus";
+    \\      result: GetAuthStatusResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -3247,6 +3360,7 @@ const CLIENT_RESPONSE_TS =
 
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
@@ -3264,6 +3378,10 @@ const SERVER_NOTIFICATION_TS =
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\
     \\export type ServerNotification =
+    \\  | {
+    \\      method: "account/updated";
+    \\      params: AccountUpdatedNotification;
+    \\    }
     \\  | {
     \\      method: "command/exec/outputDelta";
     \\      params: CommandExecOutputDeltaNotification;
@@ -3340,6 +3458,8 @@ const INDEX_TS =
     \\export type { JSONRPCRequest } from "./JSONRPCRequest";
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
+    \\export type { AuthMode } from "./AuthMode";
+    \\export type { PlanType } from "./PlanType";
     \\export type { RequestId } from "./RequestId";
     \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
@@ -3352,6 +3472,8 @@ const INDEX_TS =
 
 const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
+    \\export type { Account } from "./Account";
+    \\export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
     \\export type { ByteRange } from "./ByteRange";
     \\export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
     \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
@@ -3405,6 +3527,10 @@ const V2_INDEX_TS =
     \\export type { HooksListResponse } from "./HooksListResponse";
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
+    \\export type { GetAccountParams } from "./GetAccountParams";
+    \\export type { GetAccountResponse } from "./GetAccountResponse";
+    \\export type { GetAuthStatusParams } from "./GetAuthStatusParams";
+    \\export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { Skill } from "./Skill";
     \\export type { SkillDependencies } from "./SkillDependencies";
@@ -3698,6 +3824,168 @@ const INITIALIZE_RESPONSE_JSON_SCHEMA =
     \\    "capabilities": { "type": "object" }
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const AUTH_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AuthMode",
+    \\  "enum": ["apikey", "chatgpt", "chatgptAuthTokens", "agentIdentity"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const PLAN_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PlanType",
+    \\  "enum": [
+    \\    "free",
+    \\    "go",
+    \\    "plus",
+    \\    "pro",
+    \\    "prolite",
+    \\    "team",
+    \\    "self_serve_business_usage_based",
+    \\    "business",
+    \\    "enterprise_cbp_usage_based",
+    \\    "enterprise",
+    \\    "edu",
+    \\    "unknown"
+    \\  ],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const GET_AUTH_STATUS_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAuthStatusParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "includeToken": { "type": ["boolean", "null"] },
+    \\    "refreshToken": { "type": ["boolean", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const GET_AUTH_STATUS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAuthStatusResponse",
+    \\  "type": "object",
+    \\  "required": ["authMethod", "authToken", "requiresOpenaiAuth"],
+    \\  "properties": {
+    \\    "authMethod": {
+    \\      "anyOf": [
+    \\        { "$ref": "AuthMode.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "authToken": { "type": ["string", "null"] },
+    \\    "requiresOpenaiAuth": { "type": ["boolean", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "Account",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "apiKey" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "email", "planType"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgpt" },
+    \\        "email": { "type": "string" },
+    \\        "planType": { "$ref": "PlanType.json" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "amazonBedrock" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const GET_ACCOUNT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAccountParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "refreshToken": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const GET_ACCOUNT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAccountResponse",
+    \\  "type": "object",
+    \\  "required": ["account", "requiresOpenaiAuth"],
+    \\  "properties": {
+    \\    "account": {
+    \\      "anyOf": [
+    \\        { "$ref": "Account.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "requiresOpenaiAuth": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AccountUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["authMode", "planType"],
+    \\  "properties": {
+    \\    "authMode": {
+    \\      "anyOf": [
+    \\        { "$ref": "AuthMode.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "planType": {
+    \\      "anyOf": [
+    \\        { "$ref": "PlanType.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -8259,6 +8547,120 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
+    \\    "AuthMode": {
+    \\      "enum": ["apikey", "chatgpt", "chatgptAuthTokens", "agentIdentity"],
+    \\      "type": "string"
+    \\    },
+    \\    "PlanType": {
+    \\      "enum": [
+    \\        "free",
+    \\        "go",
+    \\        "plus",
+    \\        "pro",
+    \\        "prolite",
+    \\        "team",
+    \\        "self_serve_business_usage_based",
+    \\        "business",
+    \\        "enterprise_cbp_usage_based",
+    \\        "enterprise",
+    \\        "edu",
+    \\        "unknown"
+    \\      ],
+    \\      "type": "string"
+    \\    },
+    \\    "GetAuthStatusParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "includeToken": { "type": ["boolean", "null"] },
+    \\        "refreshToken": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "GetAuthStatusResponse": {
+    \\      "type": "object",
+    \\      "required": ["authMethod", "authToken", "requiresOpenaiAuth"],
+    \\      "properties": {
+    \\        "authMethod": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/AuthMode" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "authToken": { "type": ["string", "null"] },
+    \\        "requiresOpenaiAuth": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "Account": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "apiKey" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "email", "planType"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgpt" },
+    \\            "email": { "type": "string" },
+    \\            "planType": { "$ref": "#/$defs/PlanType" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "amazonBedrock" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "GetAccountParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "refreshToken": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "GetAccountResponse": {
+    \\      "type": "object",
+    \\      "required": ["account", "requiresOpenaiAuth"],
+    \\      "properties": {
+    \\        "account": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/Account" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "requiresOpenaiAuth": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AccountUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["authMode", "planType"],
+    \\      "properties": {
+    \\        "authMode": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/AuthMode" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "planType": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/PlanType" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "FsReadFileParams": {
     \\      "type": "object",
     \\      "required": ["path"],
@@ -9633,6 +10035,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AuthMode.json", .contents = AUTH_MODE_JSON_SCHEMA },
+    .{ .name = "PlanType.json", .contents = PLAN_TYPE_JSON_SCHEMA },
+    .{ .name = "GetAuthStatusParams.json", .contents = GET_AUTH_STATUS_PARAMS_JSON_SCHEMA },
+    .{ .name = "GetAuthStatusResponse.json", .contents = GET_AUTH_STATUS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "Account.json", .contents = ACCOUNT_JSON_SCHEMA },
+    .{ .name = "GetAccountParams.json", .contents = GET_ACCOUNT_PARAMS_JSON_SCHEMA },
+    .{ .name = "GetAccountResponse.json", .contents = GET_ACCOUNT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AccountUpdatedNotification.json", .contents = ACCOUNT_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteParams.json", .contents = GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteResponse.json", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA },
@@ -9842,12 +10252,20 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
+    .{ .name = "AuthMode.ts", .contents = AUTH_MODE_TS },
+    .{ .name = "PlanType.ts", .contents = PLAN_TYPE_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
     .{ .name = "RealtimeVoice.ts", .contents = REALTIME_VOICE_TS },
     .{ .name = "RealtimeOutputModality.ts", .contents = REALTIME_OUTPUT_MODALITY_TS },
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
+    .{ .name = "v2/GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PARAMS_TS },
+    .{ .name = "v2/GetAuthStatusResponse.ts", .contents = GET_AUTH_STATUS_RESPONSE_TS },
+    .{ .name = "v2/Account.ts", .contents = ACCOUNT_TS },
+    .{ .name = "v2/GetAccountParams.ts", .contents = GET_ACCOUNT_PARAMS_TS },
+    .{ .name = "v2/GetAccountResponse.ts", .contents = GET_ACCOUNT_RESPONSE_TS },
+    .{ .name = "v2/AccountUpdatedNotification.ts", .contents = ACCOUNT_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
     .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PARAMS_TS },
