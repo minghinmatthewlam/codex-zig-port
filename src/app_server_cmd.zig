@@ -567,6 +567,12 @@ const JSONRPC_NOTIFICATION_TS =
     \\
     ;
 
+const CLIENT_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ClientNotification = { method: "initialized" };
+    \\
+    ;
+
 const JSONRPC_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\import type { RequestId } from "./RequestId";
@@ -3724,6 +3730,7 @@ const SERVER_NOTIFICATION_TS =
 
 const INDEX_TS =
     GENERATED_TS_HEADER ++
+    \\export type { ClientNotification } from "./ClientNotification";
     \\export type { ClientRequest } from "./ClientRequest";
     \\export type { ClientResponse } from "./ClientResponse";
     \\export type { InitializeCapabilities, InitializeParams, ClientInfo } from "./InitializeParams";
@@ -4004,6 +4011,25 @@ const JSONRPC_NOTIFICATION_JSON_SCHEMA =
     \\    "params": true
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CLIENT_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ClientNotification",
+    \\  "oneOf": [
+    \\    {
+    \\      "title": "InitializedNotification",
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "const": "initialized" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  ]
     \\}
     \\
 ;
@@ -8642,6 +8668,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ClientNotification": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["method"],
+    \\          "properties": {
+    \\            "method": { "const": "initialized" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
     \\    "JSONRPCResponse": {
     \\      "type": "object",
     \\      "required": ["id", "result"],
@@ -10985,6 +11023,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCMessage.json", .contents = JSONRPC_MESSAGE_JSON_SCHEMA },
     .{ .name = "JSONRPCRequest.json", .contents = JSONRPC_REQUEST_JSON_SCHEMA },
     .{ .name = "JSONRPCNotification.json", .contents = JSONRPC_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ClientNotification.json", .contents = CLIENT_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "JSONRPCResponse.json", .contents = JSONRPC_RESPONSE_JSON_SCHEMA },
     .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
@@ -11217,6 +11256,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCMessage.ts", .contents = JSONRPC_MESSAGE_TS },
     .{ .name = "JSONRPCRequest.ts", .contents = JSONRPC_REQUEST_TS },
     .{ .name = "JSONRPCNotification.ts", .contents = JSONRPC_NOTIFICATION_TS },
+    .{ .name = "ClientNotification.ts", .contents = CLIENT_NOTIFICATION_TS },
     .{ .name = "JSONRPCResponse.ts", .contents = JSONRPC_RESPONSE_TS },
     .{ .name = "JSONRPCError.ts", .contents = JSONRPC_ERROR_TS },
     .{ .name = "JSONRPCErrorError.ts", .contents = JSONRPC_ERROR_ERROR_TS },
