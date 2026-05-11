@@ -2812,6 +2812,114 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert resumed_by_path["result"]["thread"]["id"] == resume_thread_id
             assert resumed_by_path["result"]["thread"]["turns"] == []
 
+            history_text = "Hello from in-memory history"
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-by-history",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": "not-a-valid-thread-id",
+                        "path": str(codex_home / "missing-rollout.jsonl"),
+                        "history": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": history_text,
+                                    }
+                                ],
+                            }
+                        ],
+                        "model": "gpt-history",
+                        "modelProvider": "mock_provider",
+                    },
+                },
+            )
+            resumed_by_history = read_json_line(proc, 5)
+            assert resumed_by_history["id"] == "thread-resume-by-history"
+            history_result = resumed_by_history["result"]
+            history_thread = history_result["thread"]
+            history_thread_id = history_thread["id"]
+            assert isinstance(history_thread_id, str)
+            assert len(history_thread_id) == 36
+            assert history_thread["preview"] == history_text
+            assert history_thread["source"] == "appServer"
+            assert history_thread["path"] is not None
+            assert history_thread["turns"][0]["items"][0]["content"][0]["text"] == history_text
+            assert history_result["model"] == "gpt-history"
+            assert history_result["modelProvider"] == "mock_provider"
+
+            excluded_history_text = "Hidden in-memory history"
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-by-history-exclude-turns",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "history": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": excluded_history_text,
+                                    }
+                                ],
+                            }
+                        ],
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            history_excluded = read_json_line(proc, 5)
+            assert history_excluded["id"] == "thread-resume-by-history-exclude-turns"
+            history_excluded_thread = history_excluded["result"]["thread"]
+            assert history_excluded_thread["preview"] == excluded_history_text
+            assert history_excluded_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-history-turns-list",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": history_excluded_thread["id"],
+                        "limit": 1,
+                    },
+                },
+            )
+            history_turns = read_json_line(proc, 5)
+            assert history_turns["id"] == "thread-resume-history-turns-list"
+            assert (
+                history_turns["result"]["data"][0]["items"][0]["content"][0]["text"]
+                == excluded_history_text
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-empty-history",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "history": [],
+                    },
+                },
+            )
+            empty_history = read_json_line(proc, 5)
+            assert empty_history["id"] == "thread-resume-empty-history"
+            assert empty_history["error"]["code"] == -32600
+            assert "history must not be empty" in empty_history["error"]["message"]
+
             write_json_line(
                 proc,
                 {
@@ -10005,6 +10113,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
         assert thread_resume_params_schema["required"] == ["threadId"]
+        assert thread_resume_params_schema["properties"]["history"]["type"] == [
+            "array",
+            "null",
+        ]
         assert thread_resume_params_schema["properties"]["path"]["type"] == [
             "string",
             "null",
@@ -10461,6 +10573,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             None,
         ]
         assert "ThreadResumeParams" in bundle["$defs"]
+        assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
+            "array",
+            "null",
+        ]
         assert "ThreadResumeResponse" in bundle["$defs"]
         assert "ThreadForkParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadForkParams"]["properties"]["path"]["type"] == [
@@ -10735,6 +10851,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "export interface ThreadResumeParams" in thread_resume_params
         assert "threadId: string;" in thread_resume_params
+        assert "history?: unknown[] | null;" in thread_resume_params
         assert "path?: string | null;" in thread_resume_params
         assert "excludeTurns?: boolean;" in thread_resume_params
         thread_resume_response = (
