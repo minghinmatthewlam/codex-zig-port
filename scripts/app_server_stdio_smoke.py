@@ -2509,6 +2509,67 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        rust_thread_id = "22222222-2222-4222-8222-222222222222"
+        rust_sessions_dir = codex_home / "sessions" / "2025" / "01" / "05"
+        rust_sessions_dir.mkdir(parents=True)
+        rust_rollout_path = (
+            rust_sessions_dir
+            / f"rollout-2025-01-05T12-00-00-{rust_thread_id}.jsonl"
+        )
+        rust_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": rust_thread_id,
+                                "timestamp": "2025-01-05T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "thread_source": "user",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "rust rollout hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "event_msg",
+                            "payload": {
+                                "type": "user_message",
+                                "message": "rust rollout hello",
+                                "kind": "plain",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
@@ -2919,6 +2980,56 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert empty_history["id"] == "thread-resume-empty-history"
             assert empty_history["error"]["code"] == -32600
             assert "history must not be empty" in empty_history["error"]["message"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-rust-rollout-by-id",
+                    "method": "thread/resume",
+                    "params": {"threadId": rust_thread_id},
+                },
+            )
+            rust_resumed = read_json_line(proc, 5)
+            assert rust_resumed["id"] == "thread-resume-rust-rollout-by-id"
+            rust_thread = rust_resumed["result"]["thread"]
+            assert rust_thread["id"] == rust_thread_id
+            assert rust_thread["sessionId"] == rust_thread_id
+            assert rust_thread["preview"] == "rust rollout hello"
+            assert rust_thread["source"] == "cli"
+            assert rust_thread["threadSource"] == "user"
+            assert rust_thread["modelProvider"] == "mock_provider"
+            assert rust_thread["cwd"] == "/"
+            assert rust_thread["cliVersion"] == "0.0.0"
+            assert rust_thread["path"] == os.path.realpath(rust_rollout_path)
+            assert (
+                rust_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "rust rollout hello"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-fork-rust-rollout-by-path",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": "not-a-valid-thread-id",
+                        "path": str(rust_rollout_path),
+                    },
+                },
+            )
+            rust_fork = read_json_line(proc, 5)
+            assert rust_fork["id"] == "thread-fork-rust-rollout-by-path"
+            rust_fork_thread = rust_fork["result"]["thread"]
+            assert rust_fork_thread["forkedFromId"] == rust_thread_id
+            assert rust_fork_thread["preview"] == "rust rollout hello"
+            assert rust_fork_thread["modelProvider"] == "mock_provider"
+            assert (
+                rust_fork_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "rust rollout hello"
+            )
+            assert_thread_started_notification(read_json_line(proc, 5), rust_fork_thread)
 
             write_json_line(
                 proc,
