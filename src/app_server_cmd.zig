@@ -665,6 +665,33 @@ const MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_TS =
     \\
     ;
 
+const COLLABORATION_MODE_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CollaborationModeListParams {}
+    \\
+    ;
+
+const COLLABORATION_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CollaborationMode {
+    \\  name: string;
+    \\  mode: "plan" | "default";
+    \\  model: string | null;
+    \\  reasoning_effort: string | null;
+    \\}
+    \\
+    ;
+
+const COLLABORATION_MODE_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CollaborationMode } from "./CollaborationMode";
+    \\
+    \\export interface CollaborationModeListResponse {
+    \\  data: CollaborationMode[];
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_TERMINAL_SIZE_TS =
     GENERATED_TS_HEADER ++
     \\export interface CommandExecTerminalSize {
@@ -1777,6 +1804,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
@@ -1818,6 +1846,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "modelProvider/capabilities/read";
     \\      params?: ModelProviderCapabilitiesReadParams | null;
+    \\    }
+    \\  | {
+    \\      method: "collaborationMode/list";
+    \\      params?: CollaborationModeListParams | null;
     \\    }
     \\  | {
     \\      method: "command/exec";
@@ -1964,6 +1996,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
@@ -2008,6 +2041,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "modelProvider/capabilities/read";
     \\      result: ModelProviderCapabilitiesReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "collaborationMode/list";
+    \\      result: CollaborationModeListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2282,6 +2320,9 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { CollaborationMode } from "./CollaborationMode";
+    \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
+    \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
     \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
@@ -2559,6 +2600,63 @@ const MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA =
     \\    "namespaceTools": { "type": "boolean" },
     \\    "imageGeneration": { "type": "boolean" },
     \\    "webSearch": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CollaborationModeListParams",
+    \\  "type": "object",
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COLLABORATION_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CollaborationMode",
+    \\  "type": "object",
+    \\  "required": ["name", "mode", "model", "reasoning_effort"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "mode": { "type": "string", "enum": ["plan", "default"] },
+    \\    "model": { "type": ["string", "null"] },
+    \\    "reasoning_effort": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CollaborationModeListResponse",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": {
+    \\      "type": "array",
+    \\      "items": { "$ref": "#/$defs/CollaborationMode" }
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "CollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["name", "mode", "model", "reasoning_effort"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "mode": { "type": "string", "enum": ["plan", "default"] },
+    \\        "model": { "type": ["string", "null"] },
+    \\        "reasoning_effort": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -4810,6 +4908,32 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "CollaborationModeListParams": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["name", "mode", "model", "reasoning_effort"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "mode": { "type": "string", "enum": ["plan", "default"] },
+    \\        "model": { "type": ["string", "null"] },
+    \\        "reasoning_effort": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "CollaborationModeListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data"],
+    \\      "properties": {
+    \\        "data": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/CollaborationMode" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
@@ -6035,6 +6159,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "CollaborationMode.json", .contents = COLLABORATION_MODE_JSON_SCHEMA },
+    .{ .name = "CollaborationModeListResponse.json", .contents = COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
@@ -6171,6 +6298,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadResponse.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_TS },
+    .{ .name = "v2/CollaborationModeListParams.ts", .contents = COLLABORATION_MODE_LIST_PARAMS_TS },
+    .{ .name = "v2/CollaborationMode.ts", .contents = COLLABORATION_MODE_TS },
+    .{ .name = "v2/CollaborationModeListResponse.ts", .contents = COLLABORATION_MODE_LIST_RESPONSE_TS },
     .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
     .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
     .{ .name = "v2/FileSystemAccessMode.ts", .contents = FILE_SYSTEM_ACCESS_MODE_TS },
