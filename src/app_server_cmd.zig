@@ -953,6 +953,28 @@ const TURN_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const ITEM_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ItemStartedNotification {
+    \\  item: unknown;
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  startedAtMs: number;
+    \\}
+    \\
+    ;
+
+const ITEM_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ItemCompletedNotification {
+    \\  item: unknown;
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  completedAtMs: number;
+    \\}
+    \\
+    ;
+
 const THREAD_RESUME_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadResumeParams {
@@ -1983,6 +2005,8 @@ const CLIENT_RESPONSE_TS =
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
+    \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
@@ -2003,6 +2027,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "turn/completed";
     \\      params: TurnCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/started";
+    \\      params: ItemStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/completed";
+    \\      params: ItemCompletedNotification;
     \\    };
     \\
     ;
@@ -2047,6 +2079,8 @@ const V2_INDEX_TS =
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
     \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
+    \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
+    \\export type { ItemStartedNotification } from "./ItemStartedNotification";
     \\export type { NetworkAccess } from "./NetworkAccess";
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
@@ -2849,6 +2883,40 @@ const TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\  "properties": {
     \\    "threadId": { "type": "string" },
     \\    "turn": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ITEM_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ItemStartedNotification",
+    \\  "type": "object",
+    \\  "required": ["item", "threadId", "turnId", "startedAtMs"],
+    \\  "properties": {
+    \\    "item": true,
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "startedAtMs": { "type": "integer" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ItemCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["item", "threadId", "turnId", "completedAtMs"],
+    \\  "properties": {
+    \\    "item": true,
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "completedAtMs": { "type": "integer" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4459,6 +4527,28 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ItemStartedNotification": {
+    \\      "type": "object",
+    \\      "required": ["item", "threadId", "turnId", "startedAtMs"],
+    \\      "properties": {
+    \\        "item": true,
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "startedAtMs": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ItemCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["item", "threadId", "turnId", "completedAtMs"],
+    \\      "properties": {
+    \\        "item": true,
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "completedAtMs": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -5150,6 +5240,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "TurnStartResponse.json", .contents = TURN_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "TurnStartedNotification.json", .contents = TURN_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "TurnCompletedNotification.json", .contents = TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -5270,6 +5362,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
     .{ .name = "v2/TurnStartedNotification.ts", .contents = TURN_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/TurnCompletedNotification.ts", .contents = TURN_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
@@ -5823,7 +5917,9 @@ fn handleTurnStart(
 
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
-    const started_at = currentUnixSeconds();
+    const started_at_ms = currentUnixMilliseconds();
+    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+    const user_item_index = thread.transcript.history.items.len;
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
@@ -5836,7 +5932,8 @@ fn handleTurnStart(
     };
     defer allocator.free(answer);
 
-    const completed_at = currentUnixSeconds();
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
     const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
@@ -5848,6 +5945,18 @@ fn handleTurnStart(
 
     try queueTurnNotification(allocator, state, "turn/started", started_notification);
     started_notification_moved = true;
+    if (user_item_index < thread.transcript.history.items.len) {
+        const user_item = thread.transcript.history.items[user_item_index];
+        if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
+            try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, user_item, user_item_index, "startedAtMs", started_at_ms);
+            try queueItemNotificationFromHistory(allocator, state, "item/completed", thread.id, turn_id, user_item, user_item_index, "completedAtMs", currentUnixMilliseconds());
+        }
+    }
+    if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
+        const assistant_item = thread.transcript.history.items[assistant_item_index];
+        try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, assistant_item, assistant_item_index, "startedAtMs", started_at_ms);
+        try queueItemNotificationFromHistory(allocator, state, "item/completed", thread.id, turn_id, assistant_item, assistant_item_index, "completedAtMs", completed_at_ms);
+    }
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
 
@@ -5949,6 +6058,68 @@ fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![
     try appendTurnJson(allocator, &response, turn_id, "inProgress", null, null);
     try response.appendSlice(allocator, "}");
     return response.toOwnedSlice(allocator);
+}
+
+fn queueItemNotificationFromHistory(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item: api.HistoryItem,
+    item_index: usize,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) !void {
+    const notification = try renderItemNotificationFromHistory(allocator, method, thread_id, turn_id, item, item_index, timestamp_field, timestamp_ms);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, method, notification);
+    notification_moved = true;
+}
+
+fn renderItemNotificationFromHistory(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item: api.HistoryItem,
+    item_index: usize,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":");
+    try appendHistoryMessageThreadItemJson(allocator, &notification, item, item_index);
+    try notification.appendSlice(allocator, ",\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn latestAssistantMessageIndex(transcript: *const session_mod.Transcript, start_index: usize) ?usize {
+    if (transcript.history.items.len <= start_index) return null;
+    var index = transcript.history.items.len;
+    while (index > start_index) {
+        index -= 1;
+        const item = transcript.history.items[index];
+        if (item.kind == .message and isHistoryRole(item, "assistant")) return index;
+    }
+    return null;
+}
+
+fn isHistoryRole(item: api.HistoryItem, role: []const u8) bool {
+    const item_role = item.role orelse return false;
+    return std.mem.eql(u8, item_role, role);
 }
 
 fn renderTurnNotification(
@@ -7130,6 +7301,11 @@ fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
 fn currentUnixSeconds() i64 {
     const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
     return @intCast(@divTrunc(now_ns, 1_000_000_000));
+}
+
+fn currentUnixMilliseconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
 }
 
 fn findLoadedThread(state: *const AppServerState, thread_id: []const u8) ?*const LoadedThread {
