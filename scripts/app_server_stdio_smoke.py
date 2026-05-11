@@ -7185,6 +7185,308 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-tool-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    server_path = codex_home / "tool_server.py"
+    try:
+        server_path.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}},",
+                    "                'serverInfo': {'name': 'tool-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/call':",
+                    "        params = request.get('params', {})",
+                    "        if params.get('name') != 'echo':",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'error': {'code': -32602, 'message': 'unknown tool'},",
+                    "            })",
+                    "            continue",
+                    "        arguments = params.get('arguments') or {}",
+                    "        meta = params.get('_meta') or {}",
+                    "        message = arguments.get('message', '') if isinstance(arguments, dict) else ''",
+                    "        thread_id = meta.get('threadId', '') if isinstance(meta, dict) else ''",
+                    "        source = meta.get('source', '') if isinstance(meta, dict) else ''",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'content': [{'type': 'text', 'text': f'echo: {message}'}],",
+                    "                'structuredContent': {",
+                    "                    'echoed': message,",
+                    "                    'threadId': thread_id,",
+                    "                    'source': source,",
+                    "                },",
+                    "                'isError': False,",
+                    "                '_meta': {'calledBy': 'tool-smoke', 'threadId': thread_id},",
+                    "                'extra': True,",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[mcp_servers.tool_docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                    "[mcp_servers.disabled_tool_docs]",
+                    "enabled = false",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                    "[mcp_servers.remote_tool_docs]",
+                    'url = "https://example.com/mcp"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "optOutNotificationMethods": ["thread/started"],
+                        },
+                    },
+                },
+            )
+            initialized = read_json_line(proc, 5)
+            assert initialized["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-mcp-tool",
+                    "method": "thread/start",
+                    "params": {"ephemeral": True},
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "thread-start-for-mcp-tool"
+            thread_id = thread_start["result"]["thread"]["id"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-call",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "tool_docs",
+                        "tool": "echo",
+                        "arguments": {"message": "hello from app"},
+                        "_meta": {
+                            "source": "mcp-app",
+                            "threadId": "caller-cannot-override",
+                        },
+                    },
+                },
+            )
+            tool_call = read_json_line(proc, 5)
+            assert tool_call["id"] == "mcp-tool-call"
+            assert tool_call["result"] == {
+                "content": [{"type": "text", "text": "echo: hello from app"}],
+                "structuredContent": {
+                    "echoed": "hello from app",
+                    "threadId": thread_id,
+                    "source": "mcp-app",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "tool-smoke", "threadId": thread_id},
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-invalid-arguments",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "tool_docs",
+                        "tool": "echo",
+                        "arguments": "not-an-object",
+                    },
+                },
+            )
+            invalid_arguments = read_json_line(proc, 5)
+            assert invalid_arguments["id"] == "mcp-tool-invalid-arguments"
+            assert invalid_arguments["error"]["code"] == -32602
+            assert "arguments must be an object or null" in (
+                invalid_arguments["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-missing-server",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "missing_tool_docs",
+                        "tool": "echo",
+                        "arguments": {},
+                    },
+                },
+            )
+            missing_server = read_json_line(proc, 5)
+            assert missing_server["id"] == "mcp-tool-missing-server"
+            assert missing_server["error"]["code"] == -32600
+            assert "No MCP server named 'missing_tool_docs' found." in (
+                missing_server["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-disabled-server",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "disabled_tool_docs",
+                        "tool": "echo",
+                        "arguments": {},
+                    },
+                },
+            )
+            disabled_server = read_json_line(proc, 5)
+            assert disabled_server["id"] == "mcp-tool-disabled-server"
+            assert disabled_server["error"]["code"] == -32600
+            assert "MCP server 'disabled_tool_docs' is unavailable." in (
+                disabled_server["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-http-server",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "remote_tool_docs",
+                        "tool": "echo",
+                        "arguments": {},
+                    },
+                },
+            )
+            http_server = read_json_line(proc, 5)
+            assert http_server["id"] == "mcp-tool-http-server"
+            assert http_server["error"]["code"] == -32600
+            assert "MCP server 'remote_tool_docs' is unavailable." in (
+                http_server["error"]["message"]
+            )
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+        invalid_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-tool-invalid-thread",
+                "method": "mcpServer/tool/call",
+                "params": {
+                    "threadId": "not-a-thread-id",
+                    "server": "tool_docs",
+                    "tool": "echo",
+                    "arguments": {},
+                },
+            },
+            env,
+        )
+        assert invalid_thread["id"] == "mcp-tool-invalid-thread"
+        assert invalid_thread["error"]["code"] == -32600
+        assert "invalid thread id: not-a-thread-id" in invalid_thread["error"]["message"]
+
+        missing_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-tool-missing-thread",
+                "method": "mcpServer/tool/call",
+                "params": {
+                    "threadId": "00000000-0000-4000-8000-000000000000",
+                    "server": "tool_docs",
+                    "tool": "echo",
+                    "arguments": {},
+                },
+            },
+            env,
+        )
+        assert missing_thread["id"] == "mcp-tool-missing-thread"
+        assert missing_thread["error"]["code"] == -32600
+        assert "thread not found: 00000000-0000-4000-8000-000000000000" in (
+            missing_thread["error"]["message"]
+        )
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_filesystem_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
     env = os.environ.copy()
@@ -17394,6 +17696,8 @@ def main() -> None:
     print("app-server-mcp-server-status-rpc-e2e: ok")
     run_mcp_resource_read_rpc_smoke(binary)
     print("app-server-mcp-resource-read-rpc-e2e: ok")
+    run_mcp_tool_call_rpc_smoke(binary)
+    print("app-server-mcp-tool-call-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
     run_filesystem_watch_rpc_smoke(binary)
