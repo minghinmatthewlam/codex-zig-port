@@ -160,6 +160,17 @@ notification with the Rust-shaped non-Windows setup failure for the requested
 mode. Full Windows setup execution, config persistence, and Windows readiness
 state detection remain planned.
 
+Current app-server `feedback/upload` coverage includes generated TypeScript and
+JSON Schema artifacts for `FeedbackUploadParams` and
+`FeedbackUploadResponse`. Runtime coverage validates the request object,
+required `classification` and `includeLogs` fields, optional nullable
+`reason`, `threadId`, `extraLogFiles`, and `tags`, Rust-shaped UUID validation
+for `threadId`, and `[feedback].enabled = false` rejection with the Rust
+configuration error. Actual Codex feedback snapshot construction, log
+attachment collection, and upload transport remain planned; enabled feedback
+requests currently return an explicit parsed-but-not-implemented error after
+validation.
+
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop, accepts an optional initial prompt, rejects unknown top-level flags, supports `--` before prompt text, exposes `help [COMMAND]`, includes top-level `apply` / `a`, recognizes planned Rust top-level commands (`remote-control`, `app`, `update`, `cloud` / `cloud-tasks`, hidden `responses-api-proxy`, and `exec-server`) with explicit not-implemented errors, rejects the removed Rust top-level `marketplace` namespace, and supports global `-m/--model`, `-i/--image`, `--enable`, `--disable`, `--oss`, `--local-provider`, `-p/--profile`, `-c/--config`, `-a/--ask-for-approval`, `-s/--sandbox`, `-C/--cd`, `--add-dir`, `--search`, `--remote`, `--remote-auth-token-env`, `--remote-control`, `--remote-control-bind`, `--no-alt-screen`, `--version`, and `--yolo` overrides, including Rust-compatible rejection when dangerous bypass is combined with an explicit approval policy. Remote app-server flags and local remote-control flags are parsed and rejected for non-interactive subcommands, but remote TUI transport and the local remote-control server are not implemented yet. Full command behavior parity is planned. |
