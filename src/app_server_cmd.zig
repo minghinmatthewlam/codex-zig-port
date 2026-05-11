@@ -5901,10 +5901,13 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
 const TurnStartInput = struct {
     prompt: []const u8,
     user_content_json: []const u8,
+    input_images: []const []const u8,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
         allocator.free(self.user_content_json);
+        for (self.input_images) |image_url| allocator.free(image_url);
+        allocator.free(self.input_images);
     }
 };
 
@@ -5946,9 +5949,9 @@ fn handleTurnStart(
     };
 
     var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
-        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text items"),
-        error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text"),
-        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text turn/start input is implemented"),
+        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text or image items"),
+        error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text or image"),
+        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text and image turn/start input is implemented"),
         else => return err,
     };
     defer input.deinit(allocator);
@@ -5984,6 +5987,7 @@ fn handleTurnStart(
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, input.prompt, .{
         .prompt_for_approval = false,
         .output_schema = optionalJsonParam(object, "outputSchema"),
+        .input_images = input.input_images,
     }) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to run turn", err);
     };
@@ -6034,28 +6038,54 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
     var user_content = std.ArrayList(u8).empty;
     errdefer user_content.deinit(allocator);
     try user_content.append(allocator, '[');
+    var input_images = std.ArrayList([]const u8).empty;
+    var input_images_moved = false;
+    errdefer if (!input_images_moved) {
+        for (input_images.items) |image_url| allocator.free(image_url);
+        input_images.deinit(allocator);
+    };
+    var input_items: usize = 0;
     var text_items: usize = 0;
     for (input.array.items) |item| {
         if (item != .object) return error.InvalidTurnInput;
         const item_type = item.object.get("type") orelse return error.InvalidTurnInput;
         if (item_type != .string) return error.InvalidTurnInput;
-        if (!std.mem.eql(u8, item_type.string, "text")) return error.UnsupportedTurnInput;
-        const text = item.object.get("text") orelse return error.InvalidTurnInput;
-        if (text != .string) return error.InvalidTurnInput;
-        if (text_items > 0) try prompt.append(allocator, '\n');
-        try prompt.appendSlice(allocator, text.string);
-        if (text_items > 0) try user_content.append(allocator, ',');
-        try appendTurnStartTextInputJson(allocator, &user_content, item.object, text.string);
-        text_items += 1;
+        if (std.mem.eql(u8, item_type.string, "text")) {
+            const text = item.object.get("text") orelse return error.InvalidTurnInput;
+            if (text != .string) return error.InvalidTurnInput;
+            if (text_items > 0) try prompt.append(allocator, '\n');
+            try prompt.appendSlice(allocator, text.string);
+            if (input_items > 0) try user_content.append(allocator, ',');
+            try appendTurnStartTextInputJson(allocator, &user_content, item.object, text.string);
+            text_items += 1;
+            input_items += 1;
+        } else if (std.mem.eql(u8, item_type.string, "image")) {
+            const url = item.object.get("url") orelse return error.InvalidTurnInput;
+            if (url != .string) return error.InvalidTurnInput;
+            const image_url = try allocator.dupe(u8, url.string);
+            input_images.append(allocator, image_url) catch |err| {
+                allocator.free(image_url);
+                return err;
+            };
+            if (input_items > 0) try user_content.append(allocator, ',');
+            try appendTurnStartImageInputJson(allocator, &user_content, url.string);
+            input_items += 1;
+        } else {
+            return error.UnsupportedTurnInput;
+        }
     }
-    if (text_items == 0 or prompt.items.len == 0) return error.EmptyTurnInput;
+    if (input_items == 0 or (prompt.items.len == 0 and input_images.items.len == 0)) return error.EmptyTurnInput;
     try user_content.append(allocator, ']');
     const prompt_owned = try prompt.toOwnedSlice(allocator);
     errdefer allocator.free(prompt_owned);
     const user_content_owned = try user_content.toOwnedSlice(allocator);
+    errdefer allocator.free(user_content_owned);
+    const input_images_owned = try input_images.toOwnedSlice(allocator);
+    input_images_moved = true;
     return .{
         .prompt = prompt_owned,
         .user_content_json = user_content_owned,
+        .input_images = input_images_owned,
     };
 }
 
@@ -6076,6 +6106,16 @@ fn appendTurnStartTextInputJson(
     } else {
         try out.appendSlice(allocator, "[]");
     }
+    try out.append(allocator, '}');
+}
+
+fn appendTurnStartImageInputJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    url: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"type\":\"image\",\"url\":");
+    try appendJsonString(allocator, out, url);
     try out.append(allocator, '}');
 }
 
