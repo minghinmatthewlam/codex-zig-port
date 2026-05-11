@@ -267,6 +267,20 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             return
         if method == "resources/read":
             uri = request.get("params", {}).get("uri")
+            if uri != "test://codex/resource":
+                self.write_or_defer(
+                    method,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32002,
+                            "message": f"resource not found: {uri}",
+                            "data": {"uri": uri, "transport": "streamable_http"},
+                        },
+                    },
+                )
+                return
             self.write_or_defer(
                 method,
                 {
@@ -286,6 +300,24 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             return
         if method == "tools/call":
             params = request.get("params", {})
+            tool_name = params.get("name")
+            if tool_name != "echo":
+                self.write_or_defer(
+                    method,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32602,
+                            "message": f"unknown tool: {tool_name}",
+                            "data": {
+                                "tool": tool_name,
+                                "transport": "streamable_http",
+                            },
+                        },
+                    },
+                )
+                return
             arguments = params.get("arguments") if "arguments" in params else {}
             meta = params.get("_meta") or {}
             message = arguments.get("message", "") if isinstance(arguments, dict) else ""
@@ -7547,7 +7579,11 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
                     "            write({",
                     "                'jsonrpc': '2.0',",
                     "                'id': request_id,",
-                    "                'error': {'code': -32002, 'message': f'resource not found: {uri}'},",
+                    "                'error': {",
+                    "                    'code': -32002,",
+                    "                    'message': f'resource not found: {uri}',",
+                    "                    'data': {'uri': uri, 'server': 'resource_docs'},",
+                    "                },",
                     "            })",
                     "            continue",
                     "        write({",
@@ -7643,6 +7679,30 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         )
         assert resource_read["id"] == "mcp-resource-read"
         assert resource_read["result"] == expected_resource_response
+
+        missing_resource_error = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-read-mcp-error",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "resource_docs",
+                    "uri": "test://codex/missing",
+                },
+            },
+            env,
+        )
+        assert missing_resource_error["id"] == "mcp-resource-read-mcp-error"
+        assert missing_resource_error["error"]["code"] == -32002
+        assert (
+            missing_resource_error["error"]["message"]
+            == "resource not found: test://codex/missing"
+        )
+        assert missing_resource_error["error"]["data"] == {
+            "uri": "test://codex/missing",
+            "server": "resource_docs",
+        }
 
         proc = subprocess.Popen(
             [str(binary), "app-server"],
@@ -7832,6 +7892,30 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         assert streamable_server.request_bodies[-2]["params"]["uri"] == "test://codex/resource"
         assert streamable_server.request_headers[-1]["authorization"] == "Bearer resource-token"
         assert streamable_server.request_headers[-1]["mcp-protocol-version"] == "2025-03-26"
+
+        http_missing_resource_error = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-http-mcp-error",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "remote_docs",
+                    "uri": "test://codex/missing-http",
+                },
+            },
+            env,
+        )
+        assert http_missing_resource_error["id"] == "mcp-resource-http-mcp-error"
+        assert http_missing_resource_error["error"]["code"] == -32002
+        assert (
+            http_missing_resource_error["error"]["message"]
+            == "resource not found: test://codex/missing-http"
+        )
+        assert http_missing_resource_error["error"]["data"] == {
+            "uri": "test://codex/missing-http",
+            "transport": "streamable_http",
+        }
     finally:
         streamable_server.shutdown()
         streamable_server.server_close()
@@ -7879,7 +7963,11 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     "            write({",
                     "                'jsonrpc': '2.0',",
                     "                'id': request_id,",
-                    "                'error': {'code': -32602, 'message': 'unknown tool'},",
+                    "                'error': {",
+                    "                    'code': -32602,",
+                    "                    'message': 'unknown tool',",
+                    "                    'data': {'tool': params.get('name'), 'server': 'tool_docs'},",
+                    "                },",
                     "            })",
                     "            continue",
                     "        arguments = params.get('arguments') if 'arguments' in params else {}",
@@ -8085,6 +8173,29 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "mcp-tool-call-mcp-error",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "tool_docs",
+                        "tool": "missing",
+                        "arguments": {},
+                    },
+                },
+            )
+            tool_call_error = read_json_line(proc, 5)
+            assert tool_call_error["id"] == "mcp-tool-call-mcp-error"
+            assert tool_call_error["error"]["code"] == -32602
+            assert tool_call_error["error"]["message"] == "unknown tool"
+            assert tool_call_error["error"]["data"] == {
+                "tool": "missing",
+                "server": "tool_docs",
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "mcp-tool-missing-server",
                     "method": "mcpServer/tool/call",
                     "params": {
@@ -8226,6 +8337,37 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             assert streamable_server.request_headers[7]["accept"] == "application/json, text/event-stream"
             assert streamable_server.request_headers[7]["authorization"] == "Bearer oauth-tool-token"
             assert streamable_server.request_headers[8]["authorization"] == "Bearer oauth-tool-token"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-http-get-mcp-error",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "remote_tool_docs",
+                        "tool": "missing",
+                        "arguments": {},
+                    },
+                },
+            )
+            http_get_error = read_json_line(proc, 5)
+            assert http_get_error["id"] == "mcp-tool-http-get-mcp-error"
+            assert http_get_error["error"]["code"] == -32602
+            assert http_get_error["error"]["message"] == "unknown tool: missing"
+            assert http_get_error["error"]["data"] == {
+                "tool": "missing",
+                "transport": "streamable_http",
+            }
+            assert [request["method"] for request in streamable_server.request_bodies[-5:]] == [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                "GET",
+                "DELETE",
+            ]
+            assert streamable_server.request_bodies[-3]["params"]["name"] == "missing"
 
             assert proc.stdin is not None
             proc.stdin.close()
