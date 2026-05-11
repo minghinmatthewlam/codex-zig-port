@@ -949,6 +949,7 @@ const THREAD_FORK_PARAMS_TS =
     \\  developerInstructions?: string | null;
     \\  ephemeral?: boolean;
     \\  threadSource?: "user" | "subagent" | "memory_consolidation" | null;
+    \\  excludeTurns?: boolean;
     \\}
     \\
     ;
@@ -2753,7 +2754,8 @@ const THREAD_FORK_PARAMS_JSON_SCHEMA =
     \\    "baseInstructions": { "type": ["string", "null"] },
     \\    "developerInstructions": { "type": ["string", "null"] },
     \\    "ephemeral": { "type": "boolean" },
-    \\    "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
+    \\    "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] },
+    \\    "excludeTurns": { "type": "boolean" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4290,7 +4292,8 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "baseInstructions": { "type": ["string", "null"] },
     \\        "developerInstructions": { "type": ["string", "null"] },
     \\        "ephemeral": { "type": "boolean" },
-    \\        "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
+    \\        "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] },
+    \\        "excludeTurns": { "type": "boolean" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -5881,7 +5884,7 @@ fn handleThreadStart(
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
 
-    const result = try renderThreadLifecycleResponse(allocator, &thread);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, true);
     defer allocator.free(result);
 
     try state.loaded_threads.append(allocator, thread);
@@ -5934,7 +5937,8 @@ fn handleThreadResume(
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
 
-    const result = try renderThreadLifecycleResponse(allocator, &thread);
+    const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
     defer allocator.free(result);
 
     try upsertLoadedThread(allocator, state, thread);
@@ -5976,7 +5980,8 @@ fn handleThreadFork(
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
 
-    const result = try renderThreadLifecycleResponse(allocator, &thread);
+    const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
     defer allocator.free(result);
 
     try state.loaded_threads.append(allocator, thread);
@@ -6101,8 +6106,7 @@ fn createLoadedThreadFromResumeParams(
     errdefer allocator.free(source);
     const name = if (transcript.title) |title| try allocator.dupe(u8, title) else null;
     errdefer if (name) |value| allocator.free(value);
-    const include_turns = !(optionalBoolParam(params, "excludeTurns") orelse false);
-    const turns_json = try renderTranscriptTurnsJson(allocator, transcript, include_turns);
+    const turns_json = try renderTranscriptTurnsJson(allocator, transcript, true);
     errdefer allocator.free(turns_json);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
@@ -6175,7 +6179,7 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(preview);
     const source_label = try allocator.dupe(u8, "appServer");
     errdefer allocator.free(source_label);
-    const turns_json = try allocator.dupe(u8, "[]");
+    const turns_json = try allocator.dupe(u8, source.turns_json);
     errdefer allocator.free(turns_json);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse source.model);
@@ -6463,12 +6467,12 @@ fn threadLoadedListLimit(params_value: ?std.json.Value) ?usize {
     return @intCast(limit.integer);
 }
 
-fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, "{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, true);
+    try appendLoadedThreadJson(allocator, &result, thread, include_turns);
     try result.appendSlice(allocator, ",\"model\":");
     try appendJsonString(allocator, &result, thread.model);
     try result.appendSlice(allocator, ",\"modelProvider\":");
@@ -7133,6 +7137,9 @@ fn validateThreadForkParams(params_value: ?std.json.Value) ?[]const u8 {
     }
     if (object.get("ephemeral")) |value| {
         if (value != .bool) return "ephemeral must be a boolean";
+    }
+    if (object.get("excludeTurns")) |value| {
+        if (value != .bool) return "excludeTurns must be a boolean";
     }
     if (object.get("threadSource")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "user", "subagent", "memory_consolidation" })) {
