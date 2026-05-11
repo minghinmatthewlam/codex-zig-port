@@ -34,7 +34,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (std.mem.eql(u8, subcommand, "app-server")) {
-        try runAppServerDebug(args);
+        try runAppServerDebug(allocator, args, options);
         return;
     }
     if (std.mem.eql(u8, subcommand, "trace-reduce")) {
@@ -112,7 +112,7 @@ fn runModels(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, opt
     try cli_utils.writeStdout("\n");
 }
 
-fn runAppServerDebug(args: *std.process.Args.Iterator) !void {
+fn runAppServerDebug(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     const subcommand = args.next() orelse {
         printDebugAppServerHelp();
         return error.MissingDebugAppServerSubcommand;
@@ -135,8 +135,259 @@ fn runAppServerDebug(args: *std.process.Args.Iterator) !void {
     }
     if (args.next() != null) return error.UnexpectedDebugAppServerArgument;
 
-    try cli_utils.writeStderr("codex-zig debug app-server send-message-v2 is parsed but not implemented yet\n");
-    return error.DebugAppServerSendMessageV2NotImplemented;
+    try runDebugAppServerSendMessageV2(allocator, user_message, options);
+}
+
+fn runDebugAppServerSendMessageV2(allocator: std.mem.Allocator, user_message: []const u8, options: Options) !void {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var self_exe_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const self_exe_len = try std.process.executablePath(io_instance.io(), &self_exe_buffer);
+    const self_exe = self_exe_buffer[0..self_exe_len];
+
+    var child_env = try currentEnvironmentMap(allocator);
+    defer child_env.deinit();
+    try applyDebugAppServerChildEnvOverrides(&child_env, options.runtime_overrides);
+
+    var child_argv = std.ArrayList([]const u8).empty;
+    defer child_argv.deinit(allocator);
+    var owned_child_argv = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_child_argv.items) |value| allocator.free(value);
+        owned_child_argv.deinit(allocator);
+    }
+    try child_argv.append(allocator, self_exe);
+    try appendDebugAppServerChildOptions(allocator, &child_argv, &owned_child_argv, options);
+    try child_argv.append(allocator, "app-server");
+
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = child_argv.items,
+        .environ_map = &child_env,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    });
+    var child_alive = true;
+    errdefer if (child_alive) child.kill(io_instance.io());
+
+    const stdin_file = child.stdin orelse return error.DebugAppServerMissingPipe;
+    const stdout_file = child.stdout orelse return error.DebugAppServerMissingPipe;
+    var stdout_buffer: [64 * 1024]u8 = undefined;
+    var stdout_reader = stdout_file.reader(io_instance.io(), &stdout_buffer);
+
+    const initialize_request =
+        \\{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"clientInfo":{"name":"codex-zig-debug","version":"0"},"capabilities":{"experimentalApi":true}}}
+    ;
+    try writeAppServerRequest(&io_instance, stdin_file, initialize_request);
+    const initialize_response = try readDebugResponseLine(allocator, &stdout_reader.interface, "initialize", "initialize");
+    allocator.free(initialize_response);
+
+    const thread_start_request =
+        \\{"jsonrpc":"2.0","id":"thread-start","method":"thread/start","params":{}}
+    ;
+    try writeAppServerRequest(&io_instance, stdin_file, thread_start_request);
+    const thread_start_response = try readDebugResponseLine(allocator, &stdout_reader.interface, "thread-start", "thread/start");
+    defer allocator.free(thread_start_response);
+    const thread_id = try extractNestedString(allocator, thread_start_response, &.{ "result", "thread", "id" });
+    defer allocator.free(thread_id);
+
+    const escaped_message = try std.json.Stringify.valueAlloc(allocator, user_message, .{});
+    defer allocator.free(escaped_message);
+    const thread_id_json = try std.json.Stringify.valueAlloc(allocator, thread_id, .{});
+    defer allocator.free(thread_id_json);
+    const turn_start_request = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"turn-start\",\"method\":\"turn/start\",\"params\":{{\"threadId\":{s},\"input\":[{{\"type\":\"text\",\"text\":{s},\"text_elements\":[]}}]}}}}",
+        .{ thread_id_json, escaped_message },
+    );
+    defer allocator.free(turn_start_request);
+    try writeAppServerRequest(&io_instance, stdin_file, turn_start_request);
+    const turn_start_response = try readDebugResponseLine(allocator, &stdout_reader.interface, "turn-start", "turn/start");
+    defer allocator.free(turn_start_response);
+    const turn_id = try extractNestedString(allocator, turn_start_response, &.{ "result", "turn", "id" });
+    defer allocator.free(turn_id);
+
+    try streamDebugTurnUntilCompleted(allocator, &stdout_reader.interface, thread_id, turn_id);
+
+    stdin_file.close(io_instance.io());
+    child.stdin = null;
+    const term = try child.wait(io_instance.io());
+    child_alive = false;
+    if (!childTermSuccess(term)) return error.DebugAppServerExited;
+}
+
+fn appendDebugAppServerChildOptions(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    owned_args: *std.ArrayList([]const u8),
+    options: Options,
+) !void {
+    if (options.profile) |profile| {
+        try argv.append(allocator, "-p");
+        try argv.append(allocator, profile);
+    }
+    const overrides = options.runtime_overrides;
+    if (overrides.model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model", value);
+    if (overrides.openai_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "openai_base_url", value);
+    if (overrides.chatgpt_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "chatgpt_base_url", value);
+    if (overrides.oss_provider) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "oss_provider", value);
+    if (overrides.approval_policy) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "approval_policy", value.label());
+    if (overrides.sandbox_mode) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "sandbox_mode", value.label());
+    if (overrides.web_search_mode) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "web_search", value.label());
+    if (overrides.service_tier) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "service_tier", value);
+    if (overrides.syntax_theme) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "syntax_theme", value);
+    if (overrides.personality) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "personality", value.label());
+    if (overrides.tui_alternate_screen) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "tui.alternate_screen", value.label());
+}
+
+fn applyDebugAppServerChildEnvOverrides(env_map: *std.process.Environ.Map, overrides: config.RuntimeOverrides) !void {
+    // The app-server loads config inside request handlers, so base-url overrides
+    // need the existing env hook in addition to the forwarded argv flags.
+    const base_url = overrides.chatgpt_base_url orelse overrides.openai_base_url orelse return;
+    try env_map.put("CODEX_ZIG_BASE_URL", base_url);
+}
+
+fn appendConfigOverrideArg(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    owned_args: *std.ArrayList([]const u8),
+    key: []const u8,
+    value: []const u8,
+) !void {
+    const arg = try std.fmt.allocPrint(allocator, "{s}={s}", .{ key, value });
+    errdefer allocator.free(arg);
+    try owned_args.append(allocator, arg);
+    try argv.append(allocator, "-c");
+    try argv.append(allocator, arg);
+}
+
+fn writeAppServerRequest(io_instance: *std.Io.Threaded, stdin_file: std.Io.File, request: []const u8) !void {
+    try stdin_file.writeStreamingAll(io_instance.io(), request);
+    try stdin_file.writeStreamingAll(io_instance.io(), "\n");
+}
+
+fn readDebugResponseLine(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    request_id: []const u8,
+    label: []const u8,
+) ![]const u8 {
+    var lines_read: usize = 0;
+    while (lines_read < 256) : (lines_read += 1) {
+        const line = try readDebugAppServerLine(reader) orelse return error.DebugAppServerClosed;
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try printDebugAppServerMessage("app-server message", line);
+            continue;
+        }
+        const object = parsed.value.object;
+        if (object.get("id")) |id_value| {
+            if (jsonValueStringEquals(id_value, request_id)) {
+                const response_label = try std.fmt.allocPrint(allocator, "{s} response", .{label});
+                defer allocator.free(response_label);
+                try printDebugAppServerMessage(response_label, line);
+                if (object.get("error") != null) return error.DebugAppServerRequestFailed;
+                return allocator.dupe(u8, line);
+            }
+        }
+        if (object.get("method")) |method| {
+            if (method == .string) {
+                try printDebugAppServerMessage("notification", line);
+                continue;
+            }
+        }
+        try printDebugAppServerMessage("app-server message", line);
+    }
+    return error.DebugAppServerResponseNotFound;
+}
+
+fn streamDebugTurnUntilCompleted(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    thread_id: []const u8,
+    turn_id: []const u8,
+) !void {
+    var lines_read: usize = 0;
+    while (lines_read < 512) : (lines_read += 1) {
+        const line = try readDebugAppServerLine(reader) orelse return error.DebugAppServerClosed;
+        try printDebugAppServerMessage("notification", line);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const object = parsed.value.object;
+        if (object.get("error") != null) return error.DebugAppServerRequestFailed;
+        const method = object.get("method") orelse continue;
+        if (method != .string or !std.mem.eql(u8, method.string, "turn/completed")) continue;
+        if (debugTurnNotificationMatches(object, thread_id, turn_id)) return;
+    }
+    return error.DebugAppServerTurnIncomplete;
+}
+
+fn readDebugAppServerLine(reader: *std.Io.Reader) !?[]const u8 {
+    const line_opt = try reader.takeDelimiter('\n');
+    const line = line_opt orelse return null;
+    return std.mem.trim(u8, line, " \t\r\n");
+}
+
+fn printDebugAppServerMessage(label: []const u8, line: []const u8) !void {
+    try cli_utils.writeStdout("< ");
+    try cli_utils.writeStdout(label);
+    try cli_utils.writeStdout(": ");
+    try cli_utils.writeStdout(line);
+    try cli_utils.writeStdout("\n");
+}
+
+fn extractNestedString(allocator: std.mem.Allocator, response_line: []const u8, path: []const []const u8) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_line, .{});
+    defer parsed.deinit();
+
+    var current = parsed.value;
+    for (path) |part| {
+        if (current != .object) return error.InvalidDebugAppServerResponse;
+        current = current.object.get(part) orelse return error.InvalidDebugAppServerResponse;
+    }
+    if (current != .string) return error.InvalidDebugAppServerResponse;
+    return allocator.dupe(u8, current.string);
+}
+
+fn debugTurnNotificationMatches(object: std.json.ObjectMap, thread_id: []const u8, turn_id: []const u8) bool {
+    const params = object.get("params") orelse return false;
+    if (params != .object) return false;
+    const notification_thread_id = params.object.get("threadId") orelse return false;
+    if (!jsonValueStringEquals(notification_thread_id, thread_id)) return false;
+    const turn = params.object.get("turn") orelse return false;
+    if (turn != .object) return false;
+    const notification_turn_id = turn.object.get("id") orelse return false;
+    return jsonValueStringEquals(notification_turn_id, turn_id);
+}
+
+fn jsonValueStringEquals(value: std.json.Value, expected: []const u8) bool {
+    return value == .string and std.mem.eql(u8, value.string, expected);
+}
+
+fn childTermSuccess(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn currentEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+        const entry = std.mem.span(entry_ptr);
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const key = entry[0..eq];
+        if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+        try result.put(key, entry[eq + 1 ..]);
+    }
+    return result;
 }
 
 fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -309,7 +560,7 @@ fn printDebugAppServerHelp() void {
         \\  codex-zig debug app-server send-message-v2 USER_MESSAGE
         \\
         \\Subcommands:
-        \\  send-message-v2    Send a V2 debug message through the Rust app-server test client
+        \\  send-message-v2    Send a V2 debug message through the local app-server
         \\
     , .{});
 }
@@ -319,8 +570,8 @@ fn printDebugAppServerSendMessageV2Help() void {
         \\Usage:
         \\  codex-zig debug app-server send-message-v2 USER_MESSAGE
         \\
-        \\Parses the Rust debug app-server helper shape. The app-server test
-        \\client transport is not implemented in the Zig port yet.
+        \\Spawns the local app-server over stdio, starts a thread, sends a
+        \\turn/start text message, and prints responses and notifications.
         \\
     , .{});
 }
