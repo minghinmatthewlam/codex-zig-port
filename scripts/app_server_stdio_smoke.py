@@ -2838,6 +2838,50 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Standalone Skill" not in stored_after_rollback
                 assert "Use this body without a text item." not in stored_after_rollback
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-name-loaded",
+                        "method": "thread/name/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "name": "  Smoke Renamed Thread  ",
+                        },
+                    },
+                )
+                name_set = read_json_line(proc, 5)
+                assert name_set["id"] == "thread-name-loaded"
+                assert name_set["result"] == {}
+                name_notification = read_json_line(proc, 5)
+                assert name_notification == {
+                    "jsonrpc": "2.0",
+                    "method": "thread/name/updated",
+                    "params": {
+                        "threadId": thread_id,
+                        "threadName": "Smoke Renamed Thread",
+                    },
+                }
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-name",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": False},
+                    },
+                )
+                read_after_name = read_json_line(proc, 5)
+                assert read_after_name["id"] == "thread-read-after-name"
+                assert (
+                    read_after_name["result"]["thread"]["name"]
+                    == "Smoke Renamed Thread"
+                )
+                stored_after_name = rollout_path.read_text(encoding="utf-8")
+                assert "Smoke Renamed Thread" in stored_after_name
+                assert "Standalone Skill" not in stored_after_name
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
