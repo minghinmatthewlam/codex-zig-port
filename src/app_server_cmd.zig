@@ -2626,6 +2626,31 @@ const PROCESS_EXITED_NOTIFICATION_TS =
     \\
     ;
 
+const FEEDBACK_UPLOAD_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadId } from "../ThreadId";
+    \\
+    \\export interface FeedbackUploadParams {
+    \\  classification: string;
+    \\  reason?: string | null;
+    \\  threadId?: ThreadId | null;
+    \\  includeLogs: boolean;
+    \\  extraLogFiles?: string[] | null;
+    \\  tags?: Record<string, string> | null;
+    \\}
+    \\
+    ;
+
+const FEEDBACK_UPLOAD_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadId } from "../ThreadId";
+    \\
+    \\export interface FeedbackUploadResponse {
+    \\  threadId: ThreadId;
+    \\}
+    \\
+    ;
+
 const WINDOWS_SANDBOX_SETUP_MODE_TS =
     GENERATED_TS_HEADER ++
     \\export type WindowsSandboxSetupMode = "elevated" | "unelevated";
@@ -3628,6 +3653,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
     \\import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";
+    \\import type { FeedbackUploadParams } from "./v2/FeedbackUploadParams";
     \\import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
@@ -3871,6 +3897,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ProcessResizePtyParams;
     \\    }
     \\  | {
+    \\      method: "feedback/upload";
+    \\      params: FeedbackUploadParams;
+    \\    }
+    \\  | {
     \\      method: "windowsSandbox/readiness";
     \\    }
     \\  | {
@@ -4022,6 +4052,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";
     \\import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";
+    \\import type { FeedbackUploadResponse } from "./v2/FeedbackUploadResponse";
     \\import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
@@ -4316,6 +4347,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "process/resizePty";
     \\      result: ProcessResizePtyResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "feedback/upload";
+    \\      result: FeedbackUploadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4722,6 +4758,8 @@ const V2_INDEX_TS =
     \\export type { ProcessTerminalSize } from "./ProcessTerminalSize";
     \\export type { ProcessWriteStdinParams } from "./ProcessWriteStdinParams";
     \\export type { ProcessWriteStdinResponse } from "./ProcessWriteStdinResponse";
+    \\export type { FeedbackUploadParams } from "./FeedbackUploadParams";
+    \\export type { FeedbackUploadResponse } from "./FeedbackUploadResponse";
     \\export type { WindowsSandboxReadiness } from "./WindowsSandboxReadiness";
     \\export type { WindowsSandboxReadinessResponse } from "./WindowsSandboxReadinessResponse";
     \\export type { WindowsSandboxSetupCompletedNotification } from "./WindowsSandboxSetupCompletedNotification";
@@ -8478,6 +8516,50 @@ const PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA =
     \\    "stdoutCapReached": { "type": "boolean" },
     \\    "stderr": { "type": "string" },
     \\    "stderrCapReached": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FEEDBACK_UPLOAD_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FeedbackUploadParams",
+    \\  "type": "object",
+    \\  "required": ["classification", "includeLogs"],
+    \\  "properties": {
+    \\    "classification": { "type": "string" },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "threadId": {
+    \\      "oneOf": [
+    \\        { "$ref": "ThreadId.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "includeLogs": { "type": "boolean" },
+    \\    "extraLogFiles": {
+    \\      "type": ["array", "null"],
+    \\      "items": { "type": "string" }
+    \\    },
+    \\    "tags": {
+    \\      "type": ["object", "null"],
+    \\      "additionalProperties": { "type": "string" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FEEDBACK_UPLOAD_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FeedbackUploadResponse",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "$ref": "ThreadId.json" }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -12249,6 +12331,38 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "FeedbackUploadParams": {
+    \\      "type": "object",
+    \\      "required": ["classification", "includeLogs"],
+    \\      "properties": {
+    \\        "classification": { "type": "string" },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "threadId": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/ThreadId" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "includeLogs": { "type": "boolean" },
+    \\        "extraLogFiles": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "type": "string" }
+    \\        },
+    \\        "tags": {
+    \\          "type": ["object", "null"],
+    \\          "additionalProperties": { "type": "string" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FeedbackUploadResponse": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "$ref": "#/$defs/ThreadId" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "WindowsSandboxSetupMode": {
     \\      "enum": ["elevated", "unelevated"],
     \\      "type": "string"
@@ -13404,6 +13518,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ProcessResizePtyResponse.json", .contents = PROCESS_RESIZE_PTY_RESPONSE_JSON_SCHEMA },
     .{ .name = "ProcessOutputDeltaNotification.json", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ProcessExitedNotification.json", .contents = PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "FeedbackUploadParams.json", .contents = FEEDBACK_UPLOAD_PARAMS_JSON_SCHEMA },
+    .{ .name = "FeedbackUploadResponse.json", .contents = FEEDBACK_UPLOAD_RESPONSE_JSON_SCHEMA },
     .{ .name = "WindowsSandboxSetupMode.json", .contents = WINDOWS_SANDBOX_SETUP_MODE_JSON_SCHEMA },
     .{ .name = "WindowsSandboxReadiness.json", .contents = WINDOWS_SANDBOX_READINESS_JSON_SCHEMA },
     .{ .name = "WindowsSandboxSetupStartParams.json", .contents = WINDOWS_SANDBOX_SETUP_START_PARAMS_JSON_SCHEMA },
@@ -13728,6 +13844,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ProcessResizePtyResponse.ts", .contents = PROCESS_RESIZE_PTY_RESPONSE_TS },
     .{ .name = "v2/ProcessOutputDeltaNotification.ts", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ProcessExitedNotification.ts", .contents = PROCESS_EXITED_NOTIFICATION_TS },
+    .{ .name = "v2/FeedbackUploadParams.ts", .contents = FEEDBACK_UPLOAD_PARAMS_TS },
+    .{ .name = "v2/FeedbackUploadResponse.ts", .contents = FEEDBACK_UPLOAD_RESPONSE_TS },
     .{ .name = "v2/WindowsSandboxSetupMode.ts", .contents = WINDOWS_SANDBOX_SETUP_MODE_TS },
     .{ .name = "v2/WindowsSandboxReadiness.ts", .contents = WINDOWS_SANDBOX_READINESS_TS },
     .{ .name = "v2/WindowsSandboxSetupStartParams.ts", .contents = WINDOWS_SANDBOX_SETUP_START_PARAMS_TS },
