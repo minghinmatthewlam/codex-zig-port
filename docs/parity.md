@@ -113,7 +113,8 @@ now has generated TypeScript and JSON Schema artifacts for cursor, limit, and
 detail params, paginated `data` / `nextCursor` responses, MCP server rows with
 `name`, raw stdio tool snapshots, raw stdio resource/resource-template
 snapshots in full detail mode, empty resource/resource-template snapshots in
-`toolsAndAuthOnly` mode, and the current `authStatus` enum values. Live
+`toolsAndAuthOnly` mode, and Rust-shaped `authStatus` enum values for
+unsupported, not-logged-in, bearer-token, and OAuth states. Live
 streamable-HTTP status refresh and status notifications remain planned.
 
 Additional app-server MCP resource coverage: `mcpServer/resource/read` now has

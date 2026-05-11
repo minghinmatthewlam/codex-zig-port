@@ -74,7 +74,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - accept app-server MCP config reload requests and list server status with
   `config/mcpServer/reload` and `mcpServerStatus/list`, including enabled
   local plugin-cache `.mcp.json` server entries plus raw stdio tool, resource,
-  and resource-template inventory
+  and resource-template inventory plus streamable HTTP bearer-token,
+  file-backed OAuth, and OAuth-discovery not-logged-in auth state
 - read resources with and without loaded thread IDs, and call tools on
   configured stdio MCP servers through app-server `mcpServer/resource/read`
   and `mcpServer/tool/call`
@@ -294,7 +295,8 @@ skill roots plus `forceReload` cache behavior, `agents/openai.yaml`
 interface/dependency metadata, and `skills/changed` invalidations for in-process skill and config
 mutations, verifies
 app-server MCP server status pagination, enabled local plugin-cache MCP entries,
-raw stdio tool/resource/resource-template inventory, bearer-token auth reporting,
+raw stdio tool/resource/resource-template inventory, bearer-token,
+file-backed OAuth, and OAuth-discovery not-logged-in auth reporting,
 config-backed stdio resource reads with and without loaded thread IDs,
 loaded-thread stdio tool calls including non-object argument pass-through, and
 model-facing stdio MCP resource
