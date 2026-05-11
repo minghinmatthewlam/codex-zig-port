@@ -672,6 +672,111 @@ const GIT_DIFF_TO_REMOTE_RESPONSE_TS =
     \\
     ;
 
+const FUZZY_FILE_SEARCH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchParams {
+    \\  query: string;
+    \\  roots: string[];
+    \\  cancellationToken?: string | null;
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_MATCH_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FuzzyFileSearchMatchType = "file" | "directory";
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_MATCH_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
+    \\
+    \\export interface FuzzyFileSearchMatch {
+    \\  root: string;
+    \\  path: string;
+    \\  match_type: FuzzyFileSearchMatchType;
+    \\  file_name: string;
+    \\  score: number;
+    \\  indices: number[];
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchMatch } from "./FuzzyFileSearchMatch";
+    \\
+    \\export interface FuzzyFileSearchResponse {
+    \\  files: FuzzyFileSearchMatch[];
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionStartParams {
+    \\  sessionId: string;
+    \\  roots: string[];
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionUpdateParams {
+    \\  sessionId: string;
+    \\  query: string;
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_STOP_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionStopParams {
+    \\  sessionId: string;
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionStartResponse {}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionUpdateResponse {}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionStopResponse {}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FuzzyFileSearchMatch } from "./FuzzyFileSearchMatch";
+    \\
+    \\export interface FuzzyFileSearchSessionUpdatedNotification {
+    \\  sessionId: string;
+    \\  query: string;
+    \\  files: FuzzyFileSearchMatch[];
+    \\}
+    \\
+    ;
+
+const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FuzzyFileSearchSessionCompletedNotification {
+    \\  sessionId: string;
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -1989,6 +2094,10 @@ const CLIENT_REQUEST_TS =
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
+    \\import type { FuzzyFileSearchParams } from "./v2/FuzzyFileSearchParams";
+    \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
+    \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
+    \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
     \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
@@ -2035,6 +2144,22 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "gitDiffToRemote";
     \\      params: GitDiffToRemoteParams;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch";
+    \\      params: FuzzyFileSearchParams;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch/sessionStart";
+    \\      params: FuzzyFileSearchSessionStartParams;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch/sessionUpdate";
+    \\      params: FuzzyFileSearchSessionUpdateParams;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch/sessionStop";
+    \\      params: FuzzyFileSearchSessionStopParams;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -2204,6 +2329,10 @@ const CLIENT_RESPONSE_TS =
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
+    \\import type { FuzzyFileSearchResponse } from "./v2/FuzzyFileSearchResponse";
+    \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
+    \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
+    \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
@@ -2256,6 +2385,26 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "gitDiffToRemote";
     \\      result: GitDiffToRemoteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fuzzyFileSearch";
+    \\      result: FuzzyFileSearchResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fuzzyFileSearch/sessionStart";
+    \\      result: FuzzyFileSearchSessionStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fuzzyFileSearch/sessionUpdate";
+    \\      result: FuzzyFileSearchSessionUpdateResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fuzzyFileSearch/sessionStop";
+    \\      result: FuzzyFileSearchSessionStopResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2459,6 +2608,8 @@ const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { FuzzyFileSearchSessionCompletedNotification } from "./v2/FuzzyFileSearchSessionCompletedNotification";
+    \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./v2/FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
@@ -2473,6 +2624,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "command/exec/outputDelta";
     \\      params: CommandExecOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch/sessionUpdated";
+    \\      params: FuzzyFileSearchSessionUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "fuzzyFileSearch/sessionCompleted";
+    \\      params: FuzzyFileSearchSessionCompletedNotification;
     \\    }
     \\  | {
     \\      method: "thread/started";
@@ -2565,6 +2724,18 @@ const V2_INDEX_TS =
     \\export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";
     \\export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";
     \\export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
+    \\export type { FuzzyFileSearchMatch } from "./FuzzyFileSearchMatch";
+    \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
+    \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
+    \\export type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
+    \\export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
+    \\export type { FuzzyFileSearchSessionStartParams } from "./FuzzyFileSearchSessionStartParams";
+    \\export type { FuzzyFileSearchSessionStartResponse } from "./FuzzyFileSearchSessionStartResponse";
+    \\export type { FuzzyFileSearchSessionStopParams } from "./FuzzyFileSearchSessionStopParams";
+    \\export type { FuzzyFileSearchSessionStopResponse } from "./FuzzyFileSearchSessionStopResponse";
+    \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
+    \\export type { FuzzyFileSearchSessionUpdateParams } from "./FuzzyFileSearchSessionUpdateParams";
+    \\export type { FuzzyFileSearchSessionUpdateResponse } from "./FuzzyFileSearchSessionUpdateResponse";
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
@@ -2865,6 +3036,213 @@ const GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA =
     \\  "properties": {
     \\    "sha": { "type": "string" },
     \\    "diff": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchParams",
+    \\  "type": "object",
+    \\  "required": ["query", "roots"],
+    \\  "properties": {
+    \\    "query": { "type": "string" },
+    \\    "roots": { "type": "array", "items": { "type": "string" } },
+    \\    "cancellationToken": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_MATCH_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchMatchType",
+    \\  "type": "string",
+    \\  "enum": ["file", "directory"]
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_MATCH_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchMatch",
+    \\  "type": "object",
+    \\  "required": ["root", "path", "match_type", "file_name", "score", "indices"],
+    \\  "properties": {
+    \\    "root": { "type": "string" },
+    \\    "path": { "type": "string" },
+    \\    "match_type": { "$ref": "#/$defs/FuzzyFileSearchMatchType" },
+    \\    "file_name": { "type": "string" },
+    \\    "score": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\    "indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } }
+    \\  },
+    \\  "$defs": {
+    \\    "FuzzyFileSearchMatchType": {
+    \\      "type": "string",
+    \\      "enum": ["file", "directory"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchResponse",
+    \\  "type": "object",
+    \\  "required": ["files"],
+    \\  "properties": {
+    \\    "files": { "type": "array", "items": { "$ref": "#/$defs/FuzzyFileSearchMatch" } }
+    \\  },
+    \\  "$defs": {
+    \\    "FuzzyFileSearchMatchType": {
+    \\      "type": "string",
+    \\      "enum": ["file", "directory"]
+    \\    },
+    \\    "FuzzyFileSearchMatch": {
+    \\      "type": "object",
+    \\      "required": ["root", "path", "match_type", "file_name", "score", "indices"],
+    \\      "properties": {
+    \\        "root": { "type": "string" },
+    \\        "path": { "type": "string" },
+    \\        "match_type": { "$ref": "#/$defs/FuzzyFileSearchMatchType" },
+    \\        "file_name": { "type": "string" },
+    \\        "score": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionStartParams",
+    \\  "type": "object",
+    \\  "required": ["sessionId", "roots"],
+    \\  "properties": {
+    \\    "sessionId": { "type": "string", "minLength": 1 },
+    \\    "roots": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionUpdateParams",
+    \\  "type": "object",
+    \\  "required": ["sessionId", "query"],
+    \\  "properties": {
+    \\    "sessionId": { "type": "string", "minLength": 1 },
+    \\    "query": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_STOP_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionStopParams",
+    \\  "type": "object",
+    \\  "required": ["sessionId"],
+    \\  "properties": {
+    \\    "sessionId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionStartResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionUpdateResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionStopResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["sessionId", "query", "files"],
+    \\  "properties": {
+    \\    "sessionId": { "type": "string" },
+    \\    "query": { "type": "string" },
+    \\    "files": { "type": "array", "items": { "$ref": "#/$defs/FuzzyFileSearchMatch" } }
+    \\  },
+    \\  "$defs": {
+    \\    "FuzzyFileSearchMatchType": {
+    \\      "type": "string",
+    \\      "enum": ["file", "directory"]
+    \\    },
+    \\    "FuzzyFileSearchMatch": {
+    \\      "type": "object",
+    \\      "required": ["root", "path", "match_type", "file_name", "score", "indices"],
+    \\      "properties": {
+    \\        "root": { "type": "string" },
+    \\        "path": { "type": "string" },
+    \\        "match_type": { "$ref": "#/$defs/FuzzyFileSearchMatchType" },
+    \\        "file_name": { "type": "string" },
+    \\        "score": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FuzzyFileSearchSessionCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["sessionId"],
+    \\  "properties": {
+    \\    "sessionId": { "type": "string" }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -5583,6 +5961,97 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "FuzzyFileSearchParams": {
+    \\      "type": "object",
+    \\      "required": ["query", "roots"],
+    \\      "properties": {
+    \\        "query": { "type": "string" },
+    \\        "roots": { "type": "array", "items": { "type": "string" } },
+    \\        "cancellationToken": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FuzzyFileSearchMatchType": {
+    \\      "type": "string",
+    \\      "enum": ["file", "directory"]
+    \\    },
+    \\    "FuzzyFileSearchMatch": {
+    \\      "type": "object",
+    \\      "required": ["root", "path", "match_type", "file_name", "score", "indices"],
+    \\      "properties": {
+    \\        "root": { "type": "string" },
+    \\        "path": { "type": "string" },
+    \\        "match_type": { "$ref": "#/$defs/FuzzyFileSearchMatchType" },
+    \\        "file_name": { "type": "string" },
+    \\        "score": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchResponse": {
+    \\      "type": "object",
+    \\      "required": ["files"],
+    \\      "properties": {
+    \\        "files": { "type": "array", "items": { "$ref": "#/$defs/FuzzyFileSearchMatch" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchSessionStartParams": {
+    \\      "type": "object",
+    \\      "required": ["sessionId", "roots"],
+    \\      "properties": {
+    \\        "sessionId": { "type": "string", "minLength": 1 },
+    \\        "roots": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FuzzyFileSearchSessionUpdateParams": {
+    \\      "type": "object",
+    \\      "required": ["sessionId", "query"],
+    \\      "properties": {
+    \\        "sessionId": { "type": "string", "minLength": 1 },
+    \\        "query": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FuzzyFileSearchSessionStopParams": {
+    \\      "type": "object",
+    \\      "required": ["sessionId"],
+    \\      "properties": {
+    \\        "sessionId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FuzzyFileSearchSessionStartResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchSessionUpdateResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchSessionStopResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchSessionUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["sessionId", "query", "files"],
+    \\      "properties": {
+    \\        "sessionId": { "type": "string" },
+    \\        "query": { "type": "string" },
+    \\        "files": { "type": "array", "items": { "$ref": "#/$defs/FuzzyFileSearchMatch" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FuzzyFileSearchSessionCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["sessionId"],
+    \\      "properties": {
+    \\        "sessionId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -6992,6 +7461,18 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteParams.json", .contents = GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteResponse.json", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchParams.json", .contents = FUZZY_FILE_SEARCH_PARAMS_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchMatchType.json", .contents = FUZZY_FILE_SEARCH_MATCH_TYPE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchMatch.json", .contents = FUZZY_FILE_SEARCH_MATCH_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchResponse.json", .contents = FUZZY_FILE_SEARCH_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionStartParams.json", .contents = FUZZY_FILE_SEARCH_SESSION_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionUpdateParams.json", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionStopParams.json", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_PARAMS_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionStartResponse.json", .contents = FUZZY_FILE_SEARCH_SESSION_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionUpdateResponse.json", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionStopResponse.json", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionUpdatedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "FuzzyFileSearchSessionCompletedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -7146,6 +7627,18 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
     .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
     .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
+    .{ .name = "v2/FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PARAMS_TS },
+    .{ .name = "v2/FuzzyFileSearchMatchType.ts", .contents = FUZZY_FILE_SEARCH_MATCH_TYPE_TS },
+    .{ .name = "v2/FuzzyFileSearchMatch.ts", .contents = FUZZY_FILE_SEARCH_MATCH_TS },
+    .{ .name = "v2/FuzzyFileSearchResponse.ts", .contents = FUZZY_FILE_SEARCH_RESPONSE_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionStartParams.ts", .contents = FUZZY_FILE_SEARCH_SESSION_START_PARAMS_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionUpdateParams.ts", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATE_PARAMS_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionStopParams.ts", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_PARAMS_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionStartResponse.ts", .contents = FUZZY_FILE_SEARCH_SESSION_START_RESPONSE_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionUpdateResponse.ts", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATE_RESPONSE_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionStopResponse.ts", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
