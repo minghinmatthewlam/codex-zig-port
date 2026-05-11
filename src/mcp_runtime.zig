@@ -127,8 +127,8 @@ pub fn loadCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalo
     }
 
     for (servers.items.items) |server| {
-        if (!server.enabled or server.kind != .stdio) continue;
-        appendServerTools(allocator, server, &specs) catch |err| {
+        if (!server.enabled) continue;
+        appendServerTools(allocator, codex_home, server, &specs) catch |err| {
             std.debug.print("[mcp] failed to list tools for {s}: {s}\n", .{ server.name, @errorName(err) });
             continue;
         };
@@ -146,8 +146,12 @@ pub fn callTool(
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(spec.server_name) orelse return error.McpServerNotFound;
-    if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
-    return callServerTool(allocator, server.*, spec.raw_tool_name, arguments_json);
+    if (!server.enabled) return error.McpServerUnavailable;
+    return switch (server.kind) {
+        .stdio => callServerTool(allocator, server.*, spec.raw_tool_name, arguments_json),
+        .streamable_http => callHttpServerTool(allocator, codex_home, server.*, spec.raw_tool_name, arguments_json),
+        else => error.McpServerUnavailable,
+    };
 }
 
 pub fn readResource(
@@ -557,9 +561,12 @@ pub fn serverStatusInventoryJson(
 
 fn appendServerTools(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
     server: mcp_cmd.McpServer,
     specs: *std.ArrayList(ToolSpec),
 ) !void {
+    if (server.kind == .streamable_http) return appendHttpServerTools(allocator, codex_home, server, specs);
+    if (server.kind != .stdio) return error.McpServerUnavailable;
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
 
@@ -571,7 +578,15 @@ fn appendServerTools(
     if (result != .object) return error.InvalidMcpResponse;
     const tools_value = result.object.get("tools") orelse return error.InvalidMcpResponse;
     if (tools_value != .array) return error.InvalidMcpResponse;
+    try appendToolSpecsFromToolsValue(allocator, server, tools_value, specs);
+}
 
+fn appendToolSpecsFromToolsValue(
+    allocator: std.mem.Allocator,
+    server: mcp_cmd.McpServer,
+    tools_value: std.json.Value,
+    specs: *std.ArrayList(ToolSpec),
+) !void {
     for (tools_value.array.items) |tool_value| {
         if (tool_value != .object) continue;
         const name_value = tool_value.object.get("name") orelse continue;
@@ -639,6 +654,61 @@ fn callServerTool(
         .summary = summary,
         .output = output,
     };
+}
+
+fn callHttpServerTool(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    raw_tool_name: []const u8,
+    arguments_json: []const u8,
+) !CallOutput {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+
+    try client.initialize();
+    const params = try buildCallToolParams(allocator, raw_tool_name, arguments_json);
+    defer allocator.free(params);
+    var response = try client.request(2, "tools/call", params);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+
+    const output = try renderCallResult(allocator, result);
+    errdefer allocator.free(output);
+    const is_error = if (result.object.get("isError")) |value| value == .bool and value.bool else false;
+    const summary = try std.fmt.allocPrint(
+        allocator,
+        "mcp {s}.{s}{s}",
+        .{ server.name, raw_tool_name, if (is_error) " error" else "" },
+    );
+    errdefer allocator.free(summary);
+
+    return .{
+        .summary = summary,
+        .output = output,
+    };
+}
+
+fn appendHttpServerTools(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    specs: *std.ArrayList(ToolSpec),
+) !void {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+
+    try client.initialize();
+    var response = try client.request(2, "tools/list", null);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    const tools_value = result.object.get("tools") orelse return error.InvalidMcpResponse;
+    if (tools_value != .array) return error.InvalidMcpResponse;
+    try appendToolSpecsFromToolsValue(allocator, server, tools_value, specs);
 }
 
 fn readServerResource(
