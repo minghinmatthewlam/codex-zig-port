@@ -61,7 +61,8 @@ Current app-server TypeScript and JSON Schema generation coverage includes the
 minimal JSON-RPC envelope files plus command-exec request, response, follow-up,
 terminal-size, sandbox-policy, permission-profile, permission-profile helper,
 filesystem-path helper, absolute-path, network-access, and output-delta
-notification artifacts. Full Rust generator parity remains planned.
+notification artifacts in standalone files and the bundled schema `$defs`.
+Full Rust generator parity remains planned.
 
 Current app-server `command/exec` coverage includes buffered command execution,
 capture-time independent stdout/stderr output-cap truncation, timeout exit-code
