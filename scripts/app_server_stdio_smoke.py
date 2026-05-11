@@ -2532,6 +2532,117 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-turns-list-page-one",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": resume_thread_id, "limit": 1},
+                },
+            )
+            turns_page_one = read_json_line(proc, 5)
+            assert turns_page_one["id"] == "thread-turns-list-page-one"
+            page_one = turns_page_one["result"]
+            assert page_one["data"][0]["id"] == "turn-1"
+            assert page_one["data"][0]["items"][0]["type"] == "agentMessage"
+            assert page_one["data"][0]["items"][0]["text"] == "saved hi"
+            assert page_one["nextCursor"] is not None
+            next_cursor = json.loads(page_one["nextCursor"])
+            assert next_cursor == {"turnId": "turn-1", "includeAnchor": False}
+            assert page_one["backwardsCursor"] is not None
+            backwards_cursor = json.loads(page_one["backwardsCursor"])
+            assert backwards_cursor == {"turnId": "turn-1", "includeAnchor": True}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-page-two",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "cursor": page_one["nextCursor"],
+                        "limit": 1,
+                    },
+                },
+            )
+            turns_page_two = read_json_line(proc, 5)
+            assert turns_page_two["id"] == "thread-turns-list-page-two"
+            page_two = turns_page_two["result"]
+            assert page_two["data"][0]["id"] == "turn-0"
+            assert (
+                page_two["data"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert page_two["nextCursor"] is None
+            assert json.loads(page_two["backwardsCursor"]) == {
+                "turnId": "turn-0",
+                "includeAnchor": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-ascending",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "limit": 2,
+                        "sortDirection": "asc",
+                    },
+                },
+            )
+            turns_ascending = read_json_line(proc, 5)
+            assert turns_ascending["id"] == "thread-turns-list-ascending"
+            assert [turn["id"] for turn in turns_ascending["result"]["data"]] == [
+                "turn-0",
+                "turn-1",
+            ]
+            assert turns_ascending["result"]["nextCursor"] is None
+            assert json.loads(turns_ascending["result"]["backwardsCursor"]) == {
+                "turnId": "turn-0",
+                "includeAnchor": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-invalid-cursor",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": resume_thread_id, "cursor": "not-json"},
+                },
+            )
+            invalid_cursor = read_json_line(proc, 5)
+            assert invalid_cursor["id"] == "thread-turns-list-invalid-cursor"
+            assert invalid_cursor["error"]["code"] == -32600
+            assert "invalid cursor: not-json" in invalid_cursor["error"]["message"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-stale-cursor",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "cursor": json.dumps(
+                            {"turnId": "missing-turn", "includeAnchor": False},
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
+            stale_cursor = read_json_line(proc, 5)
+            assert stale_cursor["id"] == "thread-turns-list-stale-cursor"
+            assert stale_cursor["error"]["code"] == -32600
+            assert (
+                "invalid cursor: anchor turn is no longer present"
+                in stale_cursor["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume-by-path-exclude-turns",
                     "method": "thread/resume",
                     "params": {
