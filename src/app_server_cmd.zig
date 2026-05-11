@@ -1058,6 +1058,12 @@ const REALTIME_VOICE_TS =
     \\
     ;
 
+const REALTIME_OUTPUT_MODALITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RealtimeOutputModality = "text" | "audio";
+    \\
+    ;
+
 const REALTIME_VOICES_LIST_TS =
     GENERATED_TS_HEADER ++
     \\import type { RealtimeVoice } from "./RealtimeVoice";
@@ -1163,6 +1169,40 @@ const THREAD_REALTIME_LIST_VOICES_PARAMS_TS =
     \\
     ;
 
+const THREAD_REALTIME_START_TRANSPORT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadRealtimeStartTransport =
+    \\  | { type: "websocket" }
+    \\  | {
+    \\      type: "webrtc";
+    \\      sdp: string;
+    \\    };
+    \\
+    ;
+
+const THREAD_REALTIME_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RealtimeOutputModality } from "../RealtimeOutputModality";
+    \\import type { RealtimeVoice } from "../RealtimeVoice";
+    \\import type { ThreadRealtimeStartTransport } from "./ThreadRealtimeStartTransport";
+    \\
+    \\export interface ThreadRealtimeStartParams {
+    \\  threadId: string;
+    \\  outputModality: RealtimeOutputModality;
+    \\  prompt?: string | null;
+    \\  realtimeSessionId?: string | null;
+    \\  transport?: ThreadRealtimeStartTransport | null;
+    \\  voice?: RealtimeVoice | null;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRealtimeStartResponse {}
+    \\
+    ;
+
 const THREAD_REALTIME_APPEND_TEXT_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadRealtimeAppendTextParams {
@@ -1252,6 +1292,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadRealtimeAppendAudioParams } from "./v2/ThreadRealtimeAppendAudioParams";
     \\import type { ThreadRealtimeAppendTextParams } from "./v2/ThreadRealtimeAppendTextParams";
     \\import type { ThreadRealtimeListVoicesParams } from "./v2/ThreadRealtimeListVoicesParams";
+    \\import type { ThreadRealtimeStartParams } from "./v2/ThreadRealtimeStartParams";
     \\import type { ThreadRealtimeStopParams } from "./v2/ThreadRealtimeStopParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
@@ -1359,6 +1400,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadRealtimeListVoicesParams;
     \\    }
     \\  | {
+    \\      method: "thread/realtime/start";
+    \\      params: ThreadRealtimeStartParams;
+    \\    }
+    \\  | {
     \\      method: "thread/realtime/appendText";
     \\      params: ThreadRealtimeAppendTextParams;
     \\    }
@@ -1394,6 +1439,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadRealtimeAppendAudioResponse } from "./v2/ThreadRealtimeAppendAudioResponse";
     \\import type { ThreadRealtimeAppendTextResponse } from "./v2/ThreadRealtimeAppendTextResponse";
     \\import type { ThreadRealtimeListVoicesResponse } from "./v2/ThreadRealtimeListVoicesResponse";
+    \\import type { ThreadRealtimeStartResponse } from "./v2/ThreadRealtimeStartResponse";
     \\import type { ThreadRealtimeStopResponse } from "./v2/ThreadRealtimeStopResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
@@ -1527,6 +1573,11 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/realtime/start";
+    \\      result: ThreadRealtimeStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/realtime/appendText";
     \\      result: ThreadRealtimeAppendTextResponse;
     \\    }
@@ -1569,6 +1620,7 @@ const INDEX_TS =
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
     \\export type { RequestId } from "./RequestId";
+    \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
     \\export type { ServerNotification } from "./ServerNotification";
@@ -1632,6 +1684,9 @@ const V2_INDEX_TS =
     \\export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
     \\export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";
     \\export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";
+    \\export type { ThreadRealtimeStartParams } from "./ThreadRealtimeStartParams";
+    \\export type { ThreadRealtimeStartResponse } from "./ThreadRealtimeStartResponse";
+    \\export type { ThreadRealtimeStartTransport } from "./ThreadRealtimeStartTransport";
     \\export type { ThreadRealtimeStopParams } from "./ThreadRealtimeStopParams";
     \\export type { ThreadRealtimeStopResponse } from "./ThreadRealtimeStopResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
@@ -2709,6 +2764,16 @@ const REALTIME_VOICE_JSON_SCHEMA =
     \\
 ;
 
+const REALTIME_OUTPUT_MODALITY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RealtimeOutputModality",
+    \\  "type": "string",
+    \\  "enum": ["text", "audio"]
+    \\}
+    \\
+;
+
 const REALTIME_VOICES_LIST_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2900,6 +2965,103 @@ const THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_REALTIME_START_TRANSPORT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStartTransport",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "type": "string", "enum": ["websocket"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "sdp"],
+    \\      "properties": {
+    \\        "type": { "type": "string", "enum": ["webrtc"] },
+    \\        "sdp": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStartParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "outputModality"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "outputModality": { "$ref": "#/$defs/RealtimeOutputModality" },
+    \\    "prompt": { "type": ["string", "null"] },
+    \\    "realtimeSessionId": { "type": ["string", "null"] },
+    \\    "transport": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadRealtimeStartTransport" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "voice": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/RealtimeVoice" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "RealtimeOutputModality": {
+    \\      "type": "string",
+    \\      "enum": ["text", "audio"]
+    \\    },
+    \\    "RealtimeVoice": {
+    \\      "type": "string",
+    \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\    },
+    \\    "ThreadRealtimeStartTransport": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "type": "string", "enum": ["websocket"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "sdp"],
+    \\          "properties": {
+    \\            "type": { "type": "string", "enum": ["webrtc"] },
+    \\            "sdp": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStartResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_REALTIME_APPEND_TEXT_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3019,6 +3181,10 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA =
     \\    "RealtimeVoice": {
     \\      "type": "string",
     \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
+    \\    },
+    \\    "RealtimeOutputModality": {
+    \\      "type": "string",
+    \\      "enum": ["text", "audio"]
     \\    },
     \\    "RealtimeVoicesList": {
     \\      "type": "object",
@@ -3733,6 +3899,54 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadRealtimeStartTransport": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "type": "string", "enum": ["websocket"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "sdp"],
+    \\          "properties": {
+    \\            "type": { "type": "string", "enum": ["webrtc"] },
+    \\            "sdp": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "ThreadRealtimeStartParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "outputModality"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "outputModality": { "$ref": "#/$defs/RealtimeOutputModality" },
+    \\        "prompt": { "type": ["string", "null"] },
+    \\        "realtimeSessionId": { "type": ["string", "null"] },
+    \\        "transport": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadRealtimeStartTransport" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "voice": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/RealtimeVoice" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeStartResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadRealtimeAppendTextParams": {
     \\      "type": "object",
     \\      "required": ["threadId", "text"],
@@ -3875,6 +4089,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadSetNameResponse.json", .contents = THREAD_SET_NAME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadMemoryMode.json", .contents = THREAD_MEMORY_MODE_JSON_SCHEMA },
     .{ .name = "RealtimeVoice.json", .contents = REALTIME_VOICE_JSON_SCHEMA },
+    .{ .name = "RealtimeOutputModality.json", .contents = REALTIME_OUTPUT_MODALITY_JSON_SCHEMA },
     .{ .name = "RealtimeVoicesList.json", .contents = REALTIME_VOICES_LIST_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetParams.json", .contents = THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetResponse.json", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA },
@@ -3887,6 +4102,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadTurnsListResponse.json", .contents = THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesParams.json", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesResponse.json", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStartTransport.json", .contents = THREAD_REALTIME_START_TRANSPORT_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStartParams.json", .contents = THREAD_REALTIME_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStartResponse.json", .contents = THREAD_REALTIME_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextParams.json", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextResponse.json", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAudioChunk.json", .contents = THREAD_REALTIME_AUDIO_CHUNK_JSON_SCHEMA },
@@ -3915,6 +4133,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
     .{ .name = "RealtimeVoice.ts", .contents = REALTIME_VOICE_TS },
+    .{ .name = "RealtimeOutputModality.ts", .contents = REALTIME_OUTPUT_MODALITY_TS },
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
@@ -3980,6 +4199,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadTurnsListResponse.ts", .contents = THREAD_TURNS_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesParams.ts", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesResponse.ts", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeStartTransport.ts", .contents = THREAD_REALTIME_START_TRANSPORT_TS },
+    .{ .name = "v2/ThreadRealtimeStartParams.ts", .contents = THREAD_REALTIME_START_PARAMS_TS },
+    .{ .name = "v2/ThreadRealtimeStartResponse.ts", .contents = THREAD_REALTIME_START_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextParams.ts", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextResponse.ts", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeAudioChunk.ts", .contents = THREAD_REALTIME_AUDIO_CHUNK_TS },
