@@ -1576,6 +1576,119 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-realtime-start-invalid-params",
+            "method": "thread/realtime/start",
+            "params": [],
+        }
+    )
+    thread_realtime_start_invalid_params = read_line()
+    assert (
+        thread_realtime_start_invalid_params["id"]
+        == "thread-realtime-start-invalid-params"
+    )
+    assert thread_realtime_start_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/realtime/start params must be an object"
+        in thread_realtime_start_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-start-invalid-output",
+            "method": "thread/realtime/start",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000017",
+                "outputModality": "video",
+            },
+        }
+    )
+    thread_realtime_start_invalid_output = read_line()
+    assert (
+        thread_realtime_start_invalid_output["id"]
+        == "thread-realtime-start-invalid-output"
+    )
+    assert thread_realtime_start_invalid_output["error"]["code"] == -32602
+    assert (
+        "outputModality must be text or audio"
+        in thread_realtime_start_invalid_output["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-start-invalid-transport",
+            "method": "thread/realtime/start",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000017",
+                "outputModality": "audio",
+                "transport": {"type": "webrtc"},
+            },
+        }
+    )
+    thread_realtime_start_invalid_transport = read_line()
+    assert (
+        thread_realtime_start_invalid_transport["id"]
+        == "thread-realtime-start-invalid-transport"
+    )
+    assert thread_realtime_start_invalid_transport["error"]["code"] == -32602
+    assert (
+        "transport.sdp must be a string"
+        in thread_realtime_start_invalid_transport["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-start-invalid-thread",
+            "method": "thread/realtime/start",
+            "params": {
+                "threadId": "not-a-uuid",
+                "outputModality": "audio",
+                "prompt": None,
+                "realtimeSessionId": None,
+                "transport": {"type": "websocket"},
+                "voice": "marin",
+            },
+        }
+    )
+    thread_realtime_start_invalid_thread = read_line()
+    assert (
+        thread_realtime_start_invalid_thread["id"]
+        == "thread-realtime-start-invalid-thread"
+    )
+    assert thread_realtime_start_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_realtime_start_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-start-missing",
+            "method": "thread/realtime/start",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000017",
+                "outputModality": "audio",
+                "prompt": "hello",
+                "realtimeSessionId": "session-1",
+                "transport": {"type": "webrtc", "sdp": "v=0\\r\\n"},
+                "voice": "marin",
+            },
+        }
+    )
+    thread_realtime_start_missing = read_line()
+    assert thread_realtime_start_missing["id"] == "thread-realtime-start-missing"
+    assert thread_realtime_start_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000017"
+        in thread_realtime_start_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-realtime-stop-invalid-params",
             "method": "thread/realtime/stop",
             "params": [],
@@ -9213,6 +9326,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "RealtimeVoice.json").read_text(encoding="utf-8")
         )
         assert realtime_voice["enum"] == EXPECTED_REALTIME_VOICE_ENUM
+        realtime_output_modality = json.loads(
+            (out_dir / "RealtimeOutputModality.json").read_text(encoding="utf-8")
+        )
+        assert realtime_output_modality["enum"] == ["text", "audio"]
         realtime_voices_list = json.loads(
             (out_dir / "RealtimeVoicesList.json").read_text(encoding="utf-8")
         )
@@ -9299,6 +9416,24 @@ def run_json_schema_smoke(binary: Path) -> None:
             thread_realtime_list_voices_response["properties"]["voices"]["$ref"]
             == "#/$defs/RealtimeVoicesList"
         )
+        thread_realtime_start_transport = json.loads(
+            (out_dir / "ThreadRealtimeStartTransport.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert len(thread_realtime_start_transport["oneOf"]) == 2
+        thread_realtime_start = json.loads(
+            (out_dir / "ThreadRealtimeStartParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_realtime_start["required"] == ["threadId", "outputModality"]
+        assert (
+            thread_realtime_start["properties"]["outputModality"]["$ref"]
+            == "#/$defs/RealtimeOutputModality"
+        )
+        thread_realtime_start_response = json.loads(
+            (out_dir / "ThreadRealtimeStartResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_realtime_start_response["additionalProperties"] is False
         thread_realtime_stop = json.loads(
             (out_dir / "ThreadRealtimeStopParams.json").read_text(encoding="utf-8")
         )
@@ -9376,8 +9511,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadReadResponse" in bundle["$defs"]
         assert "ThreadTurnsListResponse" in bundle["$defs"]
         assert "RealtimeVoice" in bundle["$defs"]
+        assert "RealtimeOutputModality" in bundle["$defs"]
         assert "RealtimeVoicesList" in bundle["$defs"]
         assert "ThreadRealtimeListVoicesResponse" in bundle["$defs"]
+        assert "ThreadRealtimeStartResponse" in bundle["$defs"]
         assert "ThreadRealtimeStopResponse" in bundle["$defs"]
         assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
         assert "ThreadRealtimeAudioChunk" in bundle["$defs"]
@@ -9503,6 +9640,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadTurnsListParams;" in client_request
         assert 'method: "thread/realtime/listVoices";' in client_request
         assert "params: ThreadRealtimeListVoicesParams;" in client_request
+        assert 'method: "thread/realtime/start";' in client_request
+        assert "params: ThreadRealtimeStartParams;" in client_request
         assert 'method: "thread/realtime/stop";' in client_request
         assert "params: ThreadRealtimeStopParams;" in client_request
         assert 'method: "thread/realtime/appendText";' in client_request
@@ -9546,6 +9685,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadTurnsListResponse;" in client_response
         assert 'method: "thread/realtime/listVoices";' in client_response
         assert "result: ThreadRealtimeListVoicesResponse;" in client_response
+        assert 'method: "thread/realtime/start";' in client_response
+        assert "result: ThreadRealtimeStartResponse;" in client_response
         assert 'method: "thread/realtime/stop";' in client_response
         assert "result: ThreadRealtimeStopResponse;" in client_response
         assert 'method: "thread/realtime/appendText";' in client_response
@@ -9806,6 +9947,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         realtime_voice = (out_dir / "RealtimeVoice.ts").read_text(encoding="utf-8")
         assert 'export type RealtimeVoice = "alloy"' in realtime_voice
         assert '"verse"' in realtime_voice
+        realtime_output_modality = (
+            out_dir / "RealtimeOutputModality.ts"
+        ).read_text(encoding="utf-8")
+        assert 'export type RealtimeOutputModality = "text" | "audio";' in realtime_output_modality
         realtime_voices_list = (out_dir / "RealtimeVoicesList.ts").read_text(
             encoding="utf-8"
         )
@@ -9824,6 +9969,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in thread_realtime_list_voices_response
         )
         assert "voices: RealtimeVoicesList;" in thread_realtime_list_voices_response
+        thread_realtime_start_transport = (
+            out_dir / "v2" / "ThreadRealtimeStartTransport.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "websocket"' in thread_realtime_start_transport
+        assert 'type: "webrtc";' in thread_realtime_start_transport
+        assert "sdp: string;" in thread_realtime_start_transport
+        thread_realtime_start = (
+            out_dir / "v2" / "ThreadRealtimeStartParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { RealtimeOutputModality } from "../RealtimeOutputModality";' in thread_realtime_start
+        assert "outputModality: RealtimeOutputModality;" in thread_realtime_start
+        assert "transport?: ThreadRealtimeStartTransport | null;" in thread_realtime_start
+        thread_realtime_start_response = (
+            out_dir / "v2" / "ThreadRealtimeStartResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadRealtimeStartResponse {}" in thread_realtime_start_response
         thread_realtime_stop = (
             out_dir / "v2" / "ThreadRealtimeStopParams.ts"
         ).read_text(encoding="utf-8")
@@ -9867,6 +10028,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
@@ -9944,6 +10106,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeStartParams } from "./ThreadRealtimeStartParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeStartResponse } from "./ThreadRealtimeStartResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeStartTransport } from "./ThreadRealtimeStartTransport";'
             in v2_index
         )
         assert (
