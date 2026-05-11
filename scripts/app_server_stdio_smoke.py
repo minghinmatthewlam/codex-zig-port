@@ -8285,6 +8285,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_rollback_response["required"] == ["thread"]
         assert thread_rollback_response["additionalProperties"] is False
+        thread_inject_items = json.loads(
+            (out_dir / "ThreadInjectItemsParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_inject_items["required"] == ["threadId", "items"]
+        assert thread_inject_items["properties"]["items"]["type"] == "array"
+        thread_inject_items_response = json.loads(
+            (out_dir / "ThreadInjectItemsResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_inject_items_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8302,6 +8311,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadIncrementElicitationResponse" in bundle["$defs"]
         assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
         assert "ThreadRollbackResponse" in bundle["$defs"]
+        assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8399,6 +8409,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadDecrementElicitationParams;" in client_request
         assert 'method: "thread/rollback";' in client_request
         assert "params: ThreadRollbackParams;" in client_request
+        assert 'method: "thread/inject_items";' in client_request
+        assert "params: ThreadInjectItemsParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
@@ -8412,6 +8424,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadDecrementElicitationResponse;" in client_response
         assert 'method: "thread/rollback";' in client_response
         assert "result: ThreadRollbackResponse;" in client_response
+        assert 'method: "thread/inject_items";' in client_response
+        assert "result: ThreadInjectItemsResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8523,6 +8537,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadRollbackResponse.ts"
         ).read_text(encoding="utf-8")
         assert "thread: unknown;" in thread_rollback_response
+        thread_inject_items = (
+            out_dir / "v2" / "ThreadInjectItemsParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_inject_items
+        assert "items: unknown[];" in thread_inject_items
+        thread_inject_items_response = (
+            out_dir / "v2" / "ThreadInjectItemsResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadInjectItemsResponse {}" in thread_inject_items_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8549,7 +8572,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";'
             in v2_index
         )
+        assert 'export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";' in v2_index
         assert 'export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";' in v2_index
+        assert 'export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
