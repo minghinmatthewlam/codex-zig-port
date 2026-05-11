@@ -11041,6 +11041,13 @@ def run_json_schema_smoke(binary: Path) -> None:
             None,
         ]
         assert "TurnStartParams" in bundle["$defs"]
+        assert "UserInput" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["TurnStartParams"]["properties"]["input"]["items"]["$ref"]
+            == "#/$defs/UserInput"
+        )
+        assert bundle["$defs"]["UserInput"]["oneOf"][0]["properties"]["type"]["const"] == "text"
+        assert bundle["$defs"]["UserInput"]["oneOf"][4]["properties"]["type"]["const"] == "mention"
         assert "TurnStartResponse" in bundle["$defs"]
         assert "TurnStartedNotification" in bundle["$defs"]
         assert "TurnCompletedNotification" in bundle["$defs"]
@@ -11115,6 +11122,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         absolute_path = (out_dir / "AbsolutePathBuf.ts").read_text(encoding="utf-8")
         assert "export type AbsolutePathBuf = string;" in absolute_path
+        user_input = (out_dir / "v2" / "UserInput.ts").read_text(encoding="utf-8")
+        assert 'type: "text";' in user_input
+        assert "text_elements: TextElement[];" in user_input
+        assert 'type: "mention";' in user_input
+        turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { UserInput } from "./UserInput";' in turn_start_params
+        assert "input: UserInput[];" in turn_start_params
 
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert 'method: "initialize";' in client_request
@@ -11340,7 +11356,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "export interface TurnStartParams" in turn_start_params
         assert "threadId: string;" in turn_start_params
-        assert "input: unknown[];" in turn_start_params
+        assert "input: UserInput[];" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
