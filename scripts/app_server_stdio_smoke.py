@@ -8535,6 +8535,15 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadArchiveResponse.json").read_text(encoding="utf-8")
         )
         assert thread_archive_response["additionalProperties"] is False
+        thread_unarchive = json.loads(
+            (out_dir / "ThreadUnarchiveParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_unarchive["required"] == ["threadId"]
+        thread_unarchive_response = json.loads(
+            (out_dir / "ThreadUnarchiveResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_unarchive_response["required"] == ["thread"]
+        assert thread_unarchive_response["additionalProperties"] is False
         thread_compact_start = json.loads(
             (out_dir / "ThreadCompactStartParams.json").read_text(encoding="utf-8")
         )
@@ -8673,6 +8682,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert "ThreadArchiveResponse" in bundle["$defs"]
+        assert "ThreadUnarchiveResponse" in bundle["$defs"]
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
         assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
@@ -8771,6 +8781,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadUnsubscribeParams;" in client_request
         assert 'method: "thread/archive";' in client_request
         assert "params: ThreadArchiveParams;" in client_request
+        assert 'method: "thread/unarchive";' in client_request
+        assert "params: ThreadUnarchiveParams;" in client_request
         assert 'method: "thread/compact/start";' in client_request
         assert "params: ThreadCompactStartParams;" in client_request
         assert 'method: "thread/shellCommand";' in client_request
@@ -8796,6 +8808,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
+        assert 'method: "thread/unarchive";' in client_response
+        assert "result: ThreadUnarchiveResponse;" in client_response
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
         assert 'method: "thread/shellCommand";' in client_response
@@ -8890,6 +8904,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadArchiveResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadArchiveResponse {}" in thread_archive_response
+        thread_unarchive = (
+            out_dir / "v2" / "ThreadUnarchiveParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_unarchive
+        thread_unarchive_response = (
+            out_dir / "v2" / "ThreadUnarchiveResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "thread: unknown;" in thread_unarchive_response
         thread_compact_start = (
             out_dir / "v2" / "ThreadCompactStartParams.ts"
         ).read_text(encoding="utf-8")
@@ -9021,6 +9043,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert 'export type { ThreadArchiveParams } from "./ThreadArchiveParams";' in v2_index
         assert 'export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";' in v2_index
+        assert 'export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";' in v2_index
+        assert 'export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";' in v2_index
         assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
         assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
         assert (
