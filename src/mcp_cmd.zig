@@ -6,6 +6,8 @@ const env = @import("env.zig");
 
 pub const ServerKind = enum { unknown, stdio, streamable_http };
 
+const McpOAuthCredentialsStore = enum { auto, file, keyring };
+
 pub const KeyValue = struct {
     key: []const u8,
     value: []const u8,
@@ -106,9 +108,12 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try runAdd(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "remove")) {
         try runRemove(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
-    } else if (std.mem.eql(u8, subcommand, "login") or std.mem.eql(u8, subcommand, "logout")) {
-        try cli_utils.writeStdout("MCP OAuth login/logout is not implemented in the Zig port yet.\n");
+    } else if (std.mem.eql(u8, subcommand, "login")) {
+        try cli_utils.writeStdout("MCP OAuth login is not implemented in the Zig port yet.\n");
         return error.UnsupportedMcpOAuth;
+    } else if (std.mem.eql(u8, subcommand, "logout")) {
+        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try runLogout(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else {
         return error.UnknownMcpSubcommand;
     }
@@ -328,6 +333,37 @@ fn runRemove(
     try cli_utils.writeStdout(message);
 }
 
+fn runLogout(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    servers: McpServers,
+    args: []const []const u8,
+) !void {
+    if (args.len == 0) return error.MissingMcpServerName;
+    if (args.len > 1) return error.UnexpectedMcpArgument;
+    const name = args[0];
+    try validateServerName(name);
+
+    const server = servers.get(name) orelse return error.McpServerNotFound;
+    if (server.kind != .streamable_http) return error.McpOAuthLogoutRequiresHttp;
+    const url = server.url orelse return error.McpOAuthLogoutRequiresHttp;
+
+    const store_mode = parseMcpOAuthCredentialsStore(config_bytes);
+    if (store_mode == .keyring) {
+        try cli_utils.writeStdout("MCP OAuth keyring credential deletion is not implemented in the Zig port yet.\n");
+        return error.UnsupportedMcpOAuthKeyring;
+    }
+
+    const removed = try deleteMcpOAuthFileCredentials(allocator, codex_home, name, url);
+    const message = if (removed)
+        try std.fmt.allocPrint(allocator, "Removed OAuth credentials for '{s}'.\n", .{name})
+    else
+        try std.fmt.allocPrint(allocator, "No OAuth credentials stored for '{s}'.\n", .{name});
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+}
+
 fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     if (try env.getOwned(allocator, "CODEX_HOME")) |value| return value;
     const home = try env.getOwned(allocator, "HOME") orelse return error.MissingHome;
@@ -342,6 +378,109 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
         error.FileNotFound => null,
         else => return err,
     };
+}
+
+fn parseMcpOAuthCredentialsStore(config_bytes: []const u8) McpOAuthCredentialsStore {
+    var in_top_level = true;
+    var start: usize = 0;
+    while (start < config_bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, config_bytes, start, '\n') orelse config_bytes.len;
+        const raw_line = config_bytes[start..end];
+        start = if (end < config_bytes.len) end + 1 else config_bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index| raw_line[0..index] else raw_line;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            in_top_level = false;
+            continue;
+        }
+        if (!in_top_level) continue;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (!std.mem.eql(u8, key, "mcp_oauth_credentials_store")) continue;
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.mem.eql(u8, value, "\"file\"")) return .file;
+        if (std.mem.eql(u8, value, "\"keyring\"")) return .keyring;
+        if (std.mem.eql(u8, value, "\"auto\"")) return .auto;
+    }
+    return .auto;
+}
+
+fn deleteMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const u8, server_name: []const u8, server_url: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, ".credentials.json" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return error.InvalidMcpOAuthCredentialsFile;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpOAuthCredentialsFile;
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.append(allocator, '{');
+
+    var found = false;
+    var kept: usize = 0;
+    var iterator = parsed.value.object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, key)) {
+            found = true;
+            continue;
+        }
+        if (kept > 0) try output.append(allocator, ',');
+        try appendJsonString(allocator, &output, entry.key_ptr.*);
+        try output.append(allocator, ':');
+        const rendered_value = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+        defer allocator.free(rendered_value);
+        try output.appendSlice(allocator, rendered_value);
+        kept += 1;
+    }
+    try output.append(allocator, '}');
+
+    if (!found) {
+        output.deinit(allocator);
+        return false;
+    }
+    if (kept == 0) {
+        output.deinit(allocator);
+        std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        return true;
+    }
+
+    const rendered = try output.toOwnedSlice(allocator);
+    defer allocator.free(rendered);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = path, .data = rendered });
+    return true;
+}
+
+fn computeMcpOAuthStoreKey(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) ![]const u8 {
+    const url_json = try std.json.Stringify.valueAlloc(allocator, server_url, .{});
+    defer allocator.free(url_json);
+    const payload = try std.fmt.allocPrint(allocator, "{{\"headers\":{{}},\"type\":\"http\",\"url\":{s}}}", .{url_json});
+    defer allocator.free(payload);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(payload, &digest, .{});
+    const hex = "0123456789abcdef";
+    var prefix: [16]u8 = undefined;
+    for (digest[0..8], 0..) |byte, index| {
+        prefix[index * 2] = hex[byte >> 4];
+        prefix[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return std.fmt.allocPrint(allocator, "{s}|{s}", .{ server_name, prefix[0..] });
 }
 
 fn writeServersConfig(allocator: std.mem.Allocator, codex_home: []const u8, original_config: []const u8, servers: McpServers) !void {
@@ -836,6 +975,8 @@ pub fn printHelp() void {
         \\  codex-zig mcp get NAME [--json]
         \\  codex-zig mcp add NAME (--url URL | -- COMMAND...)
         \\  codex-zig mcp remove NAME
+        \\  codex-zig mcp login NAME [--scopes SCOPE,SCOPE]
+        \\  codex-zig mcp logout NAME
         \\
     , .{});
 }
@@ -884,6 +1025,70 @@ test "mcp config parses and renders stdio and http servers" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "model = \"demo\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.docs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.remote]") != null);
+}
+
+test "mcp oauth store key matches Rust fallback format" {
+    const allocator = std.testing.allocator;
+    const key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("remote|6fe6427c8c9125c8", key);
+}
+
+test "mcp oauth file logout removes only matching credentials" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    const remote_key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
+    defer allocator.free(remote_key);
+    const other_key = try computeMcpOAuthStoreKey(allocator, "other", "https://other.example/mcp");
+    defer allocator.free(other_key);
+
+    const credentials = try std.fmt.allocPrint(
+        allocator,
+        "{{\"{s}\":{{\"server_name\":\"remote\",\"server_url\":\"https://example.com/mcp\",\"client_id\":\"client\",\"access_token\":\"access\"}},\"{s}\":{{\"server_name\":\"other\",\"server_url\":\"https://other.example/mcp\",\"client_id\":\"client\",\"access_token\":\"other\"}}}}",
+        .{ remote_key, other_key },
+    );
+    defer allocator.free(credentials);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = ".credentials.json",
+        .data = credentials,
+    });
+
+    try std.testing.expect(try deleteMcpOAuthFileCredentials(allocator, codex_home, "remote", "https://example.com/mcp"));
+    const updated = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".credentials.json", allocator, .limited(4096));
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, remote_key) == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, other_key) != null);
+    try std.testing.expect(!try deleteMcpOAuthFileCredentials(allocator, codex_home, "remote", "https://example.com/mcp"));
+}
+
+test "mcp oauth file logout deletes empty credentials file" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    const remote_key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
+    defer allocator.free(remote_key);
+    const credentials = try std.fmt.allocPrint(
+        allocator,
+        "{{\"{s}\":{{\"server_name\":\"remote\",\"server_url\":\"https://example.com/mcp\",\"client_id\":\"client\",\"access_token\":\"access\"}}}}",
+        .{remote_key},
+    );
+    defer allocator.free(credentials);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = ".credentials.json",
+        .data = credentials,
+    });
+
+    try std.testing.expect(try deleteMcpOAuthFileCredentials(allocator, codex_home, "remote", "https://example.com/mcp"));
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), ".credentials.json", .{}));
 }
 
 test "mcp config loads enabled plugin mcp servers" {
