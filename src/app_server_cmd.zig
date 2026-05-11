@@ -944,6 +944,26 @@ const THREAD_NAME_UPDATED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_GOAL_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadGoal } from "./ThreadGoal";
+    \\
+    \\export interface ThreadGoalUpdatedNotification {
+    \\  threadId: string;
+    \\  turnId: string | null;
+    \\  goal: ThreadGoal;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_CLEARED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadGoalClearedNotification {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
 const BYTE_RANGE_TS =
     GENERATED_TS_HEADER ++
     \\export interface ByteRange {
@@ -2105,6 +2125,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+    \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
+    \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
@@ -2122,6 +2144,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/name/updated";
     \\      params: ThreadNameUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/goal/updated";
+    \\      params: ThreadGoalUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/goal/cleared";
+    \\      params: ThreadGoalClearedNotification;
     \\    }
     \\  | {
     \\      method: "turn/started";
@@ -2213,6 +2243,8 @@ const V2_INDEX_TS =
     \\export type { ThreadGoalClearResponse } from "./ThreadGoalClearResponse";
     \\export type { ThreadGoalGetParams } from "./ThreadGoalGetParams";
     \\export type { ThreadGoalGetResponse } from "./ThreadGoalGetResponse";
+    \\export type { ThreadGoalClearedNotification } from "./ThreadGoalClearedNotification";
+    \\export type { ThreadGoalUpdatedNotification } from "./ThreadGoalUpdatedNotification";
     \\export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";
     \\export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";
     \\export type { ThreadGoalStatus } from "./ThreadGoalStatus";
@@ -3982,6 +4014,57 @@ const THREAD_GOAL_CLEAR_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId", "goal"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": ["string", "null"] },
+    \\    "goal": { "$ref": "#/$defs/ThreadGoal" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    },
+    \\    "ThreadGoal": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "objective": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\        "tokenBudget": { "type": ["integer", "null"] },
+    \\        "tokensUsed": { "type": "integer" },
+    \\        "timeUsedSeconds": { "type": "integer" },
+    \\        "createdAt": { "type": "integer" },
+    \\        "updatedAt": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalClearedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_MEMORY_MODE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4829,6 +4912,24 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadGoalUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId", "goal"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": ["string", "null"] },
+    \\        "goal": { "$ref": "#/$defs/ThreadGoal" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadGoalClearedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ByteRange": {
     \\      "type": "object",
     \\      "required": ["start", "end"],
@@ -5662,6 +5763,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadGoalUpdatedNotification.json", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadGoalClearedNotification.json", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
     .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
@@ -5789,6 +5892,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadGoalUpdatedNotification.ts", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadGoalClearedNotification.ts", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_TS },
     .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
     .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
