@@ -45,6 +45,39 @@ pub const CallOutput = struct {
     }
 };
 
+pub const McpJsonRpcErrorPayload = struct {
+    code: i64,
+    message: []const u8,
+    data_json: ?[]const u8 = null,
+
+    pub fn deinit(self: McpJsonRpcErrorPayload, allocator: std.mem.Allocator) void {
+        allocator.free(self.message);
+        if (self.data_json) |data| allocator.free(data);
+    }
+};
+
+pub const JsonRpcMethodResult = union(enum) {
+    result_json: []const u8,
+    rpc_error: McpJsonRpcErrorPayload,
+
+    pub fn deinit(self: JsonRpcMethodResult, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .result_json => |json| allocator.free(json),
+            .rpc_error => |payload| payload.deinit(allocator),
+        }
+    }
+
+    pub fn intoResultJson(self: JsonRpcMethodResult, allocator: std.mem.Allocator) ![]const u8 {
+        return switch (self) {
+            .result_json => |json| json,
+            .rpc_error => |payload| {
+                payload.deinit(allocator);
+                return error.McpJsonRpcError;
+            },
+        };
+    }
+};
+
 const ResourceInventoryKind = enum {
     resources,
     resource_templates,
@@ -160,13 +193,23 @@ pub fn readResource(
     server_name: []const u8,
     uri: []const u8,
 ) ![]const u8 {
+    const outcome = try readResourceJsonRpc(allocator, codex_home, server_name, uri);
+    return outcome.intoResultJson(allocator);
+}
+
+pub fn readResourceJsonRpc(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    uri: []const u8,
+) !JsonRpcMethodResult {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(server_name) orelse return error.McpServerNotFound;
     if (!server.enabled) return error.McpServerUnavailable;
     return switch (server.kind) {
-        .stdio => readServerResource(allocator, server.*, uri),
-        .streamable_http => readHttpServerResource(allocator, codex_home, server.*, uri),
+        .stdio => readServerResourceJsonRpc(allocator, server.*, uri),
+        .streamable_http => readHttpServerResourceJsonRpc(allocator, codex_home, server.*, uri),
         else => error.McpServerUnavailable,
     };
 }
@@ -444,8 +487,7 @@ fn parseModelResourcePage(
     kind: ResourceInventoryKind,
     response_value: std.json.Value,
 ) !ModelResourcePage {
-    if (response_value != .object) return error.InvalidMcpResponse;
-    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response_value);
     if (result != .object) return error.InvalidMcpResponse;
     const items = result.object.get(kind.primaryItemsKey()) orelse if (kind.alternateItemsKey()) |key|
         result.object.get(key) orelse return error.InvalidMcpResponse
@@ -613,13 +655,25 @@ pub fn callToolByName(
     arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
 ) ![]const u8 {
+    const outcome = try callToolByNameJsonRpc(allocator, codex_home, server_name, raw_tool_name, arguments_json, meta_json);
+    return outcome.intoResultJson(allocator);
+}
+
+pub fn callToolByNameJsonRpc(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    raw_tool_name: []const u8,
+    arguments_json: ?[]const u8,
+    meta_json: ?[]const u8,
+) !JsonRpcMethodResult {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(server_name) orelse return error.McpServerNotFound;
     if (!server.enabled) return error.McpServerUnavailable;
     return switch (server.kind) {
-        .stdio => callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json),
-        .streamable_http => callHttpServerToolJson(allocator, codex_home, server.*, raw_tool_name, arguments_json, meta_json),
+        .stdio => callServerToolJsonRpc(allocator, server.*, raw_tool_name, arguments_json, meta_json),
+        .streamable_http => callHttpServerToolJsonRpc(allocator, codex_home, server.*, raw_tool_name, arguments_json, meta_json),
         else => error.McpServerUnavailable,
     };
 }
@@ -718,7 +772,7 @@ fn appendServerTools(
     var response = try client.request(2, "tools/list", null);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response.value);
     if (result != .object) return error.InvalidMcpResponse;
     const tools_value = result.object.get("tools") orelse return error.InvalidMcpResponse;
     if (tools_value != .array) return error.InvalidMcpResponse;
@@ -781,7 +835,7 @@ fn callServerTool(
     var response = try client.request(2, "tools/call", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response.value);
     if (result != .object) return error.InvalidMcpResponse;
 
     const output = try renderCallResult(allocator, result);
@@ -816,7 +870,7 @@ fn callHttpServerTool(
     var response = try client.request(2, "tools/call", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response.value);
     if (result != .object) return error.InvalidMcpResponse;
 
     const output = try renderCallResult(allocator, result);
@@ -848,18 +902,18 @@ fn appendHttpServerTools(
     var response = try client.request(2, "tools/list", null);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response.value);
     if (result != .object) return error.InvalidMcpResponse;
     const tools_value = result.object.get("tools") orelse return error.InvalidMcpResponse;
     if (tools_value != .array) return error.InvalidMcpResponse;
     try appendToolSpecsFromToolsValue(allocator, server, tools_value, specs);
 }
 
-fn readServerResource(
+fn readServerResourceJsonRpc(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
     uri: []const u8,
-) ![]const u8 {
+) !JsonRpcMethodResult {
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
 
@@ -869,18 +923,16 @@ fn readServerResource(
     var response = try client.request(2, "resources/read", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-    if (result != .object) return error.InvalidMcpResponse;
-    return renderResourceReadResult(allocator, result);
+    return renderJsonRpcMethodResult(allocator, response.value, .resource_read);
 }
 
-fn callServerToolJson(
+fn callServerToolJsonRpc(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
     raw_tool_name: []const u8,
     arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
-) ![]const u8 {
+) !JsonRpcMethodResult {
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
 
@@ -890,17 +942,15 @@ fn callServerToolJson(
     var response = try client.request(2, "tools/call", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-    if (result != .object) return error.InvalidMcpResponse;
-    return renderToolCallResult(allocator, result);
+    return renderJsonRpcMethodResult(allocator, response.value, .tool_call);
 }
 
-fn readHttpServerResource(
+fn readHttpServerResourceJsonRpc(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     server: mcp_cmd.McpServer,
     uri: []const u8,
-) ![]const u8 {
+) !JsonRpcMethodResult {
     var client = try HttpClient.start(allocator, codex_home, server);
     defer client.close();
 
@@ -910,19 +960,17 @@ fn readHttpServerResource(
     var response = try client.request(2, "resources/read", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-    if (result != .object) return error.InvalidMcpResponse;
-    return renderResourceReadResult(allocator, result);
+    return renderJsonRpcMethodResult(allocator, response.value, .resource_read);
 }
 
-fn callHttpServerToolJson(
+fn callHttpServerToolJsonRpc(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     server: mcp_cmd.McpServer,
     raw_tool_name: []const u8,
     arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
-) ![]const u8 {
+) !JsonRpcMethodResult {
     var client = try HttpClient.start(allocator, codex_home, server);
     defer client.close();
 
@@ -932,9 +980,7 @@ fn callHttpServerToolJson(
     var response = try client.request(2, "tools/call", params);
     defer response.deinit();
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-    if (result != .object) return error.InvalidMcpResponse;
-    return renderToolCallResult(allocator, result);
+    return renderJsonRpcMethodResult(allocator, response.value, .tool_call);
 }
 
 const StdioClient = struct {
@@ -982,6 +1028,7 @@ const StdioClient = struct {
         ;
         var response = try self.request(1, "initialize", params);
         defer response.deinit();
+        _ = try jsonRpcResultValue(response.value);
         try self.notify("notifications/initialized", null);
     }
 
@@ -1022,7 +1069,6 @@ const StdioClient = struct {
                 parsed.deinit();
                 continue;
             }
-            if (parsed.value.object.get("error")) |_| return error.McpJsonRpcError;
             return parsed;
         }
         return error.McpResponseNotFound;
@@ -1105,6 +1151,7 @@ const HttpClient = struct {
         ;
         var response = try self.request(1, "initialize", params);
         defer response.deinit();
+        _ = try jsonRpcResultValue(response.value);
         const notification = try buildNotificationPayload(self.allocator, "notifications/initialized", null);
         defer self.allocator.free(notification);
         const notification_response = try self.postJson(notification);
@@ -1318,7 +1365,6 @@ fn parseHttpResponse(allocator: std.mem.Allocator, body: []const u8, id: i64) !s
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{});
     errdefer parsed.deinit();
     if (!isResponseForId(parsed.value, id)) return error.McpResponseNotFound;
-    if (parsed.value.object.get("error")) |_| return error.McpJsonRpcError;
     return parsed;
 }
 
@@ -1413,7 +1459,6 @@ fn parseSseEvent(allocator: std.mem.Allocator, data: []const u8, id: i64) !?std.
         parsed.deinit();
         return null;
     }
-    if (parsed.value.object.get("error")) |_| return error.McpJsonRpcError;
     return parsed;
 }
 
@@ -1565,6 +1610,68 @@ fn isResponseForId(value: std.json.Value, id: i64) bool {
     };
 }
 
+fn jsonRpcResultValue(response_value: std.json.Value) !std.json.Value {
+    if (response_value != .object) return error.InvalidMcpResponse;
+    if (response_value.object.get("error")) |_| return error.McpJsonRpcError;
+    return response_value.object.get("result") orelse error.InvalidMcpResponse;
+}
+
+fn parseMcpJsonRpcErrorPayload(
+    allocator: std.mem.Allocator,
+    response_value: std.json.Value,
+) !?McpJsonRpcErrorPayload {
+    if (response_value != .object) return null;
+    const error_value = response_value.object.get("error") orelse return null;
+    if (error_value != .object) return error.InvalidMcpResponse;
+    const code = try parseMcpJsonRpcErrorCode(error_value.object.get("code") orelse return error.InvalidMcpResponse);
+    const message_value = error_value.object.get("message") orelse return error.InvalidMcpResponse;
+    if (message_value != .string) return error.InvalidMcpResponse;
+
+    const message = try allocator.dupe(u8, message_value.string);
+    errdefer allocator.free(message);
+    const data_json = if (error_value.object.get("data")) |data|
+        try std.json.Stringify.valueAlloc(allocator, data, .{})
+    else
+        null;
+    errdefer if (data_json) |json| allocator.free(json);
+
+    return .{
+        .code = code,
+        .message = message,
+        .data_json = data_json,
+    };
+}
+
+fn parseMcpJsonRpcErrorCode(value: std.json.Value) !i64 {
+    return switch (value) {
+        .integer => |code| code,
+        .number_string => |code| std.fmt.parseInt(i64, code, 10) catch return error.InvalidMcpResponse,
+        else => error.InvalidMcpResponse,
+    };
+}
+
+const JsonRpcMethodResultKind = enum {
+    resource_read,
+    tool_call,
+};
+
+fn renderJsonRpcMethodResult(
+    allocator: std.mem.Allocator,
+    response_value: std.json.Value,
+    kind: JsonRpcMethodResultKind,
+) !JsonRpcMethodResult {
+    if (try parseMcpJsonRpcErrorPayload(allocator, response_value)) |payload| {
+        return .{ .rpc_error = payload };
+    }
+
+    const result = try jsonRpcResultValue(response_value);
+    const result_json = switch (kind) {
+        .resource_read => try renderResourceReadResult(allocator, result),
+        .tool_call => try renderToolCallResult(allocator, result),
+    };
+    return .{ .result_json = result_json };
+}
+
 fn renderCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
     const text = try renderTextContent(allocator, result);
     defer allocator.free(text);
@@ -1581,8 +1688,7 @@ fn listStatusTools(allocator: std.mem.Allocator, client: anytype, next_id: *i64)
 }
 
 fn renderStatusToolsFromResponse(allocator: std.mem.Allocator, response_value: std.json.Value) ![]const u8 {
-    if (response_value != .object) return error.InvalidMcpResponse;
-    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response_value);
     if (result != .object) return error.InvalidMcpResponse;
     const tools = result.object.get("tools") orelse return error.InvalidMcpResponse;
     if (tools != .array) return error.InvalidMcpResponse;
@@ -1666,8 +1772,7 @@ fn appendStatusItemsFromResponse(
     second_required_string: []const u8,
     first_item: *bool,
 ) !void {
-    if (response_value != .object) return error.InvalidMcpResponse;
-    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response_value);
     if (result != .object) return error.InvalidMcpResponse;
     const items = result.object.get(primary_items_key) orelse if (alternate_items_key) |key|
         result.object.get(key) orelse return error.InvalidMcpResponse
@@ -1686,8 +1791,7 @@ fn appendStatusItemsFromResponse(
 }
 
 fn statusNextCursor(response_value: std.json.Value) !?[]const u8 {
-    if (response_value != .object) return error.InvalidMcpResponse;
-    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
+    const result = try jsonRpcResultValue(response_value);
     if (result != .object) return error.InvalidMcpResponse;
     const next_cursor = result.object.get("nextCursor") orelse result.object.get("next_cursor") orelse return null;
     if (next_cursor == .null) return null;
@@ -1909,6 +2013,22 @@ test "mcp http response parser reads SSE JSON-RPC events" {
         "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}",
         rendered,
     );
+}
+
+test "mcp http response parser preserves JSON-RPC error payloads" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseHttpResponse(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32002,\"message\":\"missing resource\",\"data\":{\"uri\":\"test://missing\"}}}",
+        2,
+    );
+    defer parsed.deinit();
+
+    const payload = (try parseMcpJsonRpcErrorPayload(allocator, parsed.value)).?;
+    defer payload.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, -32002), payload.code);
+    try std.testing.expectEqualStrings("missing resource", payload.message);
+    try std.testing.expectEqualStrings("{\"uri\":\"test://missing\"}", payload.data_json.?);
 }
 
 test "mcp http stream parser waits for matching SSE JSON-RPC id" {

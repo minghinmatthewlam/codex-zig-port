@@ -27934,13 +27934,13 @@ fn handleMcpResourceRead(
     };
     defer allocator.free(codex_home);
 
-    const result = mcp_runtime.readResource(allocator, codex_home, params.server, params.uri) catch |err| switch (err) {
+    const result = mcp_runtime.readResourceJsonRpc(allocator, codex_home, params.server, params.uri) catch |err| switch (err) {
         error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
         error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/resource/read failed", err),
     };
-    defer allocator.free(result);
-    return renderJsonRpcResult(allocator, id_value, result);
+    defer result.deinit(allocator);
+    return renderMcpJsonRpcMethodResult(allocator, id_value, result);
 }
 
 fn handleMcpServerToolCall(
@@ -27973,13 +27973,13 @@ fn handleMcpServerToolCall(
     };
     defer allocator.free(codex_home);
 
-    const result = mcp_runtime.callToolByName(allocator, codex_home, params.server, params.tool, arguments_json, meta_json) catch |err| switch (err) {
+    const result = mcp_runtime.callToolByNameJsonRpc(allocator, codex_home, params.server, params.tool, arguments_json, meta_json) catch |err| switch (err) {
         error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
         error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/tool/call failed", err),
     };
-    defer allocator.free(result);
-    return renderJsonRpcResult(allocator, id_value, result);
+    defer result.deinit(allocator);
+    return renderMcpJsonRpcMethodResult(allocator, id_value, result);
 }
 
 fn renderMcpServerNotFound(allocator: std.mem.Allocator, id_value: std.json.Value, server: []const u8) ![]const u8 {
@@ -27992,6 +27992,17 @@ fn renderMcpServerUnavailable(allocator: std.mem.Allocator, id_value: std.json.V
     const message = try std.fmt.allocPrint(allocator, "MCP server '{s}' is unavailable.", .{server});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderMcpJsonRpcMethodResult(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    result: mcp_runtime.JsonRpcMethodResult,
+) ![]const u8 {
+    return switch (result) {
+        .result_json => |json| renderJsonRpcResult(allocator, id_value, json),
+        .rpc_error => |payload| renderJsonRpcErrorWithData(allocator, id_value, payload.code, payload.message, payload.data_json),
+    };
 }
 
 fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer) bool {
@@ -28232,6 +28243,16 @@ fn renderJsonRpcResult(allocator: std.mem.Allocator, id_value: std.json.Value, r
 }
 
 fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, code: i64, message: []const u8) ![]const u8 {
+    return renderJsonRpcErrorWithData(allocator, id_value, code, message, null);
+}
+
+fn renderJsonRpcErrorWithData(
+    allocator: std.mem.Allocator,
+    id_value: ?std.json.Value,
+    code: i64,
+    message: []const u8,
+    data_json: ?[]const u8,
+) ![]const u8 {
     const id_json = if (id_value) |value|
         try std.json.Stringify.valueAlloc(allocator, value, .{})
     else
@@ -28239,6 +28260,13 @@ fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, c
     defer allocator.free(id_json);
     const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
     defer allocator.free(message_json);
+    if (data_json) |data| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s},\"data\":{s}}}}}",
+            .{ id_json, code, message_json, data },
+        );
+    }
     return std.fmt.allocPrint(
         allocator,
         "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
