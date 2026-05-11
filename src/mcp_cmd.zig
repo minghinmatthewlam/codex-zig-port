@@ -134,8 +134,8 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
     } else if (std.mem.eql(u8, subcommand, "remove")) {
         try runRemove(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "login")) {
-        try cli_utils.writeStdout("MCP OAuth login is not implemented in the Zig port yet.\n");
-        return error.UnsupportedMcpOAuth;
+        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try runLogin(allocator, servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "logout")) {
         try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runLogout(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
@@ -363,6 +363,50 @@ fn runRemove(
     try cli_utils.writeStdout(message);
 }
 
+fn runLogin(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
+    if (args.len == 0) return error.MissingMcpServerName;
+    if (isHelpFlag(args[0])) {
+        printLoginHelp();
+        return;
+    }
+    const name = args[0];
+    try validateServerName(name);
+
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) {
+            printLoginHelp();
+            return;
+        }
+        if (std.mem.eql(u8, arg, "--scopes")) {
+            index += 1;
+            if (index >= args.len) return error.MissingMcpOptionValue;
+            try validateMcpOAuthScopes(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--scopes=")) {
+            try validateMcpOAuthScopes(arg["--scopes=".len..]);
+            continue;
+        }
+        return error.UnknownMcpLoginOption;
+    }
+
+    const server = servers.get(name) orelse {
+        const message = try std.fmt.allocPrint(allocator, "No MCP server named '{s}' found.\n", .{name});
+        defer allocator.free(message);
+        try cli_utils.writeStderr(message);
+        return error.McpServerNotFound;
+    };
+    if (server.kind != .streamable_http or server.url == null) {
+        try cli_utils.writeStderr("OAuth login is only supported for streamable HTTP servers.\n");
+        return error.McpOAuthLoginRequiresHttp;
+    }
+
+    try cli_utils.writeStdout("MCP OAuth login is not implemented in the Zig port yet.\n");
+    return error.UnsupportedMcpOAuth;
+}
+
 fn runLogout(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -392,6 +436,17 @@ fn runLogout(
         try std.fmt.allocPrint(allocator, "No OAuth credentials stored for '{s}'.\n", .{name});
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
+}
+
+fn validateMcpOAuthScopes(raw: []const u8) !void {
+    var start: usize = 0;
+    while (start <= raw.len) {
+        const end = std.mem.indexOfScalarPos(u8, raw, start, ',') orelse raw.len;
+        const scope = std.mem.trim(u8, raw[start..end], " \t\r\n");
+        if (scope.len == 0) return error.InvalidMcpOAuthScopes;
+        if (end == raw.len) break;
+        start = end + 1;
+    }
 }
 
 fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
@@ -1166,6 +1221,10 @@ fn printGetHelp() void {
 
 fn printAddHelp() void {
     std.debug.print("Usage:\n  codex-zig mcp add NAME (--url URL | -- COMMAND...)\n", .{});
+}
+
+fn printLoginHelp() void {
+    std.debug.print("Usage:\n  codex-zig mcp login NAME [--scopes SCOPE,SCOPE]\n", .{});
 }
 
 test "mcp config parses and renders stdio and http servers" {
