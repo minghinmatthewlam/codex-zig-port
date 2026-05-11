@@ -695,6 +695,48 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "bad-thread-archive",
+            "method": "thread/archive",
+            "params": {},
+        }
+    )
+    bad_thread_archive = read_line()
+    assert bad_thread_archive["id"] == "bad-thread-archive"
+    assert bad_thread_archive["error"]["code"] == -32602
+    assert "threadId must be a string" in bad_thread_archive["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "invalid-thread-archive",
+            "method": "thread/archive",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    invalid_thread_archive = read_line()
+    assert invalid_thread_archive["id"] == "invalid-thread-archive"
+    assert invalid_thread_archive["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in invalid_thread_archive["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-archive-missing",
+            "method": "thread/archive",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000013"},
+        }
+    )
+    thread_archive_missing = read_line()
+    assert thread_archive_missing["id"] == "thread-archive-missing"
+    assert thread_archive_missing["error"]["code"] == -32600
+    assert (
+        "no rollout found for thread id 00000000-0000-0000-0000-000000000013"
+        in thread_archive_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-compact-missing",
             "method": "thread/compact/start",
             "params": {"threadId": "00000000-0000-0000-0000-000000000002"},
