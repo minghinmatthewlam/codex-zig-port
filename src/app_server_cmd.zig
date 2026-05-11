@@ -13,6 +13,7 @@ const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const hooks_list = @import("hooks_list.zig");
+const image_inputs = @import("input_images.zig");
 const memory_reset = @import("memory_reset.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
@@ -5901,13 +5902,16 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
 const TurnStartInput = struct {
     prompt: []const u8,
     user_content_json: []const u8,
-    input_images: []const []const u8,
+    image_urls: []const []const u8,
+    local_image_paths: []const []const u8,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
         allocator.free(self.user_content_json);
-        for (self.input_images) |image_url| allocator.free(image_url);
-        allocator.free(self.input_images);
+        for (self.image_urls) |image_url| allocator.free(image_url);
+        allocator.free(self.image_urls);
+        for (self.local_image_paths) |path| allocator.free(path);
+        allocator.free(self.local_image_paths);
     }
 };
 
@@ -5949,9 +5953,9 @@ fn handleTurnStart(
     };
 
     var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
-        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text or image items"),
+        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text, image, or localImage items"),
         error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text or image"),
-        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text and image turn/start input is implemented"),
+        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text, image, and localImage turn/start input is implemented"),
         else => return err,
     };
     defer input.deinit(allocator);
@@ -5975,6 +5979,13 @@ fn handleTurnStart(
         else => return err,
     };
 
+    var local_images = image_inputs.load(allocator, input.local_image_paths) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load local image", err);
+    };
+    defer local_images.deinit(allocator);
+    const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
+    defer if (request_input_images.len > 0) allocator.free(request_input_images);
+
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
     const started_at_ms = currentUnixMilliseconds();
@@ -5987,7 +5998,7 @@ fn handleTurnStart(
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, input.prompt, .{
         .prompt_for_approval = false,
         .output_schema = optionalJsonParam(object, "outputSchema"),
-        .input_images = input.input_images,
+        .input_images = request_input_images,
     }) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to run turn", err);
     };
@@ -6038,11 +6049,17 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
     var user_content = std.ArrayList(u8).empty;
     errdefer user_content.deinit(allocator);
     try user_content.append(allocator, '[');
-    var input_images = std.ArrayList([]const u8).empty;
-    var input_images_moved = false;
-    errdefer if (!input_images_moved) {
-        for (input_images.items) |image_url| allocator.free(image_url);
-        input_images.deinit(allocator);
+    var image_urls = std.ArrayList([]const u8).empty;
+    var image_urls_moved = false;
+    errdefer if (!image_urls_moved) {
+        for (image_urls.items) |image_url| allocator.free(image_url);
+        image_urls.deinit(allocator);
+    };
+    var local_image_paths = std.ArrayList([]const u8).empty;
+    var local_image_paths_moved = false;
+    errdefer if (!local_image_paths_moved) {
+        for (local_image_paths.items) |path| allocator.free(path);
+        local_image_paths.deinit(allocator);
     };
     var input_items: usize = 0;
     var text_items: usize = 0;
@@ -6063,29 +6080,47 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             const url = item.object.get("url") orelse return error.InvalidTurnInput;
             if (url != .string) return error.InvalidTurnInput;
             const image_url = try allocator.dupe(u8, url.string);
-            input_images.append(allocator, image_url) catch |err| {
+            image_urls.append(allocator, image_url) catch |err| {
                 allocator.free(image_url);
                 return err;
             };
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartImageInputJson(allocator, &user_content, url.string);
             input_items += 1;
+        } else if (std.mem.eql(u8, item_type.string, "localImage")) {
+            const path = item.object.get("path") orelse return error.InvalidTurnInput;
+            if (path != .string) return error.InvalidTurnInput;
+            const local_image_path = try allocator.dupe(u8, path.string);
+            local_image_paths.append(allocator, local_image_path) catch |err| {
+                allocator.free(local_image_path);
+                return err;
+            };
+            if (input_items > 0) try user_content.append(allocator, ',');
+            try appendTurnStartLocalImageInputJson(allocator, &user_content, path.string);
+            input_items += 1;
         } else {
             return error.UnsupportedTurnInput;
         }
     }
-    if (input_items == 0 or (prompt.items.len == 0 and input_images.items.len == 0)) return error.EmptyTurnInput;
+    if (input_items == 0 or (prompt.items.len == 0 and image_urls.items.len == 0 and local_image_paths.items.len == 0)) return error.EmptyTurnInput;
     try user_content.append(allocator, ']');
     const prompt_owned = try prompt.toOwnedSlice(allocator);
     errdefer allocator.free(prompt_owned);
     const user_content_owned = try user_content.toOwnedSlice(allocator);
     errdefer allocator.free(user_content_owned);
-    const input_images_owned = try input_images.toOwnedSlice(allocator);
-    input_images_moved = true;
+    const image_urls_owned = try image_urls.toOwnedSlice(allocator);
+    image_urls_moved = true;
+    errdefer {
+        for (image_urls_owned) |image_url| allocator.free(image_url);
+        allocator.free(image_urls_owned);
+    }
+    const local_image_paths_owned = try local_image_paths.toOwnedSlice(allocator);
+    local_image_paths_moved = true;
     return .{
         .prompt = prompt_owned,
         .user_content_json = user_content_owned,
-        .input_images = input_images_owned,
+        .image_urls = image_urls_owned,
+        .local_image_paths = local_image_paths_owned,
     };
 }
 
@@ -6117,6 +6152,30 @@ fn appendTurnStartImageInputJson(
     try out.appendSlice(allocator, "{\"type\":\"image\",\"url\":");
     try appendJsonString(allocator, out, url);
     try out.append(allocator, '}');
+}
+
+fn appendTurnStartLocalImageInputJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    path: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"type\":\"localImage\",\"path\":");
+    try appendJsonString(allocator, out, path);
+    try out.append(allocator, '}');
+}
+
+fn combineTurnInputImages(
+    allocator: std.mem.Allocator,
+    image_urls: []const []const u8,
+    local_image_urls: []const []const u8,
+) ![]const []const u8 {
+    const total_len = image_urls.len + local_image_urls.len;
+    if (total_len == 0) return &.{};
+
+    const combined = try allocator.alloc([]const u8, total_len);
+    for (image_urls, 0..) |image_url, index| combined[index] = image_url;
+    for (local_image_urls, 0..) |image_url, index| combined[image_urls.len + index] = image_url;
+    return combined;
 }
 
 fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {
