@@ -799,6 +799,62 @@ const WEB_SEARCH_TOOL_CONFIG_TS =
     \\
     ;
 
+const INTERNAL_SESSION_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type InternalSessionSource = "memory_consolidation";
+    \\
+    ;
+
+const SUB_AGENT_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AgentPath } from "./AgentPath";
+    \\import type { ThreadId } from "./ThreadId";
+    \\
+    \\export type SubAgentSource = "review" | "compact" | { "thread_spawn": { parent_thread_id: ThreadId, depth: number, agent_path: AgentPath | null, agent_nickname: string | null, agent_role: string | null, } } | "memory_consolidation" | { "other": string };
+    \\
+    ;
+
+const SESSION_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { InternalSessionSource } from "./InternalSessionSource";
+    \\import type { SubAgentSource } from "./SubAgentSource";
+    \\
+    \\export type SessionSource = "cli" | "vscode" | "exec" | "mcp" | { "custom": string } | { "internal": InternalSessionSource } | { "subagent": SubAgentSource } | "unknown";
+    \\
+    ;
+
+const CONVERSATION_GIT_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ConversationGitInfo = { sha: string | null, branch: string | null, origin_url: string | null, };
+    \\
+    ;
+
+const CONVERSATION_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConversationGitInfo } from "./ConversationGitInfo";
+    \\import type { SessionSource } from "./SessionSource";
+    \\import type { ThreadId } from "./ThreadId";
+    \\
+    \\export type ConversationSummary = { conversationId: ThreadId, path: string, preview: string, timestamp: string | null, updatedAt: string | null, modelProvider: string, cwd: string, cliVersion: string, source: SessionSource, gitInfo: ConversationGitInfo | null, };
+    \\
+    ;
+
+const GET_CONVERSATION_SUMMARY_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadId } from "./ThreadId";
+    \\
+    \\export type GetConversationSummaryParams = { rolloutPath: string, } | { conversationId: ThreadId, };
+    \\
+    ;
+
+const GET_CONVERSATION_SUMMARY_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConversationSummary } from "./ConversationSummary";
+    \\
+    \\export type GetConversationSummaryResponse = { summary: ConversationSummary, };
+    \\
+    ;
+
 const GET_AUTH_STATUS_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface GetAuthStatusParams {
@@ -3110,6 +3166,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
     \\import type { GetAccountParams } from "./v2/GetAccountParams";
     \\import type { GetAuthStatusParams } from "./GetAuthStatusParams";
+    \\import type { GetConversationSummaryParams } from "./GetConversationSummaryParams";
     \\import type { FsCopyParams } from "./v2/FsCopyParams";
     \\import type { FsCreateDirectoryParams } from "./v2/FsCreateDirectoryParams";
     \\import type { FsGetMetadataParams } from "./v2/FsGetMetadataParams";
@@ -3171,6 +3228,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "gitDiffToRemote";
     \\      params: GitDiffToRemoteParams;
+    \\    }
+    \\  | {
+    \\      method: "getConversationSummary";
+    \\      params: GetConversationSummaryParams;
     \\    }
     \\  | {
     \\      method: "fuzzyFileSearch";
@@ -3446,6 +3507,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GetAccountResponse } from "./v2/GetAccountResponse";
     \\import type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
+    \\import type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";
     \\import type { FsCopyResponse } from "./v2/FsCopyResponse";
     \\import type { FsCreateDirectoryResponse } from "./v2/FsCreateDirectoryResponse";
     \\import type { FsGetMetadataResponse } from "./v2/FsGetMetadataResponse";
@@ -3515,6 +3577,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "gitDiffToRemote";
     \\      result: GitDiffToRemoteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "getConversationSummary";
+    \\      result: GetConversationSummaryResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -3942,6 +4009,8 @@ const INDEX_TS =
     \\export type { ClientRequest } from "./ClientRequest";
     \\export type { ClientResponse } from "./ClientResponse";
     \\export type { ClientInfo } from "./ClientInfo";
+    \\export type { ConversationGitInfo } from "./ConversationGitInfo";
+    \\export type { ConversationSummary } from "./ConversationSummary";
     \\export type { InitializeCapabilities } from "./InitializeCapabilities";
     \\export type { InitializeParams } from "./InitializeParams";
     \\export type { InitializeResponse, ServerInfo } from "./InitializeResponse";
@@ -3963,11 +4032,14 @@ const INDEX_TS =
     \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\export type { GetAuthStatusParams } from "./GetAuthStatusParams";
     \\export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
+    \\export type { GetConversationSummaryParams } from "./GetConversationSummaryParams";
+    \\export type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { GitSha } from "./GitSha";
     \\export type { ImageDetail } from "./ImageDetail";
     \\export type { InputModality } from "./InputModality";
+    \\export type { InternalSessionSource } from "./InternalSessionSource";
     \\export type { MessagePhase } from "./MessagePhase";
     \\export type { Personality } from "./Personality";
     \\export type { PlanType } from "./PlanType";
@@ -3979,6 +4051,8 @@ const INDEX_TS =
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
     \\export type { ServerNotification } from "./ServerNotification";
+    \\export type { SessionSource } from "./SessionSource";
+    \\export type { SubAgentSource } from "./SubAgentSource";
     \\export type { ThreadId } from "./ThreadId";
     \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
     \\export type { Verbosity } from "./Verbosity";
@@ -11543,6 +11617,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
     .{ .name = "AgentPath.ts", .contents = AGENT_PATH_TS },
     .{ .name = "AuthMode.ts", .contents = AUTH_MODE_TS },
+    .{ .name = "ConversationGitInfo.ts", .contents = CONVERSATION_GIT_INFO_TS },
+    .{ .name = "ConversationSummary.ts", .contents = CONVERSATION_SUMMARY_TS },
     .{ .name = "ForcedLoginMethod.ts", .contents = FORCED_LOGIN_METHOD_TS },
     .{ .name = "FuzzyFileSearchMatchType.ts", .contents = FUZZY_FILE_SEARCH_MATCH_TYPE_TS },
     .{ .name = "FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_PARAMS_TS },
@@ -11552,11 +11628,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_SESSION_UPDATED_NOTIFICATION_TS },
     .{ .name = "GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PUBLIC_PARAMS_TS },
     .{ .name = "GetAuthStatusResponse.ts", .contents = GET_AUTH_STATUS_PUBLIC_RESPONSE_TS },
+    .{ .name = "GetConversationSummaryParams.ts", .contents = GET_CONVERSATION_SUMMARY_PARAMS_TS },
+    .{ .name = "GetConversationSummaryResponse.ts", .contents = GET_CONVERSATION_SUMMARY_RESPONSE_TS },
     .{ .name = "GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PUBLIC_PARAMS_TS },
     .{ .name = "GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_PUBLIC_RESPONSE_TS },
     .{ .name = "GitSha.ts", .contents = GIT_SHA_TS },
     .{ .name = "ImageDetail.ts", .contents = IMAGE_DETAIL_TS },
     .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
+    .{ .name = "InternalSessionSource.ts", .contents = INTERNAL_SESSION_SOURCE_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
     .{ .name = "Personality.ts", .contents = PERSONALITY_TS },
     .{ .name = "PlanType.ts", .contents = PLAN_TYPE_TS },
@@ -11574,6 +11653,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RealtimeVoice.ts", .contents = REALTIME_VOICE_TS },
     .{ .name = "RealtimeOutputModality.ts", .contents = REALTIME_OUTPUT_MODALITY_TS },
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
+    .{ .name = "SessionSource.ts", .contents = SESSION_SOURCE_TS },
+    .{ .name = "SubAgentSource.ts", .contents = SUB_AGENT_SOURCE_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
     .{ .name = "v2/GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PARAMS_TS },
@@ -12042,6 +12123,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, id_value.?);
     }
+    if (std.mem.eql(u8, method, "getConversationSummary")) {
+        return try handleGetConversationSummary(allocator, state, id_value.?, object.get("params"));
+    }
     if (std.mem.eql(u8, method, "gitDiffToRemote")) {
         return try handleGitDiffToRemote(allocator, id_value.?, object.get("params"));
     }
@@ -12126,6 +12210,98 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
     };
     return try renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleGetConversationSummary(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "getConversationSummary params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "getConversationSummary params must be an object");
+
+    if (params.object.get("rolloutPath")) |rollout_path_value| {
+        if (rollout_path_value != .string or rollout_path_value.string.len == 0) {
+            return renderJsonRpcError(allocator, id_value, -32602, "rolloutPath must be a string");
+        }
+
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+
+        const path_raw = if (std.fs.path.isAbsolute(rollout_path_value.string))
+            try allocator.dupe(u8, rollout_path_value.string)
+        else
+            try std.fs.path.join(allocator, &.{ cfg.codex_home, rollout_path_value.string });
+        defer allocator.free(path_raw);
+
+        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, "rollout path", rollout_path_value.string);
+    }
+
+    if (params.object.get("conversationId")) |conversation_id_value| {
+        if (conversation_id_value != .string or conversation_id_value.string.len == 0) {
+            return renderJsonRpcError(allocator, id_value, -32602, "conversationId must be a string");
+        }
+        const conversation_id = conversation_id_value.string;
+        if (findLoadedThread(state, conversation_id)) |thread| {
+            const result = try renderConversationSummaryResponseFromLoadedThread(allocator, thread);
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
+
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+
+        const path_raw = session_store.resolveResumePath(allocator, cfg.codex_home, conversation_id) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to resolve thread path", err);
+        };
+        defer allocator.free(path_raw);
+
+        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, "thread id", conversation_id);
+    }
+
+    return renderJsonRpcError(allocator, id_value, -32602, "getConversationSummary params must include conversationId or rolloutPath");
+}
+
+fn renderConversationSummaryResponseFromPath(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    cfg: config.Config,
+    path_raw: []const u8,
+    target_kind: []const u8,
+    target_value: []const u8,
+) ![]const u8 {
+    var transcript = session_store.loadTranscript(allocator, path_raw) catch |err| switch (err) {
+        error.FileNotFound => {
+            const message = try std.fmt.allocPrint(allocator, "no rollout found for {s} {s}", .{ target_kind, target_value });
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load transcript", err),
+    };
+    defer transcript.deinit(allocator);
+
+    const real_path = std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path_raw, allocator) catch |err| switch (err) {
+        error.FileNotFound => {
+            const message = try std.fmt.allocPrint(allocator, "no rollout found for {s} {s}", .{ target_kind, target_value });
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+        else => return err,
+    };
+    defer allocator.free(real_path);
+
+    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+    defer if (configured_model_provider) |value| allocator.free(value);
+    const fallback_model_provider = configured_model_provider orelse "openai";
+
+    const result = try renderConversationSummaryResponseFromTranscript(allocator, real_path, &transcript, fallback_model_provider);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn handleGitDiffToRemote(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -14644,6 +14820,117 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
     try appendLoadedThreadJson(allocator, &result, thread, include_turns);
     try result.appendSlice(allocator, "}");
     return result.toOwnedSlice(allocator);
+}
+
+const ConversationSummaryView = struct {
+    conversation_id: []const u8,
+    path: []const u8,
+    preview: []const u8,
+    model_provider: []const u8,
+    cwd: []const u8,
+    cli_version: []const u8,
+    source: []const u8,
+    git_sha: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_origin_url: ?[]const u8,
+};
+
+fn renderConversationSummaryResponseFromLoadedThread(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    return renderConversationSummaryResponse(allocator, .{
+        .conversation_id = thread.id,
+        .path = thread.path orelse "",
+        .preview = thread.preview,
+        .model_provider = thread.model_provider,
+        .cwd = thread.cwd,
+        .cli_version = thread.cli_version,
+        .source = thread.source,
+        .git_sha = thread.git_sha,
+        .git_branch = thread.git_branch,
+        .git_origin_url = thread.git_origin_url,
+    });
+}
+
+fn renderConversationSummaryResponseFromTranscript(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    transcript: *const session_mod.Transcript,
+    fallback_model_provider: []const u8,
+) ![]const u8 {
+    const owned_id = if (transcript.id == null) try session_store.sessionIdFromPath(allocator, path) else null;
+    defer if (owned_id) |value| allocator.free(value);
+
+    const preview = try resumePreview(allocator, transcript);
+    defer allocator.free(preview);
+
+    return renderConversationSummaryResponse(allocator, .{
+        .conversation_id = transcript.id orelse owned_id.?,
+        .path = path,
+        .preview = preview,
+        .model_provider = transcript.model_provider orelse fallback_model_provider,
+        .cwd = transcript.cwd orelse "",
+        .cli_version = transcript.cli_version orelse "0.0.1",
+        .source = transcript.source orelse "unknown",
+        .git_sha = transcript.git_sha,
+        .git_branch = transcript.git_branch,
+        .git_origin_url = transcript.git_origin_url,
+    });
+}
+
+fn renderConversationSummaryResponse(allocator: std.mem.Allocator, summary: ConversationSummaryView) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "{\"summary\":{\"conversationId\":");
+    try appendJsonString(allocator, &result, summary.conversation_id);
+    try result.appendSlice(allocator, ",\"path\":");
+    try appendJsonString(allocator, &result, summary.path);
+    try result.appendSlice(allocator, ",\"preview\":");
+    try appendJsonString(allocator, &result, summary.preview);
+    try result.appendSlice(allocator, ",\"timestamp\":null,\"updatedAt\":null,\"modelProvider\":");
+    try appendJsonString(allocator, &result, summary.model_provider);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, &result, summary.cwd);
+    try result.appendSlice(allocator, ",\"cliVersion\":");
+    try appendJsonString(allocator, &result, summary.cli_version);
+    try result.appendSlice(allocator, ",\"source\":");
+    try appendConversationSummarySourceJson(allocator, &result, summary.source);
+    try result.appendSlice(allocator, ",\"gitInfo\":");
+    try appendConversationSummaryGitInfoJson(allocator, &result, summary);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendConversationSummarySourceJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8) !void {
+    if (std.mem.eql(u8, source, "cli") or
+        std.mem.eql(u8, source, "vscode") or
+        std.mem.eql(u8, source, "exec") or
+        std.mem.eql(u8, source, "mcp") or
+        std.mem.eql(u8, source, "unknown"))
+    {
+        try appendJsonString(allocator, out, source);
+        return;
+    }
+    if (std.mem.eql(u8, source, "memory_consolidation")) {
+        try out.appendSlice(allocator, "{\"internal\":\"memory_consolidation\"}");
+        return;
+    }
+    try out.appendSlice(allocator, "{\"custom\":");
+    try appendJsonString(allocator, out, source);
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendConversationSummaryGitInfoJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), summary: ConversationSummaryView) !void {
+    if (summary.git_sha == null and summary.git_branch == null and summary.git_origin_url == null) {
+        try out.appendSlice(allocator, "null");
+        return;
+    }
+    try out.appendSlice(allocator, "{\"sha\":");
+    try appendOptionalJsonString(allocator, out, summary.git_sha);
+    try out.appendSlice(allocator, ",\"branch\":");
+    try appendOptionalJsonString(allocator, out, summary.git_branch);
+    try out.appendSlice(allocator, ",\"origin_url\":");
+    try appendOptionalJsonString(allocator, out, summary.git_origin_url);
+    try out.appendSlice(allocator, "}");
 }
 
 fn renderThreadElicitationResponse(allocator: std.mem.Allocator, count: u64) ![]const u8 {
