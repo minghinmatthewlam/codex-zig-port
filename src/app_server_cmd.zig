@@ -1046,6 +1046,86 @@ const THREAD_SET_NAME_RESPONSE_TS =
     \\
     ;
 
+const THREAD_GOAL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadGoalStatus = "active" | "paused" | "budgetLimited" | "complete";
+    \\
+    ;
+
+const THREAD_GOAL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadGoalStatus } from "./ThreadGoalStatus";
+    \\
+    \\export interface ThreadGoal {
+    \\  threadId: string;
+    \\  objective: string;
+    \\  status: ThreadGoalStatus;
+    \\  tokenBudget: number | null;
+    \\  tokensUsed: number;
+    \\  timeUsedSeconds: number;
+    \\  createdAt: number;
+    \\  updatedAt: number;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_SET_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadGoalStatus } from "./ThreadGoalStatus";
+    \\
+    \\export interface ThreadGoalSetParams {
+    \\  threadId: string;
+    \\  objective?: string | null;
+    \\  status?: ThreadGoalStatus | null;
+    \\  tokenBudget?: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_SET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadGoal } from "./ThreadGoal";
+    \\
+    \\export interface ThreadGoalSetResponse {
+    \\  goal: ThreadGoal;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_GET_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadGoalGetParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_GET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadGoal } from "./ThreadGoal";
+    \\
+    \\export interface ThreadGoalGetResponse {
+    \\  goal: ThreadGoal | null;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_CLEAR_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadGoalClearParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_GOAL_CLEAR_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadGoalClearResponse {
+    \\  cleared: boolean;
+    \\}
+    \\
+    ;
+
 const THREAD_MEMORY_MODE_TS =
     GENERATED_TS_HEADER ++
     \\export type ThreadMemoryMode = "enabled" | "disabled";
@@ -1282,6 +1362,9 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
+    \\import type { ThreadGoalClearParams } from "./v2/ThreadGoalClearParams";
+    \\import type { ThreadGoalGetParams } from "./v2/ThreadGoalGetParams";
+    \\import type { ThreadGoalSetParams } from "./v2/ThreadGoalSetParams";
     \\import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadListParams } from "./v2/ThreadListParams";
@@ -1380,6 +1463,18 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadSetNameParams;
     \\    }
     \\  | {
+    \\      method: "thread/goal/set";
+    \\      params: ThreadGoalSetParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/goal/get";
+    \\      params: ThreadGoalGetParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/goal/clear";
+    \\      params: ThreadGoalClearParams;
+    \\    }
+    \\  | {
     \\      method: "thread/memoryMode/set";
     \\      params: ThreadMemoryModeSetParams;
     \\    }
@@ -1429,6 +1524,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
+    \\import type { ThreadGoalClearResponse } from "./v2/ThreadGoalClearResponse";
+    \\import type { ThreadGoalGetResponse } from "./v2/ThreadGoalGetResponse";
+    \\import type { ThreadGoalSetResponse } from "./v2/ThreadGoalSetResponse";
     \\import type { ThreadInjectItemsResponse } from "./v2/ThreadInjectItemsResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadListResponse } from "./v2/ThreadListResponse";
@@ -1548,6 +1646,21 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/goal/set";
+    \\      result: ThreadGoalSetResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/goal/get";
+    \\      result: ThreadGoalGetResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/goal/clear";
+    \\      result: ThreadGoalClearResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/memoryMode/set";
     \\      result: ThreadMemoryModeSetResponse;
     \\    }
@@ -1662,6 +1775,14 @@ const V2_INDEX_TS =
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadDecrementElicitationParams } from "./ThreadDecrementElicitationParams";
     \\export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";
+    \\export type { ThreadGoal } from "./ThreadGoal";
+    \\export type { ThreadGoalClearParams } from "./ThreadGoalClearParams";
+    \\export type { ThreadGoalClearResponse } from "./ThreadGoalClearResponse";
+    \\export type { ThreadGoalGetParams } from "./ThreadGoalGetParams";
+    \\export type { ThreadGoalGetResponse } from "./ThreadGoalGetResponse";
+    \\export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";
+    \\export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";
+    \\export type { ThreadGoalStatus } from "./ThreadGoalStatus";
     \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
@@ -2744,6 +2865,188 @@ const THREAD_SET_NAME_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_GOAL_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalStatus",
+    \\  "type": "string",
+    \\  "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\}
+    \\
+;
+
+const THREAD_GOAL_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoal",
+    \\  "type": "object",
+    \\  "required": ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "objective": { "type": "string" },
+    \\    "status": { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\    "tokenBudget": { "type": ["integer", "null"] },
+    \\    "tokensUsed": { "type": "integer" },
+    \\    "timeUsedSeconds": { "type": "integer" },
+    \\    "createdAt": { "type": "integer" },
+    \\    "updatedAt": { "type": "integer" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_GOAL_SET_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalSetParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "objective": { "type": ["string", "null"] },
+    \\    "status": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "tokenBudget": { "type": ["integer", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_GOAL_SET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalSetResponse",
+    \\  "type": "object",
+    \\  "required": ["goal"],
+    \\  "properties": {
+    \\    "goal": { "$ref": "#/$defs/ThreadGoal" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    },
+    \\    "ThreadGoal": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "objective": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\        "tokenBudget": { "type": ["integer", "null"] },
+    \\        "tokensUsed": { "type": "integer" },
+    \\        "timeUsedSeconds": { "type": "integer" },
+    \\        "createdAt": { "type": "integer" },
+    \\        "updatedAt": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_GOAL_GET_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalGetParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_GOAL_GET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalGetResponse",
+    \\  "type": "object",
+    \\  "required": ["goal"],
+    \\  "properties": {
+    \\    "goal": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadGoal" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    },
+    \\    "ThreadGoal": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "objective": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\        "tokenBudget": { "type": ["integer", "null"] },
+    \\        "tokensUsed": { "type": "integer" },
+    \\        "timeUsedSeconds": { "type": "integer" },
+    \\        "createdAt": { "type": "integer" },
+    \\        "updatedAt": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_GOAL_CLEAR_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalClearParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_GOAL_CLEAR_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadGoalClearResponse",
+    \\  "type": "object",
+    \\  "required": ["cleared"],
+    \\  "properties": {
+    \\    "cleared": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_MEMORY_MODE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3781,6 +4084,86 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadGoalStatus": {
+    \\      "type": "string",
+    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\    },
+    \\    "ThreadGoal": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "objective": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\        "tokenBudget": { "type": ["integer", "null"] },
+    \\        "tokensUsed": { "type": "integer" },
+    \\        "timeUsedSeconds": { "type": "integer" },
+    \\        "createdAt": { "type": "integer" },
+    \\        "updatedAt": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadGoalSetParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "objective": { "type": ["string", "null"] },
+    \\        "status": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadGoalStatus" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "tokenBudget": { "type": ["integer", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadGoalSetResponse": {
+    \\      "type": "object",
+    \\      "required": ["goal"],
+    \\      "properties": {
+    \\        "goal": { "$ref": "#/$defs/ThreadGoal" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadGoalGetParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadGoalGetResponse": {
+    \\      "type": "object",
+    \\      "required": ["goal"],
+    \\      "properties": {
+    \\        "goal": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadGoal" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadGoalClearParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadGoalClearResponse": {
+    \\      "type": "object",
+    \\      "required": ["cleared"],
+    \\      "properties": {
+    \\        "cleared": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadMemoryMode": {
     \\      "type": "string",
     \\      "enum": ["enabled", "disabled"]
@@ -4091,6 +4474,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadSetNameResponse.json", .contents = THREAD_SET_NAME_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadGoalStatus.json", .contents = THREAD_GOAL_STATUS_JSON_SCHEMA },
+    .{ .name = "ThreadGoal.json", .contents = THREAD_GOAL_JSON_SCHEMA },
+    .{ .name = "ThreadGoalSetParams.json", .contents = THREAD_GOAL_SET_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadGoalSetResponse.json", .contents = THREAD_GOAL_SET_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadGoalGetParams.json", .contents = THREAD_GOAL_GET_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadGoalGetResponse.json", .contents = THREAD_GOAL_GET_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadGoalClearParams.json", .contents = THREAD_GOAL_CLEAR_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadGoalClearResponse.json", .contents = THREAD_GOAL_CLEAR_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadMemoryMode.json", .contents = THREAD_MEMORY_MODE_JSON_SCHEMA },
     .{ .name = "RealtimeVoice.json", .contents = REALTIME_VOICE_JSON_SCHEMA },
     .{ .name = "RealtimeOutputModality.json", .contents = REALTIME_OUTPUT_MODALITY_JSON_SCHEMA },
@@ -4192,6 +4583,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
     .{ .name = "v2/ThreadSetNameParams.ts", .contents = THREAD_SET_NAME_PARAMS_TS },
     .{ .name = "v2/ThreadSetNameResponse.ts", .contents = THREAD_SET_NAME_RESPONSE_TS },
+    .{ .name = "v2/ThreadGoalStatus.ts", .contents = THREAD_GOAL_STATUS_TS },
+    .{ .name = "v2/ThreadGoal.ts", .contents = THREAD_GOAL_TS },
+    .{ .name = "v2/ThreadGoalSetParams.ts", .contents = THREAD_GOAL_SET_PARAMS_TS },
+    .{ .name = "v2/ThreadGoalSetResponse.ts", .contents = THREAD_GOAL_SET_RESPONSE_TS },
+    .{ .name = "v2/ThreadGoalGetParams.ts", .contents = THREAD_GOAL_GET_PARAMS_TS },
+    .{ .name = "v2/ThreadGoalGetResponse.ts", .contents = THREAD_GOAL_GET_RESPONSE_TS },
+    .{ .name = "v2/ThreadGoalClearParams.ts", .contents = THREAD_GOAL_CLEAR_PARAMS_TS },
+    .{ .name = "v2/ThreadGoalClearResponse.ts", .contents = THREAD_GOAL_CLEAR_RESPONSE_TS },
     .{ .name = "v2/ThreadMemoryModeSetParams.ts", .contents = THREAD_MEMORY_MODE_SET_PARAMS_TS },
     .{ .name = "v2/ThreadMemoryModeSetResponse.ts", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_TS },
     .{ .name = "v2/ThreadMetadataGitInfoUpdateParams.ts", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_TS },
@@ -4453,7 +4852,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
     }
     if (isThreadMethod(method)) {
-        return try handleThreadMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleThreadMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isFuzzyFileSearchSessionMethod(method)) {
         return try handleFuzzyFileSearchSessionMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -4627,6 +5026,9 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/list") or
         std.mem.eql(u8, method, "thread/inject_items") or
         std.mem.eql(u8, method, "thread/name/set") or
+        std.mem.eql(u8, method, "thread/goal/set") or
+        std.mem.eql(u8, method, "thread/goal/get") or
+        std.mem.eql(u8, method, "thread/goal/clear") or
         std.mem.eql(u8, method, "thread/memoryMode/set") or
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
@@ -4640,6 +5042,7 @@ fn isThreadMethod(method: []const u8) bool {
 
 fn handleThreadMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
@@ -4781,6 +5184,39 @@ fn handleThreadMethod(
         if (std.mem.trim(u8, name_value.string, " \t\r\n").len == 0) {
             return renderJsonRpcError(allocator, id_value, -32600, "thread name must not be empty");
         }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/goal/set")) {
+        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+            return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
+        }
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (validateThreadGoalSetParams(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/goal/get") or std.mem.eql(u8, method, "thread/goal/clear")) {
+        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+            return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
+        }
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
@@ -4937,6 +5373,20 @@ fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
     if (num_turns != .integer) return error.InvalidNumTurns;
     if (num_turns.integer < 0 or num_turns.integer > std.math.maxInt(u32)) return error.InvalidNumTurns;
     return @intCast(num_turns.integer);
+}
+
+fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServerState, key: []const u8) !bool {
+    var cfg = try config.load(allocator);
+    defer cfg.deinit(allocator);
+    var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    defer config_overrides.deinit(allocator);
+
+    if (config_overrides.get(key)) |enabled| return enabled;
+    if (state.runtime_feature_enablement.get(key)) |enabled| return enabled;
+    for (features_cmd.FeatureSpec.all) |feature| {
+        if (std.mem.eql(u8, feature.key, key)) return feature.default_enabled;
+    }
+    return false;
 }
 
 fn threadItemsParamIsArray(object: std.json.ObjectMap) bool {
@@ -5107,6 +5557,30 @@ fn validateThreadRealtimeAudioChunk(object: std.json.ObjectMap) ?[]const u8 {
     }
     if (object.get("itemId")) |value| {
         if (!jsonOptionalStringValueIsValid(value)) return "audio.itemId must be a string or null";
+    }
+    return null;
+}
+
+fn validateThreadGoalSetParams(object: std.json.ObjectMap) ?[]const u8 {
+    const has_objective = object.get("objective") != null;
+    const has_token_budget = object.get("tokenBudget") != null;
+    if (object.get("objective")) |value| {
+        if (!jsonOptionalStringValueIsValid(value)) return "goal objective must be a string or null";
+        if (value == .string) {
+            const objective = std.mem.trim(u8, value.string, " \t\r\n");
+            if (objective.len == 0) return "goal objective must not be empty";
+            const count = std.unicode.utf8CountCodepoints(objective) catch objective.len;
+            if (count > 4000) return "goal objective must be at most 4000 characters";
+        }
+    }
+    if (object.get("status")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "active", "paused", "budgetLimited", "complete" })) return "goal status must be active, paused, budgetLimited, complete, or null";
+    }
+    if (object.get("tokenBudget")) |value| {
+        if (value != .null and value != .integer) return "goal tokenBudget must be a positive integer or null";
+        if ((has_objective or has_token_budget) and value == .integer and value.integer <= 0) {
+            return "goal budgets must be positive when provided";
+        }
     }
     return null;
 }
@@ -14079,6 +14553,7 @@ fn experimentalFeatureStageLabel(stage: []const u8) []const u8 {
 
 const supported_experimental_feature_enablement = [_][]const u8{
     "apps",
+    "goals",
     "memories",
     "plugins",
     "remote_control",
@@ -14087,7 +14562,7 @@ const supported_experimental_feature_enablement = [_][]const u8{
     "tool_call_mcp_elicitation",
 };
 
-const supported_experimental_feature_enablement_message = "apps, memories, plugins, remote_control, tool_search, tool_suggest, tool_call_mcp_elicitation";
+const supported_experimental_feature_enablement_message = "apps, goals, memories, plugins, remote_control, tool_search, tool_suggest, tool_call_mcp_elicitation";
 
 fn handleExperimentalFeatureEnablementSet(
     allocator: std.mem.Allocator,
