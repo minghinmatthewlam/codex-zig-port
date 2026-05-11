@@ -2576,6 +2576,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                             }
                         ],
                     },
+                    {
+                        "type": "image",
+                        "url": "https://example.com/codex-zig-smoke.png",
+                    },
                     {"type": "text", "text": "second text item"},
                 ]
                 prompt = "hello from app-server turn\nsecond text item"
@@ -2614,6 +2618,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert user_item["id"] == "item-0"
                 assert user_item["content"] == [
                     input_items[0],
+                    input_items[1],
                     {
                         "type": "text",
                         "text": "second text item",
@@ -2658,7 +2663,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert server.request_paths == ["/responses"]
                 request = server.request_bodies[0]
                 assert request["model"] == "gpt-turn-smoke"
-                assert request["input"][0]["content"][0]["text"] == prompt
+                request_content = request["input"][0]["content"]
+                assert request_content[0]["text"] == prompt
+                assert request_content[1] == {
+                    "type": "input_image",
+                    "image_url": "https://example.com/codex-zig-smoke.png",
+                    "detail": "auto",
+                }
 
                 write_json_line(
                     proc,
