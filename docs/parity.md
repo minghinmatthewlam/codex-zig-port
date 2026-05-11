@@ -120,3 +120,5 @@ Additional app-server thread memory-mode coverage: `thread/memoryMode/set` valid
 Additional app-server thread metadata coverage: `thread/metadata/update` validates `threadId`, requires `gitInfo` to include at least one Git field, rejects empty string metadata fields with Rust-shaped errors, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation with an opaque thread response until full thread schema parity lands.
 
 Additional app-server thread read coverage: `thread/read` validates `threadId` and `includeTurns` when present, returns Rust-shaped `thread not loaded` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation with an opaque thread response until full thread schema parity lands.
+
+Additional app-server thread archive coverage: `thread/archive` validates `threadId`, returns the Rust-shaped missing-rollout error for valid missing threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
