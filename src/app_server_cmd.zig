@@ -162,6 +162,7 @@ const LoadedThreadGoal = struct {
 
     fn deinit(self: *LoadedThreadGoal, allocator: std.mem.Allocator) void {
         allocator.free(self.objective);
+        allocator.free(self.status);
     }
 };
 
@@ -15495,7 +15496,11 @@ fn setLoadedThreadGoal(
     if (objective) |value| {
         if (thread.goal) |*existing| {
             if (std.mem.eql(u8, existing.objective, value) and !std.mem.eql(u8, existing.status, "complete")) {
-                if (status) |next_status| existing.status = next_status;
+                if (status) |next_status| {
+                    const status_copy = try allocator.dupe(u8, next_status);
+                    allocator.free(existing.status);
+                    existing.status = status_copy;
+                }
                 if (token_budget.present) existing.token_budget = token_budget.value;
                 existing.updated_at = now;
                 thread.updated_at = now;
@@ -15505,9 +15510,14 @@ fn setLoadedThreadGoal(
             thread.goal = null;
         }
 
+        const objective_copy = try allocator.dupe(u8, value);
+        errdefer allocator.free(objective_copy);
+        const status_copy = try allocator.dupe(u8, status orelse "active");
+        errdefer allocator.free(status_copy);
+
         thread.goal = .{
-            .objective = try allocator.dupe(u8, value),
-            .status = status orelse "active",
+            .objective = objective_copy,
+            .status = status_copy,
             .token_budget = if (token_budget.present) token_budget.value else null,
             .tokens_used = 0,
             .time_used_seconds = 0,
@@ -15519,7 +15529,11 @@ fn setLoadedThreadGoal(
     }
 
     const existing = if (thread.goal) |*goal| goal else return error.MissingThreadGoal;
-    if (status) |next_status| existing.status = next_status;
+    if (status) |next_status| {
+        const status_copy = try allocator.dupe(u8, next_status);
+        allocator.free(existing.status);
+        existing.status = status_copy;
+    }
     if (token_budget.present) existing.token_budget = token_budget.value;
     existing.updated_at = now;
     thread.updated_at = now;
