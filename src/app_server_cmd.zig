@@ -655,6 +655,23 @@ const MEMORY_RESET_RESPONSE_TS =
     \\
     ;
 
+const GIT_DIFF_TO_REMOTE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GitDiffToRemoteParams {
+    \\  cwd: string;
+    \\}
+    \\
+    ;
+
+const GIT_DIFF_TO_REMOTE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GitDiffToRemoteResponse {
+    \\  sha: string;
+    \\  diff: string;
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -1972,6 +1989,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
+    \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
@@ -2013,6 +2031,10 @@ const CLIENT_REQUEST_TS =
     \\    }
     \\  | {
     \\      method: "memory/reset";
+    \\    }
+    \\  | {
+    \\      method: "gitDiffToRemote";
+    \\      params: GitDiffToRemoteParams;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -2182,6 +2204,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
+    \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
@@ -2228,6 +2251,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "memory/reset";
     \\      result: MemoryResetResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "gitDiffToRemote";
+    \\      result: GitDiffToRemoteResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2537,6 +2565,8 @@ const V2_INDEX_TS =
     \\export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";
     \\export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";
     \\export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
+    \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
+    \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
     \\export type { FileSystemPath } from "./FileSystemPath";
@@ -2807,6 +2837,35 @@ const MEMORY_RESET_RESPONSE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "MemoryResetResponse",
     \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GitDiffToRemoteParams",
+    \\  "type": "object",
+    \\  "required": ["cwd"],
+    \\  "properties": {
+    \\    "cwd": { "type": "string", "minLength": 1 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GitDiffToRemoteResponse",
+    \\  "type": "object",
+    \\  "required": ["sha", "diff"],
+    \\  "properties": {
+    \\    "sha": { "type": "string" },
+    \\    "diff": { "type": "string" }
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -5507,6 +5566,23 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "GitDiffToRemoteParams": {
+    \\      "type": "object",
+    \\      "required": ["cwd"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string", "minLength": 1 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "GitDiffToRemoteResponse": {
+    \\      "type": "object",
+    \\      "required": ["sha", "diff"],
+    \\      "properties": {
+    \\        "sha": { "type": "string" },
+    \\        "diff": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -6914,6 +6990,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
+    .{ .name = "GitDiffToRemoteParams.json", .contents = GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA },
+    .{ .name = "GitDiffToRemoteResponse.json", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -7066,6 +7144,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
+    .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
+    .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
