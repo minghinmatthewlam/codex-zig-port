@@ -2735,6 +2735,34 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-fork-by-path",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": "not-a-valid-thread-id",
+                        "path": str(rollout_path),
+                        "model": "gpt-path-fork",
+                    },
+                },
+            )
+            fork_by_path = read_json_line(proc, 5)
+            assert fork_by_path["id"] == "thread-fork-by-path"
+            fork_by_path_result = fork_by_path["result"]
+            fork_by_path_thread = fork_by_path_result["thread"]
+            assert fork_by_path_thread["id"] != resume_thread_id
+            assert fork_by_path_thread["forkedFromId"] == resume_thread_id
+            assert fork_by_path_thread["preview"] == "saved hello"
+            assert fork_by_path_thread["source"] == "appServer"
+            assert (
+                fork_by_path_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert fork_by_path_result["model"] == "gpt-path-fork"
+            assert_thread_started_notification(read_json_line(proc, 5), fork_by_path_thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-fork-exclude-turns",
                     "method": "thread/fork",
                     "params": {
@@ -9989,6 +10017,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadForkParams.json").read_text(encoding="utf-8")
         )
         assert thread_fork_params_schema["required"] == ["threadId"]
+        assert thread_fork_params_schema["properties"]["path"]["type"] == [
+            "string",
+            "null",
+        ]
         assert thread_fork_params_schema["properties"]["excludeTurns"]["type"] == "boolean"
         thread_fork_response_schema = json.loads(
             (out_dir / "ThreadForkResponse.json").read_text(encoding="utf-8")
@@ -10431,6 +10463,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadResumeParams" in bundle["$defs"]
         assert "ThreadResumeResponse" in bundle["$defs"]
         assert "ThreadForkParams" in bundle["$defs"]
+        assert bundle["$defs"]["ThreadForkParams"]["properties"]["path"]["type"] == [
+            "string",
+            "null",
+        ]
         assert "ThreadForkResponse" in bundle["$defs"]
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
@@ -10711,6 +10747,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "export interface ThreadForkParams" in thread_fork_params
         assert "threadId: string;" in thread_fork_params
+        assert "path?: string | null;" in thread_fork_params
         assert "ephemeral?: boolean;" in thread_fork_params
         assert "excludeTurns?: boolean;" in thread_fork_params
         thread_fork_response = (out_dir / "v2" / "ThreadForkResponse.ts").read_text(
