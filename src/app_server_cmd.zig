@@ -5915,6 +5915,18 @@ const TurnStartInput = struct {
     }
 };
 
+const TurnLocalImages = struct {
+    data_urls: []const []const u8 = &.{},
+    missing_placeholders: []const []const u8 = &.{},
+
+    fn deinit(self: *TurnLocalImages, allocator: std.mem.Allocator) void {
+        for (self.data_urls) |data_url| allocator.free(data_url);
+        if (self.data_urls.len > 0) allocator.free(self.data_urls);
+        for (self.missing_placeholders) |placeholder| allocator.free(placeholder);
+        if (self.missing_placeholders.len > 0) allocator.free(self.missing_placeholders);
+    }
+};
+
 fn isTurnMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "turn/start");
 }
@@ -5979,12 +5991,12 @@ fn handleTurnStart(
         else => return err,
     };
 
-    var local_images = image_inputs.load(allocator, input.local_image_paths) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load local image", err);
-    };
+    var local_images = try loadTurnLocalImages(allocator, input.local_image_paths);
     defer local_images.deinit(allocator);
     const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
     defer if (request_input_images.len > 0) allocator.free(request_input_images);
+    const prompt_for_turn = try turnPromptWithLocalImagePlaceholders(allocator, input.prompt, local_images.missing_placeholders);
+    defer allocator.free(prompt_for_turn);
 
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
@@ -5995,7 +6007,7 @@ fn handleTurnStart(
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
 
-    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, input.prompt, .{
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
@@ -6010,7 +6022,7 @@ fn handleTurnStart(
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-    try refreshLoadedThreadAfterTurn(allocator, thread, input.prompt);
+    try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -6206,6 +6218,77 @@ fn combineTurnInputImages(
     for (image_urls, 0..) |image_url, index| combined[index] = image_url;
     for (local_image_urls, 0..) |image_url, index| combined[image_urls.len + index] = image_url;
     return combined;
+}
+
+fn loadTurnLocalImages(allocator: std.mem.Allocator, paths: []const []const u8) !TurnLocalImages {
+    if (paths.len == 0) return .{};
+
+    var data_urls = std.ArrayList([]const u8).empty;
+    var data_urls_moved = false;
+    errdefer if (!data_urls_moved) {
+        for (data_urls.items) |data_url| allocator.free(data_url);
+        data_urls.deinit(allocator);
+    };
+
+    var missing_placeholders = std.ArrayList([]const u8).empty;
+    var missing_placeholders_moved = false;
+    errdefer if (!missing_placeholders_moved) {
+        for (missing_placeholders.items) |placeholder| allocator.free(placeholder);
+        missing_placeholders.deinit(allocator);
+    };
+
+    for (paths) |path| {
+        const data_url = image_inputs.loadOne(allocator, path) catch |err| {
+            const placeholder = try renderLocalImageErrorPlaceholder(allocator, path, err);
+            missing_placeholders.append(allocator, placeholder) catch |append_err| {
+                allocator.free(placeholder);
+                return append_err;
+            };
+            continue;
+        };
+        data_urls.append(allocator, data_url) catch |err| {
+            allocator.free(data_url);
+            return err;
+        };
+    }
+
+    const data_urls_owned = try data_urls.toOwnedSlice(allocator);
+    data_urls_moved = true;
+    errdefer {
+        for (data_urls_owned) |data_url| allocator.free(data_url);
+        if (data_urls_owned.len > 0) allocator.free(data_urls_owned);
+    }
+    const missing_placeholders_owned = try missing_placeholders.toOwnedSlice(allocator);
+    missing_placeholders_moved = true;
+    return .{
+        .data_urls = data_urls_owned,
+        .missing_placeholders = missing_placeholders_owned,
+    };
+}
+
+fn renderLocalImageErrorPlaceholder(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    err: anyerror,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "Codex could not read the local image at `{s}`: {s}", .{ path, @errorName(err) });
+}
+
+fn turnPromptWithLocalImagePlaceholders(
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    placeholders: []const []const u8,
+) ![]const u8 {
+    if (placeholders.len == 0) return allocator.dupe(u8, prompt);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    if (prompt.len > 0) try out.appendSlice(allocator, prompt);
+    for (placeholders) |placeholder| {
+        if (out.items.len > 0) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, placeholder);
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {

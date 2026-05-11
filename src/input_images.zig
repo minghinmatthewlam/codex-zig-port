@@ -40,7 +40,7 @@ pub fn load(allocator: std.mem.Allocator, paths: []const []const u8) !Loaded {
     return .{ .data_urls = data_urls };
 }
 
-fn loadOne(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+pub fn loadOne(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(20 * 1024 * 1024));
     defer allocator.free(bytes);
 
