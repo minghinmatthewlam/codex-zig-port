@@ -1123,6 +1123,126 @@ const ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS =
     \\
     ;
 
+const APPS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppsListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  threadId?: string | null;
+    \\  forceRefetch?: boolean;
+    \\}
+    \\
+    ;
+
+const APP_BRANDING_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppBranding {
+    \\  category: string | null;
+    \\  developer: string | null;
+    \\  website: string | null;
+    \\  privacyPolicy: string | null;
+    \\  termsOfService: string | null;
+    \\  isDiscoverableApp: boolean;
+    \\}
+    \\
+    ;
+
+const APP_REVIEW_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppReview {
+    \\  status: string;
+    \\}
+    \\
+    ;
+
+const APP_SCREENSHOT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppScreenshot {
+    \\  url: string | null;
+    \\  fileId: string | null;
+    \\  userPrompt: string;
+    \\}
+    \\
+    ;
+
+const APP_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppReview } from "./AppReview";
+    \\import type { AppScreenshot } from "./AppScreenshot";
+    \\
+    \\export interface AppMetadata {
+    \\  review: AppReview | null;
+    \\  categories: string[] | null;
+    \\  subCategories: string[] | null;
+    \\  seoDescription: string | null;
+    \\  screenshots: AppScreenshot[] | null;
+    \\  developer: string | null;
+    \\  version: string | null;
+    \\  versionId: string | null;
+    \\  versionNotes: string | null;
+    \\  firstPartyType: string | null;
+    \\  firstPartyRequiresInstall: boolean | null;
+    \\  showInComposerWhenUnlinked: boolean | null;
+    \\}
+    \\
+    ;
+
+const APP_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppBranding } from "./AppBranding";
+    \\import type { AppMetadata } from "./AppMetadata";
+    \\
+    \\export interface AppInfo {
+    \\  id: string;
+    \\  name: string;
+    \\  description: string | null;
+    \\  logoUrl: string | null;
+    \\  logoUrlDark: string | null;
+    \\  distributionChannel: string | null;
+    \\  branding: AppBranding | null;
+    \\  appMetadata: AppMetadata | null;
+    \\  labels: Record<string, string> | null;
+    \\  installUrl: string | null;
+    \\  isAccessible: boolean;
+    \\  isEnabled: boolean;
+    \\  pluginDisplayNames: string[];
+    \\}
+    \\
+    ;
+
+const APP_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppSummary {
+    \\  id: string;
+    \\  name: string;
+    \\  description: string | null;
+    \\  installUrl: string | null;
+    \\  needsAuth: boolean;
+    \\}
+    \\
+    ;
+
+const APPS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppInfo } from "./AppInfo";
+    \\
+    \\export interface AppsListResponse {
+    \\  data: AppInfo[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const APP_LIST_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppInfo } from "./AppInfo";
+    \\
+    \\export interface AppListUpdatedNotification {
+    \\  data: AppInfo[];
+    \\}
+    \\
+    ;
+
 const ADD_CREDITS_NUDGE_CREDIT_TYPE_TS =
     GENERATED_TS_HEADER ++
     \\export type AddCreditsNudgeCreditType = "credits" | "usage_limit";
@@ -3151,6 +3271,7 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_TS =
 
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AppsListParams } from "./v2/AppsListParams";
     \\import type { CancelLoginAccountParams } from "./v2/CancelLoginAccountParams";
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
@@ -3248,6 +3369,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      params: FuzzyFileSearchSessionStopParams;
+    \\    }
+    \\  | {
+    \\      method: "app/list";
+    \\      params?: AppsListParams | null;
     \\    }
     \\  | {
     \\      method: "hooks/list";
@@ -3492,6 +3617,7 @@ const CLIENT_REQUEST_TS =
 
 const CLIENT_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AppsListResponse } from "./v2/AppsListResponse";
     \\import type { CancelLoginAccountResponse } from "./v2/CancelLoginAccountResponse";
     \\import type { CommandExecResponse } from "./v2/CommandExecResponse";
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
@@ -3602,6 +3728,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      result: FuzzyFileSearchSessionStopResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "app/list";
+    \\      result: AppsListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -3912,6 +4043,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AccountRateLimitsUpdatedNotification } from "./v2/AccountRateLimitsUpdatedNotification";
     \\import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
+    \\import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
@@ -3939,6 +4071,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "account/rateLimits/updated";
     \\      params: AccountRateLimitsUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "app/list/updated";
+    \\      params: AppListUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "command/exec/outputDelta";
@@ -4073,6 +4209,15 @@ const V2_INDEX_TS =
     \\export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
     \\export type { AddCreditsNudgeCreditType } from "./AddCreditsNudgeCreditType";
     \\export type { AddCreditsNudgeEmailStatus } from "./AddCreditsNudgeEmailStatus";
+    \\export type { AppBranding } from "./AppBranding";
+    \\export type { AppInfo } from "./AppInfo";
+    \\export type { AppListUpdatedNotification } from "./AppListUpdatedNotification";
+    \\export type { AppMetadata } from "./AppMetadata";
+    \\export type { AppReview } from "./AppReview";
+    \\export type { AppsListParams } from "./AppsListParams";
+    \\export type { AppsListResponse } from "./AppsListResponse";
+    \\export type { AppScreenshot } from "./AppScreenshot";
+    \\export type { AppSummary } from "./AppSummary";
     \\export type { ByteRange } from "./ByteRange";
     \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
     \\export type { CancelLoginAccountResponse } from "./CancelLoginAccountResponse";
@@ -4970,6 +5115,193 @@ const ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["rateLimits"],
     \\  "properties": {
     \\    "rateLimits": { "$ref": "RateLimitSnapshot.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const APPS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "threadId": { "type": ["string", "null"] },
+    \\    "forceRefetch": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const APPS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "AppBranding": {
+    \\      "type": "object",
+    \\      "required": ["isDiscoverableApp"],
+    \\      "properties": {
+    \\        "category": { "type": ["string", "null"] },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "website": { "type": ["string", "null"] },
+    \\        "privacyPolicy": { "type": ["string", "null"] },
+    \\        "termsOfService": { "type": ["string", "null"] },
+    \\        "isDiscoverableApp": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppReview": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppScreenshot": {
+    \\      "type": "object",
+    \\      "required": ["userPrompt"],
+    \\      "properties": {
+    \\        "url": { "type": ["string", "null"] },
+    \\        "fileId": { "type": ["string", "null"] },
+    \\        "userPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppMetadata": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "review": { "anyOf": [{ "$ref": "#/$defs/AppReview" }, { "type": "null" }] },
+    \\        "categories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "subCategories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "seoDescription": { "type": ["string", "null"] },
+    \\        "screenshots": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AppScreenshot" } },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "version": { "type": ["string", "null"] },
+    \\        "versionId": { "type": ["string", "null"] },
+    \\        "versionNotes": { "type": ["string", "null"] },
+    \\        "firstPartyType": { "type": ["string", "null"] },
+    \\        "firstPartyRequiresInstall": { "type": ["boolean", "null"] },
+    \\        "showInComposerWhenUnlinked": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppInfo": {
+    \\      "type": "object",
+    \\      "required": ["id", "name"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "logoUrl": { "type": ["string", "null"] },
+    \\        "logoUrlDark": { "type": ["string", "null"] },
+    \\        "distributionChannel": { "type": ["string", "null"] },
+    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
+    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "isAccessible": { "type": "boolean", "default": false },
+    \\        "isEnabled": { "type": "boolean", "default": true },
+    \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppListUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } }
+    \\  },
+    \\  "$defs": {
+    \\    "AppBranding": {
+    \\      "type": "object",
+    \\      "required": ["isDiscoverableApp"],
+    \\      "properties": {
+    \\        "category": { "type": ["string", "null"] },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "website": { "type": ["string", "null"] },
+    \\        "privacyPolicy": { "type": ["string", "null"] },
+    \\        "termsOfService": { "type": ["string", "null"] },
+    \\        "isDiscoverableApp": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppReview": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppScreenshot": {
+    \\      "type": "object",
+    \\      "required": ["userPrompt"],
+    \\      "properties": {
+    \\        "url": { "type": ["string", "null"] },
+    \\        "fileId": { "type": ["string", "null"] },
+    \\        "userPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppMetadata": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "review": { "anyOf": [{ "$ref": "#/$defs/AppReview" }, { "type": "null" }] },
+    \\        "categories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "subCategories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "seoDescription": { "type": ["string", "null"] },
+    \\        "screenshots": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AppScreenshot" } },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "version": { "type": ["string", "null"] },
+    \\        "versionId": { "type": ["string", "null"] },
+    \\        "versionNotes": { "type": ["string", "null"] },
+    \\        "firstPartyType": { "type": ["string", "null"] },
+    \\        "firstPartyRequiresInstall": { "type": ["boolean", "null"] },
+    \\        "showInComposerWhenUnlinked": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppInfo": {
+    \\      "type": "object",
+    \\      "required": ["id", "name"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "logoUrl": { "type": ["string", "null"] },
+    \\        "logoUrlDark": { "type": ["string", "null"] },
+    \\        "distributionChannel": { "type": ["string", "null"] },
+    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
+    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "isAccessible": { "type": "boolean", "default": false },
+    \\        "isEnabled": { "type": "boolean", "default": true },
+    \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -9976,6 +10308,114 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "AppsListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "threadId": { "type": ["string", "null"] },
+    \\        "forceRefetch": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AppBranding": {
+    \\      "type": "object",
+    \\      "required": ["isDiscoverableApp"],
+    \\      "properties": {
+    \\        "category": { "type": ["string", "null"] },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "website": { "type": ["string", "null"] },
+    \\        "privacyPolicy": { "type": ["string", "null"] },
+    \\        "termsOfService": { "type": ["string", "null"] },
+    \\        "isDiscoverableApp": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppReview": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppScreenshot": {
+    \\      "type": "object",
+    \\      "required": ["userPrompt"],
+    \\      "properties": {
+    \\        "url": { "type": ["string", "null"] },
+    \\        "fileId": { "type": ["string", "null"] },
+    \\        "userPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppMetadata": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "review": { "anyOf": [{ "$ref": "#/$defs/AppReview" }, { "type": "null" }] },
+    \\        "categories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "subCategories": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "seoDescription": { "type": ["string", "null"] },
+    \\        "screenshots": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AppScreenshot" } },
+    \\        "developer": { "type": ["string", "null"] },
+    \\        "version": { "type": ["string", "null"] },
+    \\        "versionId": { "type": ["string", "null"] },
+    \\        "versionNotes": { "type": ["string", "null"] },
+    \\        "firstPartyType": { "type": ["string", "null"] },
+    \\        "firstPartyRequiresInstall": { "type": ["boolean", "null"] },
+    \\        "showInComposerWhenUnlinked": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppInfo": {
+    \\      "type": "object",
+    \\      "required": ["id", "name"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "logoUrl": { "type": ["string", "null"] },
+    \\        "logoUrlDark": { "type": ["string", "null"] },
+    \\        "distributionChannel": { "type": ["string", "null"] },
+    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
+    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "isAccessible": { "type": "boolean", "default": false },
+    \\        "isEnabled": { "type": "boolean", "default": true },
+    \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppSummary": {
+    \\      "type": "object",
+    \\      "required": ["id", "name", "needsAuth"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "needsAuth": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppListUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["data"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AddCreditsNudgeCreditType": {
     \\      "enum": ["credits", "usage_limit"],
     \\      "type": "string"
@@ -11399,6 +11839,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "RateLimitSnapshot.json", .contents = RATE_LIMIT_SNAPSHOT_JSON_SCHEMA },
     .{ .name = "GetAccountRateLimitsResponse.json", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_JSON_SCHEMA },
     .{ .name = "AccountRateLimitsUpdatedNotification.json", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "AppsListParams.json", .contents = APPS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "AppsListResponse.json", .contents = APPS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AppListUpdatedNotification.json", .contents = APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
     .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
@@ -11679,6 +12122,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/RateLimitSnapshot.ts", .contents = RATE_LIMIT_SNAPSHOT_TS },
     .{ .name = "v2/GetAccountRateLimitsResponse.ts", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS },
     .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/AppsListParams.ts", .contents = APPS_LIST_PARAMS_TS },
+    .{ .name = "v2/AppBranding.ts", .contents = APP_BRANDING_TS },
+    .{ .name = "v2/AppReview.ts", .contents = APP_REVIEW_TS },
+    .{ .name = "v2/AppScreenshot.ts", .contents = APP_SCREENSHOT_TS },
+    .{ .name = "v2/AppMetadata.ts", .contents = APP_METADATA_TS },
+    .{ .name = "v2/AppInfo.ts", .contents = APP_INFO_TS },
+    .{ .name = "v2/AppSummary.ts", .contents = APP_SUMMARY_TS },
+    .{ .name = "v2/AppsListResponse.ts", .contents = APPS_LIST_RESPONSE_TS },
+    .{ .name = "v2/AppListUpdatedNotification.ts", .contents = APP_LIST_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
@@ -12132,6 +12584,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "fuzzyFileSearch")) {
         return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
     }
+    if (std.mem.eql(u8, method, "app/list")) {
+        return try handleAppsList(allocator, state, id_value.?, object.get("params"));
+    }
     if (isTurnMethod(method)) {
         return try handleTurnMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -12210,6 +12665,30 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
     };
     return try renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleAppsList(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = switch (optionalAppsListParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    if (params) |object| {
+        if (object.get("threadId")) |value| {
+            if (value != .null) {
+                if (value != .string or value.string.len == 0) return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null");
+                if (findLoadedThread(state, value.string) == null) return renderThreadNotFound(allocator, id_value, value.string);
+            }
+        }
+    }
+
+    return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
 }
 
 fn handleGetConversationSummary(
@@ -24337,6 +24816,33 @@ const OptionalObjectParams = union(enum) {
     empty,
     message: []const u8,
 };
+
+fn optionalAppsListParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "app/list params must be an object" };
+    const object = params.object;
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return .{ .message = "cursor must be a string or null" };
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return .{ .message = "limit must be a non-negative integer or null" },
+            .number_string => |number| {
+                _ = std.fmt.parseUnsigned(u32, number, 10) catch return .{ .message = "limit must be a non-negative integer or null" };
+            },
+            else => return .{ .message = "limit must be a non-negative integer or null" },
+        }
+    }
+    if (object.get("threadId")) |value| {
+        if (value != .null and value != .string) return .{ .message = "threadId must be a string or null" };
+    }
+    if (object.get("forceRefetch")) |value| {
+        if (value != .bool) return .{ .message = "forceRefetch must be a boolean" };
+    }
+    return .{ .object = object };
+}
 
 fn optionalModelListParams(params_value: ?std.json.Value) OptionalObjectParams {
     const params = params_value orelse return .empty;
