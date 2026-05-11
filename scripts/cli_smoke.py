@@ -76,6 +76,40 @@ class ExecResponsesServer(ThreadingHTTPServer):
     response_delays: list[float]
 
 
+class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_paths.append(self.path)
+        if self.path == "/.well-known/oauth-authorization-server/mcp":
+            payload = json.dumps(
+                {
+                    "authorization_endpoint": f"{self.server.base_url}/oauth/authorize",
+                    "token_endpoint": f"{self.server.base_url}/oauth/token",
+                    "scopes_supported": ["read", "write"],
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        payload = b"not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class McpOAuthDiscoveryServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    base_url: str
+
+
 def default_exec_response_payload() -> bytes:
     return (
         b'data: {"type":"response.output_text.delta","delta":"stored reply"}\n\n'
@@ -106,6 +140,14 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
+    server = McpOAuthDiscoveryServer(("127.0.0.1", 0), McpOAuthDiscoveryHandler)
+    server.request_paths = []
+    server.base_url = f"http://127.0.0.1:{server.server_port}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"{server.base_url}/mcp"
 
 
 def make_exec_mock_env(temp_root: Path, base_url: str) -> dict[str, str]:
@@ -1460,10 +1502,10 @@ def mcp_oauth_store_key(name: str, url: str) -> str:
 
 def run_mcp_oauth_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
+    discovery_server, remote_url = start_mcp_oauth_discovery_server()
     try:
         codex_home = temp_root / "codex-home"
         codex_home.mkdir()
-        remote_url = "https://example.com/mcp"
         other_url = "https://other.example/mcp"
         remote_key = mcp_oauth_store_key("remote", remote_url)
         other_key = mcp_oauth_store_key("other", other_url)
@@ -1568,7 +1610,8 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
             check=True,
         )
         relisted_entries = {entry["name"]: entry for entry in json.loads(relisted.stdout)}
-        assert relisted_entries["remote"]["auth_status"] == "Unsupported"
+        assert relisted_entries["remote"]["auth_status"] == "NotLoggedIn"
+        assert "/.well-known/oauth-authorization-server/mcp" in discovery_server.request_paths
 
         missing = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
@@ -1596,6 +1639,8 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         assert stdio_logout.returncode != 0
         assert "error: McpOAuthLogoutRequiresHttp" in stdio_logout.stderr
     finally:
+        discovery_server.shutdown()
+        discovery_server.server_close()
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
