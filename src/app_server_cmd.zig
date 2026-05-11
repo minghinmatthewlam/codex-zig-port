@@ -1307,6 +1307,192 @@ const ABSOLUTE_PATH_BUF_TS =
     \\
     ;
 
+const FS_READ_FILE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsReadFileParams {
+    \\  path: AbsolutePathBuf;
+    \\}
+    \\
+    ;
+
+const FS_READ_FILE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsReadFileResponse {
+    \\  dataBase64: string;
+    \\}
+    \\
+    ;
+
+const FS_WRITE_FILE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsWriteFileParams {
+    \\  path: AbsolutePathBuf;
+    \\  dataBase64: string;
+    \\}
+    \\
+    ;
+
+const FS_WRITE_FILE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsWriteFileResponse {}
+    \\
+    ;
+
+const FS_CREATE_DIRECTORY_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsCreateDirectoryParams {
+    \\  path: AbsolutePathBuf;
+    \\  recursive?: boolean | null;
+    \\}
+    \\
+    ;
+
+const FS_CREATE_DIRECTORY_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsCreateDirectoryResponse {}
+    \\
+    ;
+
+const FS_GET_METADATA_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsGetMetadataParams {
+    \\  path: AbsolutePathBuf;
+    \\}
+    \\
+    ;
+
+const FS_GET_METADATA_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsGetMetadataResponse {
+    \\  isDirectory: boolean;
+    \\  isFile: boolean;
+    \\  isSymlink: boolean;
+    \\  createdAtMs: number;
+    \\  modifiedAtMs: number;
+    \\}
+    \\
+    ;
+
+const FS_READ_DIRECTORY_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsReadDirectoryParams {
+    \\  path: AbsolutePathBuf;
+    \\}
+    \\
+    ;
+
+const FS_READ_DIRECTORY_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsReadDirectoryEntry {
+    \\  fileName: string;
+    \\  isDirectory: boolean;
+    \\  isFile: boolean;
+    \\}
+    \\
+    ;
+
+const FS_READ_DIRECTORY_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FsReadDirectoryEntry } from "./FsReadDirectoryEntry";
+    \\
+    \\export interface FsReadDirectoryResponse {
+    \\  entries: FsReadDirectoryEntry[];
+    \\}
+    \\
+    ;
+
+const FS_REMOVE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsRemoveParams {
+    \\  path: AbsolutePathBuf;
+    \\  recursive?: boolean | null;
+    \\  force?: boolean | null;
+    \\}
+    \\
+    ;
+
+const FS_REMOVE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsRemoveResponse {}
+    \\
+    ;
+
+const FS_COPY_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsCopyParams {
+    \\  sourcePath: AbsolutePathBuf;
+    \\  destinationPath: AbsolutePathBuf;
+    \\  recursive?: boolean;
+    \\}
+    \\
+    ;
+
+const FS_COPY_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsCopyResponse {}
+    \\
+    ;
+
+const FS_WATCH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsWatchParams {
+    \\  watchId: string;
+    \\  path: AbsolutePathBuf;
+    \\}
+    \\
+    ;
+
+const FS_WATCH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsWatchResponse {
+    \\  path: AbsolutePathBuf;
+    \\}
+    \\
+    ;
+
+const FS_UNWATCH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsUnwatchParams {
+    \\  watchId: string;
+    \\}
+    \\
+    ;
+
+const FS_UNWATCH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FsUnwatchResponse {}
+    \\
+    ;
+
+const FS_CHANGED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface FsChangedNotification {
+    \\  watchId: string;
+    \\  changedPaths: AbsolutePathBuf[];
+    \\}
+    \\
+    ;
+
 const SANDBOX_POLICY_TS =
     GENERATED_TS_HEADER ++
     \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
@@ -2400,6 +2586,15 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
+    \\import type { FsCopyParams } from "./v2/FsCopyParams";
+    \\import type { FsCreateDirectoryParams } from "./v2/FsCreateDirectoryParams";
+    \\import type { FsGetMetadataParams } from "./v2/FsGetMetadataParams";
+    \\import type { FsReadDirectoryParams } from "./v2/FsReadDirectoryParams";
+    \\import type { FsReadFileParams } from "./v2/FsReadFileParams";
+    \\import type { FsRemoveParams } from "./v2/FsRemoveParams";
+    \\import type { FsUnwatchParams } from "./v2/FsUnwatchParams";
+    \\import type { FsWatchParams } from "./v2/FsWatchParams";
+    \\import type { FsWriteFileParams } from "./v2/FsWriteFileParams";
     \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
     \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
@@ -2478,6 +2673,42 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "skills/config/write";
     \\      params: SkillsConfigWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/readFile";
+    \\      params: FsReadFileParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/writeFile";
+    \\      params: FsWriteFileParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/createDirectory";
+    \\      params: FsCreateDirectoryParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/getMetadata";
+    \\      params: FsGetMetadataParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/readDirectory";
+    \\      params: FsReadDirectoryParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/remove";
+    \\      params: FsRemoveParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/copy";
+    \\      params: FsCopyParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/watch";
+    \\      params: FsWatchParams;
+    \\    }
+    \\  | {
+    \\      method: "fs/unwatch";
+    \\      params: FsUnwatchParams;
     \\    }
     \\  | {
     \\      method: "config/mcpServer/reload";
@@ -2660,6 +2891,15 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
+    \\import type { FsCopyResponse } from "./v2/FsCopyResponse";
+    \\import type { FsCreateDirectoryResponse } from "./v2/FsCreateDirectoryResponse";
+    \\import type { FsGetMetadataResponse } from "./v2/FsGetMetadataResponse";
+    \\import type { FsReadDirectoryResponse } from "./v2/FsReadDirectoryResponse";
+    \\import type { FsReadFileResponse } from "./v2/FsReadFileResponse";
+    \\import type { FsRemoveResponse } from "./v2/FsRemoveResponse";
+    \\import type { FsUnwatchResponse } from "./v2/FsUnwatchResponse";
+    \\import type { FsWatchResponse } from "./v2/FsWatchResponse";
+    \\import type { FsWriteFileResponse } from "./v2/FsWriteFileResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
@@ -2751,6 +2991,51 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "skills/config/write";
     \\      result: SkillsConfigWriteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/readFile";
+    \\      result: FsReadFileResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/writeFile";
+    \\      result: FsWriteFileResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/createDirectory";
+    \\      result: FsCreateDirectoryResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/getMetadata";
+    \\      result: FsGetMetadataResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/readDirectory";
+    \\      result: FsReadDirectoryResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/remove";
+    \\      result: FsRemoveResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/copy";
+    \\      result: FsCopyResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/watch";
+    \\      result: FsWatchResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "fs/unwatch";
+    \\      result: FsUnwatchResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2964,6 +3249,7 @@ const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./v2/FuzzyFileSearchSessionCompletedNotification";
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./v2/FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
@@ -2989,6 +3275,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "fuzzyFileSearch/sessionCompleted";
     \\      params: FuzzyFileSearchSessionCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "fs/changed";
+    \\      params: FsChangedNotification;
     \\    }
     \\  | {
     \\      method: "skills/changed";
@@ -3132,6 +3422,26 @@ const V2_INDEX_TS =
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
     \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
+    \\export type { FsChangedNotification } from "./FsChangedNotification";
+    \\export type { FsCopyParams } from "./FsCopyParams";
+    \\export type { FsCopyResponse } from "./FsCopyResponse";
+    \\export type { FsCreateDirectoryParams } from "./FsCreateDirectoryParams";
+    \\export type { FsCreateDirectoryResponse } from "./FsCreateDirectoryResponse";
+    \\export type { FsGetMetadataParams } from "./FsGetMetadataParams";
+    \\export type { FsGetMetadataResponse } from "./FsGetMetadataResponse";
+    \\export type { FsReadDirectoryEntry } from "./FsReadDirectoryEntry";
+    \\export type { FsReadDirectoryParams } from "./FsReadDirectoryParams";
+    \\export type { FsReadDirectoryResponse } from "./FsReadDirectoryResponse";
+    \\export type { FsReadFileParams } from "./FsReadFileParams";
+    \\export type { FsReadFileResponse } from "./FsReadFileResponse";
+    \\export type { FsRemoveParams } from "./FsRemoveParams";
+    \\export type { FsRemoveResponse } from "./FsRemoveResponse";
+    \\export type { FsUnwatchParams } from "./FsUnwatchParams";
+    \\export type { FsUnwatchResponse } from "./FsUnwatchResponse";
+    \\export type { FsWatchParams } from "./FsWatchParams";
+    \\export type { FsWatchResponse } from "./FsWatchResponse";
+    \\export type { FsWriteFileParams } from "./FsWriteFileParams";
+    \\export type { FsWriteFileResponse } from "./FsWriteFileResponse";
     \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
     \\export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
@@ -4894,6 +5204,292 @@ const ABSOLUTE_PATH_BUF_JSON_SCHEMA =
     \\  "title": "AbsolutePathBuf",
     \\  "description": "A path that is guaranteed to be absolute and normalized. When deserializing an AbsolutePathBuf, a base path must be set unless the path is already absolute.",
     \\  "type": "string"
+    \\}
+    \\
+;
+
+const FS_READ_FILE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsReadFileParams",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_READ_FILE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsReadFileResponse",
+    \\  "type": "object",
+    \\  "required": ["dataBase64"],
+    \\  "properties": {
+    \\    "dataBase64": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_WRITE_FILE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsWriteFileParams",
+    \\  "type": "object",
+    \\  "required": ["path", "dataBase64"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" },
+    \\    "dataBase64": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_WRITE_FILE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsWriteFileResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_CREATE_DIRECTORY_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsCreateDirectoryParams",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" },
+    \\    "recursive": { "type": ["boolean", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_CREATE_DIRECTORY_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsCreateDirectoryResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_GET_METADATA_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsGetMetadataParams",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_GET_METADATA_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsGetMetadataResponse",
+    \\  "type": "object",
+    \\  "required": ["isDirectory", "isFile", "isSymlink", "createdAtMs", "modifiedAtMs"],
+    \\  "properties": {
+    \\    "isDirectory": { "type": "boolean" },
+    \\    "isFile": { "type": "boolean" },
+    \\    "isSymlink": { "type": "boolean" },
+    \\    "createdAtMs": { "type": "integer" },
+    \\    "modifiedAtMs": { "type": "integer" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_READ_DIRECTORY_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsReadDirectoryParams",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_READ_DIRECTORY_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsReadDirectoryEntry",
+    \\  "type": "object",
+    \\  "required": ["fileName", "isDirectory", "isFile"],
+    \\  "properties": {
+    \\    "fileName": { "type": "string" },
+    \\    "isDirectory": { "type": "boolean" },
+    \\    "isFile": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_READ_DIRECTORY_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsReadDirectoryResponse",
+    \\  "type": "object",
+    \\  "required": ["entries"],
+    \\  "properties": {
+    \\    "entries": { "type": "array", "items": { "$ref": "#/$defs/FsReadDirectoryEntry" } }
+    \\  },
+    \\  "$defs": {
+    \\    "FsReadDirectoryEntry": {
+    \\      "type": "object",
+    \\      "required": ["fileName", "isDirectory", "isFile"],
+    \\      "properties": {
+    \\        "fileName": { "type": "string" },
+    \\        "isDirectory": { "type": "boolean" },
+    \\        "isFile": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_REMOVE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsRemoveParams",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" },
+    \\    "recursive": { "type": ["boolean", "null"] },
+    \\    "force": { "type": ["boolean", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_REMOVE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsRemoveResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_COPY_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsCopyParams",
+    \\  "type": "object",
+    \\  "required": ["sourcePath", "destinationPath"],
+    \\  "properties": {
+    \\    "sourcePath": { "$ref": "AbsolutePathBuf.json" },
+    \\    "destinationPath": { "$ref": "AbsolutePathBuf.json" },
+    \\    "recursive": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_COPY_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsCopyResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_WATCH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsWatchParams",
+    \\  "type": "object",
+    \\  "required": ["watchId", "path"],
+    \\  "properties": {
+    \\    "watchId": { "type": "string" },
+    \\    "path": { "$ref": "AbsolutePathBuf.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_WATCH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsWatchResponse",
+    \\  "type": "object",
+    \\  "required": ["path"],
+    \\  "properties": {
+    \\    "path": { "$ref": "AbsolutePathBuf.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_UNWATCH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsUnwatchParams",
+    \\  "type": "object",
+    \\  "required": ["watchId"],
+    \\  "properties": {
+    \\    "watchId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FS_UNWATCH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsUnwatchResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const FS_CHANGED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FsChangedNotification",
+    \\  "type": "object",
+    \\  "required": ["watchId", "changedPaths"],
+    \\  "properties": {
+    \\    "watchId": { "type": "string" },
+    \\    "changedPaths": { "type": "array", "items": { "$ref": "AbsolutePathBuf.json" } }
+    \\  },
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -7663,6 +8259,160 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
+    \\    "FsReadFileParams": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsReadFileResponse": {
+    \\      "type": "object",
+    \\      "required": ["dataBase64"],
+    \\      "properties": {
+    \\        "dataBase64": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsWriteFileParams": {
+    \\      "type": "object",
+    \\      "required": ["path", "dataBase64"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "dataBase64": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsWriteFileResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsCreateDirectoryParams": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "recursive": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsCreateDirectoryResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsGetMetadataParams": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsGetMetadataResponse": {
+    \\      "type": "object",
+    \\      "required": ["isDirectory", "isFile", "isSymlink", "createdAtMs", "modifiedAtMs"],
+    \\      "properties": {
+    \\        "isDirectory": { "type": "boolean" },
+    \\        "isFile": { "type": "boolean" },
+    \\        "isSymlink": { "type": "boolean" },
+    \\        "createdAtMs": { "type": "integer" },
+    \\        "modifiedAtMs": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsReadDirectoryParams": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsReadDirectoryEntry": {
+    \\      "type": "object",
+    \\      "required": ["fileName", "isDirectory", "isFile"],
+    \\      "properties": {
+    \\        "fileName": { "type": "string" },
+    \\        "isDirectory": { "type": "boolean" },
+    \\        "isFile": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsReadDirectoryResponse": {
+    \\      "type": "object",
+    \\      "required": ["entries"],
+    \\      "properties": {
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/FsReadDirectoryEntry" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsRemoveParams": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "recursive": { "type": ["boolean", "null"] },
+    \\        "force": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsRemoveResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsCopyParams": {
+    \\      "type": "object",
+    \\      "required": ["sourcePath", "destinationPath"],
+    \\      "properties": {
+    \\        "sourcePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "destinationPath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "recursive": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsCopyResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsWatchParams": {
+    \\      "type": "object",
+    \\      "required": ["watchId", "path"],
+    \\      "properties": {
+    \\        "watchId": { "type": "string" },
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsWatchResponse": {
+    \\      "type": "object",
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsUnwatchParams": {
+    \\      "type": "object",
+    \\      "required": ["watchId"],
+    \\      "properties": {
+    \\        "watchId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FsUnwatchResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "FsChangedNotification": {
+    \\      "type": "object",
+    \\      "required": ["watchId", "changedPaths"],
+    \\      "properties": {
+    \\        "watchId": { "type": "string" },
+    \\        "changedPaths": { "type": "array", "items": { "$ref": "#/$defs/AbsolutePathBuf" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "NetworkAccess": {
     \\      "enum": ["restricted", "enabled"],
     \\      "type": "string"
@@ -8947,6 +9697,26 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ExperimentalFeatureEnablementSetResponse.json", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
+    .{ .name = "FsReadFileParams.json", .contents = FS_READ_FILE_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsReadFileResponse.json", .contents = FS_READ_FILE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsWriteFileParams.json", .contents = FS_WRITE_FILE_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsWriteFileResponse.json", .contents = FS_WRITE_FILE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsCreateDirectoryParams.json", .contents = FS_CREATE_DIRECTORY_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsCreateDirectoryResponse.json", .contents = FS_CREATE_DIRECTORY_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsGetMetadataParams.json", .contents = FS_GET_METADATA_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsGetMetadataResponse.json", .contents = FS_GET_METADATA_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsReadDirectoryParams.json", .contents = FS_READ_DIRECTORY_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsReadDirectoryEntry.json", .contents = FS_READ_DIRECTORY_ENTRY_JSON_SCHEMA },
+    .{ .name = "FsReadDirectoryResponse.json", .contents = FS_READ_DIRECTORY_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsRemoveParams.json", .contents = FS_REMOVE_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsRemoveResponse.json", .contents = FS_REMOVE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsCopyParams.json", .contents = FS_COPY_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsCopyResponse.json", .contents = FS_COPY_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsWatchParams.json", .contents = FS_WATCH_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsWatchResponse.json", .contents = FS_WATCH_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsUnwatchParams.json", .contents = FS_UNWATCH_PARAMS_JSON_SCHEMA },
+    .{ .name = "FsUnwatchResponse.json", .contents = FS_UNWATCH_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FsChangedNotification.json", .contents = FS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
     .{ .name = "SandboxPolicy.json", .contents = SANDBOX_POLICY_JSON_SCHEMA },
     .{ .name = "FileSystemAccessMode.json", .contents = FILE_SYSTEM_ACCESS_MODE_JSON_SCHEMA },
@@ -9147,6 +9917,26 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/FileSystemSpecialPath.ts", .contents = FILE_SYSTEM_SPECIAL_PATH_TS },
     .{ .name = "v2/FileSystemPath.ts", .contents = FILE_SYSTEM_PATH_TS },
     .{ .name = "v2/FileSystemSandboxEntry.ts", .contents = FILE_SYSTEM_SANDBOX_ENTRY_TS },
+    .{ .name = "v2/FsReadFileParams.ts", .contents = FS_READ_FILE_PARAMS_TS },
+    .{ .name = "v2/FsReadFileResponse.ts", .contents = FS_READ_FILE_RESPONSE_TS },
+    .{ .name = "v2/FsWriteFileParams.ts", .contents = FS_WRITE_FILE_PARAMS_TS },
+    .{ .name = "v2/FsWriteFileResponse.ts", .contents = FS_WRITE_FILE_RESPONSE_TS },
+    .{ .name = "v2/FsCreateDirectoryParams.ts", .contents = FS_CREATE_DIRECTORY_PARAMS_TS },
+    .{ .name = "v2/FsCreateDirectoryResponse.ts", .contents = FS_CREATE_DIRECTORY_RESPONSE_TS },
+    .{ .name = "v2/FsGetMetadataParams.ts", .contents = FS_GET_METADATA_PARAMS_TS },
+    .{ .name = "v2/FsGetMetadataResponse.ts", .contents = FS_GET_METADATA_RESPONSE_TS },
+    .{ .name = "v2/FsReadDirectoryParams.ts", .contents = FS_READ_DIRECTORY_PARAMS_TS },
+    .{ .name = "v2/FsReadDirectoryEntry.ts", .contents = FS_READ_DIRECTORY_ENTRY_TS },
+    .{ .name = "v2/FsReadDirectoryResponse.ts", .contents = FS_READ_DIRECTORY_RESPONSE_TS },
+    .{ .name = "v2/FsRemoveParams.ts", .contents = FS_REMOVE_PARAMS_TS },
+    .{ .name = "v2/FsRemoveResponse.ts", .contents = FS_REMOVE_RESPONSE_TS },
+    .{ .name = "v2/FsCopyParams.ts", .contents = FS_COPY_PARAMS_TS },
+    .{ .name = "v2/FsCopyResponse.ts", .contents = FS_COPY_RESPONSE_TS },
+    .{ .name = "v2/FsWatchParams.ts", .contents = FS_WATCH_PARAMS_TS },
+    .{ .name = "v2/FsWatchResponse.ts", .contents = FS_WATCH_RESPONSE_TS },
+    .{ .name = "v2/FsUnwatchParams.ts", .contents = FS_UNWATCH_PARAMS_TS },
+    .{ .name = "v2/FsUnwatchResponse.ts", .contents = FS_UNWATCH_RESPONSE_TS },
+    .{ .name = "v2/FsChangedNotification.ts", .contents = FS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/PermissionProfileNetworkPermissions.ts", .contents = PERMISSION_PROFILE_NETWORK_PERMISSIONS_TS },
     .{ .name = "v2/PermissionProfileFileSystemPermissions.ts", .contents = PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_TS },
     .{ .name = "v2/PermissionProfile.ts", .contents = PERMISSION_PROFILE_TS },
