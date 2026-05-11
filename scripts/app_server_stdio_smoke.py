@@ -119,6 +119,23 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
 
 
 class StreamableMcpHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append({"method": "GET"})
+        payload = self.server.pending_stream_responses.pop(0)
+        encoded = b"event: message\ndata: " + json.dumps(
+            payload, separators=(",", ":")
+        ).encode() + b"\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Mcp-Session-Id", self.server.session_id)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_DELETE(self) -> None:
         self.server.request_paths.append(self.path)
         self.server.request_headers.append(
@@ -149,7 +166,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if method == "initialize":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -162,7 +180,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "tools/list":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -186,7 +205,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
         if method == "resources/list":
             cursor = request.get("params", {}).get("cursor")
             if cursor == "next-http-resources":
-                self.write_rpc(
+                self.write_or_defer(
+                    method,
                     {
                         "jsonrpc": "2.0",
                         "id": request_id,
@@ -204,7 +224,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -224,7 +245,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "resources/templates/list":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -245,7 +267,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             return
         if method == "resources/read":
             uri = request.get("params", {}).get("uri")
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -268,7 +291,8 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             message = arguments.get("message", "") if isinstance(arguments, dict) else ""
             thread_id = meta.get("threadId", "") if isinstance(meta, dict) else ""
             source = meta.get("source", "") if isinstance(meta, dict) else ""
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -286,13 +310,24 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
                 }
             )
             return
-        self.write_rpc(
+        self.write_or_defer(
+            method,
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {"code": -32601, "message": f"unknown method: {method}"},
             }
         )
+
+    def write_or_defer(self, method: str, payload: dict) -> None:
+        if method in self.server.deferred_methods:
+            self.server.pending_stream_responses.append(payload)
+            self.send_response(202)
+            self.send_header("Mcp-Session-Id", self.server.session_id)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.write_rpc(payload)
 
     def write_rpc(self, payload: dict) -> None:
         encoded = json.dumps(payload, separators=(",", ":")).encode()
@@ -316,6 +351,8 @@ class StreamableMcpServer(ThreadingHTTPServer):
     request_paths: list[str]
     request_headers: list[dict[str, str]]
     request_bodies: list[dict]
+    deferred_methods: set[str]
+    pending_stream_responses: list[dict]
     sse: bool
     session_id: str
 
@@ -342,6 +379,8 @@ def start_streamable_mcp_server(sse: bool = False) -> tuple[StreamableMcpServer,
     server.request_paths = []
     server.request_headers = []
     server.request_bodies = []
+    server.deferred_methods = set()
+    server.pending_stream_responses = []
     server.sse = sse
     server.session_id = "streamable-session-1"
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -8134,6 +8173,59 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             assert streamable_server.request_bodies[-2]["params"]["name"] == "echo"
             assert streamable_server.request_headers[-1]["authorization"] == "Bearer oauth-tool-token"
             assert streamable_server.request_headers[-2]["accept"] == "application/json, text/event-stream"
+
+            streamable_server.deferred_methods = {"tools/call"}
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-http-get-server",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "remote_tool_docs",
+                        "tool": "echo",
+                        "arguments": {"message": "hello from get"},
+                        "_meta": {"source": "mcp-http-get-app"},
+                    },
+                },
+            )
+            http_get_server = read_json_line(proc, 5)
+            assert http_get_server["id"] == "mcp-tool-http-get-server"
+            assert http_get_server["result"] == {
+                "content": [{"type": "text", "text": "http echo: hello from get"}],
+                "structuredContent": {
+                    "echoed": "hello from get",
+                    "threadId": thread_id,
+                    "source": "mcp-http-get-app",
+                    "transport": "streamable_http",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "streamable-smoke", "threadId": thread_id},
+            }
+            assert [request["method"] for request in streamable_server.request_bodies] == [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                "DELETE",
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                "GET",
+                "DELETE",
+            ]
+            assert "mcp-session-id" not in streamable_server.request_headers[4]
+            for index in (5, 6, 7, 8):
+                assert (
+                    streamable_server.request_headers[index]["mcp-session-id"]
+                    == "streamable-session-1"
+                )
+            assert streamable_server.request_bodies[6]["params"]["arguments"] == {
+                "message": "hello from get"
+            }
+            assert streamable_server.request_headers[7]["accept"] == "application/json, text/event-stream"
+            assert streamable_server.request_headers[7]["authorization"] == "Bearer oauth-tool-token"
+            assert streamable_server.request_headers[8]["authorization"] == "Bearer oauth-tool-token"
 
             assert proc.stdin is not None
             proc.stdin.close()

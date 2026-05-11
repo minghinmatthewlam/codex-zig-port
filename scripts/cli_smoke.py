@@ -118,6 +118,21 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
 
 
 class StreamableMcpToolHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_bodies.append({"method": "GET"})
+        payload = self.server.pending_stream_responses.pop(0)
+        encoded = b"event: message\ndata: " + json.dumps(
+            payload, separators=(",", ":")
+        ).encode() + b"\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Mcp-Session-Id", self.server.session_id)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_DELETE(self) -> None:
         self.server.request_paths.append(self.path)
         self.server.request_headers.append(dict(self.headers.items()))
@@ -142,7 +157,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         if method == "initialize":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -155,7 +171,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "tools/list":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -179,7 +196,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             params = request.get("params", {})
             arguments = params.get("arguments", {})
             message = arguments.get("message", "") if isinstance(arguments, dict) else ""
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -192,7 +210,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "resources/list":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -211,7 +230,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "resources/templates/list":
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -230,7 +250,8 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
             return
         if method == "resources/read":
             uri = request.get("params", {}).get("uri")
-            self.write_rpc(
+            self.write_or_defer(
+                method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -246,13 +267,24 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
                 }
             )
             return
-        self.write_rpc(
+        self.write_or_defer(
+            method,
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {"code": -32601, "message": f"unknown method: {method}"},
             }
         )
+
+    def write_or_defer(self, method: str, payload: dict) -> None:
+        if method in self.server.deferred_methods:
+            self.server.pending_stream_responses.append(payload)
+            self.send_response(202)
+            self.send_header("Mcp-Session-Id", self.server.session_id)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.write_rpc(payload)
 
     def write_rpc(self, payload: dict) -> None:
         encoded = json.dumps(payload, separators=(",", ":")).encode()
@@ -271,6 +303,8 @@ class StreamableMcpToolServer(ThreadingHTTPServer):
     request_paths: list[str]
     request_headers: list[dict[str, str]]
     request_bodies: list[dict]
+    deferred_methods: set[str]
+    pending_stream_responses: list[dict]
     session_id: str
 
 
@@ -319,6 +353,8 @@ def start_streamable_mcp_tool_server() -> tuple[StreamableMcpToolServer, str]:
     server.request_paths = []
     server.request_headers = []
     server.request_bodies = []
+    server.deferred_methods = set()
+    server.pending_stream_responses = []
     server.session_id = "streamable-session-1"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}/mcp"
@@ -1839,6 +1875,98 @@ def run_exec_streamable_http_mcp_tool_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_streamable_http_mcp_get_stream_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-http-mcp-get-", dir="/tmp"))
+    responses_server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
+    mcp_server.deferred_methods = {"tools/call"}
+    responses_server.response_payloads = [
+        function_call_response_payload(
+            "call-http-tool",
+            "mcp__remote_tools__echo",
+            {"message": "hello from get stream"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"http mcp get done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    codex_home = temp_root / "codex-home"
+    try:
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-http-mcp-get"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[mcp_servers.remote-tools]",
+                    f"url = {json.dumps(mcp_url)}",
+                    'bearer_token_env_var = "STREAMABLE_MCP_TOKEN"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env["STREAMABLE_MCP_TOKEN"] = "streamable-token"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "http", "mcp", "tool"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "http mcp get done\n"
+        assert len(responses_server.request_bodies) == 2
+        tool_output = responses_server.request_bodies[1]["input"][-1]["output"]
+        assert tool_output == "http echo: hello from get stream"
+
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "GET",
+            "DELETE",
+        ]
+        assert header_value(mcp_server.request_headers[0], "Mcp-Session-Id") is None
+        assert header_value(mcp_server.request_headers[4], "Mcp-Session-Id") is None
+        for index in (1, 2, 3, 5, 6, 7, 8):
+            assert (
+                header_value(mcp_server.request_headers[index], "Mcp-Session-Id")
+                == "streamable-session-1"
+            )
+        assert mcp_server.request_bodies[6]["params"]["arguments"] == {
+            "message": "hello from get stream"
+        }
+        assert header_value(mcp_server.request_headers[7], "Accept") == (
+            "application/json, text/event-stream"
+        )
+        assert header_value(mcp_server.request_headers[7], "Authorization") == (
+            "Bearer streamable-token"
+        )
+        assert header_value(mcp_server.request_headers[8], "Authorization") == (
+            "Bearer streamable-token"
+        )
+    finally:
+        responses_server.shutdown()
+        responses_server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def mcp_oauth_store_key(name: str, url: str) -> str:
     payload = json.dumps(
         {"headers": {}, "type": "http", "url": url},
@@ -2732,6 +2860,7 @@ def main() -> None:
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
     run_exec_mcp_resource_tools_smoke(binary)
     run_exec_streamable_http_mcp_tool_smoke(binary)
+    run_exec_streamable_http_mcp_get_stream_smoke(binary)
     run_mcp_oauth_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -2756,6 +2885,7 @@ def main() -> None:
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
     print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-streamable-http-mcp-tool-e2e: ok")
+    print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
     print("cli-mcp-oauth-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
