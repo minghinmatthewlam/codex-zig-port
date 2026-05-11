@@ -8709,6 +8709,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadShellCommandResponse.json").read_text(encoding="utf-8")
         )
         assert thread_shell_command_response["additionalProperties"] is False
+        thread_guardian_approval = json.loads(
+            (out_dir / "ThreadApproveGuardianDeniedActionParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_guardian_approval["required"] == ["threadId", "event"]
+        assert (
+            "GuardianAssessmentEvent"
+            in thread_guardian_approval["properties"]["event"]["description"]
+        )
+        thread_guardian_approval_response = json.loads(
+            (
+                out_dir / "ThreadApproveGuardianDeniedActionResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert thread_guardian_approval_response["additionalProperties"] is False
         thread_background_clean = json.loads(
             (out_dir / "ThreadBackgroundTerminalsCleanParams.json").read_text(
                 encoding="utf-8"
@@ -8860,6 +8876,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadUnarchiveResponse" in bundle["$defs"]
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
+        assert "ThreadApproveGuardianDeniedActionResponse" in bundle["$defs"]
         assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
         assert "ThreadIncrementElicitationResponse" in bundle["$defs"]
         assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
@@ -8963,6 +8980,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadCompactStartParams;" in client_request
         assert 'method: "thread/shellCommand";' in client_request
         assert "params: ThreadShellCommandParams;" in client_request
+        assert 'method: "thread/approveGuardianDeniedAction";' in client_request
+        assert (
+            "params: ThreadApproveGuardianDeniedActionParams;" in client_request
+        )
         assert 'method: "thread/backgroundTerminals/clean";' in client_request
         assert "params: ThreadBackgroundTerminalsCleanParams;" in client_request
         assert 'method: "thread/increment_elicitation";' in client_request
@@ -8992,6 +9013,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadCompactStartResponse;" in client_response
         assert 'method: "thread/shellCommand";' in client_response
         assert "result: ThreadShellCommandResponse;" in client_response
+        assert 'method: "thread/approveGuardianDeniedAction";' in client_response
+        assert (
+            "result: ThreadApproveGuardianDeniedActionResponse;" in client_response
+        )
         assert 'method: "thread/backgroundTerminals/clean";' in client_response
         assert "result: ThreadBackgroundTerminalsCleanResponse;" in client_response
         assert 'method: "thread/increment_elicitation";' in client_response
@@ -9109,6 +9134,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadShellCommandResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadShellCommandResponse {}" in thread_shell_command_response
+        thread_guardian_approval = (
+            out_dir / "v2" / "ThreadApproveGuardianDeniedActionParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_guardian_approval
+        assert "event: unknown;" in thread_guardian_approval
+        assert "GuardianAssessmentEvent" in thread_guardian_approval
+        thread_guardian_approval_response = (
+            out_dir / "v2" / "ThreadApproveGuardianDeniedActionResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadApproveGuardianDeniedActionResponse {}"
+            in thread_guardian_approval_response
+        )
         thread_background_clean = (
             out_dir / "v2" / "ThreadBackgroundTerminalsCleanParams.ts"
         ).read_text(encoding="utf-8")
@@ -9255,6 +9293,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";' in v2_index
         assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
         assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
+        assert (
+            'export type { ThreadApproveGuardianDeniedActionParams } from "./ThreadApproveGuardianDeniedActionParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveGuardianDeniedActionResponse";'
+            in v2_index
+        )
         assert (
             'export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";'
             in v2_index
