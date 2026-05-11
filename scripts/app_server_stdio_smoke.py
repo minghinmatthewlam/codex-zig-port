@@ -11484,6 +11484,100 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert filesystem_entry["properties"]["path"]["$ref"] == "FileSystemPath.json"
         assert filesystem_entry["properties"]["access"]["$ref"] == "FileSystemAccessMode.json"
+        fs_read_file_params = json.loads(
+            (out_dir / "FsReadFileParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_read_file_params["required"] == ["path"]
+        assert (
+            fs_read_file_params["properties"]["path"]["$ref"]
+            == "AbsolutePathBuf.json"
+        )
+        fs_read_file_response = json.loads(
+            (out_dir / "FsReadFileResponse.json").read_text(encoding="utf-8")
+        )
+        assert fs_read_file_response["required"] == ["dataBase64"]
+        fs_write_file_params = json.loads(
+            (out_dir / "FsWriteFileParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_write_file_params["required"] == ["path", "dataBase64"]
+        fs_create_directory_params = json.loads(
+            (out_dir / "FsCreateDirectoryParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_create_directory_params["properties"]["recursive"]["type"] == [
+            "boolean",
+            "null",
+        ]
+        fs_get_metadata_response = json.loads(
+            (out_dir / "FsGetMetadataResponse.json").read_text(encoding="utf-8")
+        )
+        assert fs_get_metadata_response["required"] == [
+            "isDirectory",
+            "isFile",
+            "isSymlink",
+            "createdAtMs",
+            "modifiedAtMs",
+        ]
+        fs_read_directory_entry = json.loads(
+            (out_dir / "FsReadDirectoryEntry.json").read_text(encoding="utf-8")
+        )
+        assert fs_read_directory_entry["required"] == [
+            "fileName",
+            "isDirectory",
+            "isFile",
+        ]
+        fs_read_directory_response = json.loads(
+            (out_dir / "FsReadDirectoryResponse.json").read_text(encoding="utf-8")
+        )
+        assert (
+            fs_read_directory_response["properties"]["entries"]["items"]["$ref"]
+            == "#/$defs/FsReadDirectoryEntry"
+        )
+        fs_remove_params = json.loads(
+            (out_dir / "FsRemoveParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_remove_params["properties"]["recursive"]["type"] == [
+            "boolean",
+            "null",
+        ]
+        assert fs_remove_params["properties"]["force"]["type"] == [
+            "boolean",
+            "null",
+        ]
+        fs_copy_params = json.loads(
+            (out_dir / "FsCopyParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_copy_params["required"] == ["sourcePath", "destinationPath"]
+        assert fs_copy_params["properties"]["recursive"]["type"] == "boolean"
+        fs_watch_params = json.loads(
+            (out_dir / "FsWatchParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_watch_params["required"] == ["watchId", "path"]
+        fs_watch_response = json.loads(
+            (out_dir / "FsWatchResponse.json").read_text(encoding="utf-8")
+        )
+        assert fs_watch_response["properties"]["path"]["$ref"] == "AbsolutePathBuf.json"
+        fs_unwatch_params = json.loads(
+            (out_dir / "FsUnwatchParams.json").read_text(encoding="utf-8")
+        )
+        assert fs_unwatch_params["required"] == ["watchId"]
+        fs_changed = json.loads(
+            (out_dir / "FsChangedNotification.json").read_text(encoding="utf-8")
+        )
+        assert (
+            fs_changed["properties"]["changedPaths"]["items"]["$ref"]
+            == "AbsolutePathBuf.json"
+        )
+        for empty_response_file in [
+            "FsWriteFileResponse.json",
+            "FsCreateDirectoryResponse.json",
+            "FsRemoveResponse.json",
+            "FsCopyResponse.json",
+            "FsUnwatchResponse.json",
+        ]:
+            empty_response = json.loads(
+                (out_dir / empty_response_file).read_text(encoding="utf-8")
+            )
+            assert empty_response["additionalProperties"] is False
         permission_profile_file_system = json.loads(
             (out_dir / "PermissionProfileFileSystemPermissions.json").read_text(
                 encoding="utf-8"
@@ -12195,6 +12289,46 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
         assert "ThreadRealtimeAudioChunk" in bundle["$defs"]
         assert "ThreadRealtimeAppendAudioResponse" in bundle["$defs"]
+        assert "FsReadFileParams" in bundle["$defs"]
+        assert "FsReadFileResponse" in bundle["$defs"]
+        assert "FsWriteFileParams" in bundle["$defs"]
+        assert "FsWriteFileResponse" in bundle["$defs"]
+        assert "FsCreateDirectoryParams" in bundle["$defs"]
+        assert "FsCreateDirectoryResponse" in bundle["$defs"]
+        assert "FsGetMetadataParams" in bundle["$defs"]
+        assert "FsGetMetadataResponse" in bundle["$defs"]
+        assert "FsReadDirectoryParams" in bundle["$defs"]
+        assert "FsReadDirectoryEntry" in bundle["$defs"]
+        assert "FsReadDirectoryResponse" in bundle["$defs"]
+        assert "FsRemoveParams" in bundle["$defs"]
+        assert "FsRemoveResponse" in bundle["$defs"]
+        assert "FsCopyParams" in bundle["$defs"]
+        assert "FsCopyResponse" in bundle["$defs"]
+        assert "FsWatchParams" in bundle["$defs"]
+        assert "FsWatchResponse" in bundle["$defs"]
+        assert "FsUnwatchParams" in bundle["$defs"]
+        assert "FsUnwatchResponse" in bundle["$defs"]
+        assert "FsChangedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["FsReadFileParams"]["properties"]["path"]["$ref"]
+            == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["FsReadDirectoryResponse"]["properties"]["entries"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/FsReadDirectoryEntry"
+        )
+        assert (
+            bundle["$defs"]["FsChangedNotification"]["properties"][
+                "changedPaths"
+            ]["items"]["$ref"]
+            == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["FsCopyParams"]["properties"]["recursive"]["type"]
+            == "boolean"
+        )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -12506,6 +12640,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: SkillsListParams | null;" in client_request
         assert 'method: "skills/config/write";' in client_request
         assert "params: SkillsConfigWriteParams;" in client_request
+        for method, params_type in [
+            ("fs/readFile", "FsReadFileParams"),
+            ("fs/writeFile", "FsWriteFileParams"),
+            ("fs/createDirectory", "FsCreateDirectoryParams"),
+            ("fs/getMetadata", "FsGetMetadataParams"),
+            ("fs/readDirectory", "FsReadDirectoryParams"),
+            ("fs/remove", "FsRemoveParams"),
+            ("fs/copy", "FsCopyParams"),
+            ("fs/watch", "FsWatchParams"),
+            ("fs/unwatch", "FsUnwatchParams"),
+        ]:
+            assert f'method: "{method}";' in client_request
+            assert f"params: {params_type};" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
@@ -12607,6 +12754,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "skills/changed";' in server_notification
         assert "params: SkillsChangedNotification;" in server_notification
+        assert 'method: "fs/changed";' in server_notification
+        assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
@@ -12646,6 +12795,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: SkillsListResponse;" in client_response
         assert 'method: "skills/config/write";' in client_response
         assert "result: SkillsConfigWriteResponse;" in client_response
+        for method, response_type in [
+            ("fs/readFile", "FsReadFileResponse"),
+            ("fs/writeFile", "FsWriteFileResponse"),
+            ("fs/createDirectory", "FsCreateDirectoryResponse"),
+            ("fs/getMetadata", "FsGetMetadataResponse"),
+            ("fs/readDirectory", "FsReadDirectoryResponse"),
+            ("fs/remove", "FsRemoveResponse"),
+            ("fs/copy", "FsCopyResponse"),
+            ("fs/watch", "FsWatchResponse"),
+            ("fs/unwatch", "FsUnwatchResponse"),
+        ]:
+            assert f'method: "{method}";' in client_response
+            assert f"result: {response_type};" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
         assert 'method: "mcpServerStatus/list";' in client_response
@@ -13075,6 +13237,79 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "FileSystemSpecialPath.ts"
         ).read_text(encoding="utf-8")
         assert 'kind: "project_roots"; subpath: string | null' in filesystem_special_path
+        fs_read_file_params = (out_dir / "v2" / "FsReadFileParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";' in (
+            fs_read_file_params
+        )
+        assert "path: AbsolutePathBuf;" in fs_read_file_params
+        fs_read_file_response = (
+            out_dir / "v2" / "FsReadFileResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "dataBase64: string;" in fs_read_file_response
+        fs_write_file_params = (
+            out_dir / "v2" / "FsWriteFileParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "dataBase64: string;" in fs_write_file_params
+        fs_create_directory_params = (
+            out_dir / "v2" / "FsCreateDirectoryParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "recursive?: boolean | null;" in fs_create_directory_params
+        fs_get_metadata_response = (
+            out_dir / "v2" / "FsGetMetadataResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "createdAtMs: number;" in fs_get_metadata_response
+        assert "modifiedAtMs: number;" in fs_get_metadata_response
+        fs_read_directory_entry = (
+            out_dir / "v2" / "FsReadDirectoryEntry.ts"
+        ).read_text(encoding="utf-8")
+        assert "fileName: string;" in fs_read_directory_entry
+        fs_read_directory_response = (
+            out_dir / "v2" / "FsReadDirectoryResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { FsReadDirectoryEntry } from "./FsReadDirectoryEntry";' in (
+            fs_read_directory_response
+        )
+        assert "entries: FsReadDirectoryEntry[];" in fs_read_directory_response
+        fs_remove_params = (out_dir / "v2" / "FsRemoveParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "recursive?: boolean | null;" in fs_remove_params
+        assert "force?: boolean | null;" in fs_remove_params
+        fs_copy_params = (out_dir / "v2" / "FsCopyParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "sourcePath: AbsolutePathBuf;" in fs_copy_params
+        assert "destinationPath: AbsolutePathBuf;" in fs_copy_params
+        assert "recursive?: boolean;" in fs_copy_params
+        fs_watch_params = (out_dir / "v2" / "FsWatchParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "watchId: string;" in fs_watch_params
+        fs_watch_response = (out_dir / "v2" / "FsWatchResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "path: AbsolutePathBuf;" in fs_watch_response
+        fs_unwatch_params = (out_dir / "v2" / "FsUnwatchParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "watchId: string;" in fs_unwatch_params
+        fs_changed = (out_dir / "v2" / "FsChangedNotification.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "changedPaths: AbsolutePathBuf[];" in fs_changed
+        for empty_response_file in [
+            "FsWriteFileResponse.ts",
+            "FsCreateDirectoryResponse.ts",
+            "FsRemoveResponse.ts",
+            "FsCopyResponse.ts",
+            "FsUnwatchResponse.ts",
+        ]:
+            empty_response = (
+                out_dir / "v2" / empty_response_file
+            ).read_text(encoding="utf-8")
+            assert "export interface" in empty_response
         sandbox_policy = (out_dir / "v2" / "SandboxPolicy.ts").read_text(encoding="utf-8")
         assert 'type: "workspaceWrite"' in sandbox_policy
         assert 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";' in sandbox_policy
@@ -13662,6 +13897,29 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { HooksListResponse } from "./HooksListResponse";'
             in v2_index
         )
+        for fs_export in [
+            "FsChangedNotification",
+            "FsCopyParams",
+            "FsCopyResponse",
+            "FsCreateDirectoryParams",
+            "FsCreateDirectoryResponse",
+            "FsGetMetadataParams",
+            "FsGetMetadataResponse",
+            "FsReadDirectoryEntry",
+            "FsReadDirectoryParams",
+            "FsReadDirectoryResponse",
+            "FsReadFileParams",
+            "FsReadFileResponse",
+            "FsRemoveParams",
+            "FsRemoveResponse",
+            "FsUnwatchParams",
+            "FsUnwatchResponse",
+            "FsWatchParams",
+            "FsWatchResponse",
+            "FsWriteFileParams",
+            "FsWriteFileResponse",
+        ]:
+            assert f'export type {{ {fs_export} }} from "./{fs_export}";' in v2_index
         assert 'export type { Skill } from "./Skill";' in v2_index
         assert 'export type { SkillDependencies } from "./SkillDependencies";' in v2_index
         assert 'export type { SkillError } from "./SkillError";' in v2_index
