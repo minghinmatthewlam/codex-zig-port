@@ -2591,6 +2591,42 @@ const TURN_START_RESPONSE_TS =
     \\
     ;
 
+const TURN_STEER_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { UserInput } from "./UserInput";
+    \\
+    \\export interface TurnSteerParams {
+    \\  threadId: string;
+    \\  input: UserInput[];
+    \\  responsesapiClientMetadata?: Record<string, string> | null;
+    \\  expectedTurnId: string;
+    \\}
+    \\
+    ;
+
+const TURN_STEER_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnSteerResponse {
+    \\  turnId: string;
+    \\}
+    \\
+    ;
+
+const TURN_INTERRUPT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnInterruptParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\}
+    \\
+    ;
+
+const TURN_INTERRUPT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnInterruptResponse {}
+    \\
+    ;
+
 const TURN_STARTED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface TurnStartedNotification {
@@ -3335,7 +3371,9 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
     \\import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
+    \\import type { TurnInterruptParams } from "./v2/TurnInterruptParams";
     \\import type { TurnStartParams } from "./v2/TurnStartParams";
+    \\import type { TurnSteerParams } from "./v2/TurnSteerParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
     \\export type ClientRequest =
@@ -3499,6 +3537,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "turn/start";
     \\      params: TurnStartParams;
+    \\    }
+    \\  | {
+    \\      method: "turn/steer";
+    \\      params: TurnSteerParams;
+    \\    }
+    \\  | {
+    \\      method: "turn/interrupt";
+    \\      params: TurnInterruptParams;
     \\    }
     \\  | {
     \\      method: "thread/resume";
@@ -3684,7 +3730,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadTurnsListResponse } from "./v2/ThreadTurnsListResponse";
     \\import type { ThreadUnarchiveResponse } from "./v2/ThreadUnarchiveResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
+    \\import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";
     \\import type { TurnStartResponse } from "./v2/TurnStartResponse";
+    \\import type { TurnSteerResponse } from "./v2/TurnSteerResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
     \\
@@ -3893,6 +3941,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "turn/start";
     \\      result: TurnStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "turn/steer";
+    \\      result: TurnSteerResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "turn/interrupt";
+    \\      result: TurnInterruptResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4420,9 +4478,13 @@ const V2_INDEX_TS =
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
+    \\export type { TurnInterruptParams } from "./TurnInterruptParams";
+    \\export type { TurnInterruptResponse } from "./TurnInterruptResponse";
     \\export type { TurnStartedNotification } from "./TurnStartedNotification";
     \\export type { TurnStartParams } from "./TurnStartParams";
     \\export type { TurnStartResponse } from "./TurnStartResponse";
+    \\export type { TurnSteerParams } from "./TurnSteerParams";
+    \\export type { TurnSteerResponse } from "./TurnSteerResponse";
     \\export type { UserInput } from "./UserInput";
     \\
     ;
@@ -7878,6 +7940,137 @@ const TURN_START_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const TURN_STEER_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnSteerParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "input", "expectedTurnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
+    \\    "responsesapiClientMetadata": {
+    \\      "type": ["object", "null"],
+    \\      "additionalProperties": { "type": "string" }
+    \\    },
+    \\    "expectedTurnId": { "type": "string" }
+    \\  },
+    \\  "$defs": {
+    \\    "ByteRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TextElement": {
+    \\      "type": "object",
+    \\      "required": ["byteRange", "placeholder"],
+    \\      "properties": {
+    \\        "byteRange": { "$ref": "#/$defs/ByteRange" },
+    \\        "placeholder": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "UserInput": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "text", "text_elements"],
+    \\          "properties": {
+    \\            "type": { "const": "text" },
+    \\            "text": { "type": "string" },
+    \\            "text_elements": { "type": "array", "items": { "$ref": "#/$defs/TextElement" } }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "url"],
+    \\          "properties": {
+    \\            "type": { "const": "image" },
+    \\            "url": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "localImage" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "skill" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "mention" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_STEER_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnSteerResponse",
+    \\  "type": "object",
+    \\  "required": ["turnId"],
+    \\  "properties": {
+    \\    "turnId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const TURN_INTERRUPT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnInterruptParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_INTERRUPT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnInterruptResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const TURN_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11101,6 +11294,41 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "TurnSteerParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "input", "expectedTurnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
+    \\        "responsesapiClientMetadata": {
+    \\          "type": ["object", "null"],
+    \\          "additionalProperties": { "type": "string" }
+    \\        },
+    \\        "expectedTurnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnSteerResponse": {
+    \\      "type": "object",
+    \\      "required": ["turnId"],
+    \\      "properties": {
+    \\        "turnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TurnInterruptParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnInterruptResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "TurnStartedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId", "turn"],
@@ -11964,6 +12192,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
     .{ .name = "TurnStartParams.json", .contents = TURN_START_PARAMS_JSON_SCHEMA },
     .{ .name = "TurnStartResponse.json", .contents = TURN_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "TurnSteerParams.json", .contents = TURN_STEER_PARAMS_JSON_SCHEMA },
+    .{ .name = "TurnSteerResponse.json", .contents = TURN_STEER_RESPONSE_JSON_SCHEMA },
+    .{ .name = "TurnInterruptParams.json", .contents = TURN_INTERRUPT_PARAMS_JSON_SCHEMA },
+    .{ .name = "TurnInterruptResponse.json", .contents = TURN_INTERRUPT_RESPONSE_JSON_SCHEMA },
     .{ .name = "TurnStartedNotification.json", .contents = TURN_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "TurnCompletedNotification.json", .contents = TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
@@ -12252,6 +12484,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
     .{ .name = "v2/TurnStartParams.ts", .contents = TURN_START_PARAMS_TS },
     .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
+    .{ .name = "v2/TurnSteerParams.ts", .contents = TURN_STEER_PARAMS_TS },
+    .{ .name = "v2/TurnSteerResponse.ts", .contents = TURN_STEER_RESPONSE_TS },
+    .{ .name = "v2/TurnInterruptParams.ts", .contents = TURN_INTERRUPT_PARAMS_TS },
+    .{ .name = "v2/TurnInterruptResponse.ts", .contents = TURN_INTERRUPT_RESPONSE_TS },
     .{ .name = "v2/TurnStartedNotification.ts", .contents = TURN_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/TurnCompletedNotification.ts", .contents = TURN_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
@@ -12916,7 +13152,9 @@ const TurnLocalImages = struct {
 };
 
 fn isTurnMethod(method: []const u8) bool {
-    return std.mem.eql(u8, method, "turn/start");
+    return std.mem.eql(u8, method, "turn/start") or
+        std.mem.eql(u8, method, "turn/steer") or
+        std.mem.eql(u8, method, "turn/interrupt");
 }
 
 fn handleTurnMethod(
@@ -12928,6 +13166,12 @@ fn handleTurnMethod(
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "turn/start")) {
         return handleTurnStart(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "turn/steer")) {
+        return handleTurnSteer(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "turn/interrupt")) {
+        return handleTurnInterrupt(allocator, state, id_value, params_value);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
@@ -13040,6 +13284,68 @@ fn handleTurnStart(
     completed_notification_moved = true;
 
     return renderJsonRpcResult(allocator, id_value, response);
+}
+
+fn handleTurnSteer(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "turn/steer params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "turn/steer params must be an object");
+    const object = params.object;
+
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    const expected_turn_id_value = object.get("expectedTurnId") orelse return renderJsonRpcError(allocator, id_value, -32602, "expectedTurnId must be a string");
+    if (expected_turn_id_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "expectedTurnId must be a string");
+    if (expected_turn_id_value.string.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "expectedTurnId must not be empty");
+    if (!isUuidString(thread_id)) {
+        return renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    if (findLoadedThreadIndex(state, thread_id) == null) {
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+
+    var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
+        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of supported user input items"),
+        error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must not be empty"),
+        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text, image, localImage, skill, and mention turn/steer input is implemented"),
+        else => return err,
+    };
+    defer input.deinit(allocator);
+
+    return renderJsonRpcError(allocator, id_value, -32600, "no active turn to steer");
+}
+
+fn handleTurnInterrupt(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "turn/interrupt params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "turn/interrupt params must be an object");
+    const object = params.object;
+
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    const turn_id_value = object.get("turnId") orelse return renderJsonRpcError(allocator, id_value, -32602, "turnId must be a string");
+    if (turn_id_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "turnId must be a string");
+    if (!isUuidString(thread_id)) {
+        return renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    if (findLoadedThreadIndex(state, thread_id) == null) {
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+
+    if (turn_id_value.string.len == 0) {
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
+    return renderJsonRpcError(allocator, id_value, -32600, "no active turn to interrupt");
 }
 
 fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap) !TurnStartInput {
