@@ -85,6 +85,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `mcpServer/resource/read` and `mcpServer/tool/call`, including streamable
   HTTP GET SSE responses after accepted POSTs and forwarded MCP JSON-RPC
   error code/message/data payloads
+- validate app-server MCP OAuth login requests with `mcpServer/oauth/login`,
+  including generated completion notification artifacts, Rust-shaped
+  configured-server checks, and explicit not-implemented errors for the browser
+  OAuth flow
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in

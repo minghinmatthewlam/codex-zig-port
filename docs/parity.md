@@ -126,10 +126,11 @@ uses bearer-token env vars or file-backed OAuth access tokens for HTTP servers
 when configured, reuses `Mcp-Session-Id` response headers after HTTP
 initialize, sends best-effort streamable HTTP session teardown requests, validates
 missing/invalid params, preserves Rust-shaped invalid/missing thread errors, and
-returns unavailable errors for disabled servers. Streamable HTTP JSON-RPC
-requests can also receive responses from GET SSE streams after accepted POSTs.
-True thread-owned MCP runtime context, persistent streamable HTTP server
-notification streams, and richer MCP JSON-RPC error forwarding remain planned.
+returns unavailable errors for disabled servers. MCP server JSON-RPC errors are
+forwarded with their original code, message, and data payload. Streamable HTTP
+JSON-RPC requests can also receive responses from GET SSE streams after accepted
+POSTs. True thread-owned MCP runtime context and persistent streamable HTTP
+server notification streams remain planned.
 
 Additional app-server MCP tool-call coverage: `mcpServer/tool/call` now has
 generated TypeScript and JSON Schema artifacts for required `threadId`,
@@ -141,9 +142,19 @@ through to the MCP server while preserving `content`, `structuredContent`,
 `isError`, and `_meta` responses. Streamable HTTP calls reuse
 `Mcp-Session-Id` response headers after initialize and send best-effort session
 teardown requests. Streamable HTTP requests can receive JSON-RPC responses from
-GET SSE streams after accepted POSTs. True thread-owned MCP runtime reuse,
-persistent streamable HTTP server notification streams, elicitation, progress,
-and richer MCP JSON-RPC error forwarding remain planned.
+GET SSE streams after accepted POSTs, and MCP server JSON-RPC errors are
+forwarded with their original code, message, and data payload. True thread-owned
+MCP runtime reuse, persistent streamable HTTP server notification streams,
+elicitation, and progress remain planned.
+
+Additional app-server MCP OAuth-login coverage: `mcpServer/oauth/login` now has
+generated TypeScript and JSON Schema artifacts for required `name`, optional
+nullable `scopes`, optional nullable `timeoutSecs`, and `authorizationUrl`
+responses plus `mcpServer/oauthLogin/completed` notifications. The runtime
+validates request shape, missing configured servers, and non-streamable HTTP
+servers with Rust-shaped errors. The actual browser OAuth login flow remains
+planned and currently returns an explicit not-implemented error for configured
+streamable HTTP servers.
 
 Additional CLI MCP OAuth coverage: `codex-zig mcp logout NAME` now validates
 configured streamable HTTP servers and removes matching file-backed OAuth
@@ -151,7 +162,8 @@ credentials from `$CODEX_HOME/.credentials.json` using Rust's fallback
 credential key format. `codex-zig mcp list` reports Rust-shaped auth-status
 labels and JSON enum names for stdio, bearer-token, file-backed OAuth, and
 HTTP OAuth-discovery not-logged-in servers. Browser OAuth login, keyring
-credential deletion, scoped login, and app-server OAuth flows remain planned.
+credential deletion, scoped login, and full app-server OAuth login completion
+remain planned.
 
 Additional model-facing MCP coverage: Responses turns now advertise configured
 stdio and streamable HTTP MCP tools plus the `list_mcp_resources`,
