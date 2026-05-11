@@ -11110,6 +11110,76 @@ def run_json_schema_smoke(binary: Path) -> None:
             model_list_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/ModelListItem"
         )
+        experimental_feature_list_params = json.loads(
+            (out_dir / "ExperimentalFeatureListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert experimental_feature_list_params["title"] == (
+            "ExperimentalFeatureListParams"
+        )
+        assert experimental_feature_list_params["properties"]["limit"]["minimum"] == 0
+        experimental_feature_stage = json.loads(
+            (out_dir / "ExperimentalFeatureStage.json").read_text(encoding="utf-8")
+        )
+        assert experimental_feature_stage["enum"] == [
+            "beta",
+            "underDevelopment",
+            "stable",
+            "deprecated",
+            "removed",
+        ]
+        experimental_feature = json.loads(
+            (out_dir / "ExperimentalFeature.json").read_text(encoding="utf-8")
+        )
+        assert experimental_feature["required"] == [
+            "name",
+            "stage",
+            "displayName",
+            "description",
+            "announcement",
+            "enabled",
+            "defaultEnabled",
+        ]
+        assert (
+            experimental_feature["properties"]["stage"]["$ref"]
+            == "#/$defs/ExperimentalFeatureStage"
+        )
+        experimental_feature_list_response = json.loads(
+            (out_dir / "ExperimentalFeatureListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert experimental_feature_list_response["required"] == [
+            "data",
+            "nextCursor",
+        ]
+        assert (
+            experimental_feature_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/ExperimentalFeature"
+        )
+        experimental_feature_enablement = json.loads(
+            (out_dir / "ExperimentalFeatureEnablement.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert experimental_feature_enablement["additionalProperties"]["type"] == (
+            "boolean"
+        )
+        experimental_feature_enablement_set_params = json.loads(
+            (out_dir / "ExperimentalFeatureEnablementSetParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert experimental_feature_enablement_set_params["required"] == ["enablement"]
+        experimental_feature_enablement_set_response = json.loads(
+            (out_dir / "ExperimentalFeatureEnablementSetResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert experimental_feature_enablement_set_response["required"] == [
+            "enablement"
+        ]
 
         command_exec = json.loads((out_dir / "CommandExecParams.json").read_text(encoding="utf-8"))
         assert command_exec["title"] == "CommandExecParams"
@@ -11761,6 +11831,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ModelAvailabilityNux" in bundle["$defs"]
         assert "ModelReasoningEffort" in bundle["$defs"]
         assert "ModelServiceTier" in bundle["$defs"]
+        assert "ExperimentalFeatureListParams" in bundle["$defs"]
+        assert "ExperimentalFeatureStage" in bundle["$defs"]
+        assert "ExperimentalFeature" in bundle["$defs"]
+        assert "ExperimentalFeatureListResponse" in bundle["$defs"]
+        assert "ExperimentalFeatureEnablement" in bundle["$defs"]
+        assert "ExperimentalFeatureEnablementSetParams" in bundle["$defs"]
+        assert "ExperimentalFeatureEnablementSetResponse" in bundle["$defs"]
         assert "CommandExecTerminalSize" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecWriteParams" in bundle["$defs"]
@@ -11827,6 +11904,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ModelListItem"]["properties"]["serviceTiers"][
             "items"
         ]["$ref"] == "#/$defs/ModelServiceTier"
+        assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
+            "data"
+        ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
+        assert bundle["$defs"]["ExperimentalFeatureEnablementSetParams"][
+            "properties"
+        ]["enablement"]["$ref"] == "#/$defs/ExperimentalFeatureEnablement"
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
@@ -11984,6 +12067,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: CollaborationModeListParams | null;" in client_request
         assert 'method: "model/list";' in client_request
         assert "params?: ModelListParams | null;" in client_request
+        assert 'method: "experimentalFeature/list";' in client_request
+        assert "params?: ExperimentalFeatureListParams | null;" in client_request
+        assert 'method: "experimentalFeature/enablement/set";' in client_request
+        assert (
+            "params: ExperimentalFeatureEnablementSetParams;"
+            in client_request
+        )
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -12082,6 +12172,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: CollaborationModeListResponse;" in client_response
         assert 'method: "model/list";' in client_response
         assert "result: ModelListResponse;" in client_response
+        assert 'method: "experimentalFeature/list";' in client_response
+        assert "result: ExperimentalFeatureListResponse;" in client_response
+        assert 'method: "experimentalFeature/enablement/set";' in client_response
+        assert (
+            "result: ExperimentalFeatureEnablementSetResponse;"
+            in client_response
+        )
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
@@ -12210,6 +12307,52 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: ModelListItem[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
+        experimental_feature_list_params = (
+            out_dir / "v2" / "ExperimentalFeatureListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "cursor?: string | null;" in experimental_feature_list_params
+        assert "limit?: number | null;" in experimental_feature_list_params
+        experimental_feature_stage = (
+            out_dir / "v2" / "ExperimentalFeatureStage.ts"
+        ).read_text(encoding="utf-8")
+        assert '"underDevelopment"' in experimental_feature_stage
+        experimental_feature = (
+            out_dir / "v2" / "ExperimentalFeature.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";'
+            in experimental_feature
+        )
+        assert "stage: ExperimentalFeatureStage;" in experimental_feature
+        assert "defaultEnabled: boolean;" in experimental_feature
+        experimental_feature_list_response = (
+            out_dir / "v2" / "ExperimentalFeatureListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ExperimentalFeature } from "./ExperimentalFeature";'
+            in experimental_feature_list_response
+        )
+        assert "data: ExperimentalFeature[];" in experimental_feature_list_response
+        assert "nextCursor: string | null;" in experimental_feature_list_response
+        experimental_feature_enablement = (
+            out_dir / "v2" / "ExperimentalFeatureEnablement.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export type ExperimentalFeatureEnablement = Record<string, boolean>;"
+            in experimental_feature_enablement
+        )
+        experimental_feature_enablement_set_params = (
+            out_dir / "v2" / "ExperimentalFeatureEnablementSetParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "enablement: ExperimentalFeatureEnablement;" in (
+            experimental_feature_enablement_set_params
+        )
+        experimental_feature_enablement_set_response = (
+            out_dir / "v2" / "ExperimentalFeatureEnablementSetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "enablement: ExperimentalFeatureEnablement;" in (
+            experimental_feature_enablement_set_response
+        )
         permission_profile = (out_dir / "v2" / "PermissionProfile.ts").read_text(
             encoding="utf-8"
         )
@@ -12746,6 +12889,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeature } from "./ExperimentalFeature";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureEnablementSetParams } from "./ExperimentalFeatureEnablementSetParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureEnablementSetResponse } from "./ExperimentalFeatureEnablementSetResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";'
             in v2_index
         )
         assert (
