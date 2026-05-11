@@ -65,10 +65,15 @@ notification artifacts, model-provider capabilities read artifacts, thread
 token-usage notification artifacts, collaboration-mode list artifacts, and
 model-list catalog artifacts, plus experimental-feature list/enablement
 artifacts, memory-reset response artifacts, git-diff-to-remote artifacts,
-fuzzy-file-search artifacts, MCP config reload artifacts, and MCP server status
-artifacts, in
+fuzzy-file-search artifacts, hooks-list artifacts, MCP config reload artifacts,
+and MCP server status artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
+
+Additional app-server hooks generation coverage: `hooks/list` now has generated
+TypeScript and JSON Schema artifacts for optional `cwds` params, response
+entries, hook errors, command hook rows, event/source/trust enums, and the
+current Rust-shaped `data` response envelope.
 
 Additional app-server MCP status generation coverage: `mcpServerStatus/list`
 now has generated TypeScript and JSON Schema artifacts for cursor, limit, and
