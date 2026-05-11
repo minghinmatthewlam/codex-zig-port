@@ -2002,6 +2002,8 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
                     "",
                     "[mcp_servers.remote]",
                     f'url = "{remote_url}"',
+                    'http_headers = { "X-Remote-Static" = "remote-static" }',
+                    'env_http_headers = { "X-Remote-Env" = "REMOTE_HEADER_ENV" }',
                     "",
                     "[mcp_servers.bearer]",
                     'url = "https://bearer.example/mcp"',
@@ -2052,8 +2054,47 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         )
         listed_entries = {entry["name"]: entry for entry in json.loads(listed.stdout)}
         assert listed_entries["remote"]["auth_status"] == "OAuth"
+        assert listed_entries["remote"]["transport"]["http_headers"] == {
+            "X-Remote-Static": "remote-static"
+        }
+        assert listed_entries["remote"]["transport"]["env_http_headers"] == {
+            "X-Remote-Env": "REMOTE_HEADER_ENV"
+        }
         assert listed_entries["bearer"]["auth_status"] == "BearerToken"
         assert listed_entries["docs"]["auth_status"] == "Unsupported"
+
+        get_remote_json = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "remote", "--json"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        remote_json = json.loads(get_remote_json.stdout)
+        assert remote_json["transport"]["http_headers"] == {
+            "X-Remote-Static": "remote-static"
+        }
+        assert remote_json["transport"]["env_http_headers"] == {
+            "X-Remote-Env": "REMOTE_HEADER_ENV"
+        }
+
+        get_remote_text = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "remote"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "http_headers: X-Remote-Static=*****" in get_remote_text.stdout
+        assert "env_http_headers: X-Remote-Env=REMOTE_HEADER_ENV" in (
+            get_remote_text.stdout
+        )
 
         listed_text = subprocess.run(
             [str(binary.resolve()), "mcp", "list"],
