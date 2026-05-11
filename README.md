@@ -63,6 +63,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `network_rule` validation, and absolute host executable resolution
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio MCP tools as `mcp__server__tool` calls
+- expose model-facing `list_mcp_resources`, `list_mcp_resource_templates`, and
+  `read_mcp_resource` tools for configured stdio MCP servers
 - copy the last assistant response from the interactive TUI with `/copy`
 - toggle copy-friendly transcript output from the interactive TUI with `/raw`
 - toggle the in-memory Vim composer mode indicator with `/vim`
@@ -288,7 +290,8 @@ interface/dependency metadata, and `skills/changed` invalidations for in-process
 mutations, verifies
 app-server MCP server status pagination, enabled local plugin-cache MCP entries,
 raw stdio tool/resource/resource-template inventory, bearer-token auth reporting,
-config-backed stdio resource reads, and loaded-thread stdio tool calls, verifies
+config-backed stdio resource reads, loaded-thread stdio tool calls, and
+model-facing stdio MCP resource list/template/read tool calls, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
