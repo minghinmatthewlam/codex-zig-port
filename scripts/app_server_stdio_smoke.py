@@ -1352,6 +1352,166 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-goal-enable-feature",
+            "method": "experimentalFeature/enablement/set",
+            "params": {"enablement": {"goals": True}},
+        }
+    )
+    thread_goal_enable_feature = read_line()
+    assert thread_goal_enable_feature["id"] == "thread-goal-enable-feature"
+    assert thread_goal_enable_feature["result"]["enablement"] == {"goals": True}
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-invalid-params",
+            "method": "thread/goal/set",
+            "params": [],
+        }
+    )
+    thread_goal_set_invalid_params = read_line()
+    assert thread_goal_set_invalid_params["id"] == "thread-goal-set-invalid-params"
+    assert thread_goal_set_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/goal/set params must be an object"
+        in thread_goal_set_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-empty-objective",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "objective": "   ",
+            },
+        }
+    )
+    thread_goal_set_empty_objective = read_line()
+    assert thread_goal_set_empty_objective["id"] == "thread-goal-set-empty-objective"
+    assert thread_goal_set_empty_objective["error"]["code"] == -32600
+    assert (
+        "goal objective must not be empty"
+        in thread_goal_set_empty_objective["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-invalid-status",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "status": "done",
+            },
+        }
+    )
+    thread_goal_set_invalid_status = read_line()
+    assert thread_goal_set_invalid_status["id"] == "thread-goal-set-invalid-status"
+    assert thread_goal_set_invalid_status["error"]["code"] == -32600
+    assert (
+        "goal status must be active, paused, budgetLimited, complete, or null"
+        in thread_goal_set_invalid_status["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-invalid-budget",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "objective": "ship the zig port",
+                "tokenBudget": 0,
+            },
+        }
+    )
+    thread_goal_set_invalid_budget = read_line()
+    assert thread_goal_set_invalid_budget["id"] == "thread-goal-set-invalid-budget"
+    assert thread_goal_set_invalid_budget["error"]["code"] == -32600
+    assert (
+        "goal budgets must be positive when provided"
+        in thread_goal_set_invalid_budget["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-invalid-thread",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": "not-a-uuid",
+                "objective": "ship the zig port",
+                "status": "active",
+                "tokenBudget": 1000,
+            },
+        }
+    )
+    thread_goal_set_invalid_thread = read_line()
+    assert thread_goal_set_invalid_thread["id"] == "thread-goal-set-invalid-thread"
+    assert thread_goal_set_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_goal_set_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-set-missing",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000011",
+                "objective": "ship the zig port",
+                "status": "active",
+                "tokenBudget": 1000,
+            },
+        }
+    )
+    thread_goal_set_missing = read_line()
+    assert thread_goal_set_missing["id"] == "thread-goal-set-missing"
+    assert thread_goal_set_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000011"
+        in thread_goal_set_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-get-missing",
+            "method": "thread/goal/get",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
+        }
+    )
+    thread_goal_get_missing = read_line()
+    assert thread_goal_get_missing["id"] == "thread-goal-get-missing"
+    assert thread_goal_get_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000011"
+        in thread_goal_get_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-goal-clear-missing",
+            "method": "thread/goal/clear",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
+        }
+    )
+    thread_goal_clear_missing = read_line()
+    assert thread_goal_clear_missing["id"] == "thread-goal-clear-missing"
+    assert thread_goal_clear_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000011"
+        in thread_goal_clear_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-metadata-no-git-info",
             "method": "thread/metadata/update",
             "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
@@ -2081,6 +2241,51 @@ def run_stdio_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_goal_feature_gate_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goals-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-disabled",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
+                },
+            )
+            thread_goal_get_disabled = read_json_line(proc, 5)
+            assert thread_goal_get_disabled["id"] == "thread-goal-get-disabled"
+            assert thread_goal_get_disabled["error"]["code"] == -32600
+            assert (
+                "goals feature is disabled"
+                in thread_goal_get_disabled["error"]["message"]
+            )
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_memory_reset_smoke(binary: Path) -> None:
@@ -9318,6 +9523,58 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadSetNameResponse.json").read_text(encoding="utf-8")
         )
         assert thread_set_name_response["additionalProperties"] is False
+        thread_goal_status = json.loads(
+            (out_dir / "ThreadGoalStatus.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_status["enum"] == [
+            "active",
+            "paused",
+            "budgetLimited",
+            "complete",
+        ]
+        thread_goal = json.loads(
+            (out_dir / "ThreadGoal.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal["required"] == [
+            "threadId",
+            "objective",
+            "status",
+            "tokenBudget",
+            "tokensUsed",
+            "timeUsedSeconds",
+            "createdAt",
+            "updatedAt",
+        ]
+        thread_goal_set = json.loads(
+            (out_dir / "ThreadGoalSetParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_set["required"] == ["threadId"]
+        assert thread_goal_set["properties"]["tokenBudget"]["type"] == [
+            "integer",
+            "null",
+        ]
+        thread_goal_set_response = json.loads(
+            (out_dir / "ThreadGoalSetResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_set_response["properties"]["goal"]["$ref"] == (
+            "#/$defs/ThreadGoal"
+        )
+        thread_goal_get = json.loads(
+            (out_dir / "ThreadGoalGetParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_get["required"] == ["threadId"]
+        thread_goal_get_response = json.loads(
+            (out_dir / "ThreadGoalGetResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_get_response["required"] == ["goal"]
+        thread_goal_clear = json.loads(
+            (out_dir / "ThreadGoalClearParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_clear["required"] == ["threadId"]
+        thread_goal_clear_response = json.loads(
+            (out_dir / "ThreadGoalClearResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_goal_clear_response["required"] == ["cleared"]
         thread_memory_mode = json.loads(
             (out_dir / "ThreadMemoryMode.json").read_text(encoding="utf-8")
         )
@@ -9506,6 +9763,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadListResponse" in bundle["$defs"]
         assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert "ThreadSetNameResponse" in bundle["$defs"]
+        assert "ThreadGoal" in bundle["$defs"]
+        assert "ThreadGoalStatus" in bundle["$defs"]
+        assert "ThreadGoalSetResponse" in bundle["$defs"]
+        assert "ThreadGoalGetResponse" in bundle["$defs"]
+        assert "ThreadGoalClearResponse" in bundle["$defs"]
         assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
         assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
         assert "ThreadReadResponse" in bundle["$defs"]
@@ -9630,6 +9892,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadInjectItemsParams;" in client_request
         assert 'method: "thread/name/set";' in client_request
         assert "params: ThreadSetNameParams;" in client_request
+        assert 'method: "thread/goal/set";' in client_request
+        assert "params: ThreadGoalSetParams;" in client_request
+        assert 'method: "thread/goal/get";' in client_request
+        assert "params: ThreadGoalGetParams;" in client_request
+        assert 'method: "thread/goal/clear";' in client_request
+        assert "params: ThreadGoalClearParams;" in client_request
         assert 'method: "thread/memoryMode/set";' in client_request
         assert "params: ThreadMemoryModeSetParams;" in client_request
         assert 'method: "thread/metadata/update";' in client_request
@@ -9675,6 +9943,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadInjectItemsResponse;" in client_response
         assert 'method: "thread/name/set";' in client_response
         assert "result: ThreadSetNameResponse;" in client_response
+        assert 'method: "thread/goal/set";' in client_response
+        assert "result: ThreadGoalSetResponse;" in client_response
+        assert 'method: "thread/goal/get";' in client_response
+        assert "result: ThreadGoalGetResponse;" in client_response
+        assert 'method: "thread/goal/clear";' in client_response
+        assert "result: ThreadGoalClearResponse;" in client_response
         assert 'method: "thread/memoryMode/set";' in client_response
         assert "result: ThreadMemoryModeSetResponse;" in client_response
         assert 'method: "thread/metadata/update";' in client_response
@@ -9879,6 +10153,45 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadSetNameResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadSetNameResponse {}" in thread_set_name_response
+        thread_goal_status = (
+            out_dir / "v2" / "ThreadGoalStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'export type ThreadGoalStatus = "active" | "paused" | "budgetLimited" | "complete";'
+            in thread_goal_status
+        )
+        thread_goal = (out_dir / "v2" / "ThreadGoal.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { ThreadGoalStatus } from "./ThreadGoalStatus";' in thread_goal
+        assert "tokenBudget: number | null;" in thread_goal
+        assert "tokensUsed: number;" in thread_goal
+        thread_goal_set = (
+            out_dir / "v2" / "ThreadGoalSetParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "objective?: string | null;" in thread_goal_set
+        assert "status?: ThreadGoalStatus | null;" in thread_goal_set
+        assert "tokenBudget?: number | null;" in thread_goal_set
+        thread_goal_set_response = (
+            out_dir / "v2" / "ThreadGoalSetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "goal: ThreadGoal;" in thread_goal_set_response
+        thread_goal_get = (
+            out_dir / "v2" / "ThreadGoalGetParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_goal_get
+        thread_goal_get_response = (
+            out_dir / "v2" / "ThreadGoalGetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "goal: ThreadGoal | null;" in thread_goal_get_response
+        thread_goal_clear = (
+            out_dir / "v2" / "ThreadGoalClearParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_goal_clear
+        thread_goal_clear_response = (
+            out_dir / "v2" / "ThreadGoalClearResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "cleared: boolean;" in thread_goal_clear_response
         thread_memory_mode = (out_dir / "ThreadMemoryMode.ts").read_text(
             encoding="utf-8"
         )
@@ -10076,6 +10389,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";' in v2_index
         assert 'export type { ThreadSetNameParams } from "./ThreadSetNameParams";' in v2_index
         assert 'export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";' in v2_index
+        assert 'export type { ThreadGoal } from "./ThreadGoal";' in v2_index
+        assert 'export type { ThreadGoalStatus } from "./ThreadGoalStatus";' in v2_index
+        assert 'export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";' in v2_index
+        assert 'export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";' in v2_index
+        assert 'export type { ThreadGoalGetParams } from "./ThreadGoalGetParams";' in v2_index
+        assert 'export type { ThreadGoalGetResponse } from "./ThreadGoalGetResponse";' in v2_index
+        assert 'export type { ThreadGoalClearParams } from "./ThreadGoalClearParams";' in v2_index
+        assert 'export type { ThreadGoalClearResponse } from "./ThreadGoalClearResponse";' in v2_index
         assert (
             'export type { ThreadMemoryModeSetParams } from "./ThreadMemoryModeSetParams";'
             in v2_index
@@ -10287,6 +10608,8 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_stdio_smoke(binary)
     print("app-server-stdio-e2e: ok")
+    run_goal_feature_gate_smoke(binary)
+    print("app-server-goal-feature-gate-e2e: ok")
     run_memory_reset_smoke(binary)
     print("app-server-memory-reset-e2e: ok")
     run_git_diff_to_remote_rpc_smoke(binary)
