@@ -11005,6 +11005,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
+        memory_reset_response = json.loads(
+            (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
+        )
+        assert memory_reset_response["title"] == "MemoryResetResponse"
+        assert memory_reset_response["additionalProperties"] is False
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -11819,6 +11824,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
+        assert "MemoryResetResponse" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -11904,6 +11910,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ModelListItem"]["properties"]["serviceTiers"][
             "items"
         ]["$ref"] == "#/$defs/ModelServiceTier"
+        assert (
+            bundle["$defs"]["MemoryResetResponse"]["additionalProperties"] is False
+        )
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -12058,6 +12067,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
+        assert 'method: "memory/reset";' in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -12164,6 +12174,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert 'method: "memory/reset";' in client_response
+        assert "result: MemoryResetResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -12307,6 +12319,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: ModelListItem[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
+        memory_reset_response = (
+            out_dir / "v2" / "MemoryResetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface MemoryResetResponse {}" in memory_reset_response
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -12917,6 +12933,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";'
+            in v2_index
+        )
+        assert (
+            'export type { MemoryResetResponse } from "./MemoryResetResponse";'
             in v2_index
         )
         assert (
