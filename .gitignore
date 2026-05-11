@@ -6,5 +6,6 @@ __pycache__/
 .env
 .env.*
 auth.json
+.credentials.json
 codex_zig_*.txt
 plans/

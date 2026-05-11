@@ -13,23 +13,26 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - License: MIT
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
-- Security settings: secret scanning, push protection, Dependabot security
-  updates, and private vulnerability reporting are enabled. GitHub reports
-  non-provider pattern scanning and secret validity checks as disabled.
+- Security settings: GitHub API checks on 2026-05-11 showed secret scanning,
+  push protection, Dependabot security updates, and private vulnerability
+  reporting enabled. GitHub reports non-provider pattern scanning and secret
+  validity checks as disabled.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS
 - Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
-  tokens, Slack tokens, private-key blocks, or unignored local artifacts.
-  Broad keyword/path scans only found test fixtures, docs, ignored local build
-  output, and temporary-path examples.
+  tokens, Slack tokens, AWS access keys, private-key blocks, JWT-shaped blobs,
+  or unignored local artifacts. Broad keyword/path scans only found test
+  fixtures, docs, ignored local build output, and temporary-path examples.
+  Git-history regex scans found only an old dummy `sk-proj-*` test fixture that
+  was removed by commit `0383594`; no real secret material was identified.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
 ## Public Guardrails
 
-- Do not publish real `auth.json` files, API keys, access tokens, private
-  prompts, local session transcripts, `.zig-cache/`, `zig-out/`, or demo
-  scratch files.
+- Do not publish real `auth.json` files, `.credentials.json` files, API keys,
+  access tokens, private prompts, local session transcripts, `.zig-cache/`,
+  `zig-out/`, or demo scratch files.
 - Keep parity claims tied to real verification. If a behavior is partial,
   describe both the covered surface and the remaining gaps in `docs/parity.md`.
 - Treat upstream Codex source as a behavioral reference only. Do not copy source,
