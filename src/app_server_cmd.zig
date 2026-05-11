@@ -116,6 +116,7 @@ const LoadedThread = struct {
     git_sha: ?[]const u8,
     git_branch: ?[]const u8,
     git_origin_url: ?[]const u8,
+    goal: ?LoadedThreadGoal,
     transcript: session_mod.Transcript,
     turns_json: []const u8,
     created_at: i64,
@@ -143,8 +144,23 @@ const LoadedThread = struct {
         if (self.git_sha) |value| allocator.free(value);
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
+        if (self.goal) |*goal| goal.deinit(allocator);
         self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
+    }
+};
+
+const LoadedThreadGoal = struct {
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64,
+    tokens_used: i64,
+    time_used_seconds: i64,
+    created_at: i64,
+    updated_at: i64,
+
+    fn deinit(self: *LoadedThreadGoal, allocator: std.mem.Allocator) void {
+        allocator.free(self.objective);
     }
 };
 
@@ -6896,6 +6912,83 @@ fn setLoadedThreadMemoryMode(allocator: std.mem.Allocator, thread: *LoadedThread
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn setLoadedThreadGoal(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    object: std.json.ObjectMap,
+) !void {
+    const now = currentUnixSeconds();
+    const objective = loadedThreadGoalObjective(object);
+    const status = loadedThreadGoalStatus(object);
+    const token_budget = loadedThreadGoalTokenBudget(object);
+
+    if (objective) |value| {
+        if (thread.goal) |*existing| {
+            if (std.mem.eql(u8, existing.objective, value) and !std.mem.eql(u8, existing.status, "complete")) {
+                if (status) |next_status| existing.status = next_status;
+                if (token_budget.present) existing.token_budget = token_budget.value;
+                existing.updated_at = now;
+                thread.updated_at = now;
+                return;
+            }
+            existing.deinit(allocator);
+            thread.goal = null;
+        }
+
+        thread.goal = .{
+            .objective = try allocator.dupe(u8, value),
+            .status = status orelse "active",
+            .token_budget = if (token_budget.present) token_budget.value else null,
+            .tokens_used = 0,
+            .time_used_seconds = 0,
+            .created_at = now,
+            .updated_at = now,
+        };
+        thread.updated_at = now;
+        return;
+    }
+
+    const existing = if (thread.goal) |*goal| goal else return error.MissingThreadGoal;
+    if (status) |next_status| existing.status = next_status;
+    if (token_budget.present) existing.token_budget = token_budget.value;
+    existing.updated_at = now;
+    thread.updated_at = now;
+}
+
+fn loadedThreadGoalObjective(object: std.json.ObjectMap) ?[]const u8 {
+    const value = object.get("objective") orelse return null;
+    if (value == .null) return null;
+    return std.mem.trim(u8, value.string, " \t\r\n");
+}
+
+fn loadedThreadGoalStatus(object: std.json.ObjectMap) ?[]const u8 {
+    const value = object.get("status") orelse return null;
+    if (value == .null) return null;
+    return value.string;
+}
+
+const LoadedThreadGoalTokenBudget = struct {
+    present: bool,
+    value: ?i64,
+};
+
+fn loadedThreadGoalTokenBudget(object: std.json.ObjectMap) LoadedThreadGoalTokenBudget {
+    const value = object.get("tokenBudget") orelse return .{ .present = false, .value = null };
+    if (value == .null) return .{ .present = true, .value = null };
+    return .{ .present = true, .value = value.integer };
+}
+
+fn clearLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) bool {
+    if (thread.goal) |*goal| {
+        goal.deinit(allocator);
+    } else {
+        return false;
+    }
+    thread.goal = null;
+    thread.updated_at = currentUnixSeconds();
+    return true;
+}
+
 fn updateLoadedThreadGitInfo(
     allocator: std.mem.Allocator,
     thread: *LoadedThread,
@@ -7470,9 +7563,29 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        if (thread.ephemeral) {
+            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        setLoadedThreadGoal(allocator, thread, object) catch |err| switch (err) {
+            error.MissingThreadGoal => {
+                const message = try std.fmt.allocPrint(allocator, "cannot update goal for thread {s}: no goal exists", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed", err),
+        };
+        const result = try renderThreadGoalSetResponse(allocator, thread);
+        defer allocator.free(result);
+        try queueThreadGoalUpdatedNotification(allocator, state, thread);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
-    if (std.mem.eql(u8, method, "thread/goal/get") or std.mem.eql(u8, method, "thread/goal/clear")) {
+    if (std.mem.eql(u8, method, "thread/goal/get")) {
         if (!try appServerFeatureEnabled(allocator, state, "goals")) {
             return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
         }
@@ -7485,7 +7598,46 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        if (thread.ephemeral) {
+            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        const result = try renderThreadGoalGetResponse(allocator, thread);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
+    }
+    if (std.mem.eql(u8, method, "thread/goal/clear")) {
+        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+            return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
+        }
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        if (thread.ephemeral) {
+            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        const cleared = clearLoadedThreadGoal(allocator, thread);
+        const result = try renderThreadGoalClearResponse(allocator, cleared);
+        defer allocator.free(result);
+        if (cleared) try queueThreadGoalClearedNotification(allocator, state, thread.id);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/memoryMode/set")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -7936,6 +8088,7 @@ fn createLoadedThreadFromStartParams(
         .git_sha = null,
         .git_branch = null,
         .git_origin_url = null,
+        .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8029,6 +8182,7 @@ fn createLoadedThreadFromHistoryParams(
         .git_sha = null,
         .git_branch = null,
         .git_origin_url = null,
+        .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8135,6 +8289,7 @@ fn createLoadedThreadFromResumeParams(
         .git_sha = git_sha,
         .git_branch = git_branch,
         .git_origin_url = git_origin_url,
+        .goal = null,
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .created_at = now,
@@ -8265,6 +8420,7 @@ fn createLoadedThreadFromForkParams(
         .git_sha = git_sha,
         .git_branch = git_branch,
         .git_origin_url = git_origin_url,
+        .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8623,6 +8779,83 @@ fn queueThreadNameUpdatedNotification(allocator: std.mem.Allocator, state: *AppS
     const owned = try notification.toOwnedSlice(allocator);
     errdefer allocator.free(owned);
     try state.pending_notifications.append(allocator, owned);
+}
+
+fn queueThreadGoalUpdatedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
+    const goal = thread.goal orelse return;
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/goal/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread.id);
+    try notification.appendSlice(allocator, ",\"turnId\":null,\"goal\":");
+    try appendLoadedThreadGoalJson(allocator, &notification, thread.id, goal);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
+}
+
+fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !void {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/goal/cleared\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
+}
+
+fn renderThreadGoalSetResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    const goal = thread.goal orelse return error.MissingThreadGoal;
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"goal\":");
+    try appendLoadedThreadGoalJson(allocator, &result, thread.id, goal);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderThreadGoalGetResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"goal\":");
+    if (thread.goal) |goal| {
+        try appendLoadedThreadGoalJson(allocator, &result, thread.id, goal);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderThreadGoalClearResponse(allocator: std.mem.Allocator, cleared: bool) ![]const u8 {
+    return allocator.dupe(u8, if (cleared) "{\"cleared\":true}" else "{\"cleared\":false}");
+}
+
+fn appendLoadedThreadGoalJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    thread_id: []const u8,
+    goal: LoadedThreadGoal,
+) !void {
+    try out.appendSlice(allocator, "{\"threadId\":");
+    try appendJsonString(allocator, out, thread_id);
+    try out.appendSlice(allocator, ",\"objective\":");
+    try appendJsonString(allocator, out, goal.objective);
+    try out.appendSlice(allocator, ",\"status\":");
+    try appendJsonString(allocator, out, goal.status);
+    try out.appendSlice(allocator, ",\"tokenBudget\":");
+    try appendOptionalInt(allocator, out, goal.token_budget);
+    try out.appendSlice(allocator, ",\"tokensUsed\":");
+    try appendInt(allocator, out, goal.tokens_used);
+    try out.appendSlice(allocator, ",\"timeUsedSeconds\":");
+    try appendInt(allocator, out, goal.time_used_seconds);
+    try out.appendSlice(allocator, ",\"createdAt\":");
+    try appendInt(allocator, out, goal.created_at);
+    try out.appendSlice(allocator, ",\"updatedAt\":");
+    try appendInt(allocator, out, goal.updated_at);
+    try out.appendSlice(allocator, "}");
 }
 
 fn appendThreadTokenUsageJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), info: session_mod.TokenUsageInfo) !void {
