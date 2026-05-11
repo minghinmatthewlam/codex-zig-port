@@ -974,6 +974,35 @@ const THREAD_MEMORY_MODE_SET_RESPONSE_TS =
     \\
     ;
 
+const THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadMetadataGitInfoUpdateParams {
+    \\  sha?: string | null;
+    \\  branch?: string | null;
+    \\  originUrl?: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_METADATA_UPDATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
+    \\
+    \\export interface ThreadMetadataUpdateParams {
+    \\  threadId: string;
+    \\  gitInfo?: ThreadMetadataGitInfoUpdateParams | null;
+    \\}
+    \\
+    ;
+
+const THREAD_METADATA_UPDATE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadMetadataUpdateResponse {
+    \\  thread: unknown;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -987,6 +1016,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
+    \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -1057,6 +1087,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/memoryMode/set";
     \\      params: ThreadMemoryModeSetParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/metadata/update";
+    \\      params: ThreadMetadataUpdateParams;
     \\    };
     \\
     ;
@@ -1074,6 +1108,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
+    \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -1161,6 +1196,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/memoryMode/set";
     \\      result: ThreadMemoryModeSetResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/metadata/update";
+    \\      result: ThreadMetadataUpdateResponse;
     \\    };
     \\
     ;
@@ -1233,6 +1273,9 @@ const V2_INDEX_TS =
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
     \\export type { ThreadMemoryModeSetParams } from "./ThreadMemoryModeSetParams";
     \\export type { ThreadMemoryModeSetResponse } from "./ThreadMemoryModeSetResponse";
+    \\export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
+    \\export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
+    \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
@@ -2154,6 +2197,66 @@ const THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMetadataGitInfoUpdateParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "sha": { "type": ["string", "null"] },
+    \\    "branch": { "type": ["string", "null"] },
+    \\    "originUrl": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_METADATA_UPDATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMetadataUpdateParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "gitInfo": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadMetadataGitInfoUpdateParams" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadMetadataGitInfoUpdateParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "sha": { "type": ["string", "null"] },
+    \\        "branch": { "type": ["string", "null"] },
+    \\        "originUrl": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_METADATA_UPDATE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMetadataUpdateResponse",
+    \\  "type": "object",
+    \\  "required": ["thread"],
+    \\  "properties": {
+    \\    "thread": true
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2651,6 +2754,37 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadMemoryModeSetResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadMetadataGitInfoUpdateParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "sha": { "type": ["string", "null"] },
+    \\        "branch": { "type": ["string", "null"] },
+    \\        "originUrl": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadMetadataUpdateParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "gitInfo": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadMetadataGitInfoUpdateParams" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadMetadataUpdateResponse": {
+    \\      "type": "object",
+    \\      "required": ["thread"],
+    \\      "properties": {
+    \\        "thread": true
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2734,6 +2868,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadMemoryMode.json", .contents = THREAD_MEMORY_MODE_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetParams.json", .contents = THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadMemoryModeSetResponse.json", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadMetadataGitInfoUpdateParams.json", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadMetadataUpdateParams.json", .contents = THREAD_METADATA_UPDATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadMetadataUpdateResponse.json", .contents = THREAD_METADATA_UPDATE_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2798,6 +2935,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadSetNameResponse.ts", .contents = THREAD_SET_NAME_RESPONSE_TS },
     .{ .name = "v2/ThreadMemoryModeSetParams.ts", .contents = THREAD_MEMORY_MODE_SET_PARAMS_TS },
     .{ .name = "v2/ThreadMemoryModeSetResponse.ts", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_TS },
+    .{ .name = "v2/ThreadMetadataGitInfoUpdateParams.ts", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_TS },
+    .{ .name = "v2/ThreadMetadataUpdateParams.ts", .contents = THREAD_METADATA_UPDATE_PARAMS_TS },
+    .{ .name = "v2/ThreadMetadataUpdateResponse.ts", .contents = THREAD_METADATA_UPDATE_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
