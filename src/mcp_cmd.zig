@@ -780,6 +780,10 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                 if (server.bearer_token_env_var) |existing| allocator.free(existing);
                 server.bearer_token_env_var = token_env;
             }
+        } else if (std.mem.eql(u8, key, "http_headers")) {
+            try appendTomlInlineKeyValueTable(allocator, &server.http_headers, value);
+        } else if (std.mem.eql(u8, key, "env_http_headers")) {
+            try appendTomlInlineKeyValueTable(allocator, &server.env_http_headers, value);
         } else if (std.mem.eql(u8, key, "enabled")) {
             if (std.mem.eql(u8, value, "true")) server.enabled = true;
             if (std.mem.eql(u8, value, "false")) server.enabled = false;
@@ -965,6 +969,29 @@ fn appendTomlKeyValue(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyV
     });
 }
 
+fn appendTomlInlineKeyValueTable(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), raw_value: []const u8) !void {
+    const contents = try parseInlineTableContents(allocator, raw_value) orelse return;
+    defer allocator.free(contents);
+
+    var start: usize = 0;
+    while (start < contents.len) {
+        const end = findTopLevelComma(contents, start) orelse contents.len;
+        const next_start = if (end < contents.len) end + 1 else contents.len;
+
+        const entry = std.mem.trim(u8, contents[start..end], " \t\r\n");
+        if (entry.len == 0) {
+            start = next_start;
+            continue;
+        }
+        const eq = findTopLevelEquals(entry) orelse return error.InvalidTomlInlineTable;
+        const key = std.mem.trim(u8, entry[0..eq], " \t\r\n");
+        const value = std.mem.trim(u8, entry[eq + 1 ..], " \t\r\n");
+        if (key.len == 0) return error.InvalidTomlInlineTable;
+        try appendTomlKeyValue(allocator, entries, key, value);
+        start = next_start;
+    }
+}
+
 fn appendJsonStringMap(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), value: ?std.json.Value) !void {
     const map = value orelse return;
     if (map != .object) return;
@@ -1096,6 +1123,56 @@ fn parseTomlKey(allocator: std.mem.Allocator, raw_key: []const u8) ![]const u8 {
     return allocator.dupe(u8, raw_key);
 }
 
+fn parseInlineTableContents(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
+    if (rhs.len < 2 or rhs[0] != '{') return null;
+    const end = std.mem.lastIndexOfScalar(u8, rhs, '}') orelse return error.InvalidTomlInlineTable;
+    return try allocator.dupe(u8, std.mem.trim(u8, rhs[1..end], " \t\r\n"));
+}
+
+fn findTopLevelComma(value: []const u8, start: usize) ?usize {
+    var in_string = false;
+    var index = start;
+    while (index < value.len) : (index += 1) {
+        const byte = value[index];
+        if (in_string) {
+            if (byte == '\\') {
+                index += 1;
+                continue;
+            }
+            if (byte == '"') in_string = false;
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+        } else if (byte == ',') {
+            return index;
+        }
+    }
+    return null;
+}
+
+fn findTopLevelEquals(value: []const u8) ?usize {
+    var in_string = false;
+    var index: usize = 0;
+    while (index < value.len) : (index += 1) {
+        const byte = value[index];
+        if (in_string) {
+            if (byte == '\\') {
+                index += 1;
+                continue;
+            }
+            if (byte == '"') in_string = false;
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+        } else if (byte == '=') {
+            return index;
+        }
+    }
+    return null;
+}
+
 fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
     if (rhs.len < 2 or rhs[0] != '"') return null;
     var output = std.ArrayList(u8).empty;
@@ -1159,6 +1236,10 @@ fn renderJsonServerWithAuthStatus(allocator: std.mem.Allocator, server: McpServe
             try output.appendSlice(allocator, ", \"bearer_token_env_var\": ");
             try appendJsonString(allocator, &output, token_env);
         }
+        try output.appendSlice(allocator, ", \"http_headers\": ");
+        try appendOptionalKeyValueJsonObject(allocator, &output, server.http_headers.items);
+        try output.appendSlice(allocator, ", \"env_http_headers\": ");
+        try appendOptionalKeyValueJsonObject(allocator, &output, server.env_http_headers.items);
     } else if (server.kind == .stdio) {
         try output.appendSlice(allocator, ", \"command\": ");
         try appendJsonString(allocator, &output, server.command.?);
@@ -1178,6 +1259,21 @@ fn renderJsonServerWithAuthStatus(allocator: std.mem.Allocator, server: McpServe
     return output.toOwnedSlice(allocator);
 }
 
+fn appendOptionalKeyValueJsonObject(allocator: std.mem.Allocator, output: *std.ArrayList(u8), entries: []const KeyValue) !void {
+    if (entries.len == 0) {
+        try output.appendSlice(allocator, "null");
+        return;
+    }
+    try output.append(allocator, '{');
+    for (entries, 0..) |entry, index| {
+        if (index > 0) try output.appendSlice(allocator, ", ");
+        try appendJsonString(allocator, output, entry.key);
+        try output.appendSlice(allocator, ": ");
+        try appendJsonString(allocator, output, entry.value);
+    }
+    try output.append(allocator, '}');
+}
+
 fn appendJsonString(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
     const rendered = try std.json.Stringify.valueAlloc(allocator, value, .{});
     defer allocator.free(rendered);
@@ -1194,7 +1290,11 @@ fn printServer(allocator: std.mem.Allocator, server: McpServer) !void {
     try cli_utils.writeStdout(header);
     if (server.kind == .streamable_http) {
         const token = server.bearer_token_env_var orelse "-";
-        const body = try std.fmt.allocPrint(allocator, "  url: {s}\n  bearer_token_env_var: {s}\n", .{ server.url.?, token });
+        const http_headers = try headerDisplay(allocator, server.http_headers.items, true);
+        defer allocator.free(http_headers);
+        const env_http_headers = try headerDisplay(allocator, server.env_http_headers.items, false);
+        defer allocator.free(env_http_headers);
+        const body = try std.fmt.allocPrint(allocator, "  url: {s}\n  bearer_token_env_var: {s}\n  http_headers: {s}\n  env_http_headers: {s}\n", .{ server.url.?, token, http_headers, env_http_headers });
         defer allocator.free(body);
         try cli_utils.writeStdout(body);
     } else if (server.kind == .stdio) {
@@ -1226,6 +1326,16 @@ fn appendVerboseServerStatus(allocator: std.mem.Allocator, output: *std.ArrayLis
             try output.appendSlice(allocator, token_env);
             try output.append(allocator, '\n');
         }
+        const http_headers = try headerDisplay(allocator, server.http_headers.items, true);
+        defer allocator.free(http_headers);
+        try output.appendSlice(allocator, "    http_headers: ");
+        try output.appendSlice(allocator, http_headers);
+        try output.append(allocator, '\n');
+        const env_http_headers = try headerDisplay(allocator, server.env_http_headers.items, false);
+        defer allocator.free(env_http_headers);
+        try output.appendSlice(allocator, "    env_http_headers: ");
+        try output.appendSlice(allocator, env_http_headers);
+        try output.append(allocator, '\n');
         return;
     }
 
@@ -1244,6 +1354,32 @@ fn appendVerboseServerStatus(allocator: std.mem.Allocator, output: *std.ArrayLis
             try output.append(allocator, '\n');
         }
     }
+}
+
+fn headerDisplay(allocator: std.mem.Allocator, entries: []const KeyValue, mask_values: bool) ![]const u8 {
+    if (entries.len == 0) return allocator.dupe(u8, "-");
+
+    const sorted = try allocator.dupe(KeyValue, entries);
+    defer allocator.free(sorted);
+    std.mem.sort(KeyValue, sorted, {}, keyValueLessThan);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    for (sorted, 0..) |entry, index| {
+        if (index > 0) try output.appendSlice(allocator, ", ");
+        try output.appendSlice(allocator, entry.key);
+        try output.append(allocator, '=');
+        if (mask_values) {
+            try output.appendSlice(allocator, "*****");
+        } else {
+            try output.appendSlice(allocator, entry.value);
+        }
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn keyValueLessThan(_: void, lhs: KeyValue, rhs: KeyValue) bool {
+    return std.mem.lessThan(u8, lhs.key, rhs.key);
 }
 
 fn kindLabel(server: McpServer) []const u8 {
@@ -1444,6 +1580,36 @@ test "mcp list auth status reports bearer and file oauth credentials" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"OAuth\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"BearerToken\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"Unsupported\"") != null);
+}
+
+test "mcp streamable http headers parse inline and render" {
+    const allocator = std.testing.allocator;
+    const config_bytes =
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\http_headers = { "X-Remote-Static" = "remote,static", "X-Second" = "two" }
+        \\env_http_headers = { "X-Remote-Env" = "REMOTE_HEADER_ENV" }
+        \\
+    ;
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+    const remote = servers.get("remote").?;
+    try std.testing.expectEqual(@as(usize, 2), remote.http_headers.items.len);
+    try std.testing.expectEqualStrings("X-Remote-Static", remote.http_headers.items[0].key);
+    try std.testing.expectEqualStrings("remote,static", remote.http_headers.items[0].value);
+    try std.testing.expectEqual(@as(usize, 1), remote.env_http_headers.items.len);
+    try std.testing.expectEqualStrings("X-Remote-Env", remote.env_http_headers.items[0].key);
+    try std.testing.expectEqualStrings("REMOTE_HEADER_ENV", remote.env_http_headers.items[0].value);
+
+    const rendered = try renderJsonServer(allocator, remote.*);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"http_headers\": {\"X-Remote-Static\": \"remote,static\", \"X-Second\": \"two\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"env_http_headers\": {\"X-Remote-Env\": \"REMOTE_HEADER_ENV\"}") != null);
+
+    const masked = try headerDisplay(allocator, remote.http_headers.items, true);
+    defer allocator.free(masked);
+    try std.testing.expectEqualStrings("X-Remote-Static=*****, X-Second=*****", masked);
 }
 
 test "mcp oauth discovery paths match Rust candidate order" {
