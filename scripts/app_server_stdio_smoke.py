@@ -8216,6 +8216,341 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(workspace_codex_home, ignore_errors=True)
 
 
+def run_process_rpc_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-process-", dir="/tmp"))
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-process-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "danger-full-access"\n',
+            encoding="utf-8",
+        )
+        cwd = root / "cwd"
+        cwd.mkdir()
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-basic",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys; sys.stdout.write('out'); sys.stderr.write('err')",
+                        ],
+                        "processHandle": "proc-basic",
+                        "cwd": str(cwd),
+                    },
+                },
+            )
+            basic_response = read_json_line(proc, 5)
+            basic_exited = read_json_line(proc, 5)
+            assert basic_response["id"] == "process-spawn-basic"
+            assert basic_response["result"] == {}
+            assert basic_exited["method"] == "process/exited"
+            assert basic_exited["params"] == {
+                "processHandle": "proc-basic",
+                "exitCode": 0,
+                "stdout": "out",
+                "stdoutCapReached": False,
+                "stderr": "err",
+                "stderrCapReached": False,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-streaming",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [sys.executable, "-c", "import sys; sys.stdout.write('stream-out')"],
+                        "processHandle": "proc-stream",
+                        "cwd": str(cwd),
+                        "streamStdoutStderr": True,
+                    },
+                },
+            )
+            streaming_response = read_json_line(proc, 5)
+            streaming_delta = read_json_line(proc, 5)
+            streaming_exited = read_json_line(proc, 5)
+            assert streaming_response["id"] == "process-spawn-streaming"
+            assert streaming_response["result"] == {}
+            assert streaming_delta["method"] == "process/outputDelta"
+            assert streaming_delta["params"]["processHandle"] == "proc-stream"
+            assert streaming_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(streaming_delta["params"]["deltaBase64"])
+                == b"stream-out"
+            )
+            assert streaming_delta["params"]["capReached"] is False
+            assert streaming_exited["method"] == "process/exited"
+            assert streaming_exited["params"] == {
+                "processHandle": "proc-stream",
+                "exitCode": 0,
+                "stdout": "",
+                "stdoutCapReached": False,
+                "stderr": "",
+                "stderrCapReached": False,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-cap",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": ["/bin/sh", "-c", "printf capped-output"],
+                        "processHandle": "proc-cap",
+                        "cwd": str(cwd),
+                        "outputBytesCap": 6,
+                    },
+                },
+            )
+            cap_response = read_json_line(proc, 5)
+            cap_exited = read_json_line(proc, 5)
+            assert cap_response["id"] == "process-spawn-cap"
+            assert cap_response["result"] == {}
+            assert cap_exited["params"]["stdout"] == "capped"
+            assert cap_exited["params"]["stdoutCapReached"] is True
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+        empty_command = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-empty",
+                "method": "process/spawn",
+                "params": {"command": [], "processHandle": "proc-empty", "cwd": str(cwd)},
+            },
+            env,
+        )
+        assert empty_command["id"] == "process-spawn-empty"
+        assert empty_command["error"]["code"] == -32600
+        assert "command must not be empty" in empty_command["error"]["message"]
+
+        empty_handle = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-empty-handle",
+                "method": "process/spawn",
+                "params": {"command": ["/bin/echo", "unused"], "processHandle": "", "cwd": str(cwd)},
+            },
+            env,
+        )
+        assert empty_handle["id"] == "process-spawn-empty-handle"
+        assert empty_handle["error"]["code"] == -32600
+        assert "processHandle must not be empty" in empty_handle["error"]["message"]
+
+        relative_cwd = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-relative-cwd",
+                "method": "process/spawn",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processHandle": "proc-relative-cwd",
+                    "cwd": "relative",
+                },
+            },
+            env,
+        )
+        assert relative_cwd["id"] == "process-spawn-relative-cwd"
+        assert relative_cwd["error"]["code"] == -32602
+        assert "cwd must be an absolute string" in relative_cwd["error"]["message"]
+
+        size_without_tty = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-size-without-tty",
+                "method": "process/spawn",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processHandle": "proc-size",
+                    "cwd": str(cwd),
+                    "size": {"rows": 24, "cols": 80},
+                },
+            },
+            env,
+        )
+        assert size_without_tty["id"] == "process-spawn-size-without-tty"
+        assert size_without_tty["error"]["code"] == -32602
+        assert "size requires tty: true" in size_without_tty["error"]["message"]
+
+        invalid_size = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-invalid-size",
+                "method": "process/spawn",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processHandle": "proc-invalid-size",
+                    "cwd": str(cwd),
+                    "tty": True,
+                    "size": {"rows": 0, "cols": 80},
+                },
+            },
+            env,
+        )
+        assert invalid_size["id"] == "process-spawn-invalid-size"
+        assert invalid_size["error"]["code"] == -32602
+        assert "rows and cols must be greater than 0" in invalid_size["error"]["message"]
+
+        unsupported_tty = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-unsupported-tty",
+                "method": "process/spawn",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processHandle": "proc-tty",
+                    "cwd": str(cwd),
+                    "tty": True,
+                    "size": {"rows": 24, "cols": 80},
+                },
+            },
+            env,
+        )
+        assert unsupported_tty["id"] == "process-spawn-unsupported-tty"
+        assert unsupported_tty["error"]["code"] == -32603
+        assert "not implemented yet" in unsupported_tty["error"]["message"]
+
+        negative_timeout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-spawn-negative-timeout",
+                "method": "process/spawn",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processHandle": "proc-timeout",
+                    "cwd": str(cwd),
+                    "timeoutMs": -1,
+                },
+            },
+            env,
+        )
+        assert negative_timeout["id"] == "process-spawn-negative-timeout"
+        assert negative_timeout["error"]["code"] == -32602
+        assert "timeoutMs must be a non-negative integer or null" in negative_timeout["error"]["message"]
+
+        missing_write_payload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-write-empty",
+                "method": "process/writeStdin",
+                "params": {"processHandle": "proc-1"},
+            },
+            env,
+        )
+        assert missing_write_payload["id"] == "process-write-empty"
+        assert missing_write_payload["error"]["code"] == -32602
+        assert "requires deltaBase64 or closeStdin" in missing_write_payload["error"]["message"]
+
+        bad_write_delta = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-write-bad-base64",
+                "method": "process/writeStdin",
+                "params": {"processHandle": "proc-1", "deltaBase64": "not base64"},
+            },
+            env,
+        )
+        assert bad_write_delta["id"] == "process-write-bad-base64"
+        assert bad_write_delta["error"]["code"] == -32602
+        assert "invalid deltaBase64" in bad_write_delta["error"]["message"]
+
+        followup = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-write",
+                "method": "process/writeStdin",
+                "params": {"processHandle": "proc-1", "deltaBase64": "", "closeStdin": True},
+            },
+            env,
+        )
+        assert followup["id"] == "process-write"
+        assert followup["error"]["code"] == -32600
+        assert 'no active process for process handle "proc-1"' in followup["error"]["message"]
+
+        kill = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-kill",
+                "method": "process/kill",
+                "params": {"processHandle": "proc-1"},
+            },
+            env,
+        )
+        assert kill["id"] == "process-kill"
+        assert kill["error"]["code"] == -32600
+        assert 'no active process for process handle "proc-1"' in kill["error"]["message"]
+
+        bad_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-resize-bad-size",
+                "method": "process/resizePty",
+                "params": {"processHandle": "proc-1", "size": {"rows": 0, "cols": 80}},
+            },
+            env,
+        )
+        assert bad_resize["id"] == "process-resize-bad-size"
+        assert bad_resize["error"]["code"] == -32602
+        assert "rows and cols must be greater than 0" in bad_resize["error"]["message"]
+
+        resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-resize",
+                "method": "process/resizePty",
+                "params": {"processHandle": "proc-1", "size": {"rows": 24, "cols": 80}},
+            },
+            env,
+        )
+        assert resize["id"] == "process-resize"
+        assert resize["error"]["code"] == -32600
+        assert 'no active process for process handle "proc-1"' in resize["error"]["message"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_model_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
 
@@ -16227,6 +16562,8 @@ def main() -> None:
     print("app-server-filesystem-watch-rpc-e2e: ok")
     run_command_exec_rpc_smoke(binary)
     print("app-server-command-exec-rpc-e2e: ok")
+    run_process_rpc_smoke(binary)
+    print("app-server-process-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
     run_collaboration_mode_rpc_smoke(binary)
