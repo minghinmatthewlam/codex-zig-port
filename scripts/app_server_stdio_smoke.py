@@ -1566,6 +1566,60 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert thread_realtime_list_voices["id"] == "thread-realtime-list-voices"
     assert thread_realtime_list_voices["result"]["voices"] == EXPECTED_REALTIME_VOICES
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-stop-invalid-params",
+            "method": "thread/realtime/stop",
+            "params": [],
+        }
+    )
+    thread_realtime_stop_invalid_params = read_line()
+    assert (
+        thread_realtime_stop_invalid_params["id"]
+        == "thread-realtime-stop-invalid-params"
+    )
+    assert thread_realtime_stop_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/realtime/stop params must be an object"
+        in thread_realtime_stop_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-stop-invalid-thread",
+            "method": "thread/realtime/stop",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_realtime_stop_invalid_thread = read_line()
+    assert (
+        thread_realtime_stop_invalid_thread["id"]
+        == "thread-realtime-stop-invalid-thread"
+    )
+    assert thread_realtime_stop_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_realtime_stop_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-stop-missing",
+            "method": "thread/realtime/stop",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000014"},
+        }
+    )
+    thread_realtime_stop_missing = read_line()
+    assert thread_realtime_stop_missing["id"] == "thread-realtime-stop-missing"
+    assert thread_realtime_stop_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000014"
+        in thread_realtime_stop_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
@@ -9046,6 +9100,15 @@ def run_json_schema_smoke(binary: Path) -> None:
             thread_realtime_list_voices_response["properties"]["voices"]["$ref"]
             == "#/$defs/RealtimeVoicesList"
         )
+        thread_realtime_stop = json.loads(
+            (out_dir / "ThreadRealtimeStopParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_realtime_stop["required"] == ["threadId"]
+        assert thread_realtime_stop["properties"]["threadId"]["type"] == "string"
+        thread_realtime_stop_response = json.loads(
+            (out_dir / "ThreadRealtimeStopResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_realtime_stop_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -9076,6 +9139,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "RealtimeVoice" in bundle["$defs"]
         assert "RealtimeVoicesList" in bundle["$defs"]
         assert "ThreadRealtimeListVoicesResponse" in bundle["$defs"]
+        assert "ThreadRealtimeStopResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -9197,6 +9261,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadTurnsListParams;" in client_request
         assert 'method: "thread/realtime/listVoices";' in client_request
         assert "params: ThreadRealtimeListVoicesParams;" in client_request
+        assert 'method: "thread/realtime/stop";' in client_request
+        assert "params: ThreadRealtimeStopParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
@@ -9234,6 +9300,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadTurnsListResponse;" in client_response
         assert 'method: "thread/realtime/listVoices";' in client_response
         assert "result: ThreadRealtimeListVoicesResponse;" in client_response
+        assert 'method: "thread/realtime/stop";' in client_response
+        assert "result: ThreadRealtimeStopResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -9506,6 +9574,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in thread_realtime_list_voices_response
         )
         assert "voices: RealtimeVoicesList;" in thread_realtime_list_voices_response
+        thread_realtime_stop = (
+            out_dir / "v2" / "ThreadRealtimeStopParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_realtime_stop
+        thread_realtime_stop_response = (
+            out_dir / "v2" / "ThreadRealtimeStopResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadRealtimeStopResponse {}" in thread_realtime_stop_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -9587,6 +9663,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeStopParams } from "./ThreadRealtimeStopParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeStopResponse } from "./ThreadRealtimeStopResponse";'
             in v2_index
         )
         assert (
