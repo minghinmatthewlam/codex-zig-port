@@ -3956,6 +3956,9 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
     return out.toOwnedSlice(allocator);
 }
 
+const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
+    "{\"voices\":{\"v1\":[\"juniper\",\"maple\",\"spruce\",\"ember\",\"vale\",\"breeze\",\"arbor\",\"sol\",\"cove\"],\"v2\":[\"alloy\",\"ash\",\"ballad\",\"coral\",\"echo\",\"sage\",\"shimmer\",\"verse\",\"marin\",\"cedar\"],\"defaultV1\":\"cove\",\"defaultV2\":\"marin\"}}";
+
 fn isThreadMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "thread/loaded/list") or
         std.mem.eql(u8, method, "thread/unsubscribe") or
@@ -3974,7 +3977,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/memoryMode/set") or
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
-        std.mem.eql(u8, method, "thread/turns/list");
+        std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/realtime/listVoices");
 }
 
 fn handleThreadMethod(
@@ -4184,6 +4188,12 @@ fn handleThreadMethod(
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
         return renderThreadNotLoaded(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/realtime/listVoices")) {
+        _ = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        return renderJsonRpcResult(allocator, id_value, THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
