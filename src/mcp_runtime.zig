@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const env = @import("env.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 
 pub const ToolSpec = struct {
@@ -158,8 +159,12 @@ pub fn readResource(
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(server_name) orelse return error.McpServerNotFound;
-    if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
-    return readServerResource(allocator, server.*, uri);
+    if (!server.enabled) return error.McpServerUnavailable;
+    return switch (server.kind) {
+        .stdio => readServerResource(allocator, server.*, uri),
+        .streamable_http => readHttpServerResource(allocator, codex_home, server.*, uri),
+        else => error.McpServerUnavailable,
+    };
 }
 
 pub fn callResourceTool(
@@ -509,8 +514,12 @@ pub fn callToolByName(
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(server_name) orelse return error.McpServerNotFound;
-    if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
-    return callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json);
+    if (!server.enabled) return error.McpServerUnavailable;
+    return switch (server.kind) {
+        .stdio => callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json),
+        .streamable_http => callHttpServerToolJson(allocator, codex_home, server.*, raw_tool_name, arguments_json, meta_json),
+        else => error.McpServerUnavailable,
+    };
 }
 
 pub fn serverStatusInventoryJson(
@@ -672,6 +681,48 @@ fn callServerToolJson(
     return renderToolCallResult(allocator, result);
 }
 
+fn readHttpServerResource(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    uri: []const u8,
+) ![]const u8 {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+
+    try client.initialize();
+    const params = try buildReadResourceParams(allocator, uri);
+    defer allocator.free(params);
+    var response = try client.request(2, "resources/read", params);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    return renderResourceReadResult(allocator, result);
+}
+
+fn callHttpServerToolJson(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    raw_tool_name: []const u8,
+    arguments_json: ?[]const u8,
+    meta_json: ?[]const u8,
+) ![]const u8 {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+
+    try client.initialize();
+    const params = try buildCallToolParamsWithMeta(allocator, raw_tool_name, arguments_json, meta_json);
+    defer allocator.free(params);
+    var response = try client.request(2, "tools/call", params);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    return renderToolCallResult(allocator, result);
+}
+
 const StdioClient = struct {
     allocator: std.mem.Allocator,
     io_instance: std.Io.Threaded,
@@ -791,6 +842,160 @@ const StdioClient = struct {
         return result.file_read_streaming;
     }
 };
+
+const HttpClient = struct {
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    authorization_header: ?[]const u8,
+
+    fn start(allocator: std.mem.Allocator, codex_home: []const u8, server: mcp_cmd.McpServer) !HttpClient {
+        const url = server.url orelse return error.MissingMcpUrl;
+        const url_copy = try allocator.dupe(u8, url);
+        errdefer allocator.free(url_copy);
+
+        const authorization_header = try mcpAuthorizationHeader(allocator, codex_home, server);
+        errdefer if (authorization_header) |header| allocator.free(header);
+
+        return .{
+            .allocator = allocator,
+            .url = url_copy,
+            .authorization_header = authorization_header,
+        };
+    }
+
+    fn deinit(self: *HttpClient) void {
+        if (self.authorization_header) |header| self.allocator.free(header);
+        self.allocator.free(self.url);
+    }
+
+    fn initialize(self: *HttpClient) !void {
+        const params =
+            \\{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"codex-zig","version":"0.0.1"}}
+        ;
+        var response = try self.request(1, "initialize", params);
+        defer response.deinit();
+        const notification = try buildNotificationPayload(self.allocator, "notifications/initialized", null);
+        defer self.allocator.free(notification);
+        const notification_response = try self.postJson(notification);
+        defer self.allocator.free(notification_response);
+    }
+
+    fn request(
+        self: *HttpClient,
+        id: i64,
+        method: []const u8,
+        params_json: ?[]const u8,
+    ) !std.json.Parsed(std.json.Value) {
+        const payload = try buildRequestPayload(self.allocator, id, method, params_json);
+        defer self.allocator.free(payload);
+        const body = try self.postJson(payload);
+        defer self.allocator.free(body);
+        return parseHttpResponse(self.allocator, body, id);
+    }
+
+    fn postJson(self: *HttpClient, payload: []const u8) ![]const u8 {
+        var headers = std.ArrayList(std.http.Header).empty;
+        defer headers.deinit(self.allocator);
+        try headers.append(self.allocator, .{ .name = "Content-Type", .value = "application/json" });
+        try headers.append(self.allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+        try headers.append(self.allocator, .{ .name = "MCP-Protocol-Version", .value = "2025-03-26" });
+        try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+        if (self.authorization_header) |authorization| {
+            try headers.append(self.allocator, .{ .name = "Authorization", .value = authorization });
+        }
+
+        var io_instance: std.Io.Threaded = .init(self.allocator, .{});
+        defer io_instance.deinit();
+
+        var client = std.http.Client{ .allocator = self.allocator, .io = io_instance.io() };
+        defer client.deinit();
+
+        var response_body: std.Io.Writer.Allocating = .init(self.allocator);
+        defer response_body.deinit();
+        const result = try client.fetch(.{
+            .location = .{ .url = self.url },
+            .method = .POST,
+            .payload = payload,
+            .response_writer = &response_body.writer,
+            .extra_headers = headers.items,
+        });
+        const status = @intFromEnum(result.status);
+        if (status < 200 or status >= 300) return error.McpHttpStatus;
+        return response_body.toOwnedSlice();
+    }
+};
+
+fn mcpAuthorizationHeader(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+) !?[]const u8 {
+    if (server.bearer_token_env_var) |name| {
+        const token = try env.getOwnedDynamic(allocator, name) orelse return error.McpServerUnavailable;
+        defer allocator.free(token);
+        return try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    }
+
+    const url = server.url orelse return null;
+    if (try mcp_cmd.readMcpOAuthFileAccessToken(allocator, codex_home, server.name, url)) |token| {
+        defer allocator.free(token);
+        return try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    }
+    return null;
+}
+
+fn parseHttpResponse(allocator: std.mem.Allocator, body: []const u8, id: i64) !std.json.Parsed(std.json.Value) {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (trimmed.len == 0) return error.McpResponseNotFound;
+    if (std.mem.startsWith(u8, trimmed, "data:") or std.mem.startsWith(u8, trimmed, "event:")) {
+        return parseSseResponse(allocator, trimmed, id);
+    }
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{});
+    errdefer parsed.deinit();
+    if (!isResponseForId(parsed.value, id)) return error.McpResponseNotFound;
+    if (parsed.value.object.get("error")) |_| return error.McpJsonRpcError;
+    return parsed;
+}
+
+fn parseSseResponse(allocator: std.mem.Allocator, body: []const u8, id: i64) !std.json.Parsed(std.json.Value) {
+    var event_data = std.ArrayList(u8).empty;
+    defer event_data.deinit(allocator);
+
+    var line_iter = std.mem.splitScalar(u8, body, '\n');
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, "\r");
+        if (line.len == 0) {
+            if (event_data.items.len == 0) continue;
+            if (try parseSseEvent(allocator, event_data.items, id)) |parsed| return parsed;
+            event_data.clearRetainingCapacity();
+            continue;
+        }
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+        const data = std.mem.trim(u8, line["data:".len..], " ");
+        if (std.mem.eql(u8, data, "[DONE]")) continue;
+        if (event_data.items.len > 0) try event_data.append(allocator, '\n');
+        try event_data.appendSlice(allocator, data);
+    }
+
+    if (event_data.items.len > 0) {
+        if (try parseSseEvent(allocator, event_data.items, id)) |parsed| return parsed;
+    }
+    return error.McpResponseNotFound;
+}
+
+fn parseSseEvent(allocator: std.mem.Allocator, data: []const u8, id: i64) !?std.json.Parsed(std.json.Value) {
+    const trimmed = std.mem.trim(u8, data, " \t\r\n");
+    if (trimmed.len == 0 or !std.mem.startsWith(u8, trimmed, "{")) return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return null;
+    errdefer parsed.deinit();
+    if (!isResponseForId(parsed.value, id)) {
+        parsed.deinit();
+        return null;
+    }
+    if (parsed.value.object.get("error")) |_| return error.McpJsonRpcError;
+    return parsed;
+}
 
 const SpawnArgv = struct {
     argv: []const []const u8,
@@ -1229,6 +1434,25 @@ test "mcp tool call result keeps app-server response fields" {
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings(
         "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"ok\":true},\"isError\":false,\"_meta\":{\"cursor\":\"next\"}}",
+        rendered,
+    );
+}
+
+test "mcp http response parser reads SSE JSON-RPC events" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseHttpResponse(
+        allocator,
+        "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n\ndata: [DONE]\n\n",
+        2,
+    );
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result").?;
+    try std.testing.expect(result == .object);
+    const rendered = try renderToolCallResult(allocator, result);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}",
         rendered,
     );
 }

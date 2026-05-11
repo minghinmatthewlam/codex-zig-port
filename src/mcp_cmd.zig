@@ -497,11 +497,17 @@ fn deleteMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []con
 }
 
 fn hasMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const u8, server_name: []const u8, server_url: []const u8) !bool {
+    const access_token = try readMcpOAuthFileAccessToken(allocator, codex_home, server_name, server_url);
+    defer if (access_token) |token| allocator.free(token);
+    return access_token != null;
+}
+
+pub fn readMcpOAuthFileAccessToken(allocator: std.mem.Allocator, codex_home: []const u8, server_name: []const u8, server_url: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, ".credentials.json" });
     defer allocator.free(path);
 
     const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return false,
+        error.FileNotFound => return null,
         else => return err,
     };
     defer allocator.free(bytes);
@@ -512,7 +518,11 @@ fn hasMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const 
 
     const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
     defer allocator.free(key);
-    return parsed.value.object.get(key) != null;
+    const entry = parsed.value.object.get(key) orelse return null;
+    if (entry != .object) return error.InvalidMcpOAuthCredentialsFile;
+    const access_token = entry.object.get("access_token") orelse return null;
+    if (access_token != .string or access_token.string.len == 0) return null;
+    return try allocator.dupe(u8, access_token.string);
 }
 
 pub fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: McpServer) !McpAuthStatus {
