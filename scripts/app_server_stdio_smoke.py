@@ -6947,6 +6947,244 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-resource-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    server_path = codex_home / "resource_server.py"
+    try:
+        server_path.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    'TEXT_URI = "test://codex/resource"',
+                    'BLOB_URI = "test://codex/resource.bin"',
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'resources': {}},",
+                    "                'serverInfo': {'name': 'resource-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'resources/read':",
+                    "        uri = request.get('params', {}).get('uri')",
+                    "        if uri != TEXT_URI:",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'error': {'code': -32002, 'message': f'resource not found: {uri}'},",
+                    "            })",
+                    "            continue",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'contents': [",
+                    "                    {",
+                    "                        'uri': TEXT_URI,",
+                    "                        'mimeType': 'text/markdown',",
+                    "                        'text': 'Resource body from the MCP server.',",
+                    "                    },",
+                    "                    {",
+                    "                        'uri': BLOB_URI,",
+                    "                        'mimeType': 'application/octet-stream',",
+                    "                        'blob': 'YmluYXJ5LXJlc291cmNl',",
+                    "                    },",
+                    "                ],",
+                    "                'extra': True,",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[mcp_servers.resource_docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                    "[mcp_servers.disabled_docs]",
+                    "enabled = false",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                    "[mcp_servers.remote_docs]",
+                    'url = "https://example.com/mcp"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        resource_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-read",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "resource_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert resource_read["id"] == "mcp-resource-read"
+        assert resource_read["result"] == {
+            "contents": [
+                {
+                    "uri": "test://codex/resource",
+                    "mimeType": "text/markdown",
+                    "text": "Resource body from the MCP server.",
+                },
+                {
+                    "uri": "test://codex/resource.bin",
+                    "mimeType": "application/octet-stream",
+                    "blob": "YmluYXJ5LXJlc291cmNl",
+                },
+            ]
+        }
+
+        invalid_params = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-invalid-params",
+                "method": "mcpServer/resource/read",
+                "params": {"server": "resource_docs"},
+            },
+            env,
+        )
+        assert invalid_params["id"] == "mcp-resource-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+        assert "uri must be a string" in invalid_params["error"]["message"]
+
+        invalid_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-invalid-thread",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "threadId": "not-a-thread-id",
+                    "server": "resource_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert invalid_thread["id"] == "mcp-resource-invalid-thread"
+        assert invalid_thread["error"]["code"] == -32600
+        assert "invalid thread id: not-a-thread-id" in invalid_thread["error"]["message"]
+
+        missing_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-missing-thread",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "threadId": "00000000-0000-4000-8000-000000000000",
+                    "server": "resource_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert missing_thread["id"] == "mcp-resource-missing-thread"
+        assert missing_thread["error"]["code"] == -32600
+        assert "thread not found: 00000000-0000-4000-8000-000000000000" in (
+            missing_thread["error"]["message"]
+        )
+
+        missing_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-missing-server",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "missing_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert missing_server["id"] == "mcp-resource-missing-server"
+        assert missing_server["error"]["code"] == -32600
+        assert "No MCP server named 'missing_docs' found." in (
+            missing_server["error"]["message"]
+        )
+
+        disabled_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-disabled-server",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "disabled_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert disabled_server["id"] == "mcp-resource-disabled-server"
+        assert disabled_server["error"]["code"] == -32600
+        assert "MCP server 'disabled_docs' is unavailable." in (
+            disabled_server["error"]["message"]
+        )
+
+        http_server = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-resource-http-server",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "remote_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert http_server["id"] == "mcp-resource-http-server"
+        assert http_server["error"]["code"] == -32600
+        assert "MCP server 'remote_docs' is unavailable." in (
+            http_server["error"]["message"]
+        )
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_filesystem_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
     env = os.environ.copy()
@@ -17091,6 +17329,8 @@ def main() -> None:
     print("app-server-skills-list-rpc-e2e: ok")
     run_mcp_server_status_rpc_smoke(binary)
     print("app-server-mcp-server-status-rpc-e2e: ok")
+    run_mcp_resource_read_rpc_smoke(binary)
+    print("app-server-mcp-resource-read-rpc-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
     run_filesystem_watch_rpc_smoke(binary)
