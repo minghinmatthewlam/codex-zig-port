@@ -75,8 +75,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `config/mcpServer/reload` and `mcpServerStatus/list`, including enabled
   local plugin-cache `.mcp.json` server entries plus raw stdio tool, resource,
   and resource-template inventory
-- read resources and call tools on configured stdio MCP servers through
-  app-server `mcpServer/resource/read` and `mcpServer/tool/call`
+- read resources with and without loaded thread IDs, and call tools on
+  configured stdio MCP servers through app-server `mcpServer/resource/read`
+  and `mcpServer/tool/call`
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
@@ -290,8 +291,9 @@ interface/dependency metadata, and `skills/changed` invalidations for in-process
 mutations, verifies
 app-server MCP server status pagination, enabled local plugin-cache MCP entries,
 raw stdio tool/resource/resource-template inventory, bearer-token auth reporting,
-config-backed stdio resource reads, loaded-thread stdio tool calls including
-non-object argument pass-through, and model-facing stdio MCP resource
+config-backed stdio resource reads with and without loaded thread IDs,
+loaded-thread stdio tool calls including non-object argument pass-through, and
+model-facing stdio MCP resource
 list/template/read tool calls, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
