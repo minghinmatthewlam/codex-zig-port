@@ -904,6 +904,23 @@ const THREAD_DECREMENT_ELICITATION_RESPONSE_TS =
     \\
     ;
 
+const THREAD_ROLLBACK_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRollbackParams {
+    \\  threadId: string;
+    \\  numTurns: number;
+    \\}
+    \\
+    ;
+
+const THREAD_ROLLBACK_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadRollbackResponse {
+    \\  thread: unknown;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -915,6 +932,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
+    \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
@@ -967,6 +985,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/decrement_elicitation";
     \\      params: ThreadDecrementElicitationParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/rollback";
+    \\      params: ThreadRollbackParams;
     \\    };
     \\
     ;
@@ -982,6 +1004,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
+    \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
@@ -1047,6 +1070,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/decrement_elicitation";
     \\      result: ThreadDecrementElicitationResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/rollback";
+    \\      result: ThreadRollbackResponse;
     \\    };
     \\
     ;
@@ -1114,6 +1142,8 @@ const V2_INDEX_TS =
     \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
+    \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
+    \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
@@ -1917,6 +1947,35 @@ const THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_ROLLBACK_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRollbackParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "numTurns"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "numTurns": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRollbackResponse",
+    \\  "type": "object",
+    \\  "required": ["thread"],
+    \\  "properties": {
+    \\    "thread": true
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2354,6 +2413,23 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "paused": { "type": "boolean" }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadRollbackParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "numTurns"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "numTurns": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRollbackResponse": {
+    \\      "type": "object",
+    \\      "required": ["thread"],
+    \\      "properties": {
+    \\        "thread": true
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2428,6 +2504,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadIncrementElicitationResponse.json", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadDecrementElicitationParams.json", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadDecrementElicitationResponse.json", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRollbackParams.json", .contents = THREAD_ROLLBACK_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRollbackResponse.json", .contents = THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2483,6 +2561,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadIncrementElicitationResponse.ts", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_TS },
     .{ .name = "v2/ThreadDecrementElicitationParams.ts", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_TS },
     .{ .name = "v2/ThreadDecrementElicitationResponse.ts", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_TS },
+    .{ .name = "v2/ThreadRollbackParams.ts", .contents = THREAD_ROLLBACK_PARAMS_TS },
+    .{ .name = "v2/ThreadRollbackResponse.ts", .contents = THREAD_ROLLBACK_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
