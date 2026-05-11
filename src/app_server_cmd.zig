@@ -2967,7 +2967,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
         std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
-        std.mem.eql(u8, method, "thread/rollback");
+        std.mem.eql(u8, method, "thread/rollback") or
+        std.mem.eql(u8, method, "thread/inject_items");
 }
 
 fn handleThreadMethod(
@@ -3040,6 +3041,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/inject_items")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        if (!threadItemsParamIsArray(object)) {
+            return renderJsonRpcError(allocator, id_value, -32602, "items must be an array");
+        }
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -3078,6 +3094,11 @@ fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
     if (num_turns != .integer) return error.InvalidNumTurns;
     if (num_turns.integer < 0 or num_turns.integer > std.math.maxInt(u32)) return error.InvalidNumTurns;
     return @intCast(num_turns.integer);
+}
+
+fn threadItemsParamIsArray(object: std.json.ObjectMap) bool {
+    const items = object.get("items") orelse return false;
+    return items == .array;
 }
 
 fn renderThreadObjectParamsError(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
