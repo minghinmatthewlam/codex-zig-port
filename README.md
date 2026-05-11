@@ -72,6 +72,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - accept app-server MCP config reload requests and list server status with
   `config/mcpServer/reload` and `mcpServerStatus/list`, including enabled
   local plugin-cache `.mcp.json` server entries
+- read resources and call tools on configured stdio MCP servers through
+  app-server `mcpServer/resource/read` and `mcpServer/tool/call`
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
@@ -284,7 +286,8 @@ skill roots plus `forceReload` cache behavior, `agents/openai.yaml`
 interface/dependency metadata, and `skills/changed` invalidations for in-process skill and config
 mutations, verifies
 app-server MCP server status pagination, enabled local plugin-cache MCP entries,
-and bearer-token auth reporting, verifies
+bearer-token auth reporting, config-backed stdio resource reads, and loaded-thread
+stdio tool calls, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
