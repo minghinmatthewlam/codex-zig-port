@@ -649,6 +649,22 @@ const INITIALIZE_RESPONSE_TS =
     \\
     ;
 
+const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelProviderCapabilitiesReadParams {}
+    \\
+    ;
+
+const MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ModelProviderCapabilitiesReadResponse {
+    \\  namespaceTools: boolean;
+    \\  imageGeneration: boolean;
+    \\  webSearch: boolean;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_TERMINAL_SIZE_TS =
     GENERATED_TS_HEADER ++
     \\export interface CommandExecTerminalSize {
@@ -1761,6 +1777,7 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
+    \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
@@ -1797,6 +1814,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "initialize";
     \\      params: InitializeParams;
+    \\    }
+    \\  | {
+    \\      method: "modelProvider/capabilities/read";
+    \\      params?: ModelProviderCapabilitiesReadParams | null;
     \\    }
     \\  | {
     \\      method: "command/exec";
@@ -1943,6 +1964,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
+    \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
@@ -1981,6 +2003,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "initialize";
     \\      result: InitializeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "modelProvider/capabilities/read";
+    \\      result: ModelProviderCapabilitiesReadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2261,6 +2288,8 @@ const V2_INDEX_TS =
     \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
     \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
+    \\export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";
+    \\export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";
     \\export type { NetworkAccess } from "./NetworkAccess";
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
@@ -2506,6 +2535,32 @@ const INITIALIZE_RESPONSE_JSON_SCHEMA =
     \\    "capabilities": { "type": "object" }
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelProviderCapabilitiesReadParams",
+    \\  "type": "object",
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelProviderCapabilitiesReadResponse",
+    \\  "type": "object",
+    \\  "required": ["namespaceTools", "imageGeneration", "webSearch"],
+    \\  "properties": {
+    \\    "namespaceTools": { "type": "boolean" },
+    \\    "imageGeneration": { "type": "boolean" },
+    \\    "webSearch": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -4741,6 +4796,20 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ModelProviderCapabilitiesReadParams": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ModelProviderCapabilitiesReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["namespaceTools", "imageGeneration", "webSearch"],
+    \\      "properties": {
+    \\        "namespaceTools": { "type": "boolean" },
+    \\        "imageGeneration": { "type": "boolean" },
+    \\        "webSearch": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
@@ -5964,6 +6033,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
@@ -6098,6 +6169,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
+    .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
+    .{ .name = "v2/ModelProviderCapabilitiesReadResponse.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_TS },
     .{ .name = "v2/NetworkAccess.ts", .contents = NETWORK_ACCESS_TS },
     .{ .name = "v2/SandboxPolicy.ts", .contents = SANDBOX_POLICY_TS },
     .{ .name = "v2/FileSystemAccessMode.ts", .contents = FILE_SYSTEM_ACCESS_MODE_TS },
