@@ -3485,6 +3485,7 @@ fn isThreadMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "thread/loaded/list") or
         std.mem.eql(u8, method, "thread/unsubscribe") or
         std.mem.eql(u8, method, "thread/archive") or
+        std.mem.eql(u8, method, "thread/unarchive") or
         std.mem.eql(u8, method, "thread/compact/start") or
         std.mem.eql(u8, method, "thread/shellCommand") or
         std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
@@ -3533,6 +3534,18 @@ fn handleThreadMethod(
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
         return renderNoRolloutFoundForThreadId(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/unarchive")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderNoArchivedRolloutFoundForThreadId(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/compact/start")) {
         return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
@@ -3776,6 +3789,12 @@ fn renderThreadNotLoaded(allocator: std.mem.Allocator, id_value: std.json.Value,
 
 fn renderNoRolloutFoundForThreadId(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
     const message = try std.fmt.allocPrint(allocator, "no rollout found for thread id {s}", .{thread_id});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderNoArchivedRolloutFoundForThreadId(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "no archived rollout found for thread id {s}", .{thread_id});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
 }
