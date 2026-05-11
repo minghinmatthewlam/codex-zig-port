@@ -65,6 +65,7 @@ const AppServerState = struct {
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
     skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
+    opt_out_notification_methods: std.ArrayList([]const u8) = .empty,
     pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
 
@@ -80,6 +81,8 @@ const AppServerState = struct {
         self.skill_watch_roots.deinit(allocator);
         clearSkillsListCache(allocator, self);
         self.skills_list_cache.deinit(allocator);
+        clearOptOutNotificationMethods(allocator, self);
+        self.opt_out_notification_methods.deinit(allocator);
         for (self.pre_response_notifications.items) |payload| allocator.free(payload);
         self.pre_response_notifications.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
@@ -889,6 +892,14 @@ const THREAD_START_RESPONSE_TS =
     \\  approvalsReviewer: "user" | "auto_review" | "guardian_subagent";
     \\  sandbox: unknown;
     \\  reasoningEffort: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadStartedNotification {
+    \\  thread: unknown;
     \\}
     \\
     ;
@@ -1911,11 +1922,16 @@ const CLIENT_RESPONSE_TS =
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\
     \\export type ServerNotification =
     \\  | {
     \\      method: "command/exec/outputDelta";
     \\      params: CommandExecOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/started";
+    \\      params: ThreadStartedNotification;
     \\    };
     \\
     ;
@@ -2023,6 +2039,7 @@ const V2_INDEX_TS =
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadSortKey } from "./ThreadSortKey";
     \\export type { ThreadSourceKind } from "./ThreadSourceKind";
+    \\export type { ThreadStartedNotification } from "./ThreadStartedNotification";
     \\export type { ThreadStartParams } from "./ThreadStartParams";
     \\export type { ThreadStartResponse } from "./ThreadStartResponse";
     \\export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";
@@ -2677,6 +2694,20 @@ const THREAD_START_RESPONSE_JSON_SCHEMA =
     \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
     \\    "sandbox": true,
     \\    "reasoningEffort": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadStartedNotification",
+    \\  "type": "object",
+    \\  "required": ["thread"],
+    \\  "properties": {
+    \\    "thread": true
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4236,6 +4267,14 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadStartedNotification": {
+    \\      "type": "object",
+    \\      "required": ["thread"],
+    \\      "properties": {
+    \\        "thread": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -4921,6 +4960,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -5036,6 +5076,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
+    .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
@@ -5161,33 +5202,54 @@ fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 pub fn runStdioToUnixSocket(allocator: std.mem.Allocator, socket_path: []const u8) !void {
+    _ = allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var address = try net.UnixAddress.init(socket_path);
     var stream = try address.connect(io);
     defer stream.close(io);
 
-    var stdin_buffer: [64 * 1024]u8 = undefined;
-    var socket_in_buffer: [64 * 1024]u8 = undefined;
     var socket_out_buffer: [64 * 1024]u8 = undefined;
-    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
-    var socket_reader = stream.reader(io, &socket_in_buffer);
     var socket_writer = stream.writer(io, &socket_out_buffer);
 
+    var stdin_open = true;
+    var buffer: [64 * 1024]u8 = undefined;
+    var fds = [_]std.posix.pollfd{
+        .{ .fd = std.posix.STDIN_FILENO, .events = @intCast(std.posix.POLL.IN), .revents = 0 },
+        .{ .fd = stream.socket.handle, .events = @intCast(std.posix.POLL.IN), .revents = 0 },
+    };
+
     while (true) {
-        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
-        const line = line_opt orelse break;
-        try writeStreamLine(&socket_writer.interface, line);
-        if (!try jsonRpcLineExpectsResponse(allocator, line)) continue;
-        const response = try socket_reader.interface.takeDelimiter('\n') orelse break;
-        try writeStdoutLine(response);
+        fds[0].fd = if (stdin_open) std.posix.STDIN_FILENO else -1;
+        fds[0].events = if (stdin_open) @intCast(std.posix.POLL.IN) else 0;
+        fds[0].revents = 0;
+        fds[1].events = @intCast(std.posix.POLL.IN);
+        fds[1].revents = 0;
+
+        _ = try std.posix.poll(&fds, -1);
+
+        if (stdin_open and pollReventsInclude(fds[0].revents, relay_poll_read_events)) {
+            const read_len = try std.posix.read(std.posix.STDIN_FILENO, &buffer);
+            if (read_len == 0) {
+                stdin_open = false;
+                stream.shutdown(io, .send) catch {};
+            } else {
+                try socket_writer.interface.writeAll(buffer[0..read_len]);
+                try socket_writer.interface.flush();
+            }
+        }
+
+        if (pollReventsInclude(fds[1].revents, relay_poll_read_events)) {
+            const read_len = try std.posix.read(stream.socket.handle, &buffer);
+            if (read_len == 0) break;
+            try cli_utils.writeStdout(buffer[0..read_len]);
+        }
     }
 }
 
-fn jsonRpcLineExpectsResponse(allocator: std.mem.Allocator, line: []const u8) !bool {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return true;
-    defer parsed.deinit();
-    if (parsed.value != .object) return true;
-    return parsed.value.object.get("id") != null;
+const relay_poll_read_events = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL;
+
+fn pollReventsInclude(revents: i16, mask: comptime_int) bool {
+    return (@as(u16, @bitCast(revents)) & @as(u16, @intCast(mask))) != 0;
 }
 
 fn parseTransport(value: []const u8) !Transport {
@@ -5325,6 +5387,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
 
     const method = method_value.string;
     if (std.mem.eql(u8, method, "initialize")) {
+        try updateOptOutNotificationMethods(allocator, state, object.get("params"));
         const result = try renderInitializeResult(allocator);
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
@@ -5886,9 +5949,14 @@ fn handleThreadStart(
 
     const result = try renderThreadLifecycleResponse(allocator, &thread, true);
     defer allocator.free(result);
+    const started_notification = try renderThreadStartedNotification(allocator, &thread);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(started_notification);
 
     try state.loaded_threads.append(allocator, thread);
     thread_moved = true;
+    try queueThreadStartedNotification(allocator, state, started_notification);
+    notification_moved = true;
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -5983,9 +6051,14 @@ fn handleThreadFork(
     const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
     defer allocator.free(result);
+    const started_notification = try renderThreadStartedNotification(allocator, &thread);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(started_notification);
 
     try state.loaded_threads.append(allocator, thread);
     thread_moved = true;
+    try queueThreadStartedNotification(allocator, state, started_notification);
+    notification_moved = true;
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -6503,6 +6576,23 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
     return result.toOwnedSlice(allocator);
 }
 
+fn renderThreadStartedNotification(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/started\",\"params\":{\"thread\":");
+    try appendLoadedThreadJson(allocator, &result, thread, false);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServerState, notification: []const u8) !void {
+    if (notificationMethodOptedOut(state, "thread/started")) {
+        allocator.free(notification);
+        return;
+    }
+    try state.pending_notifications.append(allocator, notification);
+}
+
 const ThreadTurnsCursor = struct {
     turn_id: []const u8,
     include_anchor: bool,
@@ -6659,6 +6749,36 @@ fn appendSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.ArrayList(
     } else {
         try result.appendSlice(allocator, "{\"type\":\"workspaceWrite\",\"writableRoots\":[],\"networkAccess\":false,\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
     }
+}
+
+fn updateOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServerState, params_value: ?std.json.Value) !void {
+    clearOptOutNotificationMethods(allocator, state);
+    const params = params_value orelse return;
+    if (params != .object) return;
+    const capabilities = params.object.get("capabilities") orelse return;
+    if (capabilities == .null) return;
+    if (capabilities != .object) return;
+    const opt_out = capabilities.object.get("optOutNotificationMethods") orelse return;
+    if (opt_out == .null) return;
+    if (opt_out != .array) return;
+    for (opt_out.array.items) |method| {
+        if (method != .string) continue;
+        const owned = try allocator.dupe(u8, method.string);
+        errdefer allocator.free(owned);
+        try state.opt_out_notification_methods.append(allocator, owned);
+    }
+}
+
+fn clearOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServerState) void {
+    for (state.opt_out_notification_methods.items) |method| allocator.free(method);
+    state.opt_out_notification_methods.clearRetainingCapacity();
+}
+
+fn notificationMethodOptedOut(state: *const AppServerState, method: []const u8) bool {
+    for (state.opt_out_notification_methods.items) |opt_out_method| {
+        if (std.mem.eql(u8, opt_out_method, method)) return true;
+    }
+    return false;
 }
 
 fn renderThreadNotFoundForThreadIdParam(
