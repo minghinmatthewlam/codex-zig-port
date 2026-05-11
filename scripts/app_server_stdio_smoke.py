@@ -908,6 +908,100 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_shell_missing["error"]["message"]
     )
 
+    guardian_event = {
+        "id": "guardian-1",
+        "turn_id": "turn-1",
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "requires approval",
+        "decision_source": "agent",
+        "action": {
+            "type": "command",
+            "source": "shell",
+            "command": "echo hello",
+            "cwd": "/tmp",
+        },
+    }
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-guardian-approval-missing",
+            "method": "thread/approveGuardianDeniedAction",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000015",
+                "event": guardian_event,
+            },
+        }
+    )
+    thread_guardian_approval_missing = read_line()
+    assert thread_guardian_approval_missing["id"] == "thread-guardian-approval-missing"
+    assert thread_guardian_approval_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000015"
+        in thread_guardian_approval_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-guardian-approval-invalid-event",
+            "method": "thread/approveGuardianDeniedAction",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000015",
+                "event": {"id": "guardian-1"},
+            },
+        }
+    )
+    thread_guardian_approval_invalid_event = read_line()
+    assert (
+        thread_guardian_approval_invalid_event["id"]
+        == "thread-guardian-approval-invalid-event"
+    )
+    assert thread_guardian_approval_invalid_event["error"]["code"] == -32600
+    assert (
+        "invalid Guardian denial event"
+        in thread_guardian_approval_invalid_event["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-guardian-approval-missing-event",
+            "method": "thread/approveGuardianDeniedAction",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000015"},
+        }
+    )
+    thread_guardian_approval_missing_event = read_line()
+    assert (
+        thread_guardian_approval_missing_event["id"]
+        == "thread-guardian-approval-missing-event"
+    )
+    assert thread_guardian_approval_missing_event["error"]["code"] == -32602
+    assert (
+        "event must be a Guardian denial event"
+        in thread_guardian_approval_missing_event["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-guardian-approval-invalid-thread",
+            "method": "thread/approveGuardianDeniedAction",
+            "params": {"threadId": "not-a-uuid", "event": guardian_event},
+        }
+    )
+    thread_guardian_approval_invalid_thread = read_line()
+    assert (
+        thread_guardian_approval_invalid_thread["id"]
+        == "thread-guardian-approval-invalid-thread"
+    )
+    assert thread_guardian_approval_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_guardian_approval_invalid_thread["error"]["message"]
+    )
+
     write_line(
         {
             "jsonrpc": "2.0",
