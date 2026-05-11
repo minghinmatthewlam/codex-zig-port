@@ -2558,6 +2558,34 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                             "timestamp": "2025-01-05T12:00:00Z",
                             "type": "event_msg",
                             "payload": {
+                                "type": "token_count",
+                                "info": {
+                                    "total_token_usage": {
+                                        "input_tokens": 120,
+                                        "cached_input_tokens": 20,
+                                        "output_tokens": 30,
+                                        "reasoning_output_tokens": 10,
+                                        "total_tokens": 150,
+                                    },
+                                    "last_token_usage": {
+                                        "input_tokens": 70,
+                                        "cached_input_tokens": 10,
+                                        "output_tokens": 20,
+                                        "reasoning_output_tokens": 5,
+                                        "total_tokens": 90,
+                                    },
+                                    "model_context_window": 200000,
+                                },
+                                "rate_limits": None,
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "event_msg",
+                            "payload": {
                                 "type": "user_message",
                                 "message": "rust rollout hello",
                                 "kind": "plain",
@@ -3006,6 +3034,18 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 rust_thread["turns"][0]["items"][0]["content"][0]["text"]
                 == "rust rollout hello"
             )
+            rust_usage = read_json_line(proc, 5)
+            assert rust_usage["method"] == "thread/tokenUsage/updated"
+            rust_usage_params = rust_usage["params"]
+            assert rust_usage_params["threadId"] == rust_thread_id
+            assert rust_usage_params["turnId"] == rust_thread["turns"][0]["id"]
+            assert rust_usage_params["tokenUsage"]["total"]["totalTokens"] == 150
+            assert rust_usage_params["tokenUsage"]["total"]["inputTokens"] == 120
+            assert rust_usage_params["tokenUsage"]["total"]["cachedInputTokens"] == 20
+            assert rust_usage_params["tokenUsage"]["total"]["outputTokens"] == 30
+            assert rust_usage_params["tokenUsage"]["total"]["reasoningOutputTokens"] == 10
+            assert rust_usage_params["tokenUsage"]["last"]["totalTokens"] == 90
+            assert rust_usage_params["tokenUsage"]["modelContextWindow"] == 200000
 
             write_json_line(
                 proc,
@@ -3029,6 +3069,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 rust_fork_thread["turns"][0]["items"][0]["content"][0]["text"]
                 == "rust rollout hello"
             )
+            rust_fork_usage = read_json_line(proc, 5)
+            assert rust_fork_usage["method"] == "thread/tokenUsage/updated"
+            assert rust_fork_usage["params"]["threadId"] == rust_fork_thread["id"]
+            assert rust_fork_usage["params"]["turnId"] == rust_fork_thread["turns"][0]["id"]
+            assert rust_fork_usage["params"]["tokenUsage"]["total"]["totalTokens"] == 150
             assert_thread_started_notification(read_json_line(proc, 5), rust_fork_thread)
 
             write_json_line(
