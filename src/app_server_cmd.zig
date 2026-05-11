@@ -4204,6 +4204,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/realtime/appendText") or
         std.mem.eql(u8, method, "thread/realtime/stop") or
         std.mem.eql(u8, method, "thread/realtime/listVoices");
 }
@@ -4424,6 +4425,20 @@ fn handleThreadMethod(
     }
     if (std.mem.eql(u8, method, "thread/realtime/stop")) {
         return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
+    }
+    if (std.mem.eql(u8, method, "thread/realtime/appendText")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        const text = object.get("text") orelse return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
+        if (text != .string) return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
