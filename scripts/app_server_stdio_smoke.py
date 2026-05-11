@@ -2615,6 +2615,14 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert agent_item["type"] == "agentMessage"
                 assert agent_item["id"] == "item-1"
                 assert agent_item["text"] == "app turn reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "item-1",
+                    "delta": "app turn reply",
+                }
                 agent_item_completed = read_json_line(proc, 5)
                 assert agent_item_completed["method"] == "item/completed"
                 assert agent_item_completed["params"]["threadId"] == thread_id
@@ -10494,6 +10502,15 @@ def run_json_schema_smoke(binary: Path) -> None:
             "turnId",
             "completedAtMs",
         ]
+        agent_message_delta_notification_schema = json.loads(
+            (out_dir / "AgentMessageDeltaNotification.json").read_text(encoding="utf-8")
+        )
+        assert agent_message_delta_notification_schema["required"] == [
+            "threadId",
+            "turnId",
+            "itemId",
+            "delta",
+        ]
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -10963,6 +10980,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "TurnCompletedNotification" in bundle["$defs"]
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
+        assert "AgentMessageDeltaNotification" in bundle["$defs"]
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -11114,6 +11132,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
         assert "params: ItemCompletedNotification;" in server_notification
+        assert 'method: "item/agentMessage/delta";' in server_notification
+        assert "params: AgentMessageDeltaNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
@@ -11285,6 +11305,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in item_completed_notification
         assert "turnId: string;" in item_completed_notification
         assert "completedAtMs: number;" in item_completed_notification
+        agent_message_delta_notification = (
+            out_dir / "v2" / "AgentMessageDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface AgentMessageDeltaNotification"
+            in agent_message_delta_notification
+        )
+        assert "threadId: string;" in agent_message_delta_notification
+        assert "turnId: string;" in agent_message_delta_notification
+        assert "itemId: string;" in agent_message_delta_notification
+        assert "delta: string;" in agent_message_delta_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -11661,6 +11692,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ItemCompletedNotification } from "./ItemCompletedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";'
             in v2_index
         )
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
