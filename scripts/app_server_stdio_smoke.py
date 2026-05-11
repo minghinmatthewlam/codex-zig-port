@@ -18,6 +18,37 @@ from pathlib import Path
 
 _OMIT = object()
 
+EXPECTED_REALTIME_VOICES = {
+    "v1": [
+        "juniper",
+        "maple",
+        "spruce",
+        "ember",
+        "vale",
+        "breeze",
+        "arbor",
+        "sol",
+        "cove",
+    ],
+    "v2": [
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "sage",
+        "shimmer",
+        "verse",
+        "marin",
+        "cedar",
+    ],
+    "defaultV1": "cove",
+    "defaultV2": "marin",
+}
+EXPECTED_REALTIME_VOICE_ENUM = sorted(
+    EXPECTED_REALTIME_VOICES["v1"] + EXPECTED_REALTIME_VOICES["v2"]
+)
+
 
 def toml_quoted_key(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
@@ -1503,6 +1534,37 @@ def exercise_json_rpc(write_line, read_line) -> None:
         "thread not loaded: 00000000-0000-0000-0000-000000000013"
         in thread_turns_list_missing["error"]["message"]
     )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-list-voices-invalid",
+            "method": "thread/realtime/listVoices",
+            "params": [],
+        }
+    )
+    thread_realtime_list_voices_invalid = read_line()
+    assert (
+        thread_realtime_list_voices_invalid["id"]
+        == "thread-realtime-list-voices-invalid"
+    )
+    assert thread_realtime_list_voices_invalid["error"]["code"] == -32602
+    assert (
+        "thread/realtime/listVoices params must be an object"
+        in thread_realtime_list_voices_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-list-voices",
+            "method": "thread/realtime/listVoices",
+            "params": {},
+        }
+    )
+    thread_realtime_list_voices = read_line()
+    assert thread_realtime_list_voices["id"] == "thread-realtime-list-voices"
+    assert thread_realtime_list_voices["result"]["voices"] == EXPECTED_REALTIME_VOICES
 
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
@@ -8894,6 +8956,23 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadMemoryMode.json").read_text(encoding="utf-8")
         )
         assert thread_memory_mode["enum"] == ["enabled", "disabled"]
+        realtime_voice = json.loads(
+            (out_dir / "RealtimeVoice.json").read_text(encoding="utf-8")
+        )
+        assert realtime_voice["enum"] == EXPECTED_REALTIME_VOICE_ENUM
+        realtime_voices_list = json.loads(
+            (out_dir / "RealtimeVoicesList.json").read_text(encoding="utf-8")
+        )
+        assert realtime_voices_list["required"] == [
+            "v1",
+            "v2",
+            "defaultV1",
+            "defaultV2",
+        ]
+        assert (
+            realtime_voices_list["properties"]["v1"]["items"]["$ref"]
+            == "#/$defs/RealtimeVoice"
+        )
         thread_memory_mode_set = json.loads(
             (out_dir / "ThreadMemoryModeSetParams.json").read_text(encoding="utf-8")
         )
@@ -8951,6 +9030,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             "backwardsCursor",
         ]
         assert thread_turns_list_response["additionalProperties"] is False
+        thread_realtime_list_voices = json.loads(
+            (out_dir / "ThreadRealtimeListVoicesParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_list_voices["type"] == "object"
+        thread_realtime_list_voices_response = json.loads(
+            (out_dir / "ThreadRealtimeListVoicesResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_list_voices_response["required"] == ["voices"]
+        assert (
+            thread_realtime_list_voices_response["properties"]["voices"]["$ref"]
+            == "#/$defs/RealtimeVoicesList"
+        )
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8978,6 +9073,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
         assert "ThreadReadResponse" in bundle["$defs"]
         assert "ThreadTurnsListResponse" in bundle["$defs"]
+        assert "RealtimeVoice" in bundle["$defs"]
+        assert "RealtimeVoicesList" in bundle["$defs"]
+        assert "ThreadRealtimeListVoicesResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -9097,6 +9195,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadReadParams;" in client_request
         assert 'method: "thread/turns/list";' in client_request
         assert "params: ThreadTurnsListParams;" in client_request
+        assert 'method: "thread/realtime/listVoices";' in client_request
+        assert "params: ThreadRealtimeListVoicesParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
@@ -9132,6 +9232,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadReadResponse;" in client_response
         assert 'method: "thread/turns/list";' in client_response
         assert "result: ThreadTurnsListResponse;" in client_response
+        assert 'method: "thread/realtime/listVoices";' in client_response
+        assert "result: ThreadRealtimeListVoicesResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -9383,10 +9485,33 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "data: unknown[];" in thread_turns_list_response
         assert "nextCursor: string | null;" in thread_turns_list_response
         assert "backwardsCursor: string | null;" in thread_turns_list_response
+        realtime_voice = (out_dir / "RealtimeVoice.ts").read_text(encoding="utf-8")
+        assert 'export type RealtimeVoice = "alloy"' in realtime_voice
+        assert '"verse"' in realtime_voice
+        realtime_voices_list = (out_dir / "RealtimeVoicesList.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { RealtimeVoice } from "./RealtimeVoice";' in realtime_voices_list
+        assert "v1: RealtimeVoice[];" in realtime_voices_list
+        assert "defaultV2: RealtimeVoice;" in realtime_voices_list
+        thread_realtime_list_voices = (
+            out_dir / "v2" / "ThreadRealtimeListVoicesParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadRealtimeListVoicesParams {}" in thread_realtime_list_voices
+        thread_realtime_list_voices_response = (
+            out_dir / "v2" / "ThreadRealtimeListVoicesResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { RealtimeVoicesList } from "../RealtimeVoicesList";'
+            in thread_realtime_list_voices_response
+        )
+        assert "voices: RealtimeVoicesList;" in thread_realtime_list_voices_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
+        assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export type { ThreadMemoryMode } from "./ThreadMemoryMode";' in index
         assert 'export * as v2 from "./v2";' in index
@@ -9456,6 +9581,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadReadResponse } from "./ThreadReadResponse";' in v2_index
         assert 'export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";' in v2_index
         assert 'export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";' in v2_index
+        assert (
+            'export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeListVoicesResponse } from "./ThreadRealtimeListVoicesResponse";'
+            in v2_index
+        )
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
