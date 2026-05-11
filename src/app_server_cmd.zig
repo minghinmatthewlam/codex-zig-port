@@ -3876,6 +3876,10 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "string",
     \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
     \\    },
+    \\    "RealtimeOutputModality": {
+    \\      "type": "string",
+    \\      "enum": ["text", "audio"]
+    \\    },
     \\    "RealtimeVoicesList": {
     \\      "type": "object",
     \\      "required": ["v1", "v2", "defaultV1", "defaultV2"],
