@@ -12711,6 +12711,27 @@ def run_json_schema_smoke(binary: Path) -> None:
             mcp_status_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/McpServerStatus"
         )
+        resource_content = json.loads(
+            (out_dir / "ResourceContent.json").read_text(encoding="utf-8")
+        )
+        assert resource_content["anyOf"][0]["required"] == ["uri", "text"]
+        assert resource_content["anyOf"][1]["required"] == ["uri", "blob"]
+        mcp_resource_read_params = json.loads(
+            (out_dir / "McpResourceReadParams.json").read_text(encoding="utf-8")
+        )
+        assert mcp_resource_read_params["required"] == ["server", "uri"]
+        assert mcp_resource_read_params["properties"]["threadId"]["type"] == [
+            "string",
+            "null",
+        ]
+        mcp_resource_read_response = json.loads(
+            (out_dir / "McpResourceReadResponse.json").read_text(encoding="utf-8")
+        )
+        assert mcp_resource_read_response["required"] == ["contents"]
+        assert (
+            mcp_resource_read_response["properties"]["contents"]["items"]["$ref"]
+            == "#/$defs/ResourceContent"
+        )
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -14307,6 +14328,24 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/McpServerStatus"
         )
+        assert bundle["$defs"]["ResourceContent"]["anyOf"][0]["required"] == [
+            "uri",
+            "text",
+        ]
+        assert bundle["$defs"]["ResourceContent"]["anyOf"][1]["required"] == [
+            "uri",
+            "blob",
+        ]
+        assert bundle["$defs"]["McpResourceReadParams"]["required"] == [
+            "server",
+            "uri",
+        ]
+        assert (
+            bundle["$defs"]["McpResourceReadResponse"]["properties"]["contents"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/ResourceContent"
+        )
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -14609,6 +14648,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { McpResourceReadParams } from "./v2/McpResourceReadParams";'
+            in client_request
+        )
+        assert (
             'import type { TurnInterruptParams } from "./v2/TurnInterruptParams";'
             in client_request
         )
@@ -14672,6 +14715,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ExternalAgentConfigImportParams;" in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
         assert "params?: McpServerStatusListParams | null;" in client_request
+        assert 'method: "mcpServer/resource/read";' in client_request
+        assert "params: McpResourceReadParams;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -14878,6 +14923,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { McpResourceReadResponse } from "./v2/McpResourceReadResponse";'
+            in client_response
+        )
+        assert (
             'import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";'
             in client_response
         )
@@ -14942,6 +14991,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ExternalAgentConfigImportResponse;" in client_response
         assert 'method: "mcpServerStatus/list";' in client_response
         assert "result: McpServerStatusListResponse;" in client_response
+        assert 'method: "mcpServer/resource/read";' in client_response
+        assert "result: McpResourceReadResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -15595,6 +15646,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: McpServerStatus[];" in mcp_status_response
         assert "nextCursor: string | null;" in mcp_status_response
+        resource_content = (out_dir / "ResourceContent.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export type ResourceContent" in resource_content
+        assert "text: string;" in resource_content
+        assert "blob: string;" in resource_content
+        mcp_resource_read_params = (
+            out_dir / "v2" / "McpResourceReadParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId?: string | null;" in mcp_resource_read_params
+        assert "server: string;" in mcp_resource_read_params
+        assert "uri: string;" in mcp_resource_read_params
+        mcp_resource_read_response = (
+            out_dir / "v2" / "McpResourceReadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ResourceContent } from "../ResourceContent";' in (
+            mcp_resource_read_response
+        )
+        assert "contents: ResourceContent[];" in mcp_resource_read_response
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -16348,6 +16418,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
+        assert 'export type { ResourceContent } from "./ResourceContent";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export type { SessionSource } from "./SessionSource";' in index
         assert 'export type { SubAgentSource } from "./SubAgentSource";' in index
@@ -16605,6 +16676,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { McpResourceReadParams } from "./McpResourceReadParams";'
+            in v2_index
+        )
+        assert (
+            'export type { McpResourceReadResponse } from "./McpResourceReadResponse";'
             in v2_index
         )
         assert (

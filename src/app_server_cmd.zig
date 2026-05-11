@@ -1916,6 +1916,44 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_TS =
     \\
     ;
 
+const RESOURCE_CONTENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ResourceContent =
+    \\  | {
+    \\      uri: string;
+    \\      mimeType?: string;
+    \\      text: string;
+    \\      _meta?: unknown;
+    \\    }
+    \\  | {
+    \\      uri: string;
+    \\      mimeType?: string;
+    \\      blob: string;
+    \\      _meta?: unknown;
+    \\    };
+    \\
+    ;
+
+const MCP_RESOURCE_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpResourceReadParams {
+    \\  threadId?: string | null;
+    \\  server: string;
+    \\  uri: string;
+    \\}
+    \\
+    ;
+
+const MCP_RESOURCE_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ResourceContent } from "../ResourceContent";
+    \\
+    \\export interface McpResourceReadResponse {
+    \\  contents: ResourceContent[];
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -3673,6 +3711,7 @@ const CLIENT_REQUEST_TS =
     \\import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
+    \\import type { McpResourceReadParams } from "./v2/McpResourceReadParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
@@ -3843,6 +3882,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "mcpServerStatus/list";
     \\      params?: McpServerStatusListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/resource/read";
+    \\      params: McpResourceReadParams;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -4074,6 +4117,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
+    \\import type { McpResourceReadResponse } from "./v2/McpResourceReadResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
@@ -4282,6 +4326,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "mcpServerStatus/list";
     \\      result: McpServerStatusListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "mcpServer/resource/read";
+    \\      result: McpResourceReadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4695,6 +4744,7 @@ const INDEX_TS =
     \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
+    \\export type { ResourceContent } from "./ResourceContent";
     \\export type { ServerNotification } from "./ServerNotification";
     \\export type { SessionSource } from "./SessionSource";
     \\export type { SubAgentSource } from "./SubAgentSource";
@@ -4784,6 +4834,8 @@ const V2_INDEX_TS =
     \\export type { SessionMigration } from "./SessionMigration";
     \\export type { SubagentMigration } from "./SubagentMigration";
     \\export type { McpServerAuthStatus } from "./McpServerAuthStatus";
+    \\export type { McpResourceReadParams } from "./McpResourceReadParams";
+    \\export type { McpResourceReadResponse } from "./McpResourceReadResponse";
     \\export type { McpServerStatus } from "./McpServerStatus";
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
     \\export type { McpServerStatusListParams } from "./McpServerStatusListParams";
@@ -7152,6 +7204,98 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA =
     \\        "authStatus": { "$ref": "#/$defs/McpServerAuthStatus" }
     \\      },
     \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const RESOURCE_CONTENT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ResourceContent",
+    \\  "description": "Contents returned when reading a resource from an MCP server.",
+    \\  "anyOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["uri", "text"],
+    \\      "properties": {
+    \\        "uri": { "type": "string", "description": "The URI of this resource." },
+    \\        "mimeType": { "type": ["string", "null"] },
+    \\        "text": { "type": "string" },
+    \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["uri", "blob"],
+    \\      "properties": {
+    \\        "uri": { "type": "string", "description": "The URI of this resource." },
+    \\        "mimeType": { "type": ["string", "null"] },
+    \\        "blob": { "type": "string" },
+    \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const MCP_RESOURCE_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpResourceReadParams",
+    \\  "type": "object",
+    \\  "required": ["server", "uri"],
+    \\  "properties": {
+    \\    "threadId": { "type": ["string", "null"] },
+    \\    "server": { "type": "string" },
+    \\    "uri": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MCP_RESOURCE_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpResourceReadResponse",
+    \\  "type": "object",
+    \\  "required": ["contents"],
+    \\  "properties": {
+    \\    "contents": { "type": "array", "items": { "$ref": "#/$defs/ResourceContent" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ResourceContent": {
+    \\      "description": "Contents returned when reading a resource from an MCP server.",
+    \\      "anyOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["uri", "text"],
+    \\          "properties": {
+    \\            "uri": { "type": "string", "description": "The URI of this resource." },
+    \\            "mimeType": { "type": ["string", "null"] },
+    \\            "text": { "type": "string" },
+    \\            "_meta": true
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["uri", "blob"],
+    \\          "properties": {
+    \\            "uri": { "type": "string", "description": "The URI of this resource." },
+    \\            "mimeType": { "type": ["string", "null"] },
+    \\            "blob": { "type": "string" },
+    \\            "_meta": true
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -11101,6 +11245,51 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ResourceContent": {
+    \\      "description": "Contents returned when reading a resource from an MCP server.",
+    \\      "anyOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["uri", "text"],
+    \\          "properties": {
+    \\            "uri": { "type": "string", "description": "The URI of this resource." },
+    \\            "mimeType": { "type": ["string", "null"] },
+    \\            "text": { "type": "string" },
+    \\            "_meta": true
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["uri", "blob"],
+    \\          "properties": {
+    \\            "uri": { "type": "string", "description": "The URI of this resource." },
+    \\            "mimeType": { "type": ["string", "null"] },
+    \\            "blob": { "type": "string" },
+    \\            "_meta": true
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "McpResourceReadParams": {
+    \\      "type": "object",
+    \\      "required": ["server", "uri"],
+    \\      "properties": {
+    \\        "threadId": { "type": ["string", "null"] },
+    \\        "server": { "type": "string" },
+    \\        "uri": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpResourceReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["contents"],
+    \\      "properties": {
+    \\        "contents": { "type": "array", "items": { "$ref": "#/$defs/ResourceContent" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -13447,6 +13636,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "McpServerAuthStatus.json", .contents = MCP_SERVER_AUTH_STATUS_JSON_SCHEMA },
     .{ .name = "McpServerStatus.json", .contents = MCP_SERVER_STATUS_JSON_SCHEMA },
     .{ .name = "McpServerStatusListResponse.json", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ResourceContent.json", .contents = RESOURCE_CONTENT_JSON_SCHEMA },
+    .{ .name = "McpResourceReadParams.json", .contents = MCP_RESOURCE_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "McpResourceReadResponse.json", .contents = MCP_RESOURCE_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -13773,6 +13965,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/McpServerAuthStatus.ts", .contents = MCP_SERVER_AUTH_STATUS_TS },
     .{ .name = "v2/McpServerStatus.ts", .contents = MCP_SERVER_STATUS_TS },
     .{ .name = "v2/McpServerStatusListResponse.ts", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_TS },
+    .{ .name = "ResourceContent.ts", .contents = RESOURCE_CONTENT_TS },
+    .{ .name = "v2/McpResourceReadParams.ts", .contents = MCP_RESOURCE_READ_PARAMS_TS },
+    .{ .name = "v2/McpResourceReadResponse.ts", .contents = MCP_RESOURCE_READ_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
