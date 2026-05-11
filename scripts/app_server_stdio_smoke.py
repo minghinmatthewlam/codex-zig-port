@@ -1024,6 +1024,60 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_name_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-memory-mode-invalid-mode",
+            "method": "thread/memoryMode/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000010",
+                "mode": "unknown",
+            },
+        }
+    )
+    thread_memory_mode_invalid_mode = read_line()
+    assert thread_memory_mode_invalid_mode["id"] == "thread-memory-mode-invalid-mode"
+    assert thread_memory_mode_invalid_mode["error"]["code"] == -32602
+    assert (
+        "mode must be enabled or disabled"
+        in thread_memory_mode_invalid_mode["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-memory-mode-invalid",
+            "method": "thread/memoryMode/set",
+            "params": {"threadId": "not-a-uuid", "mode": "enabled"},
+        }
+    )
+    thread_memory_mode_invalid = read_line()
+    assert thread_memory_mode_invalid["id"] == "thread-memory-mode-invalid"
+    assert thread_memory_mode_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_memory_mode_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-memory-mode-missing",
+            "method": "thread/memoryMode/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000010",
+                "mode": "disabled",
+            },
+        }
+    )
+    thread_memory_mode_missing = read_line()
+    assert thread_memory_mode_missing["id"] == "thread-memory-mode-missing"
+    assert thread_memory_mode_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000010"
+        in thread_memory_mode_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
