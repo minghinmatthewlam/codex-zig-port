@@ -3378,6 +3378,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                                 "source": "cli",
                                 "thread_source": "user",
                                 "model_provider": "mock_provider",
+                                "git": {
+                                    "commit_hash": "rollout-sha",
+                                    "branch": "rollout-branch",
+                                    "repository_url": "https://example.test/rollout.git",
+                                },
                             },
                         },
                         separators=(",", ":"),
@@ -3494,6 +3499,65 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert resume_result["modelProvider"] == "mock_provider"
             assert resume_result["approvalPolicy"] == "never"
             assert resume_result["sandbox"] == {"type": "dangerFullAccess"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-loaded",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": resume_thread_id},
+                },
+            )
+            loaded_summary = read_json_line(proc, 5)
+            assert loaded_summary["id"] == "conversation-summary-loaded"
+            loaded_summary_body = loaded_summary["result"]["summary"]
+            assert loaded_summary_body["conversationId"] == resume_thread_id
+            assert loaded_summary_body["path"] == os.path.realpath(rollout_path)
+            assert loaded_summary_body["preview"] == "saved hello"
+            assert loaded_summary_body["modelProvider"] == "mock_provider"
+            assert loaded_summary_body["cwd"] == os.path.realpath(".")
+            assert loaded_summary_body["cliVersion"] == "0.0.1"
+            assert loaded_summary_body["source"] == "cli"
+            assert loaded_summary_body["gitInfo"] is None
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-relative-path",
+                    "method": "getConversationSummary",
+                    "params": {
+                        "rolloutPath": str(rollout_path.relative_to(codex_home)),
+                    },
+                },
+            )
+            path_summary = read_json_line(proc, 5)
+            assert path_summary["id"] == "conversation-summary-relative-path"
+            path_summary_body = path_summary["result"]["summary"]
+            assert path_summary_body["conversationId"] == resume_thread_id
+            assert path_summary_body["path"] == os.path.realpath(rollout_path)
+            assert path_summary_body["preview"] == "saved hello"
+            assert path_summary_body["source"] == "unknown"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-path-precedence",
+                    "method": "getConversationSummary",
+                    "params": {
+                        "conversationId": resume_thread_id,
+                        "rolloutPath": str(rust_rollout_path.relative_to(codex_home)),
+                    },
+                },
+            )
+            path_precedence_summary = read_json_line(proc, 5)
+            assert path_precedence_summary["id"] == "conversation-summary-path-precedence"
+            path_precedence_body = path_precedence_summary["result"]["summary"]
+            assert path_precedence_body["conversationId"] == rust_thread_id
+            assert path_precedence_body["path"] == os.path.realpath(rust_rollout_path)
+            assert path_precedence_body["preview"] == "rust rollout hello"
 
             write_json_line(
                 proc,
@@ -3892,6 +3956,31 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert rust_usage_params["tokenUsage"]["total"]["reasoningOutputTokens"] == 10
             assert rust_usage_params["tokenUsage"]["last"]["totalTokens"] == 90
             assert rust_usage_params["tokenUsage"]["modelContextWindow"] == 200000
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-rust-rollout",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": rust_thread_id},
+                },
+            )
+            rust_summary = read_json_line(proc, 5)
+            assert rust_summary["id"] == "conversation-summary-rust-rollout"
+            rust_summary_body = rust_summary["result"]["summary"]
+            assert rust_summary_body["conversationId"] == rust_thread_id
+            assert rust_summary_body["path"] == os.path.realpath(rust_rollout_path)
+            assert rust_summary_body["preview"] == "rust rollout hello"
+            assert rust_summary_body["modelProvider"] == "mock_provider"
+            assert rust_summary_body["cwd"] == "/"
+            assert rust_summary_body["cliVersion"] == "0.0.0"
+            assert rust_summary_body["source"] == "cli"
+            assert rust_summary_body["gitInfo"] == {
+                "sha": "rollout-sha",
+                "branch": "rollout-branch",
+                "origin_url": "https://example.test/rollout.git",
+            }
 
             write_json_line(
                 proc,
@@ -13073,6 +13162,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { GetConversationSummaryParams } from "./GetConversationSummaryParams";'
+            in client_request
+        )
+        assert (
             'import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";'
             in client_request
         )
@@ -13099,6 +13192,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: GetAccountParams | null;" in client_request
         assert 'method: "getAuthStatus";' in client_request
         assert "params?: GetAuthStatusParams | null;" in client_request
+        assert 'method: "getConversationSummary";' in client_request
+        assert "params: GetConversationSummaryParams;" in client_request
         assert 'method: "account/login/start";' in client_request
         assert "params: LoginAccountParams;" in client_request
         assert 'method: "account/login/cancel";' in client_request
@@ -13265,6 +13360,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";'
+            in client_response
+        )
+        assert (
             'import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
             in client_response
         )
@@ -13290,6 +13389,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: GetAccountResponse;" in client_response
         assert 'method: "getAuthStatus";' in client_response
         assert "result: GetAuthStatusResponse;" in client_response
+        assert 'method: "getConversationSummary";' in client_response
+        assert "result: GetConversationSummaryResponse;" in client_response
         assert 'method: "account/login/start";' in client_response
         assert "result: LoginAccountResponse;" in client_response
         assert 'method: "account/login/cancel";' in client_response
@@ -13480,6 +13581,39 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             top_level_get_auth_status_response
         )
         assert "authMethod: AuthMode | null;" in top_level_get_auth_status_response
+        internal_session_source = (
+            out_dir / "InternalSessionSource.ts"
+        ).read_text(encoding="utf-8")
+        assert '"memory_consolidation"' in internal_session_source
+        sub_agent_source = (out_dir / "SubAgentSource.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { AgentPath } from "./AgentPath";' in sub_agent_source
+        assert '"thread_spawn"' in sub_agent_source
+        session_source = (out_dir / "SessionSource.ts").read_text(encoding="utf-8")
+        assert 'import type { SubAgentSource } from "./SubAgentSource";' in session_source
+        assert '"cli" | "vscode" | "exec" | "mcp"' in session_source
+        conversation_git_info = (
+            out_dir / "ConversationGitInfo.ts"
+        ).read_text(encoding="utf-8")
+        assert "origin_url: string | null" in conversation_git_info
+        conversation_summary = (out_dir / "ConversationSummary.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { SessionSource } from "./SessionSource";' in (
+            conversation_summary
+        )
+        assert "conversationId: ThreadId" in conversation_summary
+        assert "gitInfo: ConversationGitInfo | null" in conversation_summary
+        conversation_summary_params = (
+            out_dir / "GetConversationSummaryParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "{ rolloutPath: string" in conversation_summary_params
+        assert "{ conversationId: ThreadId" in conversation_summary_params
+        conversation_summary_response = (
+            out_dir / "GetConversationSummaryResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "summary: ConversationSummary" in conversation_summary_response
         get_auth_status_params = (
             out_dir / "v2" / "GetAuthStatusParams.ts"
         ).read_text(encoding="utf-8")
@@ -14475,6 +14609,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ClientInfo } from "./ClientInfo";' in index
         assert 'export type { ClientNotification } from "./ClientNotification";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { ConversationGitInfo } from "./ConversationGitInfo";' in index
+        assert 'export type { ConversationSummary } from "./ConversationSummary";' in index
         assert 'export type { ForcedLoginMethod } from "./ForcedLoginMethod";' in index
         assert 'export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";' in index
         assert 'export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";' in index
@@ -14484,6 +14620,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";' in index
         assert 'export type { GetAuthStatusParams } from "./GetAuthStatusParams";' in index
         assert 'export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";' in index
+        assert 'export type { GetConversationSummaryParams } from "./GetConversationSummaryParams";' in index
+        assert 'export type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";' in index
         assert 'export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";' in index
         assert 'export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";' in index
         assert 'export type { GitSha } from "./GitSha";' in index
@@ -14491,6 +14629,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { InitializeCapabilities } from "./InitializeCapabilities";' in index
         assert 'export type { InitializeParams } from "./InitializeParams";' in index
         assert 'export type { InputModality } from "./InputModality";' in index
+        assert 'export type { InternalSessionSource } from "./InternalSessionSource";' in index
         assert 'export type { MessagePhase } from "./MessagePhase";' in index
         assert 'export type { Personality } from "./Personality";' in index
         assert 'export type { PlanType } from "./PlanType";' in index
@@ -14501,6 +14640,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
+        assert 'export type { SessionSource } from "./SessionSource";' in index
+        assert 'export type { SubAgentSource } from "./SubAgentSource";' in index
         assert 'export type { ThreadId } from "./ThreadId";' in index
         assert 'export type { ThreadMemoryMode } from "./ThreadMemoryMode";' in index
         assert 'export type { Verbosity } from "./Verbosity";' in index
