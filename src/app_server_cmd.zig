@@ -6883,6 +6883,45 @@ fn setLoadedThreadName(allocator: std.mem.Allocator, thread: *LoadedThread, name
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn appendInjectedResponseItem(
+    allocator: std.mem.Allocator,
+    transcript: *session_mod.Transcript,
+    item: std.json.Value,
+) !void {
+    const before_len = transcript.history.items.len;
+    try session_mod.appendResponseHistoryItem(allocator, transcript, item);
+    if (transcript.history.items.len == before_len) return error.UnsupportedInjectedItem;
+}
+
+fn parseInjectedResponseItems(
+    allocator: std.mem.Allocator,
+    items: []const std.json.Value,
+) !session_mod.Transcript {
+    var transcript = session_mod.Transcript{};
+    errdefer transcript.deinit(allocator);
+    for (items) |item| try appendInjectedResponseItem(allocator, &transcript, item);
+    return transcript;
+}
+
+fn injectLoadedThreadItems(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    items: []const std.json.Value,
+) !void {
+    if (items.len == 0) return;
+
+    var injected = try parseInjectedResponseItems(allocator, items);
+    defer injected.deinit(allocator);
+    for (injected.history.items) |item| try thread.transcript.appendHistoryItem(allocator, item);
+
+    const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
+    errdefer allocator.free(turns_json);
+    allocator.free(thread.turns_json);
+    thread.turns_json = turns_json;
+    thread.updated_at = currentUnixSeconds();
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
 fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
     var response = std.ArrayList(u8).empty;
     errdefer response.deinit(allocator);
@@ -7268,7 +7307,8 @@ fn handleThreadMethod(
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
             error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
         };
-        if (!threadItemsParamIsArray(object)) {
+        const items_value = object.get("items") orelse return renderJsonRpcError(allocator, id_value, -32602, "items must be an array");
+        if (items_value != .array) {
             return renderJsonRpcError(allocator, id_value, -32602, "items must be an array");
         }
         const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
@@ -7277,7 +7317,17 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        injectLoadedThreadItems(allocator, thread, items_value.array.items) catch |err| switch (err) {
+            error.InvalidHistory, error.UnsupportedInjectedItem => {
+                return renderJsonRpcError(allocator, id_value, -32600, "items contain an unsupported response item");
+            },
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/inject_items failed", err),
+        };
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/name/set")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -8676,11 +8726,6 @@ fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServer
         if (std.mem.eql(u8, feature.key, key)) return feature.default_enabled;
     }
     return false;
-}
-
-fn threadItemsParamIsArray(object: std.json.ObjectMap) bool {
-    const items = object.get("items") orelse return false;
-    return items == .array;
 }
 
 fn guardianAssessmentEventIsValid(value: std.json.Value) bool {
