@@ -10715,6 +10715,99 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(api_key_home, ignore_errors=True)
 
 
+def run_apps_list_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-apps-list-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, params: object = _OMIT) -> dict:
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "app/list"}
+        if params is not _OMIT:
+            payload["params"] = params
+        write_json_line(proc, payload)
+        return read_json_line(proc, 5)
+
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": ["thread/started"],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        default_page = rpc("apps-list-default")
+        assert default_page["id"] == "apps-list-default"
+        assert default_page["result"] == {"data": [], "nextCursor": None}
+
+        explicit_page = rpc(
+            "apps-list-explicit",
+            {"cursor": None, "limit": 1, "forceRefetch": True},
+        )
+        assert explicit_page["id"] == "apps-list-explicit"
+        assert explicit_page["result"] == {"data": [], "nextCursor": None}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "apps-list-thread-start",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "apps-list-thread-start"
+        thread_id = started["result"]["thread"]["id"]
+
+        loaded_thread_page = rpc("apps-list-loaded-thread", {"threadId": thread_id})
+        assert loaded_thread_page["id"] == "apps-list-loaded-thread"
+        assert loaded_thread_page["result"] == {"data": [], "nextCursor": None}
+
+        invalid_limit = rpc("apps-list-invalid-limit", {"limit": -1})
+        assert invalid_limit["id"] == "apps-list-invalid-limit"
+        assert invalid_limit["error"]["code"] == -32602
+        assert "limit must be a non-negative integer or null" in invalid_limit["error"]["message"]
+
+        invalid_params = rpc("apps-list-invalid-params", [])
+        assert invalid_params["id"] == "apps-list-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+        assert "app/list params must be an object" in invalid_params["error"]["message"]
+
+        missing_thread = rpc("apps-list-missing-thread", {"threadId": "missing-thread"})
+        assert missing_thread["id"] == "apps-list-missing-thread"
+        assert missing_thread["error"]["code"] == -32600
+        assert "thread not found: missing-thread" in missing_thread["error"]["message"]
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-features-", dir="/tmp"))
     env = os.environ.copy()
@@ -11307,6 +11400,52 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert add_credits_response["required"] == ["status"]
+        apps_list_params = json.loads(
+            (out_dir / "AppsListParams.json").read_text(encoding="utf-8")
+        )
+        assert apps_list_params["title"] == "AppsListParams"
+        assert apps_list_params["properties"]["cursor"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert apps_list_params["properties"]["limit"]["maximum"] == 4294967295
+        assert apps_list_params["properties"]["threadId"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert apps_list_params["properties"]["forceRefetch"]["type"] == "boolean"
+        apps_list_response = json.loads(
+            (out_dir / "AppsListResponse.json").read_text(encoding="utf-8")
+        )
+        assert apps_list_response["title"] == "AppsListResponse"
+        assert apps_list_response["required"] == ["data", "nextCursor"]
+        assert (
+            apps_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/AppInfo"
+        )
+        assert apps_list_response["$defs"]["AppInfo"]["required"] == ["id", "name"]
+        assert (
+            apps_list_response["$defs"]["AppInfo"]["properties"][
+                "pluginDisplayNames"
+            ]["items"]["type"]
+            == "string"
+        )
+        app_list_updated = json.loads(
+            (out_dir / "AppListUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert app_list_updated["title"] == "AppListUpdatedNotification"
+        assert (
+            app_list_updated["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/AppInfo"
+        )
+        assert (
+            app_list_updated["$defs"]["AppInfo"]["properties"]["branding"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/AppBranding"
+        )
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -12519,6 +12658,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "SendAddCreditsNudgeEmailParams" in bundle["$defs"]
         assert "AddCreditsNudgeEmailStatus" in bundle["$defs"]
         assert "SendAddCreditsNudgeEmailResponse" in bundle["$defs"]
+        assert "AppsListParams" in bundle["$defs"]
+        assert "AppBranding" in bundle["$defs"]
+        assert "AppReview" in bundle["$defs"]
+        assert "AppScreenshot" in bundle["$defs"]
+        assert "AppMetadata" in bundle["$defs"]
+        assert "AppInfo" in bundle["$defs"]
+        assert "AppSummary" in bundle["$defs"]
+        assert "AppsListResponse" in bundle["$defs"]
+        assert "AppListUpdatedNotification" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -12791,6 +12939,26 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "status"
             ]["$ref"]
             == "#/$defs/AddCreditsNudgeEmailStatus"
+        )
+        assert bundle["$defs"]["AppsListParams"]["properties"]["limit"]["maximum"] == 4294967295
+        assert (
+            bundle["$defs"]["AppInfo"]["properties"]["branding"]["anyOf"][0]["$ref"]
+            == "#/$defs/AppBranding"
+        )
+        assert (
+            bundle["$defs"]["AppInfo"]["properties"]["appMetadata"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/AppMetadata"
+        )
+        assert bundle["$defs"]["AppsListResponse"]["properties"]["data"]["items"][
+            "$ref"
+        ] == "#/$defs/AppInfo"
+        assert (
+            bundle["$defs"]["AppListUpdatedNotification"]["properties"]["data"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/AppInfo"
         )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
@@ -13154,6 +13322,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert (
+            'import type { AppsListParams } from "./v2/AppsListParams";'
+            in client_request
+        )
+        assert (
             'import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";'
             in client_request
         )
@@ -13202,6 +13374,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "account/rateLimits/read";' in client_request
         assert 'method: "account/sendAddCreditsNudgeEmail";' in client_request
         assert "params: SendAddCreditsNudgeEmailParams;" in client_request
+        assert 'method: "app/list";' in client_request
+        assert "params?: AppsListParams | null;" in client_request
         for method, params_type in [
             ("fs/readFile", "FsReadFileParams"),
             ("fs/writeFile", "FsWriteFileParams"),
@@ -13305,6 +13479,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert (
+            'import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";'
+            in server_notification
+        )
+        assert (
             'import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
             in server_notification
         )
@@ -13328,6 +13506,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert (
             "params: AccountRateLimitsUpdatedNotification;" in server_notification
         )
+        assert 'method: "app/list/updated";' in server_notification
+        assert "params: AppListUpdatedNotification;" in server_notification
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -13351,6 +13531,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert (
+            'import type { AppsListResponse } from "./v2/AppsListResponse";'
+            in client_response
+        )
         assert (
             'import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";'
             in client_response
@@ -13401,6 +13585,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: GetAccountRateLimitsResponse;" in client_response
         assert 'method: "account/sendAddCreditsNudgeEmail";' in client_response
         assert "result: SendAddCreditsNudgeEmailResponse;" in client_response
+        assert 'method: "app/list";' in client_response
+        assert "result: AppsListResponse;" in client_response
         for method, response_type in [
             ("fs/readFile", "FsReadFileResponse"),
             ("fs/writeFile", "FsWriteFileResponse"),
@@ -13561,6 +13747,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: ModelListItem[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
+        apps_list_params = (out_dir / "v2" / "AppsListParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "cursor?: string | null;" in apps_list_params
+        assert "limit?: number | null;" in apps_list_params
+        assert "threadId?: string | null;" in apps_list_params
+        assert "forceRefetch?: boolean;" in apps_list_params
+        app_info = (out_dir / "v2" / "AppInfo.ts").read_text(encoding="utf-8")
+        assert 'import type { AppBranding } from "./AppBranding";' in app_info
+        assert 'import type { AppMetadata } from "./AppMetadata";' in app_info
+        assert "pluginDisplayNames: string[];" in app_info
+        apps_list_response = (
+            out_dir / "v2" / "AppsListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { AppInfo } from "./AppInfo";' in apps_list_response
+        assert "data: AppInfo[];" in apps_list_response
+        assert "nextCursor: string | null;" in apps_list_response
+        app_list_updated = (
+            out_dir / "v2" / "AppListUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { AppInfo } from "./AppInfo";' in app_list_updated
+        assert "data: AppInfo[];" in app_list_updated
         memory_reset_response = (
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
@@ -14685,6 +14893,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {account_export} }} from "./{account_export}";'
                 in v2_index
             )
+        for app_export in [
+            "AppBranding",
+            "AppInfo",
+            "AppListUpdatedNotification",
+            "AppMetadata",
+            "AppReview",
+            "AppScreenshot",
+            "AppSummary",
+            "AppsListParams",
+            "AppsListResponse",
+        ]:
+            assert (
+                f'export type {{ {app_export} }} from "./{app_export}";'
+                in v2_index
+            )
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert (
             'export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";'
@@ -15264,6 +15487,8 @@ def main() -> None:
     print("app-server-account-rate-limits-rpc-e2e: ok")
     run_account_add_credits_nudge_rpc_smoke(binary)
     print("app-server-account-add-credits-nudge-rpc-e2e: ok")
+    run_apps_list_rpc_smoke(binary)
+    print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
     run_unix_path_smoke(binary)
