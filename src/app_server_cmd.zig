@@ -16603,7 +16603,7 @@ fn handleThreadResume(
         error.FileNotFound => return renderNoRolloutFoundForThreadResume(allocator, id_value, object),
         else => return err,
     };
-    errdefer allocator.free(resume_path);
+    defer allocator.free(resume_path);
 
     var thread = createLoadedThreadFromResumeParams(allocator, cfg, object, resume_path, &transcript) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to create thread", err);
@@ -17065,7 +17065,7 @@ fn createLoadedThreadFromForkParams(
     errdefer if (service_tier) |value| allocator.free(value);
 
     const cwd = if (optionalStringParam(params, "cwd")) |value|
-        try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), value, allocator)
+        try realPathFileAllocPlain(allocator, value)
     else
         try allocator.dupe(u8, source.cwd);
     errdefer allocator.free(cwd);
@@ -17243,7 +17243,7 @@ fn appendUsize(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: usi
 
 fn threadStartCwd(allocator: std.mem.Allocator, params: ?std.json.ObjectMap) ![]const u8 {
     const cwd = optionalStringParam(params, "cwd") orelse ".";
-    return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd, allocator);
+    return realPathFileAllocPlain(allocator, cwd);
 }
 
 fn threadResumeCwd(
@@ -17252,10 +17252,16 @@ fn threadResumeCwd(
     params: std.json.ObjectMap,
 ) ![]const u8 {
     if (optionalStringParam(params, "cwd")) |cwd| {
-        return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd, allocator);
+        return realPathFileAllocPlain(allocator, cwd);
     }
     if (transcript.cwd) |cwd| return allocator.dupe(u8, cwd);
     return threadStartCwd(allocator, params);
+}
+
+fn realPathFileAllocPlain(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator);
+    defer allocator.free(real_path);
+    return allocator.dupe(u8, real_path);
 }
 
 fn optionalStringParam(params: ?std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -20056,7 +20062,7 @@ fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_val
 fn resolveSkillsListRequestCwds(allocator: std.mem.Allocator, cwds: []const []const u8) !SkillsListRequestCwds {
     if (cwds.len != 0) return .{ .values = cwds };
 
-    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    const cwd = try realPathFileAllocPlain(allocator, ".");
     errdefer allocator.free(cwd);
     const values = try allocator.alloc([]const u8, 1);
     values[0] = cwd;
@@ -21236,7 +21242,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     defer command_sandbox.deinit(allocator);
 
     const sandbox_cwd = if (cwd) |path|
-        try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator)
+        try realPathFileAllocPlain(allocator, path)
     else
         null;
     defer if (sandbox_cwd) |path| allocator.free(path);
