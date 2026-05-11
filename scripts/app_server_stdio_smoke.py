@@ -13064,6 +13064,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "input: UserInput[];" in turn_start_params
 
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
+        assert (
+            'import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";'
+            in client_request
+        )
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
         assert 'method: "memory/reset";' in client_request
@@ -13197,6 +13201,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         server_notification = (out_dir / "ServerNotification.ts").read_text(
             encoding="utf-8"
         )
+        assert (
+            'import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
+            in server_notification
+        )
         assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
         assert (
             "params: FuzzyFileSearchSessionUpdatedNotification;"
@@ -13240,6 +13248,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert (
+            'import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";'
+            in client_response
+        )
         assert 'method: "memory/reset";' in client_response
         assert "result: MemoryResetResponse;" in client_response
         assert 'method: "gitDiffToRemote";' in client_response
@@ -13573,6 +13585,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "sha: string;" in git_diff_response
         assert "diff: string;" in git_diff_response
+        top_level_fuzzy_params = (out_dir / "FuzzyFileSearchParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "cancellationToken: string | null;" in top_level_fuzzy_params
+        top_level_fuzzy_result = (out_dir / "FuzzyFileSearchResult.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";' in top_level_fuzzy_result
+        assert "indices: number[] | null;" in top_level_fuzzy_result
+        top_level_fuzzy_response = (
+            out_dir / "FuzzyFileSearchResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";'
+            in top_level_fuzzy_response
+        )
+        assert "files: FuzzyFileSearchResult[]" in top_level_fuzzy_response
+        top_level_fuzzy_session_updated = (
+            out_dir / "FuzzyFileSearchSessionUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "files: FuzzyFileSearchResult[];" in top_level_fuzzy_session_updated
+        top_level_fuzzy_session_completed = (
+            out_dir / "FuzzyFileSearchSessionCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "sessionId: string" in top_level_fuzzy_session_completed
         fuzzy_params = (out_dir / "v2" / "FuzzyFileSearchParams.ts").read_text(
             encoding="utf-8"
         )
@@ -14400,6 +14437,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ClientNotification } from "./ClientNotification";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
         assert 'export type { ForcedLoginMethod } from "./ForcedLoginMethod";' in index
+        assert 'export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";' in index
+        assert 'export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";' in index
+        assert 'export type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";' in index
+        assert 'export type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";' in index
+        assert 'export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";' in index
+        assert 'export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";' in index
         assert 'export type { ImageDetail } from "./ImageDetail";' in index
         assert 'export type { InitializeCapabilities } from "./InitializeCapabilities";' in index
         assert 'export type { InitializeParams } from "./InitializeParams";' in index
