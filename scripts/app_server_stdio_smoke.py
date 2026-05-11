@@ -8405,6 +8405,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadSetNameResponse.json").read_text(encoding="utf-8")
         )
         assert thread_set_name_response["additionalProperties"] is False
+        thread_memory_mode = json.loads(
+            (out_dir / "ThreadMemoryMode.json").read_text(encoding="utf-8")
+        )
+        assert thread_memory_mode["enum"] == ["enabled", "disabled"]
+        thread_memory_mode_set = json.loads(
+            (out_dir / "ThreadMemoryModeSetParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_memory_mode_set["required"] == ["threadId", "mode"]
+        assert thread_memory_mode_set["properties"]["mode"]["enum"] == [
+            "enabled",
+            "disabled",
+        ]
+        thread_memory_mode_set_response = json.loads(
+            (out_dir / "ThreadMemoryModeSetResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_memory_mode_set_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8424,6 +8440,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadRollbackResponse" in bundle["$defs"]
         assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert "ThreadSetNameResponse" in bundle["$defs"]
+        assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8525,6 +8542,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadInjectItemsParams;" in client_request
         assert 'method: "thread/name/set";' in client_request
         assert "params: ThreadSetNameParams;" in client_request
+        assert 'method: "thread/memoryMode/set";' in client_request
+        assert "params: ThreadMemoryModeSetParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
@@ -8542,6 +8561,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadInjectItemsResponse;" in client_response
         assert 'method: "thread/name/set";' in client_response
         assert "result: ThreadSetNameResponse;" in client_response
+        assert 'method: "thread/memoryMode/set";' in client_response
+        assert "result: ThreadMemoryModeSetResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8671,11 +8692,32 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadSetNameResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadSetNameResponse {}" in thread_set_name_response
+        thread_memory_mode = (out_dir / "ThreadMemoryMode.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'export type ThreadMemoryMode = "enabled" | "disabled";' in thread_memory_mode
+        thread_memory_mode_set = (
+            out_dir / "v2" / "ThreadMemoryModeSetParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadMemoryMode } from "../ThreadMemoryMode";'
+            in thread_memory_mode_set
+        )
+        assert "threadId: string;" in thread_memory_mode_set
+        assert "mode: ThreadMemoryMode;" in thread_memory_mode_set
+        thread_memory_mode_set_response = (
+            out_dir / "v2" / "ThreadMemoryModeSetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadMemoryModeSetResponse {}"
+            in thread_memory_mode_set_response
+        )
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
+        assert 'export type { ThreadMemoryMode } from "./ThreadMemoryMode";' in index
         assert 'export * as v2 from "./v2";' in index
         v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
@@ -8702,6 +8744,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";' in v2_index
         assert 'export type { ThreadSetNameParams } from "./ThreadSetNameParams";' in v2_index
         assert 'export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";' in v2_index
+        assert (
+            'export type { ThreadMemoryModeSetParams } from "./ThreadMemoryModeSetParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadMemoryModeSetResponse } from "./ThreadMemoryModeSetResponse";'
+            in v2_index
+        )
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
