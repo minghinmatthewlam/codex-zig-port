@@ -912,11 +912,64 @@ const THREAD_STARTED_NOTIFICATION_TS =
     \\
     ;
 
+const BYTE_RANGE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ByteRange {
+    \\  start: number;
+    \\  end: number;
+    \\}
+    \\
+    ;
+
+const TEXT_ELEMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ByteRange } from "./ByteRange";
+    \\
+    \\export interface TextElement {
+    \\  byteRange: ByteRange;
+    \\  placeholder: string | null;
+    \\}
+    \\
+    ;
+
+const USER_INPUT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TextElement } from "./TextElement";
+    \\
+    \\export type UserInput =
+    \\  | {
+    \\      type: "text";
+    \\      text: string;
+    \\      text_elements: TextElement[];
+    \\    }
+    \\  | {
+    \\      type: "image";
+    \\      url: string;
+    \\    }
+    \\  | {
+    \\      type: "localImage";
+    \\      path: string;
+    \\    }
+    \\  | {
+    \\      type: "skill";
+    \\      name: string;
+    \\      path: string;
+    \\    }
+    \\  | {
+    \\      type: "mention";
+    \\      name: string;
+    \\      path: string;
+    \\    };
+    \\
+    ;
+
 const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { UserInput } from "./UserInput";
+    \\
     \\export interface TurnStartParams {
     \\  threadId: string;
-    \\  input: unknown[];
+    \\  input: UserInput[];
     \\  model?: string | null;
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
@@ -2081,6 +2134,7 @@ const INDEX_TS =
 
 const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
+    \\export type { ByteRange } from "./ByteRange";
     \\export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
     \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
     \\export type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -2125,6 +2179,7 @@ const V2_INDEX_TS =
     \\export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";
     \\export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";
     \\export type { ThreadGoalStatus } from "./ThreadGoalStatus";
+    \\export type { TextElement } from "./TextElement";
     \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
@@ -2176,6 +2231,7 @@ const V2_INDEX_TS =
     \\export type { TurnStartedNotification } from "./TurnStartedNotification";
     \\export type { TurnStartParams } from "./TurnStartParams";
     \\export type { TurnStartResponse } from "./TurnStartResponse";
+    \\export type { UserInput } from "./UserInput";
     \\
     ;
 
@@ -2849,7 +2905,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\  "required": ["threadId", "input"],
     \\  "properties": {
     \\    "threadId": { "type": "string" },
-    \\    "input": { "type": "array" },
+    \\    "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
     \\    "model": { "type": ["string", "null"] },
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
@@ -2858,7 +2914,198 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
     \\    "outputSchema": true
     \\  },
+    \\  "$defs": {
+    \\    "ByteRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TextElement": {
+    \\      "type": "object",
+    \\      "required": ["byteRange", "placeholder"],
+    \\      "properties": {
+    \\        "byteRange": { "$ref": "#/$defs/ByteRange" },
+    \\        "placeholder": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "UserInput": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "text", "text_elements"],
+    \\          "properties": {
+    \\            "type": { "const": "text" },
+    \\            "text": { "type": "string" },
+    \\            "text_elements": { "type": "array", "items": { "$ref": "#/$defs/TextElement" } }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "url"],
+    \\          "properties": {
+    \\            "type": { "const": "image" },
+    \\            "url": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "localImage" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "skill" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "mention" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const BYTE_RANGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ByteRange",
+    \\  "type": "object",
+    \\  "required": ["start", "end"],
+    \\  "properties": {
+    \\    "start": { "type": "integer", "minimum": 0 },
+    \\    "end": { "type": "integer", "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const TEXT_ELEMENT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TextElement",
+    \\  "type": "object",
+    \\  "required": ["byteRange", "placeholder"],
+    \\  "properties": {
+    \\    "byteRange": { "$ref": "#/$defs/ByteRange" },
+    \\    "placeholder": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ByteRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const USER_INPUT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "UserInput",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "text", "text_elements"],
+    \\      "properties": {
+    \\        "type": { "const": "text" },
+    \\        "text": { "type": "string" },
+    \\        "text_elements": { "type": "array", "items": { "$ref": "#/$defs/TextElement" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "url"],
+    \\      "properties": {
+    \\        "type": { "const": "image" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "path"],
+    \\      "properties": {
+    \\        "type": { "const": "localImage" },
+    \\        "path": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "name", "path"],
+    \\      "properties": {
+    \\        "type": { "const": "skill" },
+    \\        "name": { "type": "string" },
+    \\        "path": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "name", "path"],
+    \\      "properties": {
+    \\        "type": { "const": "mention" },
+    \\        "name": { "type": "string" },
+    \\        "path": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ],
+    \\  "$defs": {
+    \\    "ByteRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TextElement": {
+    \\      "type": "object",
+    \\      "required": ["byteRange", "placeholder"],
+    \\      "properties": {
+    \\        "byteRange": { "$ref": "#/$defs/ByteRange" },
+    \\        "placeholder": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  }
     \\}
     \\
 ;
@@ -4520,12 +4767,82 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ByteRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TextElement": {
+    \\      "type": "object",
+    \\      "required": ["byteRange", "placeholder"],
+    \\      "properties": {
+    \\        "byteRange": { "$ref": "#/$defs/ByteRange" },
+    \\        "placeholder": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "UserInput": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "text", "text_elements"],
+    \\          "properties": {
+    \\            "type": { "const": "text" },
+    \\            "text": { "type": "string" },
+    \\            "text_elements": { "type": "array", "items": { "$ref": "#/$defs/TextElement" } }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "url"],
+    \\          "properties": {
+    \\            "type": { "const": "image" },
+    \\            "url": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "localImage" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "skill" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "name", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "mention" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
     \\    "TurnStartParams": {
     \\      "type": "object",
     \\      "required": ["threadId", "input"],
     \\      "properties": {
     \\        "threadId": { "type": "string" },
-    \\        "input": { "type": "array" },
+    \\        "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
     \\        "model": { "type": ["string", "null"] },
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
@@ -5282,6 +5599,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
+    .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
+    .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
     .{ .name = "TurnStartParams.json", .contents = TURN_START_PARAMS_JSON_SCHEMA },
     .{ .name = "TurnStartResponse.json", .contents = TURN_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "TurnStartedNotification.json", .contents = TURN_STARTED_NOTIFICATION_JSON_SCHEMA },
@@ -5405,6 +5725,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
+    .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
+    .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
     .{ .name = "v2/TurnStartParams.ts", .contents = TURN_START_PARAMS_TS },
     .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
     .{ .name = "v2/TurnStartedNotification.ts", .contents = TURN_STARTED_NOTIFICATION_TS },
