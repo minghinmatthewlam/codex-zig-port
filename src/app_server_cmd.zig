@@ -1723,6 +1723,147 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS =
     \\
     ;
 
+const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ExternalAgentConfigMigrationItemType =
+    \\  | "AGENTS_MD"
+    \\  | "CONFIG"
+    \\  | "SKILLS"
+    \\  | "PLUGINS"
+    \\  | "MCP_SERVER_CONFIG"
+    \\  | "SUBAGENTS"
+    \\  | "HOOKS"
+    \\  | "COMMANDS"
+    \\  | "SESSIONS";
+    \\
+    ;
+
+const PLUGINS_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginsMigration {
+    \\  marketplaceName: string;
+    \\  pluginNames: string[];
+    \\}
+    \\
+    ;
+
+const SESSION_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SessionMigration {
+    \\  path: string;
+    \\  cwd: string;
+    \\  title: string | null;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerMigration {
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const HOOK_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface HookMigration {
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const SUBAGENT_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SubagentMigration {
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const COMMAND_MIGRATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandMigration {
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const MIGRATION_DETAILS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CommandMigration } from "./CommandMigration";
+    \\import type { HookMigration } from "./HookMigration";
+    \\import type { McpServerMigration } from "./McpServerMigration";
+    \\import type { PluginsMigration } from "./PluginsMigration";
+    \\import type { SessionMigration } from "./SessionMigration";
+    \\import type { SubagentMigration } from "./SubagentMigration";
+    \\
+    \\export interface MigrationDetails {
+    \\  plugins: PluginsMigration[];
+    \\  sessions: SessionMigration[];
+    \\  mcpServers: McpServerMigration[];
+    \\  hooks: HookMigration[];
+    \\  subagents: SubagentMigration[];
+    \\  commands: CommandMigration[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\import type { MigrationDetails } from "./MigrationDetails";
+    \\
+    \\export interface ExternalAgentConfigMigrationItem {
+    \\  itemType: ExternalAgentConfigMigrationItemType;
+    \\  description: string;
+    \\  cwd: string | null;
+    \\  details: MigrationDetails | null;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_DETECT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ExternalAgentConfigDetectParams {
+    \\  includeHome?: boolean;
+    \\  cwds?: string[] | null;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigrationItem";
+    \\
+    \\export interface ExternalAgentConfigDetectResponse {
+    \\  items: ExternalAgentConfigMigrationItem[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigrationItem";
+    \\
+    \\export interface ExternalAgentConfigImportParams {
+    \\  migrationItems: ExternalAgentConfigMigrationItem[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ExternalAgentConfigImportResponse {}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ExternalAgentConfigImportCompletedNotification {}
+    \\
+    ;
+
 const MCP_SERVER_STATUS_DETAIL_TS =
     GENERATED_TS_HEADER ++
     \\export type McpServerStatusDetail = "full" | "toolsAndAuthOnly";
@@ -3317,6 +3458,8 @@ const CLIENT_REQUEST_TS =
     \\import type { ConfigMcpServerReloadParams } from "./v2/ConfigMcpServerReloadParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
+    \\import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
+    \\import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";
     \\import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
@@ -3489,6 +3632,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "config/mcpServer/reload";
     \\      params?: ConfigMcpServerReloadParams | null;
+    \\    }
+    \\  | {
+    \\      method: "externalAgentConfig/detect";
+    \\      params?: ExternalAgentConfigDetectParams | null;
+    \\    }
+    \\  | {
+    \\      method: "externalAgentConfig/import";
+    \\      params: ExternalAgentConfigImportParams;
     \\    }
     \\  | {
     \\      method: "mcpServerStatus/list";
@@ -3673,6 +3824,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { ConfigMcpServerReloadResponse } from "./v2/ConfigMcpServerReloadResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
+    \\import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";
+    \\import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";
     \\import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
@@ -3881,6 +4034,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "config/mcpServer/reload";
     \\      result: ConfigMcpServerReloadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "externalAgentConfig/detect";
+    \\      result: ExternalAgentConfigDetectResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "externalAgentConfig/import";
+    \\      result: ExternalAgentConfigImportResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4103,6 +4266,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
@@ -4133,6 +4297,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "app/list/updated";
     \\      params: AppListUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "externalAgentConfig/import/completed";
+    \\      params: ExternalAgentConfigImportCompletedNotification;
     \\    }
     \\  | {
     \\      method: "command/exec/outputDelta";
@@ -4297,7 +4465,21 @@ const V2_INDEX_TS =
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { CommandMigration } from "./CommandMigration";
     \\export type { CreditsSnapshot } from "./CreditsSnapshot";
+    \\export type { ExternalAgentConfigDetectParams } from "./ExternalAgentConfigDetectParams";
+    \\export type { ExternalAgentConfigDetectResponse } from "./ExternalAgentConfigDetectResponse";
+    \\export type { ExternalAgentConfigImportCompletedNotification } from "./ExternalAgentConfigImportCompletedNotification";
+    \\export type { ExternalAgentConfigImportParams } from "./ExternalAgentConfigImportParams";
+    \\export type { ExternalAgentConfigImportResponse } from "./ExternalAgentConfigImportResponse";
+    \\export type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigrationItem";
+    \\export type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\export type { HookMigration } from "./HookMigration";
+    \\export type { McpServerMigration } from "./McpServerMigration";
+    \\export type { MigrationDetails } from "./MigrationDetails";
+    \\export type { PluginsMigration } from "./PluginsMigration";
+    \\export type { SessionMigration } from "./SessionMigration";
+    \\export type { SubagentMigration } from "./SubagentMigration";
     \\export type { McpServerAuthStatus } from "./McpServerAuthStatus";
     \\export type { McpServerStatus } from "./McpServerStatus";
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
@@ -6342,6 +6524,230 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ConfigMcpServerReloadResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigMigrationItemType",
+    \\  "type": "string",
+    \\  "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"]
+    \\}
+    \\
+;
+
+const PLUGINS_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginsMigration",
+    \\  "type": "object",
+    \\  "required": ["marketplaceName", "pluginNames"],
+    \\  "properties": {
+    \\    "marketplaceName": { "type": "string" },
+    \\    "pluginNames": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SESSION_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SessionMigration",
+    \\  "type": "object",
+    \\  "required": ["path", "cwd", "title"],
+    \\  "properties": {
+    \\    "path": { "type": "string" },
+    \\    "cwd": { "type": "string" },
+    \\    "title": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerMigration",
+    \\  "type": "object",
+    \\  "required": ["name"],
+    \\  "properties": {
+    \\    "name": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const HOOK_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookMigration",
+    \\  "type": "object",
+    \\  "required": ["name"],
+    \\  "properties": {
+    \\    "name": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SUBAGENT_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SubagentMigration",
+    \\  "type": "object",
+    \\  "required": ["name"],
+    \\  "properties": {
+    \\    "name": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const COMMAND_MIGRATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandMigration",
+    \\  "type": "object",
+    \\  "required": ["name"],
+    \\  "properties": {
+    \\    "name": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MIGRATION_DETAILS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MigrationDetails",
+    \\  "type": "object",
+    \\  "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"],
+    \\  "properties": {
+    \\    "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } },
+    \\    "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } },
+    \\    "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } },
+    \\    "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } },
+    \\    "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } },
+    \\    "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } }
+    \\  },
+    \\  "$defs": {
+    \\    "PluginsMigration": { "type": "object", "required": ["marketplaceName", "pluginNames"], "properties": { "marketplaceName": { "type": "string" }, "pluginNames": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd", "title"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
+    \\    "McpServerMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "HookMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "SubagentMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "CommandMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigMigrationItem",
+    \\  "type": "object",
+    \\  "required": ["itemType", "description", "cwd", "details"],
+    \\  "properties": {
+    \\    "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\    "description": { "type": "string" },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "details": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/MigrationDetails" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"] },
+    \\    "MigrationDetails": { "type": "object", "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"], "properties": { "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } }, "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } }, "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } }, "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } }, "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } }, "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } } }, "additionalProperties": false },
+    \\    "PluginsMigration": { "type": "object", "required": ["marketplaceName", "pluginNames"], "properties": { "marketplaceName": { "type": "string" }, "pluginNames": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd", "title"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
+    \\    "McpServerMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "HookMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "SubagentMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
+    \\    "CommandMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_DETECT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigDetectParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "includeHome": { "type": "boolean", "default": false },
+    \\    "cwds": { "type": ["array", "null"], "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigDetectResponse",
+    \\  "type": "object",
+    \\  "required": ["items"],
+    \\  "properties": {
+    \\    "items": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigMigrationItem" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItem": { "$ref": "ExternalAgentConfigMigrationItem.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportParams",
+    \\  "type": "object",
+    \\  "required": ["migrationItems"],
+    \\  "properties": {
+    \\    "migrationItems": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigMigrationItem" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItem": { "$ref": "ExternalAgentConfigMigrationItem.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportCompletedNotification",
     \\  "type": "object",
     \\  "additionalProperties": false
     \\}
@@ -9927,6 +10333,122 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ExternalAgentConfigMigrationItemType": {
+    \\      "type": "string",
+    \\      "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"]
+    \\    },
+    \\    "PluginsMigration": {
+    \\      "type": "object",
+    \\      "required": ["marketplaceName", "pluginNames"],
+    \\      "properties": {
+    \\        "marketplaceName": { "type": "string" },
+    \\        "pluginNames": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SessionMigration": {
+    \\      "type": "object",
+    \\      "required": ["path", "cwd", "title"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "cwd": { "type": "string" },
+    \\        "title": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "McpServerMigration": {
+    \\      "type": "object",
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HookMigration": {
+    \\      "type": "object",
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SubagentMigration": {
+    \\      "type": "object",
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "CommandMigration": {
+    \\      "type": "object",
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "MigrationDetails": {
+    \\      "type": "object",
+    \\      "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"],
+    \\      "properties": {
+    \\        "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } },
+    \\        "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } },
+    \\        "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } },
+    \\        "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } },
+    \\        "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } },
+    \\        "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigMigrationItem": {
+    \\      "type": "object",
+    \\      "required": ["itemType", "description", "cwd", "details"],
+    \\      "properties": {
+    \\        "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\        "description": { "type": "string" },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "details": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/MigrationDetails" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigDetectParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "includeHome": { "type": "boolean", "default": false },
+    \\        "cwds": { "type": ["array", "null"], "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExternalAgentConfigDetectResponse": {
+    \\      "type": "object",
+    \\      "required": ["items"],
+    \\      "properties": {
+    \\        "items": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigMigrationItem" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportParams": {
+    \\      "type": "object",
+    \\      "required": ["migrationItems"],
+    \\      "properties": {
+    \\        "migrationItems": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigMigrationItem" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExternalAgentConfigImportResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportCompletedNotification": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "McpServerStatusDetail": {
     \\      "type": "string",
     \\      "enum": ["full", "toolsAndAuthOnly"]
@@ -12112,6 +12634,20 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "SkillsChangedNotification.json", .contents = SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigMigrationItemType.json", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_JSON_SCHEMA },
+    .{ .name = "PluginsMigration.json", .contents = PLUGINS_MIGRATION_JSON_SCHEMA },
+    .{ .name = "SessionMigration.json", .contents = SESSION_MIGRATION_JSON_SCHEMA },
+    .{ .name = "McpServerMigration.json", .contents = MCP_SERVER_MIGRATION_JSON_SCHEMA },
+    .{ .name = "HookMigration.json", .contents = HOOK_MIGRATION_JSON_SCHEMA },
+    .{ .name = "SubagentMigration.json", .contents = SUBAGENT_MIGRATION_JSON_SCHEMA },
+    .{ .name = "CommandMigration.json", .contents = COMMAND_MIGRATION_JSON_SCHEMA },
+    .{ .name = "MigrationDetails.json", .contents = MIGRATION_DETAILS_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigMigrationItem.json", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigDetectParams.json", .contents = EXTERNAL_AGENT_CONFIG_DETECT_PARAMS_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigDetectResponse.json", .contents = EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportParams.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportResponse.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportCompletedNotification.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "McpServerStatusDetail.json", .contents = MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA },
     .{ .name = "McpServerStatusListParams.json", .contents = MCP_SERVER_STATUS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "McpServerAuthStatus.json", .contents = MCP_SERVER_AUTH_STATUS_JSON_SCHEMA },
@@ -12404,6 +12940,20 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/SkillsChangedNotification.ts", .contents = SKILLS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
+    .{ .name = "v2/ExternalAgentConfigMigrationItemType.ts", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_TS },
+    .{ .name = "v2/PluginsMigration.ts", .contents = PLUGINS_MIGRATION_TS },
+    .{ .name = "v2/SessionMigration.ts", .contents = SESSION_MIGRATION_TS },
+    .{ .name = "v2/McpServerMigration.ts", .contents = MCP_SERVER_MIGRATION_TS },
+    .{ .name = "v2/HookMigration.ts", .contents = HOOK_MIGRATION_TS },
+    .{ .name = "v2/SubagentMigration.ts", .contents = SUBAGENT_MIGRATION_TS },
+    .{ .name = "v2/CommandMigration.ts", .contents = COMMAND_MIGRATION_TS },
+    .{ .name = "v2/MigrationDetails.ts", .contents = MIGRATION_DETAILS_TS },
+    .{ .name = "v2/ExternalAgentConfigMigrationItem.ts", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TS },
+    .{ .name = "v2/ExternalAgentConfigDetectParams.ts", .contents = EXTERNAL_AGENT_CONFIG_DETECT_PARAMS_TS },
+    .{ .name = "v2/ExternalAgentConfigDetectResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_TS },
+    .{ .name = "v2/ExternalAgentConfigImportParams.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_TS },
+    .{ .name = "v2/ExternalAgentConfigImportResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_TS },
+    .{ .name = "v2/ExternalAgentConfigImportCompletedNotification.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
     .{ .name = "v2/McpServerStatusListParams.ts", .contents = MCP_SERVER_STATUS_LIST_PARAMS_TS },
     .{ .name = "v2/McpServerAuthStatus.ts", .contents = MCP_SERVER_AUTH_STATUS_TS },
@@ -20260,7 +20810,9 @@ fn isConfigMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/read") or
         std.mem.eql(u8, method, "config/value/write") or
         std.mem.eql(u8, method, "config/batchWrite") or
-        std.mem.eql(u8, method, "configRequirements/read");
+        std.mem.eql(u8, method, "configRequirements/read") or
+        std.mem.eql(u8, method, "externalAgentConfig/detect") or
+        std.mem.eql(u8, method, "externalAgentConfig/import");
 }
 
 fn handleConfigMethod(
@@ -20286,7 +20838,74 @@ fn handleConfigMethod(
     if (std.mem.eql(u8, method, "configRequirements/read")) {
         return handleConfigRequirementsRead(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "externalAgentConfig/detect")) {
+        return handleExternalAgentConfigDetect(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "externalAgentConfig/import")) {
+        return handleExternalAgentConfigImport(allocator, id_value, params_value);
+    }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown config method");
+}
+
+fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null and params != .object) {
+            return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/detect params must be an object, null, or omitted");
+        }
+        if (params == .object) {
+            if (params.object.get("includeHome")) |value| {
+                if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeHome must be a boolean");
+            }
+            if (params.object.get("cwds")) |value| {
+                if (value != .null and value != .array) return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null");
+                if (value == .array) {
+                    for (value.array.items) |cwd| {
+                        if (cwd != .string) return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null");
+                    }
+                }
+            }
+        }
+    }
+    return renderJsonRpcResult(allocator, id_value, "{\"items\":[]}");
+}
+
+fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/import params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/import params must be an object");
+
+    const migration_items = params.object.get("migrationItems") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
+    if (migration_items != .array) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
+    for (migration_items.array.items) |item| {
+        if (item != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must be objects");
+        const item_type = item.object.get("itemType") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include itemType");
+        if (item_type != .string or !isExternalAgentConfigMigrationItemType(item_type.string)) {
+            return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must use a supported itemType");
+        }
+        const description = item.object.get("description") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include description");
+        if (description != .string) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include description");
+        if (item.object.get("cwd")) |cwd| {
+            if (cwd != .null and cwd != .string) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems cwd must be a string or null");
+        }
+        if (item.object.get("details")) |details| {
+            if (details != .null and details != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems details must be an object or null");
+        }
+    }
+    if (migration_items.array.items.len == 0) {
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
+    return renderJsonRpcError(allocator, id_value, -32603, "externalAgentConfig/import migration items are parsed but not implemented yet");
+}
+
+fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
+    return std.mem.eql(u8, value, "AGENTS_MD") or
+        std.mem.eql(u8, value, "CONFIG") or
+        std.mem.eql(u8, value, "SKILLS") or
+        std.mem.eql(u8, value, "PLUGINS") or
+        std.mem.eql(u8, value, "MCP_SERVER_CONFIG") or
+        std.mem.eql(u8, value, "SUBAGENTS") or
+        std.mem.eql(u8, value, "HOOKS") or
+        std.mem.eql(u8, value, "COMMANDS") or
+        std.mem.eql(u8, value, "SESSIONS");
 }
 
 fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
