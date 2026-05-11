@@ -1725,6 +1725,34 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS =
     \\
     ;
 
+const MCP_SERVER_OAUTH_LOGIN_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerOauthLoginParams {
+    \\  name: string;
+    \\  scopes?: string[] | null;
+    \\  timeoutSecs?: number | null;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_OAUTH_LOGIN_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerOauthLoginResponse {
+    \\  authorizationUrl: string;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerOauthLoginCompletedNotification {
+    \\  name: string;
+    \\  success: boolean;
+    \\  error?: string;
+    \\}
+    \\
+    ;
+
 const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_TS =
     GENERATED_TS_HEADER ++
     \\export type ExternalAgentConfigMigrationItemType =
@@ -3738,6 +3766,7 @@ const CLIENT_REQUEST_TS =
     \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
     \\import type { McpResourceReadParams } from "./v2/McpResourceReadParams";
+    \\import type { McpServerOauthLoginParams } from "./v2/McpServerOauthLoginParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
@@ -3897,6 +3926,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "config/mcpServer/reload";
     \\      params?: ConfigMcpServerReloadParams | null;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/oauth/login";
+    \\      params: McpServerOauthLoginParams;
     \\    }
     \\  | {
     \\      method: "externalAgentConfig/detect";
@@ -4149,6 +4182,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
     \\import type { McpResourceReadResponse } from "./v2/McpResourceReadResponse";
+    \\import type { McpServerOauthLoginResponse } from "./v2/McpServerOauthLoginResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
     \\import type { McpServerToolCallResponse } from "./v2/McpServerToolCallResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
@@ -4343,6 +4377,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "config/mcpServer/reload";
     \\      result: ConfigMcpServerReloadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "mcpServer/oauth/login";
+    \\      result: McpServerOauthLoginResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4626,6 +4665,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+    \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
@@ -4690,6 +4730,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "skills/changed";
     \\      params: SkillsChangedNotification;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/oauthLogin/completed";
+    \\      params: McpServerOauthLoginCompletedNotification;
     \\    }
     \\  | {
     \\      method: "thread/started";
@@ -4855,6 +4899,9 @@ const V2_INDEX_TS =
     \\export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
+    \\export type { McpServerOauthLoginParams } from "./McpServerOauthLoginParams";
+    \\export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse";
     \\export type { CommandMigration } from "./CommandMigration";
     \\export type { CreditsSnapshot } from "./CreditsSnapshot";
     \\export type { ExternalAgentConfigDetectParams } from "./ExternalAgentConfigDetectParams";
@@ -6919,6 +6966,52 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ConfigMcpServerReloadResponse",
     \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_OAUTH_LOGIN_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerOauthLoginParams",
+    \\  "type": "object",
+    \\  "required": ["name"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "scopes": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\    "timeoutSecs": { "type": ["integer", "null"], "format": "int64" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MCP_SERVER_OAUTH_LOGIN_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerOauthLoginResponse",
+    \\  "type": "object",
+    \\  "required": ["authorizationUrl"],
+    \\  "properties": {
+    \\    "authorizationUrl": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerOauthLoginCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["name", "success"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "success": { "type": "boolean" },
+    \\    "error": { "type": ["string", "null"] }
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -11161,6 +11254,34 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "McpServerOauthLoginParams": {
+    \\      "type": "object",
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "scopes": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "timeoutSecs": { "type": ["integer", "null"], "format": "int64" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpServerOauthLoginResponse": {
+    \\      "type": "object",
+    \\      "required": ["authorizationUrl"],
+    \\      "properties": {
+    \\        "authorizationUrl": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "McpServerOauthLoginCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["name", "success"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "success": { "type": "boolean" },
+    \\        "error": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ExternalAgentConfigMigrationItemType": {
     \\      "type": "string",
     \\      "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"]
@@ -13714,6 +13835,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "SkillsChangedNotification.json", .contents = SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerOauthLoginParams.json", .contents = MCP_SERVER_OAUTH_LOGIN_PARAMS_JSON_SCHEMA },
+    .{ .name = "McpServerOauthLoginResponse.json", .contents = MCP_SERVER_OAUTH_LOGIN_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerOauthLoginCompletedNotification.json", .contents = MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ExternalAgentConfigMigrationItemType.json", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_JSON_SCHEMA },
     .{ .name = "PluginsMigration.json", .contents = PLUGINS_MIGRATION_JSON_SCHEMA },
     .{ .name = "SessionMigration.json", .contents = SESSION_MIGRATION_JSON_SCHEMA },
@@ -14045,6 +14169,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/SkillsChangedNotification.ts", .contents = SKILLS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
+    .{ .name = "v2/McpServerOauthLoginParams.ts", .contents = MCP_SERVER_OAUTH_LOGIN_PARAMS_TS },
+    .{ .name = "v2/McpServerOauthLoginResponse.ts", .contents = MCP_SERVER_OAUTH_LOGIN_RESPONSE_TS },
+    .{ .name = "v2/McpServerOauthLoginCompletedNotification.ts", .contents = MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ExternalAgentConfigMigrationItemType.ts", .contents = EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_TS },
     .{ .name = "v2/PluginsMigration.ts", .contents = PLUGINS_MIGRATION_TS },
     .{ .name = "v2/SessionMigration.ts", .contents = SESSION_MIGRATION_TS },
@@ -27832,6 +27959,10 @@ const McpStatusDetail = enum {
     tools_and_auth_only,
 };
 
+const McpServerOauthLoginParams = struct {
+    name: []const u8,
+};
+
 const McpResourceReadParams = struct {
     thread_id: ?[]const u8 = null,
     server: []const u8,
@@ -27848,6 +27979,7 @@ const McpServerToolCallParams = struct {
 
 fn isMcpServerMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/mcpServer/reload") or
+        std.mem.eql(u8, method, "mcpServer/oauth/login") or
         std.mem.eql(u8, method, "mcpServerStatus/list") or
         std.mem.eql(u8, method, "mcpServer/resource/read") or
         std.mem.eql(u8, method, "mcpServer/tool/call");
@@ -27868,6 +28000,9 @@ fn handleMcpServerMethod(
         }
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
+    if (std.mem.eql(u8, method, "mcpServer/oauth/login")) {
+        return handleMcpServerOauthLogin(allocator, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "mcpServerStatus/list")) {
         return handleMcpServerStatusList(allocator, id_value, params_value);
     }
@@ -27878,6 +28013,35 @@ fn handleMcpServerMethod(
         return handleMcpServerToolCall(allocator, state, id_value, params_value);
     }
     return renderJsonRpcError(allocator, id_value, -32601, "unknown MCP server method");
+}
+
+fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parseMcpServerOauthLoginParams(params_value) catch |err| switch (err) {
+        error.InvalidMcpOauthLoginParams => return renderJsonRpcError(allocator, id_value, -32602, "mcpServer/oauth/login params must be an object"),
+        error.InvalidMcpOauthLoginName => return renderJsonRpcError(allocator, id_value, -32602, "name must be a string"),
+        error.InvalidMcpOauthLoginScopes => return renderJsonRpcError(allocator, id_value, -32602, "scopes must be an array of strings or null"),
+        error.InvalidMcpOauthLoginTimeout => return renderJsonRpcError(allocator, id_value, -32602, "timeoutSecs must be an integer or null"),
+    };
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_bytes = mcp_cmd.readConfigToml(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to load MCP config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    var servers = mcp_cmd.loadServersFromConfig(allocator, codex_home, config_bytes orelse "") catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to load MCP servers", err);
+    };
+    defer servers.deinit(allocator);
+
+    const server = servers.get(params.name) orelse return renderMcpServerNotFound(allocator, id_value, params.name);
+    if (server.kind != .streamable_http or server.url == null) {
+        return renderJsonRpcError(allocator, id_value, -32600, "OAuth login is only supported for streamable HTTP servers.");
+    }
+    return renderJsonRpcError(allocator, id_value, -32603, "MCP OAuth login is not implemented in the Zig port yet.");
 }
 
 fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -28007,6 +28171,30 @@ fn renderMcpJsonRpcMethodResult(
 
 fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer) bool {
     return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn parseMcpServerOauthLoginParams(params_value: ?std.json.Value) !McpServerOauthLoginParams {
+    const params = params_value orelse return error.InvalidMcpOauthLoginParams;
+    if (params != .object) return error.InvalidMcpOauthLoginParams;
+
+    const name = params.object.get("name") orelse return error.InvalidMcpOauthLoginName;
+    if (name != .string or name.string.len == 0) return error.InvalidMcpOauthLoginName;
+
+    if (params.object.get("scopes")) |scopes| {
+        if (scopes != .null) {
+            if (scopes != .array) return error.InvalidMcpOauthLoginScopes;
+            for (scopes.array.items) |scope| {
+                if (scope != .string) return error.InvalidMcpOauthLoginScopes;
+            }
+        }
+    }
+    if (params.object.get("timeoutSecs")) |timeout| {
+        if (timeout != .null and timeout != .integer and timeout != .number_string) return error.InvalidMcpOauthLoginTimeout;
+        if (timeout == .number_string) {
+            _ = std.fmt.parseInt(i64, timeout.number_string, 10) catch return error.InvalidMcpOauthLoginTimeout;
+        }
+    }
+    return .{ .name = name.string };
 }
 
 fn parseMcpStatusParams(params_value: ?std.json.Value) !McpStatusParams {
