@@ -3569,6 +3569,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
         std.mem.eql(u8, method, "thread/rollback") or
+        std.mem.eql(u8, method, "thread/list") or
         std.mem.eql(u8, method, "thread/inject_items") or
         std.mem.eql(u8, method, "thread/name/set") or
         std.mem.eql(u8, method, "thread/memoryMode/set") or
@@ -3669,6 +3670,12 @@ fn handleThreadMethod(
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/list")) {
+        if (validateThreadListParams(params_value)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null,\"backwardsCursor\":null}");
     }
     if (std.mem.eql(u8, method, "thread/inject_items")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -3891,6 +3898,90 @@ fn validateThreadLoadedListParams(params_value: ?std.json.Value) ?[]const u8 {
         }
     }
     return null;
+}
+
+fn validateThreadListParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "thread/list params must be an object";
+    if (params != .object) return "thread/list params must be an object";
+    const object = params.object;
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
+    }
+    if (object.get("sortKey")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "created_at", "updated_at" })) return "sortKey must be created_at or updated_at";
+    }
+    if (object.get("sortDirection")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    if (object.get("modelProviders")) |value| {
+        if (!optionalStringArrayIsValid(value)) return "modelProviders must be an array of strings or null";
+    }
+    if (object.get("sourceKinds")) |value| {
+        if (!optionalEnumArrayIsValid(value, &.{ "cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown" })) {
+            return "sourceKinds must be an array of valid thread source kinds or null";
+        }
+    }
+    if (object.get("archived")) |value| {
+        if (value != .null and value != .bool) return "archived must be a boolean or null";
+    }
+    if (object.get("cwd")) |value| {
+        if (!threadListCwdParamIsValid(value)) return "cwd must be a string, array of strings, or null";
+    }
+    if (object.get("useStateDbOnly")) |value| {
+        if (value != .bool) return "useStateDbOnly must be a boolean";
+    }
+    if (object.get("searchTerm")) |value| {
+        if (value != .null and value != .string) return "searchTerm must be a string or null";
+    }
+    return null;
+}
+
+fn optionalEnumStringIsValid(value: std.json.Value, comptime allowed: []const []const u8) bool {
+    if (value == .null) return true;
+    return enumStringIsValid(value, allowed);
+}
+
+fn enumStringIsValid(value: std.json.Value, comptime allowed: []const []const u8) bool {
+    if (value != .string) return false;
+    inline for (allowed) |candidate| {
+        if (std.mem.eql(u8, value.string, candidate)) return true;
+    }
+    return false;
+}
+
+fn optionalStringArrayIsValid(value: std.json.Value) bool {
+    if (value == .null) return true;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (item != .string) return false;
+    }
+    return true;
+}
+
+fn optionalEnumArrayIsValid(value: std.json.Value, comptime allowed: []const []const u8) bool {
+    if (value == .null) return true;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (!enumStringIsValid(item, allowed)) return false;
+    }
+    return true;
+}
+
+fn threadListCwdParamIsValid(value: std.json.Value) bool {
+    if (value == .null) return true;
+    if (value == .string) return true;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (item != .string) return false;
+    }
+    return true;
 }
 
 fn isFuzzyFileSearchSessionMethod(method: []const u8) bool {
