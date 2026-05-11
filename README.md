@@ -290,8 +290,9 @@ interface/dependency metadata, and `skills/changed` invalidations for in-process
 mutations, verifies
 app-server MCP server status pagination, enabled local plugin-cache MCP entries,
 raw stdio tool/resource/resource-template inventory, bearer-token auth reporting,
-config-backed stdio resource reads, loaded-thread stdio tool calls, and
-model-facing stdio MCP resource list/template/read tool calls, verifies
+config-backed stdio resource reads, loaded-thread stdio tool calls including
+non-object argument pass-through, and model-facing stdio MCP resource
+list/template/read tool calls, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
