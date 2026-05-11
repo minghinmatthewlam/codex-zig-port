@@ -7261,6 +7261,12 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     f"url = {json.dumps(streamable_url)}",
                     'bearer_token_env_var = "TEST_MCP_TOKEN"',
                     "",
+                    "[mcp_servers.remote.http_headers]",
+                    '"X-App-Mcp-Static" = "app-static"',
+                    "",
+                    "[mcp_servers.remote.env_http_headers]",
+                    '"X-App-Mcp-Env" = "APP_MCP_HEADER"',
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -7283,6 +7289,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         env["CODEX_HOME"] = str(codex_home)
         env["PLUGIN_MCP_TOKEN"] = "plugin-token"
         env["TEST_MCP_TOKEN"] = "test-token"
+        env["APP_MCP_HEADER"] = "app-env"
         env.pop("MISSING_MCP_TOKEN", None)
 
         reload_response = request_stdio_app_server(
@@ -7528,6 +7535,9 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert streamable_server.request_headers[6]["mcp-session-id"] == "streamable-session-1"
         assert streamable_server.request_bodies[4]["params"]["cursor"] == "next-http-resources"
         assert streamable_server.request_headers[-1]["authorization"] == "Bearer test-token"
+        for headers in streamable_server.request_headers:
+            assert headers["x-app-mcp-static"] == "app-static"
+            assert headers["x-app-mcp-env"] == "app-env"
         assert "/.well-known/oauth-authorization-server/mcp" in discovery_server.request_paths
 
         zero_limit = request_stdio_app_server(

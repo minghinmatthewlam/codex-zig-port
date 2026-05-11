@@ -1642,6 +1642,12 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
                     f"url = {json.dumps(mcp_url)}",
                     'bearer_token_env_var = "RESOURCE_HTTP_MCP_TOKEN"',
                     "",
+                    "[mcp_servers.remote-docs.http_headers]",
+                    '"X-Resource-Static" = "resource-static"',
+                    "",
+                    "[mcp_servers.remote-docs.env_http_headers]",
+                    '"X-Resource-Env" = "RESOURCE_HTTP_MCP_HEADER"',
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -1650,6 +1656,7 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
         env["CODEX_HOME"] = str(codex_home)
         env["OPENAI_API_KEY"] = "test-api-key"
         env["RESOURCE_HTTP_MCP_TOKEN"] = "resource-http-token"
+        env["RESOURCE_HTTP_MCP_HEADER"] = "resource-env"
         env.pop("CODEX_ACCESS_TOKEN", None)
 
         result = subprocess.run(
@@ -1777,6 +1784,9 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
         assert mcp_server.request_headers[11]["Authorization"] == "Bearer resource-http-token"
         assert mcp_server.request_headers[14]["Authorization"] == "Bearer resource-http-token"
         assert mcp_server.request_headers[15]["Authorization"] == "Bearer resource-http-token"
+        for headers in mcp_server.request_headers:
+            assert header_value(headers, "X-Resource-Static") == "resource-static"
+            assert header_value(headers, "X-Resource-Env") == "resource-env"
     finally:
         server.shutdown()
         server.server_close()
