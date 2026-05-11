@@ -11005,6 +11005,29 @@ def run_json_schema_smoke(binary: Path) -> None:
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
+        model_provider_capabilities_params = json.loads(
+            (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert model_provider_capabilities_params["title"] == (
+            "ModelProviderCapabilitiesReadParams"
+        )
+        assert model_provider_capabilities_params["type"] == "object"
+        model_provider_capabilities_response = json.loads(
+            (out_dir / "ModelProviderCapabilitiesReadResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert model_provider_capabilities_response["required"] == [
+            "namespaceTools",
+            "imageGeneration",
+            "webSearch",
+        ]
+        assert (
+            model_provider_capabilities_response["properties"]["namespaceTools"]["type"]
+            == "boolean"
+        )
 
         command_exec = json.loads((out_dir / "CommandExecParams.json").read_text(encoding="utf-8"))
         assert command_exec["title"] == "CommandExecParams"
@@ -11644,6 +11667,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
+        assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
+        assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CommandExecTerminalSize" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecWriteParams" in bundle["$defs"]
@@ -11698,6 +11723,9 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["CommandExecParams"]["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"]
             == "#/$defs/SandboxPolicy"
         )
+        assert bundle["$defs"]["ModelProviderCapabilitiesReadResponse"][
+            "properties"
+        ]["webSearch"]["type"] == "boolean"
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
@@ -11846,6 +11874,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
+        assert 'method: "modelProvider/capabilities/read";' in client_request
+        assert (
+            "params?: ModelProviderCapabilitiesReadParams | null;"
+            in client_request
+        )
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -11936,6 +11969,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert 'method: "modelProvider/capabilities/read";' in client_response
+        assert (
+            "result: ModelProviderCapabilitiesReadResponse;" in client_response
+        )
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
@@ -12002,6 +12039,23 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "command: string[]" in command_exec
         assert "sandboxPolicy?: SandboxPolicy | null;" in command_exec
         assert "permissionProfile?: PermissionProfile | null;" in command_exec
+        model_provider_capabilities_params = (
+            out_dir / "v2" / "ModelProviderCapabilitiesReadParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ModelProviderCapabilitiesReadParams {}"
+            in model_provider_capabilities_params
+        )
+        model_provider_capabilities_response = (
+            out_dir / "v2" / "ModelProviderCapabilitiesReadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ModelProviderCapabilitiesReadResponse"
+            in model_provider_capabilities_response
+        )
+        assert "namespaceTools: boolean;" in model_provider_capabilities_response
+        assert "imageGeneration: boolean;" in model_provider_capabilities_response
+        assert "webSearch: boolean;" in model_provider_capabilities_response
         permission_profile = (out_dir / "v2" / "PermissionProfile.ts").read_text(
             encoding="utf-8"
         )
@@ -12520,6 +12574,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
+        assert (
+            'export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";'
+            in v2_index
+        )
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
