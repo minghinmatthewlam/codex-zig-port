@@ -877,6 +877,143 @@ const HOOKS_LIST_RESPONSE_TS =
     \\
     ;
 
+const SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillsListExtraRootsForCwd {
+    \\  cwd: string;
+    \\  extraUserRoots: string[];
+    \\}
+    \\
+    ;
+
+const SKILLS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SkillsListExtraRootsForCwd } from "./SkillsListExtraRootsForCwd";
+    \\
+    \\export interface SkillsListParams {
+    \\  cwds?: string[] | null;
+    \\  forceReload?: boolean | null;
+    \\  perCwdExtraUserRoots?: SkillsListExtraRootsForCwd[] | null;
+    \\}
+    \\
+    ;
+
+const SKILL_INTERFACE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillInterface {
+    \\  displayName?: string;
+    \\  shortDescription?: string;
+    \\  iconSmall?: string;
+    \\  iconLarge?: string;
+    \\  brandColor?: string;
+    \\  defaultPrompt?: string;
+    \\}
+    \\
+    ;
+
+const SKILL_TOOL_DEPENDENCY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillToolDependency {
+    \\  type: string;
+    \\  value: string;
+    \\  description?: string;
+    \\  transport?: string;
+    \\  command?: string;
+    \\  url?: string;
+    \\}
+    \\
+    ;
+
+const SKILL_DEPENDENCIES_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SkillToolDependency } from "./SkillToolDependency";
+    \\
+    \\export interface SkillDependencies {
+    \\  tools: SkillToolDependency[];
+    \\}
+    \\
+    ;
+
+const SKILL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SkillDependencies } from "./SkillDependencies";
+    \\import type { SkillInterface } from "./SkillInterface";
+    \\
+    \\export interface Skill {
+    \\  name: string;
+    \\  description: string;
+    \\  shortDescription?: string;
+    \\  interface?: SkillInterface;
+    \\  dependencies?: SkillDependencies;
+    \\  path: string;
+    \\  scope: string;
+    \\  enabled: boolean;
+    \\}
+    \\
+    ;
+
+const SKILL_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillError {
+    \\  path: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const SKILLS_LIST_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { Skill } from "./Skill";
+    \\import type { SkillError } from "./SkillError";
+    \\
+    \\export interface SkillsListEntry {
+    \\  cwd: string;
+    \\  skills: Skill[];
+    \\  errors: SkillError[];
+    \\}
+    \\
+    ;
+
+const SKILLS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SkillsListEntry } from "./SkillsListEntry";
+    \\
+    \\export interface SkillsListResponse {
+    \\  data: SkillsListEntry[];
+    \\}
+    \\
+    ;
+
+const SKILLS_CONFIG_WRITE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type SkillsConfigWriteParams =
+    \\  | {
+    \\      name: string;
+    \\      path?: null;
+    \\      enabled: boolean;
+    \\    }
+    \\  | {
+    \\      path: string;
+    \\      name?: null;
+    \\      enabled: boolean;
+    \\    };
+    \\
+    ;
+
+const SKILLS_CONFIG_WRITE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillsConfigWriteResponse {
+    \\  effectiveEnabled: boolean;
+    \\}
+    \\
+    ;
+
+const SKILLS_CHANGED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillsChangedNotification {}
+    \\
+    ;
+
 const CONFIG_MCP_SERVER_RELOAD_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ConfigMcpServerReloadParams {}
@@ -2268,6 +2405,8 @@ const CLIENT_REQUEST_TS =
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
+    \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
+    \\import type { SkillsListParams } from "./v2/SkillsListParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
@@ -2331,6 +2470,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "hooks/list";
     \\      params?: HooksListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "skills/list";
+    \\      params?: SkillsListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "skills/config/write";
+    \\      params: SkillsConfigWriteParams;
     \\    }
     \\  | {
     \\      method: "config/mcpServer/reload";
@@ -2519,6 +2666,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
+    \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
+    \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
@@ -2592,6 +2741,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "hooks/list";
     \\      result: HooksListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "skills/list";
+    \\      result: SkillsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "skills/config/write";
+    \\      result: SkillsConfigWriteResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2809,6 +2968,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./v2/FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+    \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
@@ -2829,6 +2989,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "fuzzyFileSearch/sessionCompleted";
     \\      params: FuzzyFileSearchSessionCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "skills/changed";
+    \\      params: SkillsChangedNotification;
     \\    }
     \\  | {
     \\      method: "thread/started";
@@ -2952,6 +3116,18 @@ const V2_INDEX_TS =
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
+    \\export type { Skill } from "./Skill";
+    \\export type { SkillDependencies } from "./SkillDependencies";
+    \\export type { SkillError } from "./SkillError";
+    \\export type { SkillInterface } from "./SkillInterface";
+    \\export type { SkillToolDependency } from "./SkillToolDependency";
+    \\export type { SkillsChangedNotification } from "./SkillsChangedNotification";
+    \\export type { SkillsConfigWriteParams } from "./SkillsConfigWriteParams";
+    \\export type { SkillsConfigWriteResponse } from "./SkillsConfigWriteResponse";
+    \\export type { SkillsListEntry } from "./SkillsListEntry";
+    \\export type { SkillsListExtraRootsForCwd } from "./SkillsListExtraRootsForCwd";
+    \\export type { SkillsListParams } from "./SkillsListParams";
+    \\export type { SkillsListResponse } from "./SkillsListResponse";
     \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
@@ -3714,6 +3890,401 @@ const HOOKS_LIST_RESPONSE_JSON_SCHEMA =
     \\      "additionalProperties": false
     \\    }
     \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsListExtraRootsForCwd",
+    \\  "type": "object",
+    \\  "required": ["cwd", "extraUserRoots"],
+    \\  "properties": {
+    \\    "cwd": { "type": "string" },
+    \\    "extraUserRoots": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const SKILLS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cwds": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\    "forceReload": { "type": ["boolean", "null"] },
+    \\    "perCwdExtraUserRoots": {
+    \\      "type": ["array", "null"],
+    \\      "items": { "$ref": "#/$defs/SkillsListExtraRootsForCwd" }
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "SkillsListExtraRootsForCwd": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "extraUserRoots"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "extraUserRoots": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const SKILL_INTERFACE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillInterface",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "displayName": { "type": "string" },
+    \\    "shortDescription": { "type": "string" },
+    \\    "iconSmall": { "type": "string" },
+    \\    "iconLarge": { "type": "string" },
+    \\    "brandColor": { "type": "string" },
+    \\    "defaultPrompt": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILL_TOOL_DEPENDENCY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillToolDependency",
+    \\  "type": "object",
+    \\  "required": ["type", "value"],
+    \\  "properties": {
+    \\    "type": { "type": "string" },
+    \\    "value": { "type": "string" },
+    \\    "description": { "type": "string" },
+    \\    "transport": { "type": "string" },
+    \\    "command": { "type": "string" },
+    \\    "url": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILL_DEPENDENCIES_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillDependencies",
+    \\  "type": "object",
+    \\  "required": ["tools"],
+    \\  "properties": {
+    \\    "tools": { "type": "array", "items": { "$ref": "#/$defs/SkillToolDependency" } }
+    \\  },
+    \\  "$defs": {
+    \\    "SkillToolDependency": {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "type": "string" },
+    \\        "value": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "transport": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILL_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "Skill",
+    \\  "type": "object",
+    \\  "required": ["name", "description", "path", "scope", "enabled"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "description": { "type": "string" },
+    \\    "shortDescription": { "type": "string" },
+    \\    "interface": { "$ref": "#/$defs/SkillInterface" },
+    \\    "dependencies": { "$ref": "#/$defs/SkillDependencies" },
+    \\    "path": { "type": "string" },
+    \\    "scope": { "type": "string" },
+    \\    "enabled": { "type": "boolean" }
+    \\  },
+    \\  "$defs": {
+    \\    "SkillInterface": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "displayName": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "iconSmall": { "type": "string" },
+    \\        "iconLarge": { "type": "string" },
+    \\        "brandColor": { "type": "string" },
+    \\        "defaultPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillToolDependency": {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "type": "string" },
+    \\        "value": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "transport": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillDependencies": {
+    \\      "type": "object",
+    \\      "required": ["tools"],
+    \\      "properties": {
+    \\        "tools": { "type": "array", "items": { "$ref": "#/$defs/SkillToolDependency" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILL_ERROR_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillError",
+    \\  "type": "object",
+    \\  "required": ["path", "message"],
+    \\  "properties": {
+    \\    "path": { "type": "string" },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_LIST_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsListEntry",
+    \\  "type": "object",
+    \\  "required": ["cwd", "skills", "errors"],
+    \\  "properties": {
+    \\    "cwd": { "type": "string" },
+    \\    "skills": { "type": "array", "items": { "$ref": "#/$defs/Skill" } },
+    \\    "errors": { "type": "array", "items": { "$ref": "#/$defs/SkillError" } }
+    \\  },
+    \\  "$defs": {
+    \\    "SkillInterface": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "displayName": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "iconSmall": { "type": "string" },
+    \\        "iconLarge": { "type": "string" },
+    \\        "brandColor": { "type": "string" },
+    \\        "defaultPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillToolDependency": {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "type": "string" },
+    \\        "value": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "transport": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillDependencies": {
+    \\      "type": "object",
+    \\      "required": ["tools"],
+    \\      "properties": {
+    \\        "tools": { "type": "array", "items": { "$ref": "#/$defs/SkillToolDependency" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "Skill": {
+    \\      "type": "object",
+    \\      "required": ["name", "description", "path", "scope", "enabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "interface": { "$ref": "#/$defs/SkillInterface" },
+    \\        "dependencies": { "$ref": "#/$defs/SkillDependencies" },
+    \\        "path": { "type": "string" },
+    \\        "scope": { "type": "string" },
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/SkillsListEntry" } }
+    \\  },
+    \\  "$defs": {
+    \\    "SkillInterface": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "displayName": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "iconSmall": { "type": "string" },
+    \\        "iconLarge": { "type": "string" },
+    \\        "brandColor": { "type": "string" },
+    \\        "defaultPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillToolDependency": {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "type": "string" },
+    \\        "value": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "transport": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillDependencies": {
+    \\      "type": "object",
+    \\      "required": ["tools"],
+    \\      "properties": {
+    \\        "tools": { "type": "array", "items": { "$ref": "#/$defs/SkillToolDependency" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "Skill": {
+    \\      "type": "object",
+    \\      "required": ["name", "description", "path", "scope", "enabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "interface": { "$ref": "#/$defs/SkillInterface" },
+    \\        "dependencies": { "$ref": "#/$defs/SkillDependencies" },
+    \\        "path": { "type": "string" },
+    \\        "scope": { "type": "string" },
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillsListEntry": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "skills", "errors"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "skills": { "type": "array", "items": { "$ref": "#/$defs/Skill" } },
+    \\        "errors": { "type": "array", "items": { "$ref": "#/$defs/SkillError" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_CONFIG_WRITE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsConfigWriteParams",
+    \\  "type": "object",
+    \\  "required": ["enabled"],
+    \\  "properties": {
+    \\    "name": { "type": ["string", "null"] },
+    \\    "path": { "type": ["string", "null"] },
+    \\    "enabled": { "type": "boolean" }
+    \\  },
+    \\  "oneOf": [
+    \\    {
+    \\      "required": ["name"],
+    \\      "properties": {
+    \\        "name": { "type": "string", "minLength": 1 },
+    \\        "path": { "type": "null" }
+    \\      }
+    \\    },
+    \\    {
+    \\      "required": ["path"],
+    \\      "properties": {
+    \\        "path": { "type": "string", "minLength": 1 },
+    \\        "name": { "type": "null" }
+    \\      }
+    \\    }
+    \\  ],
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const SKILLS_CONFIG_WRITE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsConfigWriteResponse",
+    \\  "type": "object",
+    \\  "required": ["effectiveEnabled"],
+    \\  "properties": {
+    \\    "effectiveEnabled": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsChangedNotification",
+    \\  "type": "object",
     \\  "additionalProperties": false
     \\}
     \\
@@ -6721,6 +7292,140 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "SkillsListExtraRootsForCwd": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "extraUserRoots"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "extraUserRoots": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "SkillsListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cwds": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "forceReload": { "type": ["boolean", "null"] },
+    \\        "perCwdExtraUserRoots": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "$ref": "#/$defs/SkillsListExtraRootsForCwd" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "SkillInterface": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "displayName": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "iconSmall": { "type": "string" },
+    \\        "iconLarge": { "type": "string" },
+    \\        "brandColor": { "type": "string" },
+    \\        "defaultPrompt": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillToolDependency": {
+    \\      "type": "object",
+    \\      "required": ["type", "value"],
+    \\      "properties": {
+    \\        "type": { "type": "string" },
+    \\        "value": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "transport": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "url": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillDependencies": {
+    \\      "type": "object",
+    \\      "required": ["tools"],
+    \\      "properties": {
+    \\        "tools": { "type": "array", "items": { "$ref": "#/$defs/SkillToolDependency" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "Skill": {
+    \\      "type": "object",
+    \\      "required": ["name", "description", "path", "scope", "enabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "shortDescription": { "type": "string" },
+    \\        "interface": { "$ref": "#/$defs/SkillInterface" },
+    \\        "dependencies": { "$ref": "#/$defs/SkillDependencies" },
+    \\        "path": { "type": "string" },
+    \\        "scope": { "type": "string" },
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillsListEntry": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "skills", "errors"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "skills": { "type": "array", "items": { "$ref": "#/$defs/Skill" } },
+    \\        "errors": { "type": "array", "items": { "$ref": "#/$defs/SkillError" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/SkillsListEntry" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillsConfigWriteParams": {
+    \\      "type": "object",
+    \\      "required": ["enabled"],
+    \\      "properties": {
+    \\        "name": { "type": ["string", "null"] },
+    \\        "path": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "oneOf": [
+    \\        {
+    \\          "required": ["name"],
+    \\          "properties": {
+    \\            "name": { "type": "string", "minLength": 1 },
+    \\            "path": { "type": "null" }
+    \\          }
+    \\        },
+    \\        {
+    \\          "required": ["path"],
+    \\          "properties": {
+    \\            "path": { "type": "string", "minLength": 1 },
+    \\            "name": { "type": "null" }
+    \\          }
+    \\        }
+    \\      ],
+    \\      "additionalProperties": true
+    \\    },
+    \\    "SkillsConfigWriteResponse": {
+    \\      "type": "object",
+    \\      "required": ["effectiveEnabled"],
+    \\      "properties": {
+    \\        "effectiveEnabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillsChangedNotification": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ConfigMcpServerReloadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -8202,6 +8907,18 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "Hook.json", .contents = HOOK_JSON_SCHEMA },
     .{ .name = "HooksListEntry.json", .contents = HOOKS_LIST_ENTRY_JSON_SCHEMA },
     .{ .name = "HooksListResponse.json", .contents = HOOKS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "SkillsListExtraRootsForCwd.json", .contents = SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_JSON_SCHEMA },
+    .{ .name = "SkillsListParams.json", .contents = SKILLS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "SkillInterface.json", .contents = SKILL_INTERFACE_JSON_SCHEMA },
+    .{ .name = "SkillToolDependency.json", .contents = SKILL_TOOL_DEPENDENCY_JSON_SCHEMA },
+    .{ .name = "SkillDependencies.json", .contents = SKILL_DEPENDENCIES_JSON_SCHEMA },
+    .{ .name = "Skill.json", .contents = SKILL_JSON_SCHEMA },
+    .{ .name = "SkillError.json", .contents = SKILL_ERROR_JSON_SCHEMA },
+    .{ .name = "SkillsListEntry.json", .contents = SKILLS_LIST_ENTRY_JSON_SCHEMA },
+    .{ .name = "SkillsListResponse.json", .contents = SKILLS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "SkillsConfigWriteParams.json", .contents = SKILLS_CONFIG_WRITE_PARAMS_JSON_SCHEMA },
+    .{ .name = "SkillsConfigWriteResponse.json", .contents = SKILLS_CONFIG_WRITE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "SkillsChangedNotification.json", .contents = SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerStatusDetail.json", .contents = MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA },
@@ -8384,6 +9101,18 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/Hook.ts", .contents = HOOK_TS },
     .{ .name = "v2/HooksListEntry.ts", .contents = HOOKS_LIST_ENTRY_TS },
     .{ .name = "v2/HooksListResponse.ts", .contents = HOOKS_LIST_RESPONSE_TS },
+    .{ .name = "v2/SkillsListExtraRootsForCwd.ts", .contents = SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_TS },
+    .{ .name = "v2/SkillsListParams.ts", .contents = SKILLS_LIST_PARAMS_TS },
+    .{ .name = "v2/SkillInterface.ts", .contents = SKILL_INTERFACE_TS },
+    .{ .name = "v2/SkillToolDependency.ts", .contents = SKILL_TOOL_DEPENDENCY_TS },
+    .{ .name = "v2/SkillDependencies.ts", .contents = SKILL_DEPENDENCIES_TS },
+    .{ .name = "v2/Skill.ts", .contents = SKILL_TS },
+    .{ .name = "v2/SkillError.ts", .contents = SKILL_ERROR_TS },
+    .{ .name = "v2/SkillsListEntry.ts", .contents = SKILLS_LIST_ENTRY_TS },
+    .{ .name = "v2/SkillsListResponse.ts", .contents = SKILLS_LIST_RESPONSE_TS },
+    .{ .name = "v2/SkillsConfigWriteParams.ts", .contents = SKILLS_CONFIG_WRITE_PARAMS_TS },
+    .{ .name = "v2/SkillsConfigWriteResponse.ts", .contents = SKILLS_CONFIG_WRITE_RESPONSE_TS },
+    .{ .name = "v2/SkillsChangedNotification.ts", .contents = SKILLS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
     .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
