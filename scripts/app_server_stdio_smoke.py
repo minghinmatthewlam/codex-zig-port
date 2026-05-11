@@ -2565,7 +2565,20 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert rollout_path.name == f"rollout-{thread_id}.jsonl"
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
-                prompt = "hello from app-server turn"
+                input_items = [
+                    {
+                        "type": "text",
+                        "text": "hello from app-server turn",
+                        "text_elements": [
+                            {
+                                "byteRange": {"start": 0, "end": 5},
+                                "placeholder": "hello",
+                            }
+                        ],
+                    },
+                    {"type": "text", "text": "second text item"},
+                ]
+                prompt = "hello from app-server turn\nsecond text item"
                 write_json_line(
                     proc,
                     {
@@ -2574,7 +2587,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "method": "turn/start",
                         "params": {
                             "threadId": thread_id,
-                            "input": [{"type": "text", "text": prompt}],
+                            "input": input_items,
                         },
                     },
                 )
@@ -2599,7 +2612,14 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 user_item = user_item_started["params"]["item"]
                 assert user_item["type"] == "userMessage"
                 assert user_item["id"] == "item-0"
-                assert user_item["content"][0]["text"] == prompt
+                assert user_item["content"] == [
+                    input_items[0],
+                    {
+                        "type": "text",
+                        "text": "second text item",
+                        "text_elements": [],
+                    },
+                ]
                 user_item_completed = read_json_line(proc, 5)
                 assert user_item_completed["method"] == "item/completed"
                 assert user_item_completed["params"]["threadId"] == thread_id
@@ -2656,7 +2676,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert loaded_thread["turns"][0]["items"][0]["content"][0]["text"] == prompt
                 assert loaded_thread["turns"][1]["items"][0]["text"] == "app turn reply"
                 stored = rollout_path.read_text(encoding="utf-8")
-                assert prompt in stored
+                assert "hello from app-server turn" in stored
+                assert "second text item" in stored
                 assert "app turn reply" in stored
 
             assert proc.stdin is not None
