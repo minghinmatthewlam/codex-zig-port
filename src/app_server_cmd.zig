@@ -3778,6 +3778,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/unarchive") or
         std.mem.eql(u8, method, "thread/compact/start") or
         std.mem.eql(u8, method, "thread/shellCommand") or
+        std.mem.eql(u8, method, "thread/approveGuardianDeniedAction") or
         std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
         std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
@@ -3852,6 +3853,22 @@ fn handleThreadMethod(
         if (command_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "command must be a string");
         if (std.mem.trim(u8, command_value.string, " \t\r\n").len == 0) {
             return renderJsonRpcError(allocator, id_value, -32600, "command must not be empty");
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+    if (std.mem.eql(u8, method, "thread/approveGuardianDeniedAction")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        const event_value = object.get("event") orelse return renderJsonRpcError(allocator, id_value, -32602, "event must be a Guardian denial event");
+        if (!guardianAssessmentEventIsValid(event_value)) {
+            return renderJsonRpcError(allocator, id_value, -32600, "invalid Guardian denial event");
         }
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
@@ -4010,6 +4027,117 @@ fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
 fn threadItemsParamIsArray(object: std.json.ObjectMap) bool {
     const items = object.get("items") orelse return false;
     return items == .array;
+}
+
+fn guardianAssessmentEventIsValid(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const object = value.object;
+    if (!jsonRequiredStringFieldIsValid(object, "id")) return false;
+    if (object.get("target_item_id")) |field| {
+        if (!jsonOptionalStringValueIsValid(field)) return false;
+    }
+    if (object.get("turn_id")) |field| {
+        if (field != .string) return false;
+    }
+    const status = object.get("status") orelse return false;
+    if (!enumStringIsValid(status, &.{ "in_progress", "approved", "denied", "timed_out", "aborted" })) return false;
+    if (object.get("risk_level")) |field| {
+        if (!optionalEnumStringIsValid(field, &.{ "low", "medium", "high", "critical" })) return false;
+    }
+    if (object.get("user_authorization")) |field| {
+        if (!optionalEnumStringIsValid(field, &.{ "unknown", "low", "medium", "high" })) return false;
+    }
+    if (object.get("rationale")) |field| {
+        if (!jsonOptionalStringValueIsValid(field)) return false;
+    }
+    if (object.get("decision_source")) |field| {
+        if (!optionalEnumStringIsValid(field, &.{"agent"})) return false;
+    }
+    const action = object.get("action") orelse return false;
+    return guardianAssessmentActionIsValid(action);
+}
+
+fn guardianAssessmentActionIsValid(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const object = value.object;
+    const action_type = object.get("type") orelse return false;
+    if (action_type != .string) return false;
+    if (std.mem.eql(u8, action_type.string, "command")) {
+        return guardianCommandSourceFieldIsValid(object) and
+            jsonRequiredStringFieldIsValid(object, "command") and
+            jsonRequiredStringFieldIsValid(object, "cwd");
+    }
+    if (std.mem.eql(u8, action_type.string, "execve")) {
+        return guardianCommandSourceFieldIsValid(object) and
+            jsonRequiredStringFieldIsValid(object, "program") and
+            jsonRequiredStringArrayFieldIsValid(object, "argv") and
+            jsonRequiredStringFieldIsValid(object, "cwd");
+    }
+    if (std.mem.eql(u8, action_type.string, "apply_patch")) {
+        return jsonRequiredStringFieldIsValid(object, "cwd") and
+            jsonRequiredStringArrayFieldIsValid(object, "files");
+    }
+    if (std.mem.eql(u8, action_type.string, "network_access")) {
+        return jsonRequiredStringFieldIsValid(object, "target") and
+            jsonRequiredStringFieldIsValid(object, "host") and
+            guardianNetworkProtocolFieldIsValid(object) and
+            jsonRequiredU16FieldIsValid(object, "port");
+    }
+    if (std.mem.eql(u8, action_type.string, "mcp_tool_call")) {
+        return jsonRequiredStringFieldIsValid(object, "server") and
+            jsonRequiredStringFieldIsValid(object, "tool_name") and
+            jsonOptionalStringFieldIsValid(object, "connector_id") and
+            jsonOptionalStringFieldIsValid(object, "connector_name") and
+            jsonOptionalStringFieldIsValid(object, "tool_title");
+    }
+    if (std.mem.eql(u8, action_type.string, "request_permissions")) {
+        return jsonOptionalStringFieldIsValid(object, "reason") and
+            jsonRequiredObjectFieldIsValid(object, "permissions");
+    }
+    return false;
+}
+
+fn guardianCommandSourceFieldIsValid(object: std.json.ObjectMap) bool {
+    const source = object.get("source") orelse return false;
+    return enumStringIsValid(source, &.{ "shell", "unified_exec" });
+}
+
+fn guardianNetworkProtocolFieldIsValid(object: std.json.ObjectMap) bool {
+    const protocol = object.get("protocol") orelse return false;
+    return enumStringIsValid(protocol, &.{ "http", "https", "https_connect", "http-connect", "socks5_tcp", "socks5_udp" });
+}
+
+fn jsonRequiredStringFieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .string;
+}
+
+fn jsonOptionalStringFieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return true;
+    return jsonOptionalStringValueIsValid(value);
+}
+
+fn jsonOptionalStringValueIsValid(value: std.json.Value) bool {
+    return value == .null or value == .string;
+}
+
+fn jsonRequiredStringArrayFieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        if (item != .string) return false;
+    }
+    return true;
+}
+
+fn jsonRequiredObjectFieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .object;
+}
+
+fn jsonRequiredU16FieldIsValid(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u16);
 }
 
 fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
