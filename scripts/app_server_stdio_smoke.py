@@ -748,6 +748,81 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-fork",
+                "method": "thread/fork",
+                "params": {
+                    "threadId": thread_id,
+                    "model": "gpt-fork",
+                    "ephemeral": True,
+                    "threadSource": "user",
+                },
+            }
+        )
+        thread_fork = read_line()
+        assert thread_fork["id"] == "thread-fork"
+        fork_result = thread_fork["result"]
+        forked_thread = fork_result["thread"]
+        forked_thread_id = forked_thread["id"]
+        assert isinstance(forked_thread_id, str)
+        assert len(forked_thread_id) == 36
+        assert forked_thread_id != thread_id
+        assert forked_thread["sessionId"] == forked_thread_id
+        assert forked_thread["forkedFromId"] == thread_id
+        assert forked_thread["preview"] == started_thread["preview"]
+        assert forked_thread["ephemeral"] is True
+        assert forked_thread["path"] is None
+        assert forked_thread["source"] == "appServer"
+        assert forked_thread["threadSource"] == "user"
+        assert forked_thread["turns"] == []
+        assert fork_result["model"] == "gpt-fork"
+        assert fork_result["modelProvider"] == "mock_provider"
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-threads-after-fork",
+                "method": "thread/loaded/list",
+            }
+        )
+        loaded_threads_after_fork = read_line()
+        assert loaded_threads_after_fork["id"] == "loaded-threads-after-fork"
+        assert loaded_threads_after_fork["result"] == {
+            "data": sorted([thread_id, forked_thread_id]),
+            "nextCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-fork-missing",
+                "method": "thread/fork",
+                "params": {"threadId": "00000000-0000-0000-0000-000000000012"},
+            }
+        )
+        thread_fork_missing = read_line()
+        assert thread_fork_missing["id"] == "thread-fork-missing"
+        assert thread_fork_missing["error"]["code"] == -32600
+        assert (
+            "thread not found: 00000000-0000-0000-0000-000000000012"
+            in thread_fork_missing["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-fork-invalid",
+                "method": "thread/fork",
+                "params": {"threadId": "not-a-uuid"},
+            }
+        )
+        thread_fork_invalid = read_line()
+        assert thread_fork_invalid["id"] == "thread-fork-invalid"
+        assert thread_fork_invalid["error"]["code"] == -32600
+        assert "invalid thread id: not-a-uuid" in thread_fork_invalid["error"]["message"]
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "read-started-thread",
                 "method": "thread/read",
                 "params": {"threadId": thread_id, "includeTurns": False},
@@ -9468,6 +9543,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
         )
         assert thread_start_response_schema["required"][0] == "thread"
+        thread_fork_params_schema = json.loads(
+            (out_dir / "ThreadForkParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_fork_params_schema["required"] == ["threadId"]
+        thread_fork_response_schema = json.loads(
+            (out_dir / "ThreadForkResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_fork_response_schema["required"][0] == "thread"
         thread_unsubscribe = json.loads(
             (out_dir / "ThreadUnsubscribeParams.json").read_text(encoding="utf-8")
         )
@@ -9902,6 +9985,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             "memory_consolidation",
             None,
         ]
+        assert "ThreadForkParams" in bundle["$defs"]
+        assert "ThreadForkResponse" in bundle["$defs"]
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
         )
@@ -9968,6 +10053,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecWriteParams;" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
+        assert 'method: "thread/fork";' in client_request
+        assert "params: ThreadForkParams;" in client_request
         assert 'method: "thread/loaded/list";' in client_request
         assert "params?: ThreadLoadedListParams | null;" in client_request
         assert 'method: "thread/unsubscribe";' in client_request
@@ -10025,6 +10112,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
+        assert 'method: "thread/fork";' in client_response
+        assert "result: ThreadForkResponse;" in client_response
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
         assert 'method: "thread/unarchive";' in client_response
@@ -10146,6 +10235,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ThreadStartResponse" in thread_start_response
         assert "thread: unknown;" in thread_start_response
         assert "modelProvider: string;" in thread_start_response
+        thread_fork_params = (out_dir / "v2" / "ThreadForkParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ThreadForkParams" in thread_fork_params
+        assert "threadId: string;" in thread_fork_params
+        assert "ephemeral?: boolean;" in thread_fork_params
+        thread_fork_response = (out_dir / "v2" / "ThreadForkResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ThreadForkResponse" in thread_fork_response
+        assert "thread: unknown;" in thread_fork_response
         thread_unsubscribe = (
             out_dir / "v2" / "ThreadUnsubscribeResponse.ts"
         ).read_text(encoding="utf-8")
@@ -10476,6 +10576,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
+        assert 'export type { ThreadForkParams } from "./ThreadForkParams";' in v2_index
+        assert 'export type { ThreadForkResponse } from "./ThreadForkResponse";' in v2_index
         assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert 'export type { ThreadArchiveParams } from "./ThreadArchiveParams";' in v2_index
