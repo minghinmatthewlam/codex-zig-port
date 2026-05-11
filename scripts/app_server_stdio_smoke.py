@@ -118,6 +118,114 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
     base_url: str
 
 
+class StreamableMcpHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        request = json.loads(body)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append(request)
+
+        method = request.get("method")
+        request_id = request.get("id")
+        if method == "notifications/initialized":
+            payload = b""
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if method == "initialize":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}, "resources": {}},
+                        "serverInfo": {"name": "streamable-smoke", "version": "0.1.0"},
+                    },
+                }
+            )
+            return
+        if method == "resources/read":
+            uri = request.get("params", {}).get("uri")
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "contents": [
+                            {
+                                "uri": uri,
+                                "mimeType": "text/plain",
+                                "text": "Remote resource body from streamable HTTP.",
+                            }
+                        ]
+                    },
+                }
+            )
+            return
+        if method == "tools/call":
+            params = request.get("params", {})
+            arguments = params.get("arguments") if "arguments" in params else {}
+            meta = params.get("_meta") or {}
+            message = arguments.get("message", "") if isinstance(arguments, dict) else ""
+            thread_id = meta.get("threadId", "") if isinstance(meta, dict) else ""
+            source = meta.get("source", "") if isinstance(meta, dict) else ""
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"http echo: {message}"}],
+                        "structuredContent": {
+                            "echoed": message,
+                            "threadId": thread_id,
+                            "source": source,
+                            "transport": "streamable_http",
+                        },
+                        "isError": False,
+                        "_meta": {"calledBy": "streamable-smoke", "threadId": thread_id},
+                    },
+                }
+            )
+            return
+        self.write_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"unknown method: {method}"},
+            }
+        )
+
+    def write_rpc(self, payload: dict) -> None:
+        encoded = json.dumps(payload, separators=(",", ":")).encode()
+        if self.server.sse:
+            encoded = b"event: message\ndata: " + encoded + b"\n\n"
+            content_type = "text/event-stream"
+        else:
+            content_type = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class StreamableMcpServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[dict]
+    sse: bool
+
+
 def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server = TurnResponsesServer(("127.0.0.1", 0), TurnResponsesHandler)
     server.request_paths = []
@@ -133,6 +241,16 @@ def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
     server.base_url = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"{server.base_url}/mcp"
+
+
+def start_streamable_mcp_server(sse: bool = False) -> tuple[StreamableMcpServer, str]:
+    server = StreamableMcpServer(("127.0.0.1", 0), StreamableMcpHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_bodies = []
+    server.sse = sse
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/mcp"
 
 
 def toml_quoted_key(value: str) -> str:
@@ -7206,6 +7324,7 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-resource-", dir="/tmp"))
     config_path = codex_home / "config.toml"
     server_path = codex_home / "resource_server.py"
+    streamable_server, streamable_url = start_streamable_mcp_server()
     try:
         server_path.write_text(
             "\n".join(
@@ -7290,7 +7409,8 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
                     f"args = [{json.dumps(str(server_path))}]",
                     "",
                     "[mcp_servers.remote_docs]",
-                    'url = "https://example.com/mcp"',
+                    f"url = {json.dumps(streamable_url)}",
+                    'bearer_token_env_var = "RESOURCE_MCP_TOKEN"',
                     "",
                 ]
             ),
@@ -7298,6 +7418,7 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         )
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["RESOURCE_MCP_TOKEN"] = "resource-token"
 
         expected_resource_response = {
             "contents": [
@@ -7311,6 +7432,15 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
                     "mimeType": "application/octet-stream",
                     "blob": "YmluYXJ5LXJlc291cmNl",
                 },
+            ]
+        }
+        expected_remote_resource_response = {
+            "contents": [
+                {
+                    "uri": "test://codex/resource",
+                    "mimeType": "text/plain",
+                    "text": "Remote resource body from streamable HTTP.",
+                }
             ]
         }
 
@@ -7495,11 +7625,18 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             env,
         )
         assert http_server["id"] == "mcp-resource-http-server"
-        assert http_server["error"]["code"] == -32600
-        assert "MCP server 'remote_docs' is unavailable." in (
-            http_server["error"]["message"]
-        )
+        assert http_server["result"] == expected_remote_resource_response
+        assert [request["method"] for request in streamable_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "resources/read",
+        ]
+        assert streamable_server.request_bodies[-1]["params"]["uri"] == "test://codex/resource"
+        assert streamable_server.request_headers[-1]["authorization"] == "Bearer resource-token"
+        assert streamable_server.request_headers[-1]["mcp-protocol-version"] == "2025-03-26"
     finally:
+        streamable_server.shutdown()
+        streamable_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -7507,6 +7644,8 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-tool-", dir="/tmp"))
     config_path = codex_home / "config.toml"
     server_path = codex_home / "tool_server.py"
+    streamable_server, streamable_url = start_streamable_mcp_server(sse=True)
+    streamable_key = mcp_oauth_credential_key("remote_tool_docs", streamable_url)
     try:
         server_path.write_text(
             "\n".join(
@@ -7585,6 +7724,8 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
         config_path.write_text(
             "\n".join(
                 [
+                    'mcp_oauth_credentials_store = "file"',
+                    "",
                     "[mcp_servers.tool_docs]",
                     f"command = {json.dumps(sys.executable)}",
                     f"args = [{json.dumps(str(server_path))}]",
@@ -7595,9 +7736,23 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     f"args = [{json.dumps(str(server_path))}]",
                     "",
                     "[mcp_servers.remote_tool_docs]",
-                    'url = "https://example.com/mcp"',
+                    f"url = {json.dumps(streamable_url)}",
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    streamable_key: {
+                        "server_name": "remote_tool_docs",
+                        "server_url": streamable_url,
+                        "client_id": "client",
+                        "access_token": "oauth-tool-token",
+                    }
+                },
+                separators=(",", ":"),
             ),
             encoding="utf-8",
         )
@@ -7780,16 +7935,32 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                         "threadId": thread_id,
                         "server": "remote_tool_docs",
                         "tool": "echo",
-                        "arguments": {},
+                        "arguments": {"message": "hello from http"},
+                        "_meta": {"source": "mcp-http-app"},
                     },
                 },
             )
             http_server = read_json_line(proc, 5)
             assert http_server["id"] == "mcp-tool-http-server"
-            assert http_server["error"]["code"] == -32600
-            assert "MCP server 'remote_tool_docs' is unavailable." in (
-                http_server["error"]["message"]
-            )
+            assert http_server["result"] == {
+                "content": [{"type": "text", "text": "http echo: hello from http"}],
+                "structuredContent": {
+                    "echoed": "hello from http",
+                    "threadId": thread_id,
+                    "source": "mcp-http-app",
+                    "transport": "streamable_http",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "streamable-smoke", "threadId": thread_id},
+            }
+            assert [request["method"] for request in streamable_server.request_bodies] == [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+            ]
+            assert streamable_server.request_bodies[-1]["params"]["name"] == "echo"
+            assert streamable_server.request_headers[-1]["authorization"] == "Bearer oauth-tool-token"
+            assert streamable_server.request_headers[-1]["accept"] == "application/json, text/event-stream"
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -7841,6 +8012,8 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             missing_thread["error"]["message"]
         )
     finally:
+        streamable_server.shutdown()
+        streamable_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
