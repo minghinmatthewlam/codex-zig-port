@@ -820,6 +820,27 @@ const GET_AUTH_STATUS_RESPONSE_TS =
     \\
     ;
 
+const GET_AUTH_STATUS_PUBLIC_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type GetAuthStatusParams = {
+    \\  includeToken: boolean | null;
+    \\  refreshToken: boolean | null;
+    \\};
+    \\
+    ;
+
+const GET_AUTH_STATUS_PUBLIC_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AuthMode } from "./AuthMode";
+    \\
+    \\export type GetAuthStatusResponse = {
+    \\  authMethod: AuthMode | null;
+    \\  authToken: string | null;
+    \\  requiresOpenaiAuth: boolean | null;
+    \\};
+    \\
+    ;
+
 const ACCOUNT_TS =
     GENERATED_TS_HEADER ++
     \\import type { PlanType } from "../PlanType";
@@ -1098,6 +1119,26 @@ const GIT_DIFF_TO_REMOTE_RESPONSE_TS =
     \\  sha: string;
     \\  diff: string;
     \\}
+    \\
+    ;
+
+const GIT_SHA_TS =
+    GENERATED_TS_HEADER ++
+    \\export type GitSha = string;
+    \\
+    ;
+
+const GIT_DIFF_TO_REMOTE_PUBLIC_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type GitDiffToRemoteParams = { cwd: string };
+    \\
+    ;
+
+const GIT_DIFF_TO_REMOTE_PUBLIC_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { GitSha } from "./GitSha";
+    \\
+    \\export type GitDiffToRemoteResponse = { sha: GitSha; diff: string };
     \\
     ;
 
@@ -3068,7 +3109,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
     \\import type { GetAccountParams } from "./v2/GetAccountParams";
-    \\import type { GetAuthStatusParams } from "./v2/GetAuthStatusParams";
+    \\import type { GetAuthStatusParams } from "./GetAuthStatusParams";
     \\import type { FsCopyParams } from "./v2/FsCopyParams";
     \\import type { FsCreateDirectoryParams } from "./v2/FsCreateDirectoryParams";
     \\import type { FsGetMetadataParams } from "./v2/FsGetMetadataParams";
@@ -3078,7 +3119,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FsUnwatchParams } from "./v2/FsUnwatchParams";
     \\import type { FsWatchParams } from "./v2/FsWatchParams";
     \\import type { FsWriteFileParams } from "./v2/FsWriteFileParams";
-    \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
+    \\import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
@@ -3404,7 +3445,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GetAccountResponse } from "./v2/GetAccountResponse";
-    \\import type { GetAuthStatusResponse } from "./v2/GetAuthStatusResponse";
+    \\import type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
     \\import type { FsCopyResponse } from "./v2/FsCopyResponse";
     \\import type { FsCreateDirectoryResponse } from "./v2/FsCreateDirectoryResponse";
     \\import type { FsGetMetadataResponse } from "./v2/FsGetMetadataResponse";
@@ -3414,7 +3455,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FsUnwatchResponse } from "./v2/FsUnwatchResponse";
     \\import type { FsWatchResponse } from "./v2/FsWatchResponse";
     \\import type { FsWriteFileResponse } from "./v2/FsWriteFileResponse";
-    \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
+    \\import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\import type { GetAccountRateLimitsResponse } from "./v2/GetAccountRateLimitsResponse";
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
@@ -3920,6 +3961,11 @@ const INDEX_TS =
     \\export type { FuzzyFileSearchResult } from "./FuzzyFileSearchResult";
     \\export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
+    \\export type { GetAuthStatusParams } from "./GetAuthStatusParams";
+    \\export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
+    \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
+    \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
+    \\export type { GitSha } from "./GitSha";
     \\export type { ImageDetail } from "./ImageDetail";
     \\export type { InputModality } from "./InputModality";
     \\export type { MessagePhase } from "./MessagePhase";
@@ -11504,6 +11550,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "FuzzyFileSearchResult.ts", .contents = FUZZY_FILE_SEARCH_RESULT_TS },
     .{ .name = "FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_SESSION_COMPLETED_NOTIFICATION_TS },
     .{ .name = "FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_PUBLIC_SESSION_UPDATED_NOTIFICATION_TS },
+    .{ .name = "GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PUBLIC_PARAMS_TS },
+    .{ .name = "GetAuthStatusResponse.ts", .contents = GET_AUTH_STATUS_PUBLIC_RESPONSE_TS },
+    .{ .name = "GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PUBLIC_PARAMS_TS },
+    .{ .name = "GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_PUBLIC_RESPONSE_TS },
+    .{ .name = "GitSha.ts", .contents = GIT_SHA_TS },
     .{ .name = "ImageDetail.ts", .contents = IMAGE_DETAIL_TS },
     .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
