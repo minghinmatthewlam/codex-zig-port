@@ -964,6 +964,42 @@ const THREAD_GOAL_CLEARED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_TOKEN_USAGE_BREAKDOWN_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadTokenUsageBreakdown {
+    \\  totalTokens: number;
+    \\  inputTokens: number;
+    \\  cachedInputTokens: number;
+    \\  outputTokens: number;
+    \\  reasoningOutputTokens: number;
+    \\}
+    \\
+    ;
+
+const THREAD_TOKEN_USAGE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";
+    \\
+    \\export interface ThreadTokenUsage {
+    \\  total: ThreadTokenUsageBreakdown;
+    \\  last: ThreadTokenUsageBreakdown;
+    \\  modelContextWindow: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadTokenUsage } from "./ThreadTokenUsage";
+    \\
+    \\export interface ThreadTokenUsageUpdatedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  tokenUsage: ThreadTokenUsage;
+    \\}
+    \\
+    ;
+
 const BYTE_RANGE_TS =
     GENERATED_TS_HEADER ++
     \\export interface ByteRange {
@@ -2129,6 +2165,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
+    \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\
@@ -2152,6 +2189,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/goal/cleared";
     \\      params: ThreadGoalClearedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/tokenUsage/updated";
+    \\      params: ThreadTokenUsageUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "turn/started";
@@ -2248,6 +2289,9 @@ const V2_INDEX_TS =
     \\export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";
     \\export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";
     \\export type { ThreadGoalStatus } from "./ThreadGoalStatus";
+    \\export type { ThreadTokenUsage } from "./ThreadTokenUsage";
+    \\export type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";
+    \\export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";
     \\export type { TextElement } from "./TextElement";
     \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
@@ -4065,6 +4109,94 @@ const THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_TOKEN_USAGE_BREAKDOWN_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadTokenUsageBreakdown",
+    \\  "type": "object",
+    \\  "required": ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"],
+    \\  "properties": {
+    \\    "totalTokens": { "type": "integer" },
+    \\    "inputTokens": { "type": "integer" },
+    \\    "cachedInputTokens": { "type": "integer" },
+    \\    "outputTokens": { "type": "integer" },
+    \\    "reasoningOutputTokens": { "type": "integer" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_TOKEN_USAGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadTokenUsage",
+    \\  "type": "object",
+    \\  "required": ["total", "last", "modelContextWindow"],
+    \\  "properties": {
+    \\    "total": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\    "last": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\    "modelContextWindow": { "type": ["integer", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadTokenUsageBreakdown": {
+    \\      "type": "object",
+    \\      "required": ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"],
+    \\      "properties": {
+    \\        "totalTokens": { "type": "integer" },
+    \\        "inputTokens": { "type": "integer" },
+    \\        "cachedInputTokens": { "type": "integer" },
+    \\        "outputTokens": { "type": "integer" },
+    \\        "reasoningOutputTokens": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadTokenUsageUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId", "tokenUsage"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "tokenUsage": { "$ref": "#/$defs/ThreadTokenUsage" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadTokenUsageBreakdown": {
+    \\      "type": "object",
+    \\      "required": ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"],
+    \\      "properties": {
+    \\        "totalTokens": { "type": "integer" },
+    \\        "inputTokens": { "type": "integer" },
+    \\        "cachedInputTokens": { "type": "integer" },
+    \\        "outputTokens": { "type": "integer" },
+    \\        "reasoningOutputTokens": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadTokenUsage": {
+    \\      "type": "object",
+    \\      "required": ["total", "last", "modelContextWindow"],
+    \\      "properties": {
+    \\        "total": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\        "last": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\        "modelContextWindow": { "type": ["integer", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_MEMORY_MODE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4993,6 +5125,38 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadTokenUsageBreakdown": {
+    \\      "type": "object",
+    \\      "required": ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"],
+    \\      "properties": {
+    \\        "totalTokens": { "type": "integer" },
+    \\        "inputTokens": { "type": "integer" },
+    \\        "cachedInputTokens": { "type": "integer" },
+    \\        "outputTokens": { "type": "integer" },
+    \\        "reasoningOutputTokens": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadTokenUsage": {
+    \\      "type": "object",
+    \\      "required": ["total", "last", "modelContextWindow"],
+    \\      "properties": {
+    \\        "total": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\        "last": { "$ref": "#/$defs/ThreadTokenUsageBreakdown" },
+    \\        "modelContextWindow": { "type": ["integer", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadTokenUsageUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId", "tokenUsage"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "tokenUsage": { "$ref": "#/$defs/ThreadTokenUsage" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ByteRange": {
     \\      "type": "object",
     \\      "required": ["start", "end"],
@@ -5828,6 +5992,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalUpdatedNotification.json", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalClearedNotification.json", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadTokenUsageBreakdown.json", .contents = THREAD_TOKEN_USAGE_BREAKDOWN_JSON_SCHEMA },
+    .{ .name = "ThreadTokenUsage.json", .contents = THREAD_TOKEN_USAGE_JSON_SCHEMA },
+    .{ .name = "ThreadTokenUsageUpdatedNotification.json", .contents = THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
     .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
@@ -5957,6 +6124,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalUpdatedNotification.ts", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalClearedNotification.ts", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadTokenUsageBreakdown.ts", .contents = THREAD_TOKEN_USAGE_BREAKDOWN_TS },
+    .{ .name = "v2/ThreadTokenUsage.ts", .contents = THREAD_TOKEN_USAGE_TS },
+    .{ .name = "v2/ThreadTokenUsageUpdatedNotification.ts", .contents = THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
     .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
