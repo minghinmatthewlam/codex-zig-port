@@ -27817,10 +27817,19 @@ const McpResourceReadParams = struct {
     uri: []const u8,
 };
 
+const McpServerToolCallParams = struct {
+    thread_id: []const u8,
+    server: []const u8,
+    tool: []const u8,
+    arguments: ?std.json.Value = null,
+    meta: ?std.json.Value = null,
+};
+
 fn isMcpServerMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/mcpServer/reload") or
         std.mem.eql(u8, method, "mcpServerStatus/list") or
-        std.mem.eql(u8, method, "mcpServer/resource/read");
+        std.mem.eql(u8, method, "mcpServer/resource/read") or
+        std.mem.eql(u8, method, "mcpServer/tool/call");
 }
 
 fn handleMcpServerMethod(
@@ -27843,6 +27852,9 @@ fn handleMcpServerMethod(
     }
     if (std.mem.eql(u8, method, "mcpServer/resource/read")) {
         return handleMcpResourceRead(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "mcpServer/tool/call")) {
+        return handleMcpServerToolCall(allocator, state, id_value, params_value);
     }
     return renderJsonRpcError(allocator, id_value, -32601, "unknown MCP server method");
 }
@@ -27901,6 +27913,47 @@ fn handleMcpResourceRead(
         error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
         error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/resource/read failed", err),
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleMcpServerToolCall(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = parseMcpServerToolCallParams(params_value) catch |err| switch (err) {
+        error.InvalidMcpToolCallParams => return renderJsonRpcError(allocator, id_value, -32602, "mcpServer/tool/call params must be an object"),
+        error.InvalidMcpToolCallThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        error.InvalidMcpToolCallServer => return renderJsonRpcError(allocator, id_value, -32602, "server must be a string"),
+        error.InvalidMcpToolCallTool => return renderJsonRpcError(allocator, id_value, -32602, "tool must be a string"),
+        error.InvalidMcpToolCallArguments => return renderJsonRpcError(allocator, id_value, -32602, "arguments must be an object or null"),
+    };
+
+    if (!isUuidString(params.thread_id)) return renderInvalidThreadId(allocator, id_value, params.thread_id);
+    if (findLoadedThreadIndex(state, params.thread_id) == null) return renderThreadNotFound(allocator, id_value, params.thread_id);
+
+    const arguments_json = if (params.arguments) |arguments|
+        try std.json.Stringify.valueAlloc(allocator, arguments, .{})
+    else
+        try allocator.dupe(u8, "{}");
+    defer allocator.free(arguments_json);
+
+    const meta_json = try renderMcpToolCallMeta(allocator, params.thread_id, params.meta);
+    defer allocator.free(meta_json);
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/tool/call failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const result = mcp_runtime.callToolByName(allocator, codex_home, params.server, params.tool, arguments_json, meta_json) catch |err| switch (err) {
+        error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
+        error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
+        error.InvalidMcpToolArguments => return renderJsonRpcError(allocator, id_value, -32602, "arguments must be an object or null"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/tool/call failed", err),
     };
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
@@ -27982,6 +28035,68 @@ fn parseMcpResourceReadParams(params_value: ?std.json.Value) !McpResourceReadPar
         }
     }
     return parsed;
+}
+
+fn parseMcpServerToolCallParams(params_value: ?std.json.Value) !McpServerToolCallParams {
+    const params = params_value orelse return error.InvalidMcpToolCallParams;
+    if (params != .object) return error.InvalidMcpToolCallParams;
+    const object = params.object;
+
+    const thread_id = object.get("threadId") orelse return error.InvalidMcpToolCallThreadId;
+    if (thread_id != .string) return error.InvalidMcpToolCallThreadId;
+    const server = object.get("server") orelse return error.InvalidMcpToolCallServer;
+    if (server != .string) return error.InvalidMcpToolCallServer;
+    const tool = object.get("tool") orelse return error.InvalidMcpToolCallTool;
+    if (tool != .string) return error.InvalidMcpToolCallTool;
+
+    var parsed = McpServerToolCallParams{
+        .thread_id = thread_id.string,
+        .server = server.string,
+        .tool = tool.string,
+    };
+    if (object.get("arguments")) |arguments| {
+        if (arguments == .null) {
+            parsed.arguments = null;
+        } else if (arguments == .object) {
+            parsed.arguments = arguments;
+        } else {
+            return error.InvalidMcpToolCallArguments;
+        }
+    }
+    if (object.get("_meta")) |meta| {
+        parsed.meta = if (meta == .null) null else meta;
+    }
+    return parsed;
+}
+
+fn renderMcpToolCallMeta(allocator: std.mem.Allocator, thread_id: []const u8, meta: ?std.json.Value) ![]const u8 {
+    const thread_id_json = try std.json.Stringify.valueAlloc(allocator, thread_id, .{});
+    defer allocator.free(thread_id_json);
+    const meta_value = meta orelse return std.fmt.allocPrint(allocator, "{{\"threadId\":{s}}}", .{thread_id_json});
+    if (meta_value != .object) return std.json.Stringify.valueAlloc(allocator, meta_value, .{});
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '{');
+    var first = true;
+    var iter = meta_value.object.iterator();
+    while (iter.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "threadId")) continue;
+        if (!first) try out.append(allocator, ',');
+        first = false;
+        const key_json = try std.json.Stringify.valueAlloc(allocator, entry.key_ptr.*, .{});
+        defer allocator.free(key_json);
+        const value_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+        defer allocator.free(value_json);
+        try out.appendSlice(allocator, key_json);
+        try out.append(allocator, ':');
+        try out.appendSlice(allocator, value_json);
+    }
+    if (!first) try out.append(allocator, ',');
+    try out.appendSlice(allocator, "\"threadId\":");
+    try out.appendSlice(allocator, thread_id_json);
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
 }
 
 fn renderMcpServerStatusListResponse(

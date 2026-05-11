@@ -91,6 +91,21 @@ pub fn readResource(
     return readServerResource(allocator, server.*, uri);
 }
 
+pub fn callToolByName(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    raw_tool_name: []const u8,
+    arguments_json: []const u8,
+    meta_json: ?[]const u8,
+) ![]const u8 {
+    var servers = try mcp_cmd.loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+    const server = servers.get(server_name) orelse return error.McpServerNotFound;
+    if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
+    return callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json);
+}
+
 fn appendServerTools(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
@@ -194,6 +209,27 @@ fn readServerResource(
     const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
     if (result != .object) return error.InvalidMcpResponse;
     return renderResourceReadResult(allocator, result);
+}
+
+fn callServerToolJson(
+    allocator: std.mem.Allocator,
+    server: mcp_cmd.McpServer,
+    raw_tool_name: []const u8,
+    arguments_json: []const u8,
+    meta_json: ?[]const u8,
+) ![]const u8 {
+    var client = try StdioClient.start(allocator, server);
+    defer client.deinit();
+
+    try client.initialize();
+    const params = try buildCallToolParamsWithMeta(allocator, raw_tool_name, arguments_json, meta_json);
+    defer allocator.free(params);
+    var response = try client.request(2, "tools/call", params);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    return renderToolCallResult(allocator, result);
 }
 
 const StdioClient = struct {
@@ -408,6 +444,15 @@ fn buildNotificationPayload(
 }
 
 fn buildCallToolParams(allocator: std.mem.Allocator, raw_tool_name: []const u8, arguments_json: []const u8) ![]const u8 {
+    return buildCallToolParamsWithMeta(allocator, raw_tool_name, arguments_json, null);
+}
+
+fn buildCallToolParamsWithMeta(
+    allocator: std.mem.Allocator,
+    raw_tool_name: []const u8,
+    arguments_json: []const u8,
+    meta_json: ?[]const u8,
+) ![]const u8 {
     const name_json = try std.json.Stringify.valueAlloc(allocator, raw_tool_name, .{});
     defer allocator.free(name_json);
 
@@ -419,11 +464,14 @@ fn buildCallToolParams(allocator: std.mem.Allocator, raw_tool_name: []const u8, 
     const args_json = try std.json.Stringify.valueAlloc(allocator, parsed_args.value, .{});
     defer allocator.free(args_json);
 
-    return std.fmt.allocPrint(
-        allocator,
-        "{{\"name\":{s},\"arguments\":{s}}}",
-        .{ name_json, args_json },
-    );
+    if (meta_json) |meta| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":{s},\"arguments\":{s},\"_meta\":{s}}}",
+            .{ name_json, args_json, meta },
+        );
+    }
+    return std.fmt.allocPrint(allocator, "{{\"name\":{s},\"arguments\":{s}}}", .{ name_json, args_json });
 }
 
 fn buildReadResourceParams(allocator: std.mem.Allocator, uri: []const u8) ![]const u8 {
@@ -456,6 +504,45 @@ fn renderResourceReadResult(allocator: std.mem.Allocator, result: std.json.Value
     const contents_json = try std.json.Stringify.valueAlloc(allocator, contents, .{});
     defer allocator.free(contents_json);
     return std.fmt.allocPrint(allocator, "{{\"contents\":{s}}}", .{contents_json});
+}
+
+fn renderToolCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
+    if (result != .object) return error.InvalidMcpResponse;
+    const content = result.object.get("content") orelse return error.InvalidMcpResponse;
+    if (content != .array) return error.InvalidMcpResponse;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const content_json = try std.json.Stringify.valueAlloc(allocator, content, .{});
+    defer allocator.free(content_json);
+    try out.appendSlice(allocator, "{\"content\":");
+    try out.appendSlice(allocator, content_json);
+
+    if (result.object.get("structuredContent")) |structured_content| {
+        if (structured_content != .null) {
+            const json = try std.json.Stringify.valueAlloc(allocator, structured_content, .{});
+            defer allocator.free(json);
+            try out.appendSlice(allocator, ",\"structuredContent\":");
+            try out.appendSlice(allocator, json);
+        }
+    }
+    if (result.object.get("isError")) |is_error| {
+        if (is_error == .bool) {
+            try out.appendSlice(allocator, if (is_error.bool) ",\"isError\":true" else ",\"isError\":false");
+        } else if (is_error != .null) {
+            return error.InvalidMcpResponse;
+        }
+    }
+    if (result.object.get("_meta")) |meta| {
+        if (meta != .null) {
+            const json = try std.json.Stringify.valueAlloc(allocator, meta, .{});
+            defer allocator.free(json);
+            try out.appendSlice(allocator, ",\"_meta\":");
+            try out.appendSlice(allocator, json);
+        }
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
 }
 
 fn renderTextContent(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
@@ -535,6 +622,24 @@ test "mcp resource read result keeps contents only" {
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings(
         "{\"contents\":[{\"uri\":\"test://resource\",\"mimeType\":\"text/markdown\",\"text\":\"body\"}]}",
+        rendered,
+    );
+}
+
+test "mcp tool call result keeps app-server response fields" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"ok\":true},\"isError\":false,\"_meta\":{\"cursor\":\"next\"},\"extra\":true}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    const rendered = try renderToolCallResult(allocator, parsed.value);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"ok\":true},\"isError\":false,\"_meta\":{\"cursor\":\"next\"}}",
         rendered,
     );
 }
