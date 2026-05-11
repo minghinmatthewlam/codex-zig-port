@@ -801,6 +801,82 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_background_clean_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-increment-elicitation-invalid",
+            "method": "thread/increment_elicitation",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_increment_elicitation_invalid = read_line()
+    assert (
+        thread_increment_elicitation_invalid["id"]
+        == "thread-increment-elicitation-invalid"
+    )
+    assert thread_increment_elicitation_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_increment_elicitation_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-increment-elicitation-missing",
+            "method": "thread/increment_elicitation",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000005"},
+        }
+    )
+    thread_increment_elicitation_missing = read_line()
+    assert (
+        thread_increment_elicitation_missing["id"]
+        == "thread-increment-elicitation-missing"
+    )
+    assert thread_increment_elicitation_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000005"
+        in thread_increment_elicitation_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-decrement-elicitation-invalid",
+            "method": "thread/decrement_elicitation",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_decrement_elicitation_invalid = read_line()
+    assert (
+        thread_decrement_elicitation_invalid["id"]
+        == "thread-decrement-elicitation-invalid"
+    )
+    assert thread_decrement_elicitation_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_decrement_elicitation_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-decrement-elicitation-missing",
+            "method": "thread/decrement_elicitation",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000006"},
+        }
+    )
+    thread_decrement_elicitation_missing = read_line()
+    assert (
+        thread_decrement_elicitation_missing["id"]
+        == "thread-decrement-elicitation-missing"
+    )
+    assert thread_decrement_elicitation_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000006"
+        in thread_decrement_elicitation_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
