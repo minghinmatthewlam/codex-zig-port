@@ -1986,6 +1986,28 @@ def mcp_oauth_store_key(name: str, url: str) -> str:
     return f"{name}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
+def has_macos_security() -> bool:
+    return sys.platform == "darwin" and Path("/usr/bin/security").exists()
+
+
+def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/security",
+            "delete-generic-password",
+            "-s",
+            "Codex MCP Credentials",
+            "-a",
+            account,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+
+
 def run_mcp_oauth_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
     discovery_server, remote_url = start_mcp_oauth_discovery_server()
@@ -2229,6 +2251,131 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         )
         assert stdio_logout.returncode != 0
         assert "error: McpOAuthLogoutRequiresHttp" in stdio_logout.stderr
+
+        if has_macos_security():
+            keyring_name = f"keyring_{time.time_ns()}"
+            keyring_key = mcp_oauth_store_key(keyring_name, remote_url)
+            cleanup_mcp_oauth_keyring_entry(keyring_key)
+            try:
+                subprocess.run(
+                    [
+                        "/usr/bin/security",
+                        "add-generic-password",
+                        "-U",
+                        "-s",
+                        "Codex MCP Credentials",
+                        "-a",
+                        keyring_key,
+                        "-w",
+                        "temporary-keyring-smoke-token",
+                        "-T",
+                        "/usr/bin/security",
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+
+                keyring_home = temp_root / "keyring-home"
+                keyring_home.mkdir()
+                (keyring_home / "config.toml").write_text(
+                    "\n".join(
+                        [
+                            'mcp_oauth_credentials_store = "keyring"',
+                            "",
+                            f"[mcp_servers.{keyring_name}]",
+                            f'url = "{remote_url}"',
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                (keyring_home / ".credentials.json").write_text(
+                    json.dumps(
+                        {
+                            keyring_key: {
+                                "server_name": keyring_name,
+                                "server_url": remote_url,
+                                "client_id": "client",
+                                "access_token": "fallback",
+                            }
+                        },
+                        separators=(",", ":"),
+                    ),
+                    encoding="utf-8",
+                )
+
+                keyring_env = os.environ.copy()
+                keyring_env["CODEX_HOME"] = str(keyring_home)
+                keyring_env.pop("OPENAI_API_KEY", None)
+                keyring_env.pop("CODEX_ACCESS_TOKEN", None)
+
+                keyring_list = subprocess.run(
+                    [str(binary.resolve()), "mcp", "list", "--json"],
+                    cwd=temp_root,
+                    env=keyring_env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                keyring_entries = {
+                    entry["name"]: entry for entry in json.loads(keyring_list.stdout)
+                }
+                assert keyring_entries[keyring_name]["auth_status"] == "OAuth"
+
+                keyring_removed = subprocess.run(
+                    [str(binary.resolve()), "mcp", "logout", keyring_name],
+                    cwd=temp_root,
+                    env=keyring_env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                assert keyring_removed.stdout == (
+                    f"Removed OAuth credentials for '{keyring_name}'.\n"
+                )
+                assert keyring_removed.stderr == ""
+                assert not (keyring_home / ".credentials.json").exists()
+
+                keyring_find = subprocess.run(
+                    [
+                        "/usr/bin/security",
+                        "find-generic-password",
+                        "-s",
+                        "Codex MCP Credentials",
+                        "-a",
+                        keyring_key,
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=False,
+                )
+                assert keyring_find.returncode == 44
+
+                keyring_missing = subprocess.run(
+                    [str(binary.resolve()), "mcp", "logout", keyring_name],
+                    cwd=temp_root,
+                    env=keyring_env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                assert keyring_missing.stdout == (
+                    f"No OAuth credentials stored for '{keyring_name}'.\n"
+                )
+                assert keyring_missing.stderr == ""
+            finally:
+                cleanup_mcp_oauth_keyring_entry(keyring_key)
     finally:
         discovery_server.shutdown()
         discovery_server.server_close()
