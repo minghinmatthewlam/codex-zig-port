@@ -11058,6 +11058,58 @@ def run_json_schema_smoke(binary: Path) -> None:
             collaboration_mode_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/CollaborationMode"
         )
+        model_list_params = json.loads(
+            (out_dir / "ModelListParams.json").read_text(encoding="utf-8")
+        )
+        assert model_list_params["title"] == "ModelListParams"
+        assert model_list_params["properties"]["limit"]["minimum"] == 0
+        assert model_list_params["properties"]["includeHidden"]["default"] is False
+        model_upgrade_info = json.loads(
+            (out_dir / "ModelUpgradeInfo.json").read_text(encoding="utf-8")
+        )
+        assert model_upgrade_info["required"] == [
+            "model",
+            "upgradeCopy",
+            "modelLink",
+            "migrationMarkdown",
+        ]
+        model_availability_nux = json.loads(
+            (out_dir / "ModelAvailabilityNux.json").read_text(encoding="utf-8")
+        )
+        assert model_availability_nux["required"] == ["message"]
+        model_reasoning_effort = json.loads(
+            (out_dir / "ModelReasoningEffort.json").read_text(encoding="utf-8")
+        )
+        assert model_reasoning_effort["required"] == [
+            "reasoningEffort",
+            "description",
+        ]
+        model_service_tier = json.loads(
+            (out_dir / "ModelServiceTier.json").read_text(encoding="utf-8")
+        )
+        assert model_service_tier["required"] == ["id", "name", "description"]
+        model_list_item = json.loads(
+            (out_dir / "ModelListItem.json").read_text(encoding="utf-8")
+        )
+        assert "serviceTiers" in model_list_item["required"]
+        assert (
+            model_list_item["properties"]["upgradeInfo"]["anyOf"][0]["$ref"]
+            == "#/$defs/ModelUpgradeInfo"
+        )
+        assert (
+            model_list_item["properties"]["supportedReasoningEfforts"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/ModelReasoningEffort"
+        )
+        model_list_response = json.loads(
+            (out_dir / "ModelListResponse.json").read_text(encoding="utf-8")
+        )
+        assert model_list_response["required"] == ["data", "nextCursor"]
+        assert (
+            model_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/ModelListItem"
+        )
 
         command_exec = json.loads((out_dir / "CommandExecParams.json").read_text(encoding="utf-8"))
         assert command_exec["title"] == "CommandExecParams"
@@ -11702,6 +11754,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CollaborationModeListParams" in bundle["$defs"]
         assert "CollaborationMode" in bundle["$defs"]
         assert "CollaborationModeListResponse" in bundle["$defs"]
+        assert "ModelListParams" in bundle["$defs"]
+        assert "ModelListItem" in bundle["$defs"]
+        assert "ModelListResponse" in bundle["$defs"]
+        assert "ModelUpgradeInfo" in bundle["$defs"]
+        assert "ModelAvailabilityNux" in bundle["$defs"]
+        assert "ModelReasoningEffort" in bundle["$defs"]
+        assert "ModelServiceTier" in bundle["$defs"]
         assert "CommandExecTerminalSize" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
         assert "CommandExecWriteParams" in bundle["$defs"]
@@ -11762,6 +11821,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["CollaborationModeListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/CollaborationMode"
+        assert bundle["$defs"]["ModelListResponse"]["properties"]["data"]["items"][
+            "$ref"
+        ] == "#/$defs/ModelListItem"
+        assert bundle["$defs"]["ModelListItem"]["properties"]["serviceTiers"][
+            "items"
+        ]["$ref"] == "#/$defs/ModelServiceTier"
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
@@ -11917,6 +11982,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "collaborationMode/list";' in client_request
         assert "params?: CollaborationModeListParams | null;" in client_request
+        assert 'method: "model/list";' in client_request
+        assert "params?: ModelListParams | null;" in client_request
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -12013,6 +12080,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "collaborationMode/list";' in client_response
         assert "result: CollaborationModeListResponse;" in client_response
+        assert 'method: "model/list";' in client_response
+        assert "result: ModelListResponse;" in client_response
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
@@ -12116,6 +12185,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             collaboration_mode_response
         )
         assert "data: CollaborationMode[];" in collaboration_mode_response
+        model_list_params = (out_dir / "v2" / "ModelListParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "cursor?: string | null;" in model_list_params
+        assert "limit?: number | null;" in model_list_params
+        assert "includeHidden?: boolean;" in model_list_params
+        model_list_item = (out_dir / "v2" / "ModelListItem.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";' in (
+            model_list_item
+        )
+        assert "upgradeInfo: ModelUpgradeInfo | null;" in model_list_item
+        assert "availabilityNux: ModelAvailabilityNux | null;" in model_list_item
+        assert "supportedReasoningEfforts: ModelReasoningEffort[];" in model_list_item
+        assert "serviceTiers: ModelServiceTier[];" in model_list_item
+        assert "isDefault: boolean;" in model_list_item
+        model_list_response = (out_dir / "v2" / "ModelListResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { ModelListItem } from "./ModelListItem";' in (
+            model_list_response
+        )
+        assert "data: ModelListItem[];" in model_list_response
+        assert "nextCursor: string | null;" in model_list_response
         permission_profile = (out_dir / "v2" / "PermissionProfile.ts").read_text(
             encoding="utf-8"
         )
@@ -12652,6 +12746,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelListItem } from "./ModelListItem";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelListParams } from "./ModelListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelListResponse } from "./ModelListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelReasoningEffort } from "./ModelReasoningEffort";'
+            in v2_index
+        )
+        assert (
+            'export type { ModelServiceTier } from "./ModelServiceTier";'
             in v2_index
         )
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
