@@ -13001,6 +13001,58 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         absolute_path = (out_dir / "AbsolutePathBuf.ts").read_text(encoding="utf-8")
         assert "export type AbsolutePathBuf = string;" in absolute_path
+        agent_path = (out_dir / "AgentPath.ts").read_text(encoding="utf-8")
+        assert "export type AgentPath = string;" in agent_path
+        thread_id = (out_dir / "ThreadId.ts").read_text(encoding="utf-8")
+        assert "export type ThreadId = string;" in thread_id
+        forced_login_method = (out_dir / "ForcedLoginMethod.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"chatgpt" | "api"' in forced_login_method
+        image_detail = (out_dir / "ImageDetail.ts").read_text(encoding="utf-8")
+        assert '"original"' in image_detail
+        input_modality = (out_dir / "InputModality.ts").read_text(encoding="utf-8")
+        assert '"text" | "image"' in input_modality
+        message_phase = (out_dir / "MessagePhase.ts").read_text(encoding="utf-8")
+        assert '"commentary" | "final_answer"' in message_phase
+        personality = (out_dir / "Personality.ts").read_text(encoding="utf-8")
+        assert '"friendly" | "pragmatic"' in personality
+        reasoning_effort = (out_dir / "ReasoningEffort.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"minimal"' in reasoning_effort
+        reasoning_summary = (out_dir / "ReasoningSummary.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"concise" | "detailed"' in reasoning_summary
+        realtime_conversation_version = (
+            out_dir / "RealtimeConversationVersion.ts"
+        ).read_text(encoding="utf-8")
+        assert '"v1" | "v2"' in realtime_conversation_version
+        verbosity = (out_dir / "Verbosity.ts").read_text(encoding="utf-8")
+        assert '"low" | "medium" | "high"' in verbosity
+        web_search_action = (out_dir / "WebSearchAction.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'type: "find_in_page"' in web_search_action
+        web_search_context_size = (
+            out_dir / "WebSearchContextSize.ts"
+        ).read_text(encoding="utf-8")
+        assert '"low" | "medium" | "high"' in web_search_context_size
+        web_search_location = (out_dir / "WebSearchLocation.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "timezone: string | null;" in web_search_location
+        web_search_mode = (out_dir / "WebSearchMode.ts").read_text(encoding="utf-8")
+        assert '"disabled" | "cached" | "live"' in web_search_mode
+        web_search_tool_config = (
+            out_dir / "WebSearchToolConfig.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { WebSearchContextSize } from "./WebSearchContextSize";'
+            in web_search_tool_config
+        )
+        assert "allowed_domains: string[] | null;" in web_search_tool_config
         user_input = (out_dir / "v2" / "UserInput.ts").read_text(encoding="utf-8")
         assert 'type: "text";' in user_input
         assert "text_elements: TextElement[];" in user_input
@@ -14342,18 +14394,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
+        assert 'export type { AgentPath } from "./AgentPath";' in index
         assert 'export type { AuthMode } from "./AuthMode";' in index
         assert 'export type { ClientInfo } from "./ClientInfo";' in index
         assert 'export type { ClientNotification } from "./ClientNotification";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { ForcedLoginMethod } from "./ForcedLoginMethod";' in index
+        assert 'export type { ImageDetail } from "./ImageDetail";' in index
         assert 'export type { InitializeCapabilities } from "./InitializeCapabilities";' in index
         assert 'export type { InitializeParams } from "./InitializeParams";' in index
+        assert 'export type { InputModality } from "./InputModality";' in index
+        assert 'export type { MessagePhase } from "./MessagePhase";' in index
+        assert 'export type { Personality } from "./Personality";' in index
         assert 'export type { PlanType } from "./PlanType";' in index
+        assert 'export type { ReasoningEffort } from "./ReasoningEffort";' in index
+        assert 'export type { ReasoningSummary } from "./ReasoningSummary";' in index
+        assert 'export type { RealtimeConversationVersion } from "./RealtimeConversationVersion";' in index
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
+        assert 'export type { ThreadId } from "./ThreadId";' in index
         assert 'export type { ThreadMemoryMode } from "./ThreadMemoryMode";' in index
+        assert 'export type { Verbosity } from "./Verbosity";' in index
+        assert 'export type { WebSearchAction } from "./WebSearchAction";' in index
+        assert 'export type { WebSearchContextSize } from "./WebSearchContextSize";' in index
+        assert 'export type { WebSearchLocation } from "./WebSearchLocation";' in index
+        assert 'export type { WebSearchMode } from "./WebSearchMode";' in index
+        assert 'export type { WebSearchToolConfig } from "./WebSearchToolConfig";' in index
         assert 'export * as v2 from "./v2";' in index
         v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
