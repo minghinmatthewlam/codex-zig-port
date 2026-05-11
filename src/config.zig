@@ -583,6 +583,16 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     return loadWithOptions(allocator, .{});
 }
 
+pub fn loadFeedbackEnabled(allocator: std.mem.Allocator) !bool {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    return feedbackEnabledFromConfigBytes(config_bytes orelse "");
+}
+
 pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Config {
     const codex_home = try resolveCodexHome(allocator);
     errdefer allocator.free(codex_home);
@@ -938,6 +948,10 @@ fn resolveTuiAlternateScreen(allocator: std.mem.Allocator, config_view: ConfigVi
     const value = try config_view.getSectionString(allocator, "tui", "alternate_screen") orelse return .auto;
     defer allocator.free(value);
     return AltScreenMode.parse(value);
+}
+
+fn feedbackEnabledFromConfigBytes(bytes: []const u8) bool {
+    return (ConfigView{ .bytes = bytes }).getSectionBool("feedback", "enabled") orelse true;
 }
 
 pub fn normalizeServiceTier(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -2845,6 +2859,20 @@ test "model provider query params resolve from provider table" {
     try std.testing.expectEqualStrings("2025-04-01-preview", query_params.?.entries[0].value);
     try std.testing.expectEqualStrings("deployment-name", query_params.?.entries[1].key);
     try std.testing.expectEqualStrings("codex-test", query_params.?.entries[1].value);
+}
+
+test "feedback enabled defaults true and honors feedback table" {
+    try std.testing.expect(feedbackEnabledFromConfigBytes(""));
+    try std.testing.expect(feedbackEnabledFromConfigBytes(
+        \\[feedback]
+        \\enabled = true
+        \\
+    ));
+    try std.testing.expect(!feedbackEnabledFromConfigBytes(
+        \\[feedback]
+        \\enabled = false
+        \\
+    ));
 }
 
 test "profile model provider overrides top-level provider" {
