@@ -1955,6 +1955,29 @@ const MCP_RESOURCE_READ_RESPONSE_TS =
     \\
     ;
 
+const MCP_SERVER_TOOL_CALL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerToolCallParams {
+    \\  threadId: string;
+    \\  server: string;
+    \\  tool: string;
+    \\  arguments?: unknown;
+    \\  _meta?: unknown;
+    \\}
+    \\
+    ;
+
+const MCP_SERVER_TOOL_CALL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpServerToolCallResponse {
+    \\  content: unknown[];
+    \\  structuredContent?: unknown;
+    \\  isError?: boolean;
+    \\  _meta?: unknown;
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -3714,6 +3737,7 @@ const CLIENT_REQUEST_TS =
     \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
     \\import type { McpResourceReadParams } from "./v2/McpResourceReadParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
+    \\import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { ProcessKillParams } from "./v2/ProcessKillParams";
@@ -3887,6 +3911,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "mcpServer/resource/read";
     \\      params: McpResourceReadParams;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/tool/call";
+    \\      params: McpServerToolCallParams;
     \\    }
     \\  | {
     \\      method: "modelProvider/capabilities/read";
@@ -4120,6 +4148,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
     \\import type { McpResourceReadResponse } from "./v2/McpResourceReadResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
+    \\import type { McpServerToolCallResponse } from "./v2/McpServerToolCallResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
@@ -4332,6 +4361,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "mcpServer/resource/read";
     \\      result: McpResourceReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "mcpServer/tool/call";
+    \\      result: McpServerToolCallResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -4841,6 +4875,8 @@ const V2_INDEX_TS =
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
     \\export type { McpServerStatusListParams } from "./McpServerStatusListParams";
     \\export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";
+    \\export type { McpServerToolCallParams } from "./McpServerToolCallParams";
+    \\export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
@@ -7298,6 +7334,41 @@ const MCP_RESOURCE_READ_RESPONSE_JSON_SCHEMA =
     \\        }
     \\      ]
     \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_SERVER_TOOL_CALL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerToolCallParams",
+    \\  "type": "object",
+    \\  "required": ["server", "threadId", "tool"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "server": { "type": "string" },
+    \\    "tool": { "type": "string" },
+    \\    "arguments": true,
+    \\    "_meta": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MCP_SERVER_TOOL_CALL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerToolCallResponse",
+    \\  "type": "object",
+    \\  "required": ["content"],
+    \\  "properties": {
+    \\    "content": { "type": "array", "items": true },
+    \\    "structuredContent": true,
+    \\    "isError": { "type": ["boolean", "null"] },
+    \\    "_meta": true
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -11291,6 +11362,29 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "McpServerToolCallParams": {
+    \\      "type": "object",
+    \\      "required": ["server", "threadId", "tool"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "server": { "type": "string" },
+    \\        "tool": { "type": "string" },
+    \\        "arguments": true,
+    \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpServerToolCallResponse": {
+    \\      "type": "object",
+    \\      "required": ["content"],
+    \\      "properties": {
+    \\        "content": { "type": "array", "items": true },
+    \\        "structuredContent": true,
+    \\        "isError": { "type": ["boolean", "null"] },
+    \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -13640,6 +13734,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ResourceContent.json", .contents = RESOURCE_CONTENT_JSON_SCHEMA },
     .{ .name = "McpResourceReadParams.json", .contents = MCP_RESOURCE_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "McpResourceReadResponse.json", .contents = MCP_RESOURCE_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerToolCallParams.json", .contents = MCP_SERVER_TOOL_CALL_PARAMS_JSON_SCHEMA },
+    .{ .name = "McpServerToolCallResponse.json", .contents = MCP_SERVER_TOOL_CALL_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -13969,6 +14065,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ResourceContent.ts", .contents = RESOURCE_CONTENT_TS },
     .{ .name = "v2/McpResourceReadParams.ts", .contents = MCP_RESOURCE_READ_PARAMS_TS },
     .{ .name = "v2/McpResourceReadResponse.ts", .contents = MCP_RESOURCE_READ_RESPONSE_TS },
+    .{ .name = "v2/McpServerToolCallParams.ts", .contents = MCP_SERVER_TOOL_CALL_PARAMS_TS },
+    .{ .name = "v2/McpServerToolCallResponse.ts", .contents = MCP_SERVER_TOOL_CALL_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },

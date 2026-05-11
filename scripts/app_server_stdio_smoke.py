@@ -12970,6 +12970,24 @@ def run_json_schema_smoke(binary: Path) -> None:
             mcp_resource_read_response["properties"]["contents"]["items"]["$ref"]
             == "#/$defs/ResourceContent"
         )
+        mcp_tool_call_params = json.loads(
+            (out_dir / "McpServerToolCallParams.json").read_text(encoding="utf-8")
+        )
+        assert mcp_tool_call_params["required"] == [
+            "server",
+            "threadId",
+            "tool",
+        ]
+        assert mcp_tool_call_params["properties"]["arguments"] is True
+        assert mcp_tool_call_params["properties"]["_meta"] is True
+        mcp_tool_call_response = json.loads(
+            (out_dir / "McpServerToolCallResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_tool_call_response["required"] == ["content"]
+        assert mcp_tool_call_response["properties"]["content"]["items"] is True
+        assert mcp_tool_call_response["properties"]["structuredContent"] is True
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -14584,6 +14602,17 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/ResourceContent"
         )
+        assert bundle["$defs"]["McpServerToolCallParams"]["required"] == [
+            "server",
+            "threadId",
+            "tool",
+        ]
+        assert (
+            bundle["$defs"]["McpServerToolCallResponse"]["properties"]["content"][
+                "items"
+            ]
+            is True
+        )
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -14890,6 +14919,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";'
+            in client_request
+        )
+        assert (
             'import type { TurnInterruptParams } from "./v2/TurnInterruptParams";'
             in client_request
         )
@@ -14955,6 +14988,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: McpServerStatusListParams | null;" in client_request
         assert 'method: "mcpServer/resource/read";' in client_request
         assert "params: McpResourceReadParams;" in client_request
+        assert 'method: "mcpServer/tool/call";' in client_request
+        assert "params: McpServerToolCallParams;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -15165,6 +15200,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { McpServerToolCallResponse } from "./v2/McpServerToolCallResponse";'
+            in client_response
+        )
+        assert (
             'import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";'
             in client_response
         )
@@ -15231,6 +15270,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: McpServerStatusListResponse;" in client_response
         assert 'method: "mcpServer/resource/read";' in client_response
         assert "result: McpResourceReadResponse;" in client_response
+        assert 'method: "mcpServer/tool/call";' in client_response
+        assert "result: McpServerToolCallResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -15903,6 +15944,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             mcp_resource_read_response
         )
         assert "contents: ResourceContent[];" in mcp_resource_read_response
+        mcp_tool_call_params = (
+            out_dir / "v2" / "McpServerToolCallParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in mcp_tool_call_params
+        assert "server: string;" in mcp_tool_call_params
+        assert "tool: string;" in mcp_tool_call_params
+        assert "arguments?: unknown;" in mcp_tool_call_params
+        assert "_meta?: unknown;" in mcp_tool_call_params
+        mcp_tool_call_response = (
+            out_dir / "v2" / "McpServerToolCallResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "content: unknown[];" in mcp_tool_call_response
+        assert "structuredContent?: unknown;" in mcp_tool_call_response
+        assert "isError?: boolean;" in mcp_tool_call_response
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -16922,6 +16977,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { McpResourceReadResponse } from "./McpResourceReadResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerToolCallParams } from "./McpServerToolCallParams";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";'
             in v2_index
         )
         assert (
