@@ -1620,6 +1620,88 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_realtime_stop_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-text-invalid-params",
+            "method": "thread/realtime/appendText",
+            "params": [],
+        }
+    )
+    thread_realtime_append_text_invalid_params = read_line()
+    assert (
+        thread_realtime_append_text_invalid_params["id"]
+        == "thread-realtime-append-text-invalid-params"
+    )
+    assert thread_realtime_append_text_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/realtime/appendText params must be an object"
+        in thread_realtime_append_text_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-text-invalid-text",
+            "method": "thread/realtime/appendText",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000015",
+                "text": 123,
+            },
+        }
+    )
+    thread_realtime_append_text_invalid_text = read_line()
+    assert (
+        thread_realtime_append_text_invalid_text["id"]
+        == "thread-realtime-append-text-invalid-text"
+    )
+    assert thread_realtime_append_text_invalid_text["error"]["code"] == -32602
+    assert (
+        "text must be a string"
+        in thread_realtime_append_text_invalid_text["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-text-invalid-thread",
+            "method": "thread/realtime/appendText",
+            "params": {"threadId": "not-a-uuid", "text": "hello"},
+        }
+    )
+    thread_realtime_append_text_invalid_thread = read_line()
+    assert (
+        thread_realtime_append_text_invalid_thread["id"]
+        == "thread-realtime-append-text-invalid-thread"
+    )
+    assert thread_realtime_append_text_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_realtime_append_text_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-text-missing",
+            "method": "thread/realtime/appendText",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000015",
+                "text": "hello",
+            },
+        }
+    )
+    thread_realtime_append_text_missing = read_line()
+    assert (
+        thread_realtime_append_text_missing["id"]
+        == "thread-realtime-append-text-missing"
+    )
+    assert thread_realtime_append_text_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000015"
+        in thread_realtime_append_text_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
@@ -9109,6 +9191,20 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadRealtimeStopResponse.json").read_text(encoding="utf-8")
         )
         assert thread_realtime_stop_response["additionalProperties"] is False
+        thread_realtime_append_text = json.loads(
+            (out_dir / "ThreadRealtimeAppendTextParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_text["required"] == ["threadId", "text"]
+        assert thread_realtime_append_text["properties"]["threadId"]["type"] == "string"
+        assert thread_realtime_append_text["properties"]["text"]["type"] == "string"
+        thread_realtime_append_text_response = json.loads(
+            (out_dir / "ThreadRealtimeAppendTextResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_text_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -9140,6 +9236,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "RealtimeVoicesList" in bundle["$defs"]
         assert "ThreadRealtimeListVoicesResponse" in bundle["$defs"]
         assert "ThreadRealtimeStopResponse" in bundle["$defs"]
+        assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -9263,6 +9360,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRealtimeListVoicesParams;" in client_request
         assert 'method: "thread/realtime/stop";' in client_request
         assert "params: ThreadRealtimeStopParams;" in client_request
+        assert 'method: "thread/realtime/appendText";' in client_request
+        assert "params: ThreadRealtimeAppendTextParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
@@ -9302,6 +9401,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadRealtimeListVoicesResponse;" in client_response
         assert 'method: "thread/realtime/stop";' in client_response
         assert "result: ThreadRealtimeStopResponse;" in client_response
+        assert 'method: "thread/realtime/appendText";' in client_response
+        assert "result: ThreadRealtimeAppendTextResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -9582,6 +9683,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadRealtimeStopResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadRealtimeStopResponse {}" in thread_realtime_stop_response
+        thread_realtime_append_text = (
+            out_dir / "v2" / "ThreadRealtimeAppendTextParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_realtime_append_text
+        assert "text: string;" in thread_realtime_append_text
+        thread_realtime_append_text_response = (
+            out_dir / "v2" / "ThreadRealtimeAppendTextResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadRealtimeAppendTextResponse {}"
+            in thread_realtime_append_text_response
+        )
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -9671,6 +9784,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadRealtimeStopResponse } from "./ThreadRealtimeStopResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendTextParams } from "./ThreadRealtimeAppendTextParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendTextResponse } from "./ThreadRealtimeAppendTextResponse";'
             in v2_index
         )
         assert (
