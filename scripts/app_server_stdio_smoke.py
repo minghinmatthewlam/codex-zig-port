@@ -2807,6 +2807,37 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Standalone Skill" in stored_after_standalone
                 assert "Use this body without a text item." in stored_after_standalone
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-rollback-loaded",
+                        "method": "thread/rollback",
+                        "params": {"threadId": thread_id, "numTurns": 1},
+                    },
+                )
+                rollback = read_json_line(proc, 5)
+                assert rollback["id"] == "thread-rollback-loaded"
+                rolled_back_thread = rollback["result"]["thread"]
+                assert rolled_back_thread["id"] == thread_id
+                assert rolled_back_thread["sessionId"] == thread_id
+                assert rolled_back_thread["name"] is None
+                assert rolled_back_thread["preview"] == model_prompt
+                assert len(rolled_back_thread["turns"]) == 2
+                assert (
+                    rolled_back_thread["turns"][0]["items"][0]["content"][0]["text"]
+                    == model_prompt
+                )
+                assert (
+                    rolled_back_thread["turns"][1]["items"][0]["text"]
+                    == "app turn reply"
+                )
+                stored_after_rollback = rollout_path.read_text(encoding="utf-8")
+                assert "hello from app-server turn" in stored_after_rollback
+                assert "app turn reply" in stored_after_rollback
+                assert "Standalone Skill" not in stored_after_rollback
+                assert "Use this body without a text item." not in stored_after_rollback
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
