@@ -975,6 +975,17 @@ const ITEM_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const AGENT_MESSAGE_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AgentMessageDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\}
+    \\
+    ;
+
 const THREAD_RESUME_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadResumeParams {
@@ -2004,6 +2015,7 @@ const CLIENT_RESPONSE_TS =
 
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
@@ -2035,6 +2047,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "item/completed";
     \\      params: ItemCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/agentMessage/delta";
+    \\      params: AgentMessageDeltaNotification;
     \\    };
     \\
     ;
@@ -2064,6 +2080,7 @@ const INDEX_TS =
 
 const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
+    \\export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
     \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
     \\export type { CommandExecOutputStream } from "./CommandExecOutputStream";
     \\export type { CommandExecParams } from "./CommandExecParams";
@@ -2917,6 +2934,23 @@ const ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\    "threadId": { "type": "string" },
     \\    "turnId": { "type": "string" },
     \\    "completedAtMs": { "type": "integer" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AgentMessageDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId", "itemId", "delta"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4549,6 +4583,17 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "AgentMessageDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId", "itemId", "delta"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -5242,6 +5287,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "TurnCompletedNotification.json", .contents = TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "AgentMessageDeltaNotification.json", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -5364,6 +5410,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/TurnCompletedNotification.ts", .contents = TURN_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/AgentMessageDeltaNotification.ts", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
@@ -5955,6 +6002,11 @@ fn handleTurnStart(
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
         const assistant_item = thread.transcript.history.items[assistant_item_index];
         try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, assistant_item, assistant_item_index, "startedAtMs", started_at_ms);
+        if (assistant_item.text) |text| {
+            if (text.len > 0) {
+                try queueAgentMessageDeltaNotification(allocator, state, thread.id, turn_id, assistant_item_index, text);
+            }
+        }
         try queueItemNotificationFromHistory(allocator, state, "item/completed", thread.id, turn_id, assistant_item, assistant_item_index, "completedAtMs", completed_at_ms);
     }
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
@@ -6076,6 +6128,42 @@ fn queueItemNotificationFromHistory(
     errdefer if (!notification_moved) allocator.free(notification);
     try queueTurnNotification(allocator, state, method, notification);
     notification_moved = true;
+}
+
+fn queueAgentMessageDeltaNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    delta: []const u8,
+) !void {
+    const notification = try renderAgentMessageDeltaNotification(allocator, thread_id, turn_id, item_index, delta);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, "item/agentMessage/delta", notification);
+    notification_moved = true;
+}
+
+fn renderAgentMessageDeltaNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    delta: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":\"item-");
+    try appendUsize(allocator, &notification, item_index);
+    try notification.appendSlice(allocator, "\",\"delta\":");
+    try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn renderItemNotificationFromHistory(
