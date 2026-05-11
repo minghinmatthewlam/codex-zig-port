@@ -54,6 +54,10 @@ pub fn createSessionPathForId(allocator: std.mem.Allocator, codex_home: []const 
     return sessionFilePath(allocator, codex_home, filename);
 }
 
+pub fn sessionIdFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return sessionIdFromFilename(allocator, std.fs.path.basename(path));
+}
+
 pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript: *const session.Transcript) !void {
     try ensureParentDir(path);
 
