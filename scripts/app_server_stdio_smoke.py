@@ -8485,6 +8485,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             "notSubscribed",
             "unsubscribed",
         ]
+        thread_archive = json.loads(
+            (out_dir / "ThreadArchiveParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_archive["required"] == ["threadId"]
+        thread_archive_response = json.loads(
+            (out_dir / "ThreadArchiveResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_archive_response["additionalProperties"] is False
         thread_compact_start = json.loads(
             (out_dir / "ThreadCompactStartParams.json").read_text(encoding="utf-8")
         )
@@ -8622,6 +8630,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
+        assert "ThreadArchiveResponse" in bundle["$defs"]
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
         assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
@@ -8718,6 +8727,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: ThreadLoadedListParams | null;" in client_request
         assert 'method: "thread/unsubscribe";' in client_request
         assert "params: ThreadUnsubscribeParams;" in client_request
+        assert 'method: "thread/archive";' in client_request
+        assert "params: ThreadArchiveParams;" in client_request
         assert 'method: "thread/compact/start";' in client_request
         assert "params: ThreadCompactStartParams;" in client_request
         assert 'method: "thread/shellCommand";' in client_request
@@ -8741,6 +8752,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "thread/read";' in client_request
         assert "params: ThreadReadParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert 'method: "thread/archive";' in client_response
+        assert "result: ThreadArchiveResponse;" in client_response
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
         assert 'method: "thread/shellCommand";' in client_response
@@ -8827,6 +8840,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadUnsubscribeStatus.ts"
         ).read_text(encoding="utf-8")
         assert '"notLoaded" | "notSubscribed" | "unsubscribed"' in thread_unsubscribe_status
+        thread_archive = (
+            out_dir / "v2" / "ThreadArchiveParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_archive
+        thread_archive_response = (
+            out_dir / "v2" / "ThreadArchiveResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadArchiveResponse {}" in thread_archive_response
         thread_compact_start = (
             out_dir / "v2" / "ThreadCompactStartParams.ts"
         ).read_text(encoding="utf-8")
@@ -8956,6 +8977,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
+        assert 'export type { ThreadArchiveParams } from "./ThreadArchiveParams";' in v2_index
+        assert 'export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";' in v2_index
         assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
         assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
         assert (
