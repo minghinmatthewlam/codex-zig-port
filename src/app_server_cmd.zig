@@ -6890,6 +6890,12 @@ fn setLoadedThreadName(allocator: std.mem.Allocator, thread: *LoadedThread, name
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn setLoadedThreadMemoryMode(allocator: std.mem.Allocator, thread: *LoadedThread, mode: []const u8) !void {
+    try thread.transcript.setMemoryMode(allocator, mode);
+    thread.updated_at = currentUnixSeconds();
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
 fn updateLoadedThreadGitInfo(
     allocator: std.mem.Allocator,
     thread: *LoadedThread,
@@ -7476,6 +7482,18 @@ fn handleThreadMethod(
         }
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+            const thread = &state.loaded_threads.items[thread_index];
+            if (thread.ephemeral) {
+                const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support memory mode updates: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            setLoadedThreadMemoryMode(allocator, thread, object.get("mode").?.string) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
+            };
+            return renderJsonRpcResult(allocator, id_value, "{}");
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }

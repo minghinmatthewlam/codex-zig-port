@@ -16,6 +16,7 @@ pub const Transcript = struct {
     model_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     cli_version: ?[]const u8 = null,
+    memory_mode: ?[]const u8 = null,
     token_usage: ?TokenUsageInfo = null,
     token_usage_turn_index: ?usize = null,
     title: ?[]const u8 = null,
@@ -38,6 +39,7 @@ pub const Transcript = struct {
         clearOptionalString(allocator, &self.model_provider);
         clearOptionalString(allocator, &self.cwd);
         clearOptionalString(allocator, &self.cli_version);
+        clearOptionalString(allocator, &self.memory_mode);
     }
 
     pub fn setId(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
@@ -68,6 +70,10 @@ pub const Transcript = struct {
         try replaceOptionalString(allocator, &self.cli_version, value);
     }
 
+    pub fn setMemoryMode(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.memory_mode, value);
+    }
+
     pub fn setTitle(self: *Transcript, allocator: std.mem.Allocator, title: []const u8) !void {
         const copy = try allocator.dupe(u8, title);
         self.clearTitle(allocator);
@@ -96,6 +102,7 @@ pub const Transcript = struct {
         if (self.model_provider) |value| try copy.setModelProvider(allocator, value);
         if (self.cwd) |value| try copy.setCwd(allocator, value);
         if (self.cli_version) |value| try copy.setCliVersion(allocator, value);
+        if (self.memory_mode) |value| try copy.setMemoryMode(allocator, value);
         copy.token_usage = self.token_usage;
         copy.token_usage_turn_index = self.token_usage_turn_index;
         if (self.title) |title| try copy.setTitle(allocator, title);

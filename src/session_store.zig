@@ -8,6 +8,7 @@ const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
 const StoredLine = struct {
     type: []const u8,
     title: ?[]const u8 = null,
+    memory_mode: ?[]const u8 = null,
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
@@ -64,8 +65,12 @@ pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
-    if (transcript.title) |title| {
-        try appendStoredLineJson(allocator, &output, .{ .type = "metadata", .title = title });
+    if (transcript.title != null or transcript.memory_mode != null) {
+        try appendStoredLineJson(allocator, &output, .{
+            .type = "metadata",
+            .title = transcript.title,
+            .memory_mode = transcript.memory_mode,
+        });
     }
 
     for (transcript.history.items) |item| {
@@ -114,6 +119,7 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
 
     if (std.mem.eql(u8, line_type, "metadata")) {
         if (jsonStringField(object, "title")) |title| try transcript.setTitle(allocator, title);
+        if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
         return;
     }
 
@@ -195,6 +201,7 @@ fn applyRolloutSessionMeta(
     if (jsonStringField(object, "model_provider")) |value| try transcript.setModelProvider(allocator, value);
     if (jsonStringField(object, "cwd")) |value| try transcript.setCwd(allocator, value);
     if (jsonStringField(object, "cli_version")) |value| try transcript.setCliVersion(allocator, value);
+    if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
 }
 
 fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -605,6 +612,7 @@ test "session store round trips transcript jsonl" {
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
     try transcript.setTitle(allocator, "demo transcript");
+    try transcript.setMemoryMode(allocator, "disabled");
     try transcript.appendUserMessage(allocator, "hello");
     try transcript.appendAssistantMessage(allocator, "hi");
     try transcript.appendHistoryItem(allocator, .{
@@ -623,6 +631,7 @@ test "session store round trips transcript jsonl" {
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqualStrings("demo transcript", loaded.title.?);
+    try std.testing.expectEqualStrings("disabled", loaded.memory_mode.?);
     try std.testing.expectEqual(@as(usize, 4), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
@@ -799,7 +808,7 @@ test "load transcript accepts Rust rollout response items and session metadata" 
     try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
         .sub_path = path,
         .data =
-        \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"22222222-2222-4222-8222-222222222222","timestamp":"2025-01-05T12:00:00Z","cwd":"/","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider"}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"22222222-2222-4222-8222-222222222222","timestamp":"2025-01-05T12:00:00Z","cwd":"/","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider","memory_mode":"polluted"}}
         \\{"timestamp":"2025-01-05T12:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"rust hello"}]}}
         \\{"timestamp":"2025-01-05T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":150},"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":90},"model_context_window":200000},"rate_limits":null}}
         \\
@@ -815,6 +824,7 @@ test "load transcript accepts Rust rollout response items and session metadata" 
     try std.testing.expectEqualStrings("mock_provider", loaded.model_provider.?);
     try std.testing.expectEqualStrings("/", loaded.cwd.?);
     try std.testing.expectEqualStrings("0.0.0", loaded.cli_version.?);
+    try std.testing.expectEqualStrings("polluted", loaded.memory_mode.?);
     try std.testing.expectEqual(@as(usize, 1), loaded.history.items.len);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
     try std.testing.expectEqualStrings("rust hello", loaded.history.items[0].text.?);
