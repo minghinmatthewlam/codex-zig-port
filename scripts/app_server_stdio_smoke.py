@@ -976,6 +976,54 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_inject_items_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-name-empty",
+            "method": "thread/name/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000009",
+                "name": "   ",
+            },
+        }
+    )
+    thread_name_empty = read_line()
+    assert thread_name_empty["id"] == "thread-name-empty"
+    assert thread_name_empty["error"]["code"] == -32600
+    assert "thread name must not be empty" in thread_name_empty["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-name-invalid",
+            "method": "thread/name/set",
+            "params": {"threadId": "not-a-uuid", "name": "Demo"},
+        }
+    )
+    thread_name_invalid = read_line()
+    assert thread_name_invalid["id"] == "thread-name-invalid"
+    assert thread_name_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_name_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-name-missing",
+            "method": "thread/name/set",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000009",
+                "name": "Demo",
+            },
+        }
+    )
+    thread_name_missing = read_line()
+    assert thread_name_missing["id"] == "thread-name-missing"
+    assert thread_name_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000009"
+        in thread_name_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
