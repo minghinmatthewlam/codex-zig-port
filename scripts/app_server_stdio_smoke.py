@@ -8152,6 +8152,30 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_background_clean_response["additionalProperties"] is False
+        thread_increment_elicitation = json.loads(
+            (out_dir / "ThreadIncrementElicitationParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_increment_elicitation["required"] == ["threadId"]
+        thread_increment_elicitation_response = json.loads(
+            (out_dir / "ThreadIncrementElicitationResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_increment_elicitation_response["required"] == ["count", "paused"]
+        thread_decrement_elicitation = json.loads(
+            (out_dir / "ThreadDecrementElicitationParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_decrement_elicitation["required"] == ["threadId"]
+        thread_decrement_elicitation_response = json.loads(
+            (out_dir / "ThreadDecrementElicitationResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_decrement_elicitation_response["required"] == ["count", "paused"]
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8166,6 +8190,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
         assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
+        assert "ThreadIncrementElicitationResponse" in bundle["$defs"]
+        assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8257,6 +8283,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadShellCommandParams;" in client_request
         assert 'method: "thread/backgroundTerminals/clean";' in client_request
         assert "params: ThreadBackgroundTerminalsCleanParams;" in client_request
+        assert 'method: "thread/increment_elicitation";' in client_request
+        assert "params: ThreadIncrementElicitationParams;" in client_request
+        assert 'method: "thread/decrement_elicitation";' in client_request
+        assert "params: ThreadDecrementElicitationParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
@@ -8264,6 +8294,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadShellCommandResponse;" in client_response
         assert 'method: "thread/backgroundTerminals/clean";' in client_response
         assert "result: ThreadBackgroundTerminalsCleanResponse;" in client_response
+        assert 'method: "thread/increment_elicitation";' in client_response
+        assert "result: ThreadIncrementElicitationResponse;" in client_response
+        assert 'method: "thread/decrement_elicitation";' in client_response
+        assert "result: ThreadDecrementElicitationResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8356,6 +8390,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadBackgroundTerminalsCleanResponse {}"
             in thread_background_clean_response
         )
+        thread_increment_elicitation = (
+            out_dir / "v2" / "ThreadIncrementElicitationResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "count: number;" in thread_increment_elicitation
+        assert "paused: boolean;" in thread_increment_elicitation
+        thread_decrement_elicitation = (
+            out_dir / "v2" / "ThreadDecrementElicitationResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "count: number;" in thread_decrement_elicitation
+        assert "paused: boolean;" in thread_decrement_elicitation
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8372,6 +8416,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";' in v2_index
         assert (
             'export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";'
             in v2_index
         )
         assert (
