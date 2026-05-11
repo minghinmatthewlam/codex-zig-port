@@ -5953,9 +5953,9 @@ fn handleTurnStart(
     };
 
     var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
-        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text, image, or localImage items"),
+        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of supported user input items"),
         error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text or image"),
-        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text, image, and localImage turn/start input is implemented"),
+        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text, image, localImage, skill, and mention turn/start input is implemented"),
         else => return err,
     };
     defer input.deinit(allocator);
@@ -6098,6 +6098,20 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartLocalImageInputJson(allocator, &user_content, path.string);
             input_items += 1;
+        } else if (std.mem.eql(u8, item_type.string, "skill")) {
+            const name = item.object.get("name") orelse return error.InvalidTurnInput;
+            const path = item.object.get("path") orelse return error.InvalidTurnInput;
+            if (name != .string or path != .string) return error.InvalidTurnInput;
+            if (input_items > 0) try user_content.append(allocator, ',');
+            try appendTurnStartNamedPathInputJson(allocator, &user_content, "skill", name.string, path.string);
+            input_items += 1;
+        } else if (std.mem.eql(u8, item_type.string, "mention")) {
+            const name = item.object.get("name") orelse return error.InvalidTurnInput;
+            const path = item.object.get("path") orelse return error.InvalidTurnInput;
+            if (name != .string or path != .string) return error.InvalidTurnInput;
+            if (input_items > 0) try user_content.append(allocator, ',');
+            try appendTurnStartNamedPathInputJson(allocator, &user_content, "mention", name.string, path.string);
+            input_items += 1;
         } else {
             return error.UnsupportedTurnInput;
         }
@@ -6160,6 +6174,22 @@ fn appendTurnStartLocalImageInputJson(
     path: []const u8,
 ) !void {
     try out.appendSlice(allocator, "{\"type\":\"localImage\",\"path\":");
+    try appendJsonString(allocator, out, path);
+    try out.append(allocator, '}');
+}
+
+fn appendTurnStartNamedPathInputJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    item_type: []const u8,
+    name: []const u8,
+    path: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"type\":");
+    try appendJsonString(allocator, out, item_type);
+    try out.appendSlice(allocator, ",\"name\":");
+    try appendJsonString(allocator, out, name);
+    try out.appendSlice(allocator, ",\"path\":");
     try appendJsonString(allocator, out, path);
     try out.append(allocator, '}');
 }
