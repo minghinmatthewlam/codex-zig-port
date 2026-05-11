@@ -8,6 +8,28 @@ pub const ServerKind = enum { unknown, stdio, streamable_http };
 
 const McpOAuthCredentialsStore = enum { auto, file, keyring };
 
+const McpAuthStatus = enum {
+    unsupported,
+    bearer_token,
+    oauth,
+
+    fn display(self: McpAuthStatus) []const u8 {
+        return switch (self) {
+            .unsupported => "Unsupported",
+            .bearer_token => "Bearer token",
+            .oauth => "OAuth",
+        };
+    }
+
+    fn json(self: McpAuthStatus) []const u8 {
+        return switch (self) {
+            .unsupported => "Unsupported",
+            .bearer_token => "BearerToken",
+            .oauth => "OAuth",
+        };
+    }
+};
+
 pub const KeyValue = struct {
     key: []const u8,
     value: []const u8,
@@ -100,7 +122,7 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const subcommand = args[0];
     if (std.mem.eql(u8, subcommand, "list")) {
         try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
-        try runList(allocator, servers, args[1..]);
+        try runList(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "get")) {
         try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runGet(allocator, servers, args[1..]);
@@ -158,7 +180,7 @@ pub fn renderStatus(allocator: std.mem.Allocator, codex_home: []const u8, verbos
     return output.toOwnedSlice(allocator);
 }
 
-fn runList(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
+fn runList(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, servers: McpServers, args: []const []const u8) !void {
     var json = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--json")) {
@@ -172,7 +194,7 @@ fn runList(allocator: std.mem.Allocator, servers: McpServers, args: []const []co
     }
 
     if (json) {
-        const rendered = try renderJsonList(allocator, servers);
+        const rendered = try renderJsonList(allocator, codex_home, config_bytes, servers);
         defer allocator.free(rendered);
         try cli_utils.writeStdout(rendered);
         return;
@@ -183,10 +205,11 @@ fn runList(allocator: std.mem.Allocator, servers: McpServers, args: []const []co
         return;
     }
     for (servers.items.items) |server| {
+        const auth_status = try mcpAuthStatusForServer(allocator, codex_home, config_bytes, server);
         const line = try std.fmt.allocPrint(
             allocator,
-            "{s}\t{s}\t{s}\n",
-            .{ server.name, kindLabel(server), statusLabel(server.enabled) },
+            "{s}\t{s}\t{s}\t{s}\n",
+            .{ server.name, kindLabel(server), statusLabel(server.enabled), auth_status.display() },
         );
         defer allocator.free(line);
         try cli_utils.writeStdout(line);
@@ -464,6 +487,35 @@ fn deleteMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []con
     defer allocator.free(rendered);
     try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = path, .data = rendered });
     return true;
+}
+
+fn hasMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const u8, server_name: []const u8, server_url: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, ".credentials.json" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return error.InvalidMcpOAuthCredentialsFile;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpOAuthCredentialsFile;
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+    return parsed.value.object.get(key) != null;
+}
+
+fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: McpServer) !McpAuthStatus {
+    if (!server.enabled) return .unsupported;
+    if (server.kind != .streamable_http) return .unsupported;
+    if (server.bearer_token_env_var != null) return .bearer_token;
+    if (parseMcpOAuthCredentialsStore(config_bytes) == .keyring) return .unsupported;
+    const url = server.url orelse return .unsupported;
+    if (try hasMcpOAuthFileCredentials(allocator, codex_home, server.name, url)) return .oauth;
+    return .unsupported;
 }
 
 fn computeMcpOAuthStoreKey(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) ![]const u8 {
@@ -831,14 +883,15 @@ fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
     return error.InvalidTomlString;
 }
 
-fn renderJsonList(allocator: std.mem.Allocator, servers: McpServers) ![]const u8 {
+fn renderJsonList(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, servers: McpServers) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
     try output.appendSlice(allocator, "[\n");
     for (servers.items.items, 0..) |server, index| {
         if (index > 0) try output.appendSlice(allocator, ",\n");
         try output.appendSlice(allocator, "  ");
-        const rendered = try renderJsonServer(allocator, server);
+        const auth_status = try mcpAuthStatusForServer(allocator, codex_home, config_bytes, server);
+        const rendered = try renderJsonServerWithAuthStatus(allocator, server, auth_status);
         defer allocator.free(rendered);
         try output.appendSlice(allocator, rendered);
     }
@@ -847,6 +900,10 @@ fn renderJsonList(allocator: std.mem.Allocator, servers: McpServers) ![]const u8
 }
 
 fn renderJsonServer(allocator: std.mem.Allocator, server: McpServer) ![]const u8 {
+    return renderJsonServerWithAuthStatus(allocator, server, null);
+}
+
+fn renderJsonServerWithAuthStatus(allocator: std.mem.Allocator, server: McpServer, auth_status: ?McpAuthStatus) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
     try output.appendSlice(allocator, "{\"name\": ");
@@ -872,7 +929,12 @@ fn renderJsonServer(allocator: std.mem.Allocator, server: McpServer) ![]const u8
         }
         try output.append(allocator, ']');
     }
-    try output.appendSlice(allocator, "}}");
+    try output.append(allocator, '}');
+    if (auth_status) |status| {
+        try output.appendSlice(allocator, ", \"auth_status\": ");
+        try appendJsonString(allocator, &output, status.json());
+    }
+    try output.append(allocator, '}');
     return output.toOwnedSlice(allocator);
 }
 
@@ -1089,6 +1151,55 @@ test "mcp oauth file logout deletes empty credentials file" {
 
     try std.testing.expect(try deleteMcpOAuthFileCredentials(allocator, codex_home, "remote", "https://example.com/mcp"));
     try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), ".credentials.json", .{}));
+}
+
+test "mcp list auth status reports bearer and file oauth credentials" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const config_bytes =
+        \\mcp_oauth_credentials_store = "file"
+        \\
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\
+        \\[mcp_servers.bearer]
+        \\url = "https://bearer.example/mcp"
+        \\bearer_token_env_var = "MCP_TOKEN"
+        \\
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\
+    ;
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    const remote_key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
+    defer allocator.free(remote_key);
+    const credentials = try std.fmt.allocPrint(
+        allocator,
+        "{{\"{s}\":{{\"server_name\":\"remote\",\"server_url\":\"https://example.com/mcp\",\"client_id\":\"client\",\"access_token\":\"access\"}}}}",
+        .{remote_key},
+    );
+    defer allocator.free(credentials);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = ".credentials.json",
+        .data = credentials,
+    });
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+
+    try std.testing.expectEqual(McpAuthStatus.oauth, try mcpAuthStatusForServer(allocator, codex_home, config_bytes, servers.get("remote").?.*));
+    try std.testing.expectEqual(McpAuthStatus.bearer_token, try mcpAuthStatusForServer(allocator, codex_home, config_bytes, servers.get("bearer").?.*));
+    try std.testing.expectEqual(McpAuthStatus.unsupported, try mcpAuthStatusForServer(allocator, codex_home, config_bytes, servers.get("docs").?.*));
+
+    const rendered = try renderJsonList(allocator, codex_home, config_bytes, servers);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"OAuth\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"BearerToken\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"Unsupported\"") != null);
 }
 
 test "mcp config loads enabled plugin mcp servers" {
