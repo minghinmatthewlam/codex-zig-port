@@ -6758,8 +6758,67 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
 def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-status-", dir="/tmp"))
     config_path = codex_home / "config.toml"
+    server_path = codex_home / "status_server.py"
     plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
     try:
+        server_path.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}},",
+                    "                'serverInfo': {'name': 'status-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'tools': [",
+                    "                    {",
+                    "                        'name': 'look-up.raw',",
+                    "                        'description': 'Look up test data.',",
+                    "                        'inputSchema': {",
+                    "                            'type': 'object',",
+                    "                            'additionalProperties': False,",
+                    "                        },",
+                    "                        'annotations': {'readOnlyHint': True},",
+                    "                    }",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         plugin_root.mkdir(parents=True)
         (plugin_root / ".mcp.json").write_text(
             "\n".join(
@@ -6788,8 +6847,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     "enabled = true",
                     "",
                     "[mcp_servers.docs]",
-                    'command = "docs-server"',
-                    'args = ["--stdio"]',
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
                     "",
                     "[mcp_servers.logged_out]",
                     'url = "https://example.com/no-token"',
@@ -6836,7 +6895,15 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert first_page["result"]["nextCursor"] == "2"
         first_entries = first_page["result"]["data"]
         assert [entry["name"] for entry in first_entries] == ["docs", "logged_out"]
-        assert first_entries[0]["tools"] == {}
+        assert list(first_entries[0]["tools"].keys()) == ["look-up.raw"]
+        docs_tool = first_entries[0]["tools"]["look-up.raw"]
+        assert docs_tool["name"] == "look-up.raw"
+        assert docs_tool["description"] == "Look up test data."
+        assert docs_tool["inputSchema"] == {
+            "type": "object",
+            "additionalProperties": False,
+        }
+        assert docs_tool["annotations"] == {"readOnlyHint": True}
         assert first_entries[0]["resources"] == []
         assert first_entries[0]["resourceTemplates"] == []
         assert first_entries[0]["authStatus"] == "unsupported"
