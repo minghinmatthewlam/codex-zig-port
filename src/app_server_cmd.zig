@@ -6228,7 +6228,6 @@ const TurnStartInput = struct {
     image_urls: []const []const u8,
     local_image_paths: []const []const u8,
     skills: []const TurnNamedPathInput,
-    mentions: []const TurnNamedPathInput,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
@@ -6239,8 +6238,6 @@ const TurnStartInput = struct {
         allocator.free(self.local_image_paths);
         for (self.skills) |item| item.deinit(allocator);
         allocator.free(self.skills);
-        for (self.mentions) |item| item.deinit(allocator);
-        allocator.free(self.mentions);
     }
 };
 
@@ -6428,12 +6425,6 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         for (skills.items) |item| item.deinit(allocator);
         skills.deinit(allocator);
     };
-    var mentions = std.ArrayList(TurnNamedPathInput).empty;
-    var mentions_moved = false;
-    errdefer if (!mentions_moved) {
-        for (mentions.items) |item| item.deinit(allocator);
-        mentions.deinit(allocator);
-    };
     var input_items: usize = 0;
     var text_items: usize = 0;
     for (input.array.items) |item| {
@@ -6487,11 +6478,6 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             const name = item.object.get("name") orelse return error.InvalidTurnInput;
             const path = item.object.get("path") orelse return error.InvalidTurnInput;
             if (name != .string or path != .string) return error.InvalidTurnInput;
-            const mention = try TurnNamedPathInput.init(allocator, name.string, path.string);
-            mentions.append(allocator, mention) catch |err| {
-                mention.deinit(allocator);
-                return err;
-            };
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartNamedPathInputJson(allocator, &user_content, "mention", name.string, path.string);
             input_items += 1;
@@ -6523,15 +6509,12 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         for (skills_owned) |item| item.deinit(allocator);
         allocator.free(skills_owned);
     }
-    const mentions_owned = try mentions.toOwnedSlice(allocator);
-    mentions_moved = true;
     return .{
         .prompt = prompt_owned,
         .user_content_json = user_content_owned,
         .image_urls = image_urls_owned,
         .local_image_paths = local_image_paths_owned,
         .skills = skills_owned,
-        .mentions = mentions_owned,
     };
 }
 
