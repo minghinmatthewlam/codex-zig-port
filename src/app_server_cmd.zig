@@ -6824,6 +6824,7 @@ fn refreshLoadedThreadAfterRollback(allocator: std.mem.Allocator, thread: *Loade
 
     thread.token_usage = thread.transcript.token_usage;
     if (thread.token_usage_turn_id) |turn_id| allocator.free(turn_id);
+    thread.token_usage_turn_id = null;
     thread.token_usage_turn_id = try transcriptTokenUsageTurnId(allocator, &thread.transcript);
     thread.updated_at = currentUnixSeconds();
 }
