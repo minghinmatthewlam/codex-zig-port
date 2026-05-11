@@ -61,17 +61,18 @@ Current app-server TypeScript and JSON Schema generation coverage includes the
 minimal JSON-RPC envelope, client-notification, and initialize helper files plus
 top-level primitive TypeScript helpers for IDs, modalities, reasoning,
 verbosity, and web-search config plus top-level fuzzy-file-search TypeScript
-artifacts. It also covers command-exec request, response, follow-up,
-terminal-size, sandbox-policy, permission-profile, permission-profile helper,
-filesystem-path helper, absolute-path, network-access, and output-delta
-notification artifacts, model-provider capabilities read artifacts, thread
-token-usage notification artifacts, collaboration-mode list artifacts, and
-model-list catalog artifacts, plus experimental-feature list/enablement
-artifacts, memory-reset response artifacts, git-diff-to-remote artifacts,
-fuzzy-file-search JSON Schema artifacts, hooks-list artifacts, skills
-list/config artifacts, account read/auth/login/refresh/rate-limit/nudge
-artifacts, filesystem RPC artifacts, MCP config reload artifacts, and MCP server
-status artifacts, in standalone files and the bundled schema `$defs`.
+artifacts, and top-level legacy git-diff/auth-status TypeScript artifacts. It
+also covers command-exec request, response, follow-up, terminal-size,
+sandbox-policy, permission-profile, permission-profile helper, filesystem-path
+helper, absolute-path, network-access, and output-delta notification artifacts,
+model-provider capabilities read artifacts, thread token-usage notification
+artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
+plus experimental-feature list/enablement artifacts, memory-reset response
+artifacts, git-diff-to-remote and fuzzy-file-search JSON Schema artifacts,
+hooks-list artifacts, skills list/config artifacts, account
+read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC artifacts,
+MCP config reload artifacts, and MCP server status artifacts, in standalone
+files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
 Additional app-server account generation coverage: `account/read`,
