@@ -11104,6 +11104,32 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert login_completed["required"] == ["success"]
         assert login_completed["properties"]["loginId"]["type"] == ["string", "null"]
         assert login_completed["properties"]["success"]["type"] == "boolean"
+        refresh_reason = json.loads(
+            (out_dir / "ChatgptAuthTokensRefreshReason.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert refresh_reason["oneOf"][0]["enum"] == ["unauthorized"]
+        refresh_params = json.loads(
+            (out_dir / "ChatgptAuthTokensRefreshParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert refresh_params["required"] == ["reason"]
+        assert (
+            refresh_params["properties"]["reason"]["$ref"]
+            == "#/$defs/ChatgptAuthTokensRefreshReason"
+        )
+        refresh_response = json.loads(
+            (out_dir / "ChatgptAuthTokensRefreshResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert refresh_response["required"] == ["accessToken", "chatgptAccountId"]
+        assert refresh_response["properties"]["chatgptPlanType"]["type"] == [
+            "string",
+            "null",
+        ]
         rate_limit_reached_type = json.loads(
             (out_dir / "RateLimitReachedType.json").read_text(encoding="utf-8")
         )
@@ -12371,6 +12397,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CancelLoginAccountResponse" in bundle["$defs"]
         assert "LogoutAccountResponse" in bundle["$defs"]
         assert "AccountLoginCompletedNotification" in bundle["$defs"]
+        assert "ChatgptAuthTokensRefreshReason" in bundle["$defs"]
+        assert "ChatgptAuthTokensRefreshParams" in bundle["$defs"]
+        assert "ChatgptAuthTokensRefreshResponse" in bundle["$defs"]
         assert "RateLimitReachedType" in bundle["$defs"]
         assert "RateLimitWindow" in bundle["$defs"]
         assert "CreditsSnapshot" in bundle["$defs"]
@@ -12584,6 +12613,20 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert bundle["$defs"]["AccountLoginCompletedNotification"]["required"] == [
             "success"
+        ]
+        assert (
+            bundle["$defs"]["ChatgptAuthTokensRefreshReason"]["oneOf"][0]["enum"]
+            == ["unauthorized"]
+        )
+        assert (
+            bundle["$defs"]["ChatgptAuthTokensRefreshParams"]["properties"]["reason"][
+                "$ref"
+            ]
+            == "#/$defs/ChatgptAuthTokensRefreshReason"
+        )
+        assert bundle["$defs"]["ChatgptAuthTokensRefreshResponse"]["required"] == [
+            "accessToken",
+            "chatgptAccountId",
         ]
         assert bundle["$defs"]["RateLimitWindow"]["required"] == ["usedPercent"]
         assert (
@@ -13353,6 +13396,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "loginId: string | null;" in login_completed
         assert "success: boolean;" in login_completed
         assert "error: string | null;" in login_completed
+        refresh_reason = (
+            out_dir / "v2" / "ChatgptAuthTokensRefreshReason.ts"
+        ).read_text(encoding="utf-8")
+        assert '"unauthorized"' in refresh_reason
+        refresh_params = (
+            out_dir / "v2" / "ChatgptAuthTokensRefreshParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "reason: ChatgptAuthTokensRefreshReason;" in refresh_params
+        assert "previousAccountId?: string | null;" in refresh_params
+        refresh_response = (
+            out_dir / "v2" / "ChatgptAuthTokensRefreshResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "accessToken: string;" in refresh_response
+        assert "chatgptAccountId: string;" in refresh_response
+        assert "chatgptPlanType: string | null;" in refresh_response
         rate_limit_reached_type = (
             out_dir / "v2" / "RateLimitReachedType.ts"
         ).read_text(encoding="utf-8")
@@ -14252,6 +14310,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "CancelLoginAccountParams",
             "CancelLoginAccountResponse",
             "CancelLoginAccountStatus",
+            "ChatgptAuthTokensRefreshParams",
+            "ChatgptAuthTokensRefreshReason",
+            "ChatgptAuthTokensRefreshResponse",
             "CreditsSnapshot",
             "GetAccountParams",
             "GetAccountRateLimitsResponse",
