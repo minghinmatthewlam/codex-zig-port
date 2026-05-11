@@ -1429,6 +1429,81 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_read_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-turns-list-invalid-sort",
+            "method": "thread/turns/list",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000013",
+                "sortDirection": "ascending",
+            },
+        }
+    )
+    thread_turns_list_invalid_sort = read_line()
+    assert thread_turns_list_invalid_sort["id"] == "thread-turns-list-invalid-sort"
+    assert thread_turns_list_invalid_sort["error"]["code"] == -32602
+    assert (
+        "sortDirection must be asc or desc"
+        in thread_turns_list_invalid_sort["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-turns-list-invalid-limit",
+            "method": "thread/turns/list",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000013",
+                "limit": -1,
+            },
+        }
+    )
+    thread_turns_list_invalid_limit = read_line()
+    assert thread_turns_list_invalid_limit["id"] == "thread-turns-list-invalid-limit"
+    assert thread_turns_list_invalid_limit["error"]["code"] == -32602
+    assert (
+        "limit must be a non-negative integer or null"
+        in thread_turns_list_invalid_limit["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-turns-list-invalid-thread",
+            "method": "thread/turns/list",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_turns_list_invalid_thread = read_line()
+    assert thread_turns_list_invalid_thread["id"] == "thread-turns-list-invalid-thread"
+    assert thread_turns_list_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_turns_list_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-turns-list-missing",
+            "method": "thread/turns/list",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000013",
+                "cursor": None,
+                "limit": 3,
+                "sortDirection": "asc",
+            },
+        }
+    )
+    thread_turns_list_missing = read_line()
+    assert thread_turns_list_missing["id"] == "thread-turns-list-missing"
+    assert thread_turns_list_missing["error"]["code"] == -32600
+    assert (
+        "thread not loaded: 00000000-0000-0000-0000-000000000013"
+        in thread_turns_list_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
@@ -8861,6 +8936,21 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_read_response["required"] == ["thread"]
         assert thread_read_response["additionalProperties"] is False
+        thread_turns_list = json.loads(
+            (out_dir / "ThreadTurnsListParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_turns_list["required"] == ["threadId"]
+        assert thread_turns_list["properties"]["limit"]["maximum"] == 4294967295
+        assert "sortDirection" in thread_turns_list["properties"]
+        thread_turns_list_response = json.loads(
+            (out_dir / "ThreadTurnsListResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_turns_list_response["required"] == [
+            "data",
+            "nextCursor",
+            "backwardsCursor",
+        ]
+        assert thread_turns_list_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8887,6 +8977,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
         assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
         assert "ThreadReadResponse" in bundle["$defs"]
+        assert "ThreadTurnsListResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -9004,6 +9095,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadMetadataUpdateParams;" in client_request
         assert 'method: "thread/read";' in client_request
         assert "params: ThreadReadParams;" in client_request
+        assert 'method: "thread/turns/list";' in client_request
+        assert "params: ThreadTurnsListParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
@@ -9037,6 +9130,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadMetadataUpdateResponse;" in client_response
         assert 'method: "thread/read";' in client_response
         assert "result: ThreadReadResponse;" in client_response
+        assert 'method: "thread/turns/list";' in client_response
+        assert "result: ThreadTurnsListResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -9274,6 +9369,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "thread: unknown;" in thread_read_response
+        thread_turns_list = (
+            out_dir / "v2" / "ThreadTurnsListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { SortDirection } from "./SortDirection";' in thread_turns_list
+        assert "threadId: string;" in thread_turns_list
+        assert "cursor?: string | null;" in thread_turns_list
+        assert "limit?: number | null;" in thread_turns_list
+        assert "sortDirection?: SortDirection | null;" in thread_turns_list
+        thread_turns_list_response = (
+            out_dir / "v2" / "ThreadTurnsListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "data: unknown[];" in thread_turns_list_response
+        assert "nextCursor: string | null;" in thread_turns_list_response
+        assert "backwardsCursor: string | null;" in thread_turns_list_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -9345,6 +9454,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'export type { ThreadReadParams } from "./ThreadReadParams";' in v2_index
         assert 'export type { ThreadReadResponse } from "./ThreadReadResponse";' in v2_index
+        assert 'export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";' in v2_index
+        assert 'export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
