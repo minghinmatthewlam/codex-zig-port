@@ -112,3 +112,5 @@ sessions are implemented.
 Additional app-server thread rollback coverage: `thread/rollback` validates `threadId` and `numTurns`, preserves Rust-shaped `numTurns must be >= 1` rejection, returns Rust-shaped `thread not found` responses for unloaded threads, and is included in current TypeScript and JSON schema generation as an opaque-thread response until full thread schema parity lands.
 
 Additional app-server thread item-injection coverage: `thread/inject_items` validates `threadId` and `items` array shape, returns Rust-shaped `thread not found` responses for unloaded threads before response-item validation, and is included in current TypeScript and JSON schema generation as an opaque item-list request until full response-item schema parity lands.
+
+Additional app-server thread naming coverage: `thread/name/set` validates `threadId`, trims and rejects empty names with Rust-shaped errors, returns Rust-shaped `thread not found` responses for missing stored threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
