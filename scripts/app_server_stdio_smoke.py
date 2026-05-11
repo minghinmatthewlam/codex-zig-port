@@ -11005,6 +11005,57 @@ def run_json_schema_smoke(binary: Path) -> None:
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
+        auth_mode = json.loads((out_dir / "AuthMode.json").read_text(encoding="utf-8"))
+        assert auth_mode["enum"] == [
+            "apikey",
+            "chatgpt",
+            "chatgptAuthTokens",
+            "agentIdentity",
+        ]
+        plan_type = json.loads((out_dir / "PlanType.json").read_text(encoding="utf-8"))
+        assert "pro" in plan_type["enum"]
+        assert "enterprise" in plan_type["enum"]
+        auth_status_params = json.loads(
+            (out_dir / "GetAuthStatusParams.json").read_text(encoding="utf-8")
+        )
+        assert auth_status_params["properties"]["includeToken"]["type"] == [
+            "boolean",
+            "null",
+        ]
+        auth_status_response = json.loads(
+            (out_dir / "GetAuthStatusResponse.json").read_text(encoding="utf-8")
+        )
+        assert auth_status_response["required"] == [
+            "authMethod",
+            "authToken",
+            "requiresOpenaiAuth",
+        ]
+        assert (
+            auth_status_response["properties"]["authMethod"]["anyOf"][0]["$ref"]
+            == "AuthMode.json"
+        )
+        account = json.loads((out_dir / "Account.json").read_text(encoding="utf-8"))
+        assert account["oneOf"][1]["properties"]["type"]["const"] == "chatgpt"
+        assert account["oneOf"][1]["properties"]["planType"]["$ref"] == "PlanType.json"
+        account_params = json.loads(
+            (out_dir / "GetAccountParams.json").read_text(encoding="utf-8")
+        )
+        assert account_params["properties"]["refreshToken"]["type"] == "boolean"
+        account_response = json.loads(
+            (out_dir / "GetAccountResponse.json").read_text(encoding="utf-8")
+        )
+        assert account_response["required"] == ["account", "requiresOpenaiAuth"]
+        assert account_response["properties"]["account"]["anyOf"][0]["$ref"] == (
+            "Account.json"
+        )
+        account_updated = json.loads(
+            (out_dir / "AccountUpdatedNotification.json").read_text(encoding="utf-8")
+        )
+        assert account_updated["required"] == ["authMode", "planType"]
+        assert (
+            account_updated["properties"]["authMode"]["anyOf"][0]["$ref"]
+            == "AuthMode.json"
+        )
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -12186,6 +12237,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
+        assert "AuthMode" in bundle["$defs"]
+        assert "PlanType" in bundle["$defs"]
+        assert "GetAuthStatusParams" in bundle["$defs"]
+        assert "GetAuthStatusResponse" in bundle["$defs"]
+        assert "Account" in bundle["$defs"]
+        assert "GetAccountParams" in bundle["$defs"]
+        assert "GetAccountResponse" in bundle["$defs"]
+        assert "AccountUpdatedNotification" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -12328,6 +12387,35 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["FsCopyParams"]["properties"]["recursive"]["type"]
             == "boolean"
+        )
+        assert bundle["$defs"]["AuthMode"]["enum"] == [
+            "apikey",
+            "chatgpt",
+            "chatgptAuthTokens",
+            "agentIdentity",
+        ]
+        assert "unknown" in bundle["$defs"]["PlanType"]["enum"]
+        assert (
+            bundle["$defs"]["GetAuthStatusResponse"]["properties"]["authMethod"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/AuthMode"
+        )
+        assert (
+            bundle["$defs"]["Account"]["oneOf"][1]["properties"]["planType"]["$ref"]
+            == "#/$defs/PlanType"
+        )
+        assert (
+            bundle["$defs"]["GetAccountResponse"]["properties"]["account"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/Account"
+        )
+        assert (
+            bundle["$defs"]["AccountUpdatedNotification"]["properties"]["planType"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/PlanType"
         )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
@@ -12640,6 +12728,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: SkillsListParams | null;" in client_request
         assert 'method: "skills/config/write";' in client_request
         assert "params: SkillsConfigWriteParams;" in client_request
+        assert 'method: "account/read";' in client_request
+        assert "params?: GetAccountParams | null;" in client_request
+        assert 'method: "getAuthStatus";' in client_request
+        assert "params?: GetAuthStatusParams | null;" in client_request
         for method, params_type in [
             ("fs/readFile", "FsReadFileParams"),
             ("fs/writeFile", "FsWriteFileParams"),
@@ -12754,6 +12846,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "skills/changed";' in server_notification
         assert "params: SkillsChangedNotification;" in server_notification
+        assert 'method: "account/updated";' in server_notification
+        assert "params: AccountUpdatedNotification;" in server_notification
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -12795,6 +12889,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: SkillsListResponse;" in client_response
         assert 'method: "skills/config/write";' in client_response
         assert "result: SkillsConfigWriteResponse;" in client_response
+        assert 'method: "account/read";' in client_response
+        assert "result: GetAccountResponse;" in client_response
+        assert 'method: "getAuthStatus";' in client_response
+        assert "result: GetAuthStatusResponse;" in client_response
         for method, response_type in [
             ("fs/readFile", "FsReadFileResponse"),
             ("fs/writeFile", "FsWriteFileResponse"),
@@ -12959,6 +13057,38 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface MemoryResetResponse {}" in memory_reset_response
+        auth_mode = (out_dir / "AuthMode.ts").read_text(encoding="utf-8")
+        assert '"chatgptAuthTokens"' in auth_mode
+        plan_type = (out_dir / "PlanType.ts").read_text(encoding="utf-8")
+        assert '"enterprise"' in plan_type
+        get_auth_status_params = (
+            out_dir / "v2" / "GetAuthStatusParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "includeToken?: boolean | null;" in get_auth_status_params
+        get_auth_status_response = (
+            out_dir / "v2" / "GetAuthStatusResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { AuthMode } from "../AuthMode";' in (
+            get_auth_status_response
+        )
+        assert "authMethod: AuthMode | null;" in get_auth_status_response
+        account = (out_dir / "v2" / "Account.ts").read_text(encoding="utf-8")
+        assert 'import type { PlanType } from "../PlanType";' in account
+        assert 'type: "chatgpt"; email: string; planType: PlanType' in account
+        get_account_params = (
+            out_dir / "v2" / "GetAccountParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "refreshToken?: boolean;" in get_account_params
+        get_account_response = (
+            out_dir / "v2" / "GetAccountResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { Account } from "./Account";' in get_account_response
+        assert "account: Account | null;" in get_account_response
+        account_updated = (
+            out_dir / "v2" / "AccountUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "authMode: AuthMode | null;" in account_updated
+        assert "planType: PlanType | null;" in account_updated
         git_diff_params = (out_dir / "v2" / "GitDiffToRemoteParams.ts").read_text(
             encoding="utf-8"
         )
@@ -13789,7 +13919,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
+        assert 'export type { AuthMode } from "./AuthMode";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { PlanType } from "./PlanType";' in index
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
@@ -13798,6 +13930,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export * as v2 from "./v2";' in index
         v2_index = (out_dir / "v2" / "index.ts").read_text(encoding="utf-8")
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
+        for account_export in [
+            "Account",
+            "AccountUpdatedNotification",
+            "GetAccountParams",
+            "GetAccountResponse",
+            "GetAuthStatusParams",
+            "GetAuthStatusResponse",
+        ]:
+            assert (
+                f'export type {{ {account_export} }} from "./{account_export}";'
+                in v2_index
+            )
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert (
             'export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";'
