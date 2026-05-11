@@ -111,6 +111,7 @@ const LoadedThread = struct {
     token_usage: ?session_mod.TokenUsageInfo,
     token_usage_turn_id: ?[]const u8,
     name: ?[]const u8,
+    transcript: session_mod.Transcript,
     turns_json: []const u8,
     created_at: i64,
     updated_at: i64,
@@ -134,6 +135,7 @@ const LoadedThread = struct {
         allocator.free(self.cli_version);
         if (self.token_usage_turn_id) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
+        self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
     }
 };
@@ -909,6 +911,48 @@ const THREAD_STARTED_NOTIFICATION_TS =
     \\
     ;
 
+const TURN_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnStartParams {
+    \\  threadId: string;
+    \\  input: unknown[];
+    \\  model?: string | null;
+    \\  modelProvider?: string | null;
+    \\  serviceTier?: string | null;
+    \\  cwd?: string | null;
+    \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
+    \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
+    \\  outputSchema?: unknown | null;
+    \\}
+    \\
+    ;
+
+const TURN_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnStartResponse {
+    \\  turn: unknown;
+    \\}
+    \\
+    ;
+
+const TURN_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnStartedNotification {
+    \\  threadId: string;
+    \\  turn: unknown;
+    \\}
+    \\
+    ;
+
+const TURN_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnCompletedNotification {
+    \\  threadId: string;
+    \\  turn: unknown;
+    \\}
+    \\
+    ;
+
 const THREAD_RESUME_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadResumeParams {
@@ -1571,6 +1615,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
     \\import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
+    \\import type { TurnStartParams } from "./v2/TurnStartParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
     \\export type ClientRequest =
@@ -1597,6 +1642,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/start";
     \\      params?: ThreadStartParams | null;
+    \\    }
+    \\  | {
+    \\      method: "turn/start";
+    \\      params: TurnStartParams;
     \\    }
     \\  | {
     \\      method: "thread/resume";
@@ -1748,6 +1797,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadTurnsListResponse } from "./v2/ThreadTurnsListResponse";
     \\import type { ThreadUnarchiveResponse } from "./v2/ThreadUnarchiveResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
+    \\import type { TurnStartResponse } from "./v2/TurnStartResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
     \\
@@ -1781,6 +1831,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/start";
     \\      result: ThreadStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "turn/start";
+    \\      result: TurnStartResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -1929,6 +1984,8 @@ const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
+    \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
+    \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\
     \\export type ServerNotification =
     \\  | {
@@ -1938,6 +1995,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/started";
     \\      params: ThreadStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "turn/started";
+    \\      params: TurnStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "turn/completed";
+    \\      params: TurnCompletedNotification;
     \\    };
     \\
     ;
@@ -2055,6 +2120,10 @@ const V2_INDEX_TS =
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
+    \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
+    \\export type { TurnStartedNotification } from "./TurnStartedNotification";
+    \\export type { TurnStartParams } from "./TurnStartParams";
+    \\export type { TurnStartResponse } from "./TurnStartResponse";
     \\
     ;
 
@@ -2714,6 +2783,72 @@ const THREAD_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["thread"],
     \\  "properties": {
     \\    "thread": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnStartParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "input"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "input": { "type": "array" },
+    \\    "model": { "type": ["string", "null"] },
+    \\    "modelProvider": { "type": ["string", "null"] },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\    "outputSchema": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnStartResponse",
+    \\  "type": "object",
+    \\  "required": ["turn"],
+    \\  "properties": {
+    \\    "turn": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnStartedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turn"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turn": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turn"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turn": true
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -4282,6 +4417,48 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "TurnStartParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "input"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "input": { "type": "array" },
+    \\        "model": { "type": ["string", "null"] },
+    \\        "modelProvider": { "type": ["string", "null"] },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\        "outputSchema": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnStartResponse": {
+    \\      "type": "object",
+    \\      "required": ["turn"],
+    \\      "properties": {
+    \\        "turn": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnStartedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turn"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turn": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turn"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turn": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -4969,6 +5146,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TurnStartParams.json", .contents = TURN_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "TurnStartResponse.json", .contents = TURN_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "TurnStartedNotification.json", .contents = TURN_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TurnCompletedNotification.json", .contents = TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -5085,6 +5266,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/TurnStartParams.ts", .contents = TURN_START_PARAMS_TS },
+    .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
+    .{ .name = "v2/TurnStartedNotification.ts", .contents = TURN_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/TurnCompletedNotification.ts", .contents = TURN_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
@@ -5409,6 +5594,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "fuzzyFileSearch")) {
         return try handleFuzzyFileSearch(allocator, id_value.?, object.get("params"));
     }
+    if (isTurnMethod(method)) {
+        return try handleTurnMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
     if (isThreadMethod(method)) {
         return try handleThreadMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -5568,6 +5756,254 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
 
 const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
     "{\"voices\":{\"v1\":[\"juniper\",\"maple\",\"spruce\",\"ember\",\"vale\",\"breeze\",\"arbor\",\"sol\",\"cove\"],\"v2\":[\"alloy\",\"ash\",\"ballad\",\"coral\",\"echo\",\"sage\",\"shimmer\",\"verse\",\"marin\",\"cedar\"],\"defaultV1\":\"cove\",\"defaultV2\":\"marin\"}}";
+
+fn isTurnMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "turn/start");
+}
+
+fn handleTurnMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "turn/start")) {
+        return handleTurnStart(allocator, state, id_value, params_value);
+    }
+    return renderParsedButNotImplemented(allocator, id_value, method);
+}
+
+fn handleTurnStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
+    const object = params.object;
+
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    if (!isUuidString(thread_id)) {
+        return renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    };
+
+    const prompt = turnStartPrompt(allocator, object) catch |err| switch (err) {
+        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of text items"),
+        error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text"),
+        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text turn/start input is implemented"),
+        else => return err,
+    };
+    defer allocator.free(prompt);
+
+    var cfg = config.load(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
+    };
+    defer credentials.deinit(allocator);
+
+    const thread = &state.loaded_threads.items[thread_index];
+    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    defer allocator.free(turn_id);
+
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
+        else => return err,
+    };
+
+    const response = try renderTurnStartResponse(allocator, turn_id);
+    defer allocator.free(response);
+    const started_at = currentUnixSeconds();
+    const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
+    var started_notification_moved = false;
+    errdefer if (!started_notification_moved) allocator.free(started_notification);
+
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt, .{
+        .prompt_for_approval = false,
+        .output_schema = optionalJsonParam(object, "outputSchema"),
+    }) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to run turn", err);
+    };
+    defer allocator.free(answer);
+
+    const completed_at = currentUnixSeconds();
+    const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+    var completed_notification_moved = false;
+    errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+    try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
+    if (thread.path) |path| {
+        try session_store.saveTranscript(allocator, path, &thread.transcript);
+    }
+
+    try queueTurnNotification(allocator, state, "turn/started", started_notification);
+    started_notification_moved = true;
+    try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+    completed_notification_moved = true;
+
+    return renderJsonRpcResult(allocator, id_value, response);
+}
+
+fn turnStartPrompt(allocator: std.mem.Allocator, params: std.json.ObjectMap) ![]const u8 {
+    const input = params.get("input") orelse return error.InvalidTurnInput;
+    if (input != .array) return error.InvalidTurnInput;
+
+    var prompt = std.ArrayList(u8).empty;
+    errdefer prompt.deinit(allocator);
+    var text_items: usize = 0;
+    for (input.array.items) |item| {
+        if (item != .object) return error.InvalidTurnInput;
+        const item_type = item.object.get("type") orelse return error.InvalidTurnInput;
+        if (item_type != .string) return error.InvalidTurnInput;
+        if (!std.mem.eql(u8, item_type.string, "text")) return error.UnsupportedTurnInput;
+        const text = item.object.get("text") orelse return error.InvalidTurnInput;
+        if (text != .string) return error.InvalidTurnInput;
+        if (text_items > 0) try prompt.append(allocator, '\n');
+        try prompt.appendSlice(allocator, text.string);
+        text_items += 1;
+    }
+    if (text_items == 0 or prompt.items.len == 0) return error.EmptyTurnInput;
+    return prompt.toOwnedSlice(allocator);
+}
+
+fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {
+    var count: usize = 0;
+    for (transcript.history.items) |item| {
+        if (item.kind == .message) count += 1;
+    }
+    return std.fmt.allocPrint(allocator, "turn-{d}", .{count});
+}
+
+fn applyTurnStartRuntimeOverrides(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *LoadedThread,
+    params: std.json.ObjectMap,
+) !void {
+    const effective_model = optionalStringParam(params, "model") orelse thread.model;
+    try replaceOwnedString(allocator, &cfg.model, effective_model);
+    if (optionalStringParam(params, "model")) |model| try replaceOwnedString(allocator, &thread.model, model);
+
+    if (optionalStringParam(params, "cwd")) |cwd_raw| {
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd_raw, allocator);
+        defer allocator.free(cwd);
+        try replaceOwnedString(allocator, &thread.cwd, cwd);
+        try thread.transcript.setCwd(allocator, cwd);
+    }
+
+    const approval_policy_label = optionalStringParam(params, "approvalPolicy") orelse thread.approval_policy;
+    cfg.approval_policy = config.ApprovalPolicy.parse(approval_policy_label) catch return error.InvalidTurnContextOverride;
+    if (optionalStringParam(params, "approvalPolicy")) |approval_policy| {
+        try replaceOwnedString(allocator, &thread.approval_policy, approval_policy);
+    }
+
+    const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
+    cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
+    if (optionalStringParam(params, "sandbox")) |sandbox| {
+        try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
+    }
+
+    if (optionalStringParam(params, "modelProvider")) |model_provider| {
+        try replaceOwnedString(allocator, &thread.model_provider, model_provider);
+        try thread.transcript.setModelProvider(allocator, model_provider);
+    }
+
+    if (params.get("serviceTier")) |service_tier_value| {
+        if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
+        if (thread.service_tier) |existing| allocator.free(existing);
+        thread.service_tier = if (service_tier_value == .string)
+            try allocator.dupe(u8, service_tier_value.string)
+        else
+            null;
+        if (cfg.service_tier) |existing| allocator.free(existing);
+        cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
+    } else {
+        if (cfg.service_tier) |existing| allocator.free(existing);
+        cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
+    }
+}
+
+fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThread, prompt: []const u8) !void {
+    if (thread.preview.len == 0) try replaceOwnedString(allocator, &thread.preview, prompt);
+    const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
+    errdefer allocator.free(turns_json);
+    allocator.free(thread.turns_json);
+    thread.turns_json = turns_json;
+    thread.updated_at = currentUnixSeconds();
+}
+
+fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
+    var response = std.ArrayList(u8).empty;
+    errdefer response.deinit(allocator);
+    try response.appendSlice(allocator, "{\"turn\":");
+    try appendTurnJson(allocator, &response, turn_id, "inProgress", null, null);
+    try response.appendSlice(allocator, "}");
+    return response.toOwnedSlice(allocator);
+}
+
+fn renderTurnNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    status: []const u8,
+    started_at: ?i64,
+    completed_at: ?i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turn\":");
+    try appendTurnJson(allocator, &notification, turn_id, status, started_at, completed_at);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn appendTurnJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    turn_id: []const u8,
+    status: []const u8,
+    started_at: ?i64,
+    completed_at: ?i64,
+) !void {
+    try out.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, out, turn_id);
+    try out.appendSlice(allocator, ",\"items\":[],\"itemsView\":\"notLoaded\",\"status\":");
+    try appendJsonString(allocator, out, status);
+    try out.appendSlice(allocator, ",\"error\":null,\"startedAt\":");
+    try appendOptionalInt(allocator, out, started_at);
+    try out.appendSlice(allocator, ",\"completedAt\":");
+    try appendOptionalInt(allocator, out, completed_at);
+    try out.appendSlice(allocator, ",\"durationMs\":");
+    if (started_at != null and completed_at != null) {
+        try appendInt(allocator, out, (completed_at.? - started_at.?) * 1000);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}");
+}
+
+fn queueTurnNotification(allocator: std.mem.Allocator, state: *AppServerState, method: []const u8, notification: []const u8) !void {
+    if (notificationMethodOptedOut(state, method)) {
+        allocator.free(notification);
+        return;
+    }
+    try state.pending_notifications.append(allocator, notification);
+}
 
 fn isThreadMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "thread/start") or
@@ -6183,6 +6619,15 @@ fn createLoadedThreadFromStartParams(
         null;
     errdefer if (thread_source) |value| allocator.free(value);
 
+    var transcript = session_mod.Transcript{};
+    errdefer transcript.deinit(allocator);
+    try transcript.setId(allocator, thread_id);
+    try transcript.setSource(allocator, source);
+    try transcript.setModelProvider(allocator, model_provider);
+    try transcript.setCwd(allocator, cwd);
+    try transcript.setCliVersion(allocator, cli_version);
+    if (thread_source) |value| try transcript.setThreadSource(allocator, value);
+
     const now = currentUnixSeconds();
     return .{
         .id = thread_id,
@@ -6205,6 +6650,7 @@ fn createLoadedThreadFromStartParams(
         .token_usage = null,
         .token_usage_turn_id = null,
         .name = null,
+        .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
         .updated_at = now,
@@ -6218,7 +6664,7 @@ fn createLoadedThreadFromHistoryParams(
     history: []const std.json.Value,
 ) !LoadedThread {
     var transcript = try transcriptFromResponseHistory(allocator, history);
-    defer transcript.deinit(allocator);
+    errdefer transcript.deinit(allocator);
 
     const thread_id = try generateUuidString(allocator);
     errdefer allocator.free(thread_id);
@@ -6266,6 +6712,12 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(path);
 
     const now = currentUnixSeconds();
+    try transcript.setId(allocator, thread_id);
+    try transcript.setSource(allocator, source);
+    try transcript.setModelProvider(allocator, model_provider);
+    try transcript.setCwd(allocator, cwd);
+    try transcript.setCliVersion(allocator, cli_version);
+
     return .{
         .id = thread_id,
         .session_id = session_id,
@@ -6287,6 +6739,7 @@ fn createLoadedThreadFromHistoryParams(
         .token_usage = null,
         .token_usage_turn_id = null,
         .name = null,
+        .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
         .updated_at = now,
@@ -6328,6 +6781,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer if (name) |value| allocator.free(value);
     const turns_json = try renderTranscriptTurnsJson(allocator, transcript, true);
     errdefer allocator.free(turns_json);
+    var transcript_copy = try transcript.clone(allocator);
+    errdefer transcript_copy.deinit(allocator);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
@@ -6380,6 +6835,7 @@ fn createLoadedThreadFromResumeParams(
         .token_usage = transcript.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
         .name = name,
+        .transcript = transcript_copy,
         .turns_json = turns_json,
         .created_at = now,
         .updated_at = now,
@@ -6423,6 +6879,8 @@ fn createLoadedThreadFromForkParams(
     errdefer if (token_usage_turn_id) |value| allocator.free(value);
     const turns_json = try allocator.dupe(u8, source.turns_json);
     errdefer allocator.free(turns_json);
+    var transcript = try source.transcript.clone(allocator);
+    errdefer transcript.deinit(allocator);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse source.model);
     errdefer allocator.free(model);
@@ -6468,6 +6926,14 @@ fn createLoadedThreadFromForkParams(
     errdefer if (thread_source) |value| allocator.free(value);
 
     const now = currentUnixSeconds();
+    try transcript.setId(allocator, thread_id);
+    try transcript.setForkedFromId(allocator, source.id);
+    try transcript.setSource(allocator, source_label);
+    try transcript.setModelProvider(allocator, model_provider);
+    try transcript.setCwd(allocator, cwd);
+    try transcript.setCliVersion(allocator, cli_version);
+    if (thread_source) |value| try transcript.setThreadSource(allocator, value);
+
     return .{
         .id = thread_id,
         .session_id = session_id,
@@ -6489,6 +6955,7 @@ fn createLoadedThreadFromForkParams(
         .token_usage = source.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
         .name = null,
+        .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
         .updated_at = now,
@@ -6625,6 +7092,18 @@ fn optionalBoolParam(params: ?std.json.ObjectMap, name: []const u8) ?bool {
     const value = object.get(name) orelse return null;
     if (value == .null) return null;
     return value.bool;
+}
+
+fn optionalJsonParam(params: std.json.ObjectMap, name: []const u8) ?std.json.Value {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    return value;
+}
+
+fn replaceOwnedString(allocator: std.mem.Allocator, slot: *[]const u8, value: []const u8) !void {
+    const copy = try allocator.dupe(u8, value);
+    allocator.free(slot.*);
+    slot.* = copy;
 }
 
 fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
@@ -7835,6 +8314,14 @@ fn appendInt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: anyty
     var buffer: [64]u8 = undefined;
     const rendered = try std.fmt.bufPrint(&buffer, "{}", .{value});
     try out.appendSlice(allocator, rendered);
+}
+
+fn appendOptionalInt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?i64) !void {
+    if (value) |payload| {
+        try appendInt(allocator, out, payload);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
 }
 
 fn isMarketplaceMethod(method: []const u8) bool {
