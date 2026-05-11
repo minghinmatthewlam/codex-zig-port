@@ -76,9 +76,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - inspect configured MCP servers from the interactive TUI with `/mcp`
 - accept app-server MCP config reload requests and list server status with
   `config/mcpServer/reload` and `mcpServerStatus/list`, including enabled
-  local plugin-cache `.mcp.json` server entries plus raw stdio tool, resource,
-  and resource-template inventory plus streamable HTTP bearer-token,
-  file-backed OAuth, and OAuth-discovery not-logged-in auth state
+  local plugin-cache `.mcp.json` server entries plus raw stdio and streamable
+  HTTP tool, resource, and resource-template inventory plus streamable HTTP
+  bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in auth state
 - read resources with and without loaded thread IDs, and call tools on
   configured stdio and streamable HTTP MCP servers through app-server
   `mcpServer/resource/read` and `mcpServer/tool/call`
