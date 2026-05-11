@@ -4405,6 +4405,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/realtime/start") or
         std.mem.eql(u8, method, "thread/realtime/appendAudio") or
         std.mem.eql(u8, method, "thread/realtime/appendText") or
         std.mem.eql(u8, method, "thread/realtime/stop") or
@@ -4657,6 +4658,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/realtime/start")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (validateThreadRealtimeStartParams(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -4867,6 +4883,37 @@ fn validateThreadRealtimeAudioChunk(object: std.json.ObjectMap) ?[]const u8 {
         if (!jsonOptionalStringValueIsValid(value)) return "audio.itemId must be a string or null";
     }
     return null;
+}
+
+fn validateThreadRealtimeStartParams(object: std.json.ObjectMap) ?[]const u8 {
+    const output_modality = object.get("outputModality") orelse return "outputModality must be text or audio";
+    if (!enumStringIsValid(output_modality, &.{ "text", "audio" })) return "outputModality must be text or audio";
+    if (object.get("prompt")) |value| {
+        if (!jsonOptionalStringValueIsValid(value)) return "prompt must be a string or null";
+    }
+    if (object.get("realtimeSessionId")) |value| {
+        if (!jsonOptionalStringValueIsValid(value)) return "realtimeSessionId must be a string or null";
+    }
+    if (object.get("voice")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse" })) return "voice must be a supported realtime voice or null";
+    }
+    if (object.get("transport")) |value| {
+        if (value == .null) return null;
+        if (value != .object) return "transport must be an object or null";
+        return validateThreadRealtimeStartTransport(value.object);
+    }
+    return null;
+}
+
+fn validateThreadRealtimeStartTransport(object: std.json.ObjectMap) ?[]const u8 {
+    const transport_type = object.get("type") orelse return "transport.type must be websocket or webrtc";
+    if (transport_type != .string) return "transport.type must be websocket or webrtc";
+    if (std.mem.eql(u8, transport_type.string, "websocket")) return null;
+    if (std.mem.eql(u8, transport_type.string, "webrtc")) {
+        if (!jsonRequiredStringFieldIsValid(object, "sdp")) return "transport.sdp must be a string";
+        return null;
+    }
+    return "transport.type must be websocket or webrtc";
 }
 
 const ThreadMetadataGitInfoValidationError = struct {
