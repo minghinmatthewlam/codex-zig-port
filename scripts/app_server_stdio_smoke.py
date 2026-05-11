@@ -8651,6 +8651,18 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_decrement_elicitation_response["required"] == ["count", "paused"]
+        sort_direction = json.loads(
+            (out_dir / "SortDirection.json").read_text(encoding="utf-8")
+        )
+        assert sort_direction["enum"] == ["asc", "desc"]
+        thread_sort_key = json.loads(
+            (out_dir / "ThreadSortKey.json").read_text(encoding="utf-8")
+        )
+        assert thread_sort_key["enum"] == ["created_at", "updated_at"]
+        thread_source_kind = json.loads(
+            (out_dir / "ThreadSourceKind.json").read_text(encoding="utf-8")
+        )
+        assert "subAgentThreadSpawn" in thread_source_kind["enum"]
         thread_rollback = json.loads(
             (out_dir / "ThreadRollbackParams.json").read_text(encoding="utf-8")
         )
@@ -8661,6 +8673,20 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_rollback_response["required"] == ["thread"]
         assert thread_rollback_response["additionalProperties"] is False
+        thread_list = json.loads(
+            (out_dir / "ThreadListParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_list["properties"]["limit"]["maximum"] == 4294967295
+        assert thread_list["properties"]["useStateDbOnly"]["type"] == "boolean"
+        thread_list_response = json.loads(
+            (out_dir / "ThreadListResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_list_response["required"] == [
+            "data",
+            "nextCursor",
+            "backwardsCursor",
+        ]
+        assert thread_list_response["additionalProperties"] is False
         thread_inject_items = json.loads(
             (out_dir / "ThreadInjectItemsParams.json").read_text(encoding="utf-8")
         )
@@ -8744,6 +8770,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadIncrementElicitationResponse" in bundle["$defs"]
         assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
         assert "ThreadRollbackResponse" in bundle["$defs"]
+        assert "ThreadListResponse" in bundle["$defs"]
         assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert "ThreadSetNameResponse" in bundle["$defs"]
         assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
@@ -8850,6 +8877,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadDecrementElicitationParams;" in client_request
         assert 'method: "thread/rollback";' in client_request
         assert "params: ThreadRollbackParams;" in client_request
+        assert 'method: "thread/list";' in client_request
+        assert "params: ThreadListParams;" in client_request
         assert 'method: "thread/inject_items";' in client_request
         assert "params: ThreadInjectItemsParams;" in client_request
         assert 'method: "thread/name/set";' in client_request
@@ -8877,6 +8906,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadDecrementElicitationResponse;" in client_response
         assert 'method: "thread/rollback";' in client_response
         assert "result: ThreadRollbackResponse;" in client_response
+        assert 'method: "thread/list";' in client_response
+        assert "result: ThreadListResponse;" in client_response
         assert 'method: "thread/inject_items";' in client_response
         assert "result: ThreadInjectItemsResponse;" in client_response
         assert 'method: "thread/name/set";' in client_response
@@ -9014,6 +9045,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadRollbackResponse.ts"
         ).read_text(encoding="utf-8")
         assert "thread: unknown;" in thread_rollback_response
+        sort_direction = (out_dir / "v2" / "SortDirection.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'export type SortDirection = "asc" | "desc";' in sort_direction
+        thread_sort_key = (out_dir / "v2" / "ThreadSortKey.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'export type ThreadSortKey = "created_at" | "updated_at";' in thread_sort_key
+        thread_source_kind = (out_dir / "v2" / "ThreadSourceKind.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "subAgentThreadSpawn" in thread_source_kind
+        thread_list = (out_dir / "v2" / "ThreadListParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { SortDirection } from "./SortDirection";' in thread_list
+        assert 'import type { ThreadSortKey } from "./ThreadSortKey";' in thread_list
+        assert 'import type { ThreadSourceKind } from "./ThreadSourceKind";' in thread_list
+        assert "sortKey?: ThreadSortKey | null;" in thread_list
+        assert "sortDirection?: SortDirection | null;" in thread_list
+        assert "sourceKinds?: ThreadSourceKind[] | null;" in thread_list
+        assert "useStateDbOnly?: boolean;" in thread_list
+        thread_list_response = (
+            out_dir / "v2" / "ThreadListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "data: unknown[];" in thread_list_response
+        assert "nextCursor: string | null;" in thread_list_response
+        assert "backwardsCursor: string | null;" in thread_list_response
         thread_inject_items = (
             out_dir / "v2" / "ThreadInjectItemsParams.ts"
         ).read_text(encoding="utf-8")
@@ -9116,6 +9175,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";' in v2_index
         assert 'export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";' in v2_index
+        assert 'export type { SortDirection } from "./SortDirection";' in v2_index
+        assert 'export type { ThreadSortKey } from "./ThreadSortKey";' in v2_index
+        assert 'export type { ThreadSourceKind } from "./ThreadSourceKind";' in v2_index
+        assert 'export type { ThreadListParams } from "./ThreadListParams";' in v2_index
+        assert 'export type { ThreadListResponse } from "./ThreadListResponse";' in v2_index
         assert 'export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";' in v2_index
         assert 'export type { ThreadSetNameParams } from "./ThreadSetNameParams";' in v2_index
         assert 'export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";' in v2_index
