@@ -2399,6 +2399,180 @@ def run_stdio_smoke(binary: Path) -> None:
             proc.wait(timeout=5)
 
 
+def run_thread_resume_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
+    try:
+        resume_thread_id = "11111111-1111-4111-8111-111111111111"
+        sessions_dir = codex_home / "sessions" / "zig"
+        sessions_dir.mkdir(parents=True)
+        rollout_path = sessions_dir / f"rollout-{resume_thread_id}.jsonl"
+        rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {"type": "metadata", "title": "Resume Smoke"},
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content_type": "input_text",
+                            "text": "saved hello",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content_type": "output_text",
+                            "text": "saved hi",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "model": "gpt-resume",
+                        "modelProvider": "mock_provider",
+                        "approvalPolicy": "never",
+                        "approvalsReviewer": "user",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            resumed = read_json_line(proc, 5)
+            assert resumed["id"] == "thread-resume"
+            resume_result = resumed["result"]
+            resumed_thread = resume_result["thread"]
+            assert resumed_thread["id"] == resume_thread_id
+            assert resumed_thread["sessionId"] == resume_thread_id
+            assert resumed_thread["preview"] == "saved hello"
+            assert resumed_thread["source"] == "cli"
+            assert resumed_thread["name"] == "Resume Smoke"
+            assert resumed_thread["path"] == os.path.realpath(rollout_path)
+            assert resumed_thread["status"] == {"type": "idle"}
+            assert resumed_thread["turns"][0]["items"][0]["type"] == "userMessage"
+            assert (
+                resumed_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert resumed_thread["turns"][1]["items"][0]["type"] == "agentMessage"
+            assert resumed_thread["turns"][1]["items"][0]["text"] == "saved hi"
+            assert resume_result["model"] == "gpt-resume"
+            assert resume_result["modelProvider"] == "mock_provider"
+            assert resume_result["approvalPolicy"] == "never"
+            assert resume_result["sandbox"] == {"type": "dangerFullAccess"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "loaded-threads-after-resume",
+                    "method": "thread/loaded/list",
+                },
+            )
+            loaded = read_json_line(proc, 5)
+            assert loaded["id"] == "loaded-threads-after-resume"
+            assert loaded["result"] == {"data": [resume_thread_id], "nextCursor": None}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-default-turns",
+                    "method": "thread/read",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            read_default = read_json_line(proc, 5)
+            assert read_default["id"] == "thread-read-default-turns"
+            assert read_default["result"]["thread"]["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-include-turns",
+                    "method": "thread/read",
+                    "params": {"threadId": resume_thread_id, "includeTurns": True},
+                },
+            )
+            read_with_turns = read_json_line(proc, 5)
+            assert read_with_turns["id"] == "thread-read-include-turns"
+            assert (
+                read_with_turns["result"]["thread"]["turns"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-by-path-exclude-turns",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": "ignored-when-path-is-set",
+                        "path": str(rollout_path),
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            resumed_by_path = read_json_line(proc, 5)
+            assert resumed_by_path["id"] == "thread-resume-by-path-exclude-turns"
+            assert resumed_by_path["result"]["thread"]["id"] == resume_thread_id
+            assert resumed_by_path["result"]["thread"]["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-missing",
+                    "method": "thread/resume",
+                    "params": {"threadId": "missing-resume"},
+                },
+            )
+            missing = read_json_line(proc, 5)
+            assert missing["id"] == "thread-resume-missing"
+            assert missing["error"]["code"] == -32600
+            assert "no rollout found for thread id missing-resume" in missing["error"]["message"]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_goal_feature_gate_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goals-", dir="/tmp"))
     try:
@@ -9543,6 +9717,18 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
         )
         assert thread_start_response_schema["required"][0] == "thread"
+        thread_resume_params_schema = json.loads(
+            (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_resume_params_schema["required"] == ["threadId"]
+        assert thread_resume_params_schema["properties"]["path"]["type"] == [
+            "string",
+            "null",
+        ]
+        thread_resume_response_schema = json.loads(
+            (out_dir / "ThreadResumeResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_resume_response_schema["required"][0] == "thread"
         thread_fork_params_schema = json.loads(
             (out_dir / "ThreadForkParams.json").read_text(encoding="utf-8")
         )
@@ -9985,6 +10171,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             "memory_consolidation",
             None,
         ]
+        assert "ThreadResumeParams" in bundle["$defs"]
+        assert "ThreadResumeResponse" in bundle["$defs"]
         assert "ThreadForkParams" in bundle["$defs"]
         assert "ThreadForkResponse" in bundle["$defs"]
         v2_bundle = json.loads(
@@ -10053,6 +10241,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecWriteParams;" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
+        assert 'method: "thread/resume";' in client_request
+        assert "params: ThreadResumeParams;" in client_request
         assert 'method: "thread/fork";' in client_request
         assert "params: ThreadForkParams;" in client_request
         assert 'method: "thread/loaded/list";' in client_request
@@ -10112,6 +10302,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
+        assert 'method: "thread/resume";' in client_response
+        assert "result: ThreadResumeResponse;" in client_response
         assert 'method: "thread/fork";' in client_response
         assert "result: ThreadForkResponse;" in client_response
         assert 'method: "thread/archive";' in client_response
@@ -10235,6 +10427,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ThreadStartResponse" in thread_start_response
         assert "thread: unknown;" in thread_start_response
         assert "modelProvider: string;" in thread_start_response
+        thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ThreadResumeParams" in thread_resume_params
+        assert "threadId: string;" in thread_resume_params
+        assert "path?: string | null;" in thread_resume_params
+        assert "excludeTurns?: boolean;" in thread_resume_params
+        thread_resume_response = (
+            out_dir / "v2" / "ThreadResumeResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadResumeResponse" in thread_resume_response
+        assert "thread: unknown;" in thread_resume_response
         thread_fork_params = (out_dir / "v2" / "ThreadForkParams.ts").read_text(
             encoding="utf-8"
         )
@@ -10576,6 +10780,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
+        assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
+        assert 'export type { ThreadResumeResponse } from "./ThreadResumeResponse";' in v2_index
         assert 'export type { ThreadForkParams } from "./ThreadForkParams";' in v2_index
         assert 'export type { ThreadForkResponse } from "./ThreadForkResponse";' in v2_index
         assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
@@ -10835,6 +11041,8 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_stdio_smoke(binary)
     print("app-server-stdio-e2e: ok")
+    run_thread_resume_rpc_smoke(binary)
+    print("app-server-thread-resume-rpc-e2e: ok")
     run_goal_feature_gate_smoke(binary)
     print("app-server-goal-feature-gate-e2e: ok")
     run_memory_reset_smoke(binary)
