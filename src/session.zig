@@ -9,15 +9,61 @@ const proposed_plan = @import("proposed_plan.zig");
 const tools = @import("tools.zig");
 
 pub const Transcript = struct {
+    id: ?[]const u8 = null,
+    forked_from_id: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    thread_source: ?[]const u8 = null,
+    model_provider: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
+    cli_version: ?[]const u8 = null,
     title: ?[]const u8 = null,
     history: std.ArrayList(api.HistoryItem) = .empty,
     plan: plan_tool.State = .{},
 
     pub fn deinit(self: *Transcript, allocator: std.mem.Allocator) void {
+        self.clearMetadata(allocator);
         self.clearTitle(allocator);
         self.plan.deinit(allocator);
         for (self.history.items) |item| item.deinit(allocator);
         self.history.deinit(allocator);
+    }
+
+    pub fn clearMetadata(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.id);
+        clearOptionalString(allocator, &self.forked_from_id);
+        clearOptionalString(allocator, &self.source);
+        clearOptionalString(allocator, &self.thread_source);
+        clearOptionalString(allocator, &self.model_provider);
+        clearOptionalString(allocator, &self.cwd);
+        clearOptionalString(allocator, &self.cli_version);
+    }
+
+    pub fn setId(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.id, value);
+    }
+
+    pub fn setForkedFromId(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.forked_from_id, value);
+    }
+
+    pub fn setSource(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.source, value);
+    }
+
+    pub fn setThreadSource(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.thread_source, value);
+    }
+
+    pub fn setModelProvider(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.model_provider, value);
+    }
+
+    pub fn setCwd(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.cwd, value);
+    }
+
+    pub fn setCliVersion(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.cli_version, value);
     }
 
     pub fn setTitle(self: *Transcript, allocator: std.mem.Allocator, title: []const u8) !void {
@@ -41,6 +87,13 @@ pub const Transcript = struct {
         var copy = Transcript{};
         errdefer copy.deinit(allocator);
 
+        if (self.id) |value| try copy.setId(allocator, value);
+        if (self.forked_from_id) |value| try copy.setForkedFromId(allocator, value);
+        if (self.source) |value| try copy.setSource(allocator, value);
+        if (self.thread_source) |value| try copy.setThreadSource(allocator, value);
+        if (self.model_provider) |value| try copy.setModelProvider(allocator, value);
+        if (self.cwd) |value| try copy.setCwd(allocator, value);
+        if (self.cli_version) |value| try copy.setCliVersion(allocator, value);
         if (self.title) |title| try copy.setTitle(allocator, title);
         copy.plan = try self.plan.clone(allocator);
         for (self.history.items) |item| try copy.appendHistoryItem(allocator, item);
@@ -153,6 +206,125 @@ pub const TurnOptions = struct {
     include_tools: bool = true,
     plan_mode: bool = false,
 };
+
+fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
+    const copy = try allocator.dupe(u8, value);
+    clearOptionalString(allocator, slot);
+    slot.* = copy;
+}
+
+fn clearOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8) void {
+    if (slot.*) |value| {
+        allocator.free(value);
+        slot.* = null;
+    }
+}
+
+pub fn transcriptFromResponseHistory(allocator: std.mem.Allocator, history: []const std.json.Value) !Transcript {
+    if (history.len == 0) return error.EmptyHistory;
+
+    var transcript = Transcript{};
+    errdefer transcript.deinit(allocator);
+
+    for (history) |item| {
+        try appendResponseHistoryItem(allocator, &transcript, item);
+    }
+
+    return transcript;
+}
+
+pub fn appendResponseHistoryItem(
+    allocator: std.mem.Allocator,
+    transcript: *Transcript,
+    item: std.json.Value,
+) !void {
+    if (item != .object) return error.InvalidHistory;
+    const object = item.object;
+    const item_type_value = object.get("type") orelse return error.InvalidHistory;
+    if (item_type_value != .string) return error.InvalidHistory;
+    const item_type = item_type_value.string;
+
+    if (std.mem.eql(u8, item_type, "message")) {
+        try appendResponseHistoryMessage(allocator, transcript, object);
+    } else if (std.mem.eql(u8, item_type, "function_call")) {
+        try appendResponseHistoryFunctionCall(allocator, transcript, object);
+    } else if (std.mem.eql(u8, item_type, "function_call_output")) {
+        try appendResponseHistoryFunctionCallOutput(allocator, transcript, object);
+    }
+}
+
+fn appendResponseHistoryMessage(
+    allocator: std.mem.Allocator,
+    transcript: *Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const role_value = object.get("role") orelse return error.InvalidHistory;
+    if (role_value != .string) return error.InvalidHistory;
+    const content_value = object.get("content") orelse return error.InvalidHistory;
+    if (content_value != .array) return error.InvalidHistory;
+
+    var content_type = defaultHistoryContentType(role_value.string);
+    var text: []const u8 = "";
+    for (content_value.array.items) |content_item| {
+        if (content_item != .object) continue;
+        const content_object = content_item.object;
+        if (content_object.get("type")) |type_value| {
+            if (type_value == .string) content_type = type_value.string;
+        }
+        const text_value = content_object.get("text") orelse continue;
+        if (text_value != .string) continue;
+        text = text_value.string;
+        break;
+    }
+
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .message,
+        .role = role_value.string,
+        .content_type = content_type,
+        .text = text,
+    });
+}
+
+fn appendResponseHistoryFunctionCall(
+    allocator: std.mem.Allocator,
+    transcript: *Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
+    const name = requiredJsonStringField(object, "name") orelse return error.InvalidHistory;
+    const arguments = requiredJsonStringField(object, "arguments") orelse return error.InvalidHistory;
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call,
+        .call_id = call_id,
+        .name = name,
+        .arguments = arguments,
+    });
+}
+
+fn appendResponseHistoryFunctionCallOutput(
+    allocator: std.mem.Allocator,
+    transcript: *Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
+    const output = requiredJsonStringField(object, "output") orelse return error.InvalidHistory;
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call_output,
+        .call_id = call_id,
+        .output = output,
+    });
+}
+
+fn defaultHistoryContentType(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "assistant")) return "output_text";
+    return "input_text";
+}
+
+fn requiredJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
 
 pub fn runTurn(
     allocator: std.mem.Allocator,

@@ -107,6 +107,7 @@ const LoadedThread = struct {
     path: ?[]const u8,
     source: []const u8,
     thread_source: ?[]const u8,
+    cli_version: []const u8,
     name: ?[]const u8,
     turns_json: []const u8,
     created_at: i64,
@@ -128,6 +129,7 @@ const LoadedThread = struct {
         if (self.path) |value| allocator.free(value);
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
+        allocator.free(self.cli_version);
         if (self.name) |value| allocator.free(value);
         allocator.free(self.turns_json);
     }
@@ -6128,6 +6130,8 @@ fn createLoadedThreadFromStartParams(
     errdefer allocator.free(preview);
     const source = try allocator.dupe(u8, "appServer");
     errdefer allocator.free(source);
+    const cli_version = try allocator.dupe(u8, "0.0.1");
+    errdefer allocator.free(cli_version);
     const turns_json = try allocator.dupe(u8, "[]");
     errdefer allocator.free(turns_json);
 
@@ -6191,6 +6195,7 @@ fn createLoadedThreadFromStartParams(
         .path = path,
         .source = source,
         .thread_source = thread_source,
+        .cli_version = cli_version,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6215,6 +6220,8 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(preview);
     const source = try allocator.dupe(u8, "appServer");
     errdefer allocator.free(source);
+    const cli_version = try allocator.dupe(u8, "0.0.1");
+    errdefer allocator.free(cli_version);
     const turns_json = try renderTranscriptTurnsJson(allocator, &transcript, true);
     errdefer allocator.free(turns_json);
 
@@ -6268,6 +6275,7 @@ fn createLoadedThreadFromHistoryParams(
         .path = path,
         .source = source,
         .thread_source = null,
+        .cli_version = cli_version,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6282,16 +6290,28 @@ fn createLoadedThreadFromResumeParams(
     path: []const u8,
     transcript: *const session_mod.Transcript,
 ) !LoadedThread {
-    const thread_id = try session_store.sessionIdFromPath(allocator, path);
+    const thread_id = if (transcript.id) |value|
+        try allocator.dupe(u8, value)
+    else
+        try session_store.sessionIdFromPath(allocator, path);
     errdefer allocator.free(thread_id);
     const session_id = try allocator.dupe(u8, thread_id);
     errdefer allocator.free(session_id);
+    const forked_from_id = if (transcript.forked_from_id) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (forked_from_id) |value| allocator.free(value);
     const preview = try resumePreview(allocator, transcript);
     errdefer allocator.free(preview);
     const path_copy = try allocator.dupe(u8, path);
     errdefer allocator.free(path_copy);
-    const source = try allocator.dupe(u8, "cli");
+    const source = try allocator.dupe(u8, transcript.source orelse "cli");
     errdefer allocator.free(source);
+    const thread_source = if (transcript.thread_source) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (thread_source) |value| allocator.free(value);
+    const cli_version = try allocator.dupe(u8, transcript.cli_version orelse "0.0.1");
+    errdefer allocator.free(cli_version);
     const name = if (transcript.title) |title| try allocator.dupe(u8, title) else null;
     errdefer if (name) |value| allocator.free(value);
     const turns_json = try renderTranscriptTurnsJson(allocator, transcript, true);
@@ -6302,13 +6322,13 @@ fn createLoadedThreadFromResumeParams(
 
     const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
     defer if (configured_model_provider) |value| allocator.free(value);
-    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
+    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse transcript.model_provider orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
 
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
 
-    const cwd = try threadStartCwd(allocator, params);
+    const cwd = try threadResumeCwd(allocator, transcript, params);
     errdefer allocator.free(cwd);
 
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
@@ -6330,7 +6350,7 @@ fn createLoadedThreadFromResumeParams(
     return .{
         .id = thread_id,
         .session_id = session_id,
-        .forked_from_id = null,
+        .forked_from_id = forked_from_id,
         .preview = preview,
         .model = model,
         .model_provider = model_provider,
@@ -6343,7 +6363,8 @@ fn createLoadedThreadFromResumeParams(
         .ephemeral = false,
         .path = path_copy,
         .source = source,
-        .thread_source = null,
+        .thread_source = thread_source,
+        .cli_version = cli_version,
         .name = name,
         .turns_json = turns_json,
         .created_at = now,
@@ -6382,6 +6403,8 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(preview);
     const source_label = try allocator.dupe(u8, "appServer");
     errdefer allocator.free(source_label);
+    const cli_version = try allocator.dupe(u8, "0.0.1");
+    errdefer allocator.free(cli_version);
     const turns_json = try allocator.dupe(u8, source.turns_json);
     errdefer allocator.free(turns_json);
 
@@ -6446,6 +6469,7 @@ fn createLoadedThreadFromForkParams(
         .path = path,
         .source = source_label,
         .thread_source = thread_source,
+        .cli_version = cli_version,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6496,101 +6520,7 @@ fn resumePreview(allocator: std.mem.Allocator, transcript: *const session_mod.Tr
 }
 
 fn transcriptFromResponseHistory(allocator: std.mem.Allocator, history: []const std.json.Value) !session_mod.Transcript {
-    if (history.len == 0) return error.EmptyHistory;
-
-    var transcript = session_mod.Transcript{};
-    errdefer transcript.deinit(allocator);
-
-    for (history) |item| {
-        if (item != .object) return error.InvalidHistory;
-        const object = item.object;
-        const item_type_value = object.get("type") orelse return error.InvalidHistory;
-        if (item_type_value != .string) return error.InvalidHistory;
-        const item_type = item_type_value.string;
-
-        if (std.mem.eql(u8, item_type, "message")) {
-            try appendResponseHistoryMessage(allocator, &transcript, object);
-        } else if (std.mem.eql(u8, item_type, "function_call")) {
-            try appendResponseHistoryFunctionCall(allocator, &transcript, object);
-        } else if (std.mem.eql(u8, item_type, "function_call_output")) {
-            try appendResponseHistoryFunctionCallOutput(allocator, &transcript, object);
-        }
-    }
-
-    return transcript;
-}
-
-fn appendResponseHistoryMessage(
-    allocator: std.mem.Allocator,
-    transcript: *session_mod.Transcript,
-    object: std.json.ObjectMap,
-) !void {
-    const role_value = object.get("role") orelse return error.InvalidHistory;
-    if (role_value != .string) return error.InvalidHistory;
-    const content_value = object.get("content") orelse return error.InvalidHistory;
-    if (content_value != .array) return error.InvalidHistory;
-
-    var content_type = defaultHistoryContentType(role_value.string);
-    var text: []const u8 = "";
-    for (content_value.array.items) |content_item| {
-        if (content_item != .object) continue;
-        const content_object = content_item.object;
-        if (content_object.get("type")) |type_value| {
-            if (type_value == .string) content_type = type_value.string;
-        }
-        const text_value = content_object.get("text") orelse continue;
-        if (text_value != .string) continue;
-        text = text_value.string;
-        break;
-    }
-
-    try transcript.appendHistoryItem(allocator, .{
-        .kind = .message,
-        .role = role_value.string,
-        .content_type = content_type,
-        .text = text,
-    });
-}
-
-fn appendResponseHistoryFunctionCall(
-    allocator: std.mem.Allocator,
-    transcript: *session_mod.Transcript,
-    object: std.json.ObjectMap,
-) !void {
-    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
-    const name = requiredJsonStringField(object, "name") orelse return error.InvalidHistory;
-    const arguments = requiredJsonStringField(object, "arguments") orelse return error.InvalidHistory;
-    try transcript.appendHistoryItem(allocator, .{
-        .kind = .function_call,
-        .call_id = call_id,
-        .name = name,
-        .arguments = arguments,
-    });
-}
-
-fn appendResponseHistoryFunctionCallOutput(
-    allocator: std.mem.Allocator,
-    transcript: *session_mod.Transcript,
-    object: std.json.ObjectMap,
-) !void {
-    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
-    const output = requiredJsonStringField(object, "output") orelse return error.InvalidHistory;
-    try transcript.appendHistoryItem(allocator, .{
-        .kind = .function_call_output,
-        .call_id = call_id,
-        .output = output,
-    });
-}
-
-fn defaultHistoryContentType(role: []const u8) []const u8 {
-    if (std.mem.eql(u8, role, "assistant")) return "output_text";
-    return "input_text";
-}
-
-fn requiredJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    const value = object.get(name) orelse return null;
-    if (value != .string) return null;
-    return value.string;
+    return session_mod.transcriptFromResponseHistory(allocator, history);
 }
 
 fn renderTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript, include_turns: bool) ![]const u8 {
@@ -6644,6 +6574,18 @@ fn appendUsize(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: usi
 fn threadStartCwd(allocator: std.mem.Allocator, params: ?std.json.ObjectMap) ![]const u8 {
     const cwd = optionalStringParam(params, "cwd") orelse ".";
     return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd, allocator);
+}
+
+fn threadResumeCwd(
+    allocator: std.mem.Allocator,
+    transcript: *const session_mod.Transcript,
+    params: std.json.ObjectMap,
+) ![]const u8 {
+    if (optionalStringParam(params, "cwd")) |cwd| {
+        return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd, allocator);
+    }
+    if (transcript.cwd) |cwd| return allocator.dupe(u8, cwd);
+    return threadStartCwd(allocator, params);
 }
 
 fn optionalStringParam(params: ?std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -6958,7 +6900,9 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     try appendOptionalJsonString(allocator, result, thread.path);
     try result.appendSlice(allocator, ",\"cwd\":");
     try appendJsonString(allocator, result, thread.cwd);
-    try result.appendSlice(allocator, ",\"cliVersion\":\"0.0.1\",\"source\":");
+    try result.appendSlice(allocator, ",\"cliVersion\":");
+    try appendJsonString(allocator, result, thread.cli_version);
+    try result.appendSlice(allocator, ",\"source\":");
     try appendJsonString(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);

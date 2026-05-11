@@ -96,19 +96,105 @@ pub fn loadTranscript(allocator: std.mem.Allocator, path: []const u8) !session.T
         const line = std.mem.trim(u8, line_raw, " \t\r");
         if (line.len == 0) continue;
 
-        var parsed = try std.json.parseFromSlice(StoredLine, allocator, line, .{ .ignore_unknown_fields = true });
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
 
-        if (std.mem.eql(u8, parsed.value.type, "metadata")) {
-            if (parsed.value.title) |title| try transcript.setTitle(allocator, title);
-            continue;
-        }
-
-        const item = try historyItemFromStoredLine(parsed.value);
-        try transcript.appendHistoryItem(allocator, item);
+        try appendTranscriptLine(allocator, &transcript, parsed.value);
     }
 
     return transcript;
+}
+
+fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Transcript, line: std.json.Value) !void {
+    if (line != .object) return error.InvalidSessionLine;
+    const object = line.object;
+    const type_value = object.get("type") orelse return error.InvalidSessionLine;
+    if (type_value != .string) return error.InvalidSessionLine;
+    const line_type = type_value.string;
+
+    if (std.mem.eql(u8, line_type, "metadata")) {
+        if (jsonStringField(object, "title")) |title| try transcript.setTitle(allocator, title);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "message")) {
+        try appendStoredMessage(allocator, transcript, object);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "function_call")) {
+        try appendStoredFunctionCall(allocator, transcript, object);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "function_call_output")) {
+        try appendStoredFunctionCallOutput(allocator, transcript, object);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "session_meta")) {
+        const payload = object.get("payload") orelse return;
+        try applyRolloutSessionMeta(allocator, transcript, payload);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "response_item")) {
+        const payload = object.get("payload") orelse return error.InvalidSessionLine;
+        try session.appendResponseHistoryItem(allocator, transcript, payload);
+        return;
+    }
+}
+
+fn appendStoredMessage(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .message,
+        .role = jsonStringField(object, "role") orelse return error.InvalidSessionLine,
+        .content_type = jsonStringField(object, "content_type") orelse return error.InvalidSessionLine,
+        .text = jsonStringField(object, "text") orelse return error.InvalidSessionLine,
+    });
+}
+
+fn appendStoredFunctionCall(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call,
+        .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
+        .name = jsonStringField(object, "name") orelse return error.InvalidSessionLine,
+        .arguments = jsonStringField(object, "arguments") orelse return error.InvalidSessionLine,
+    });
+}
+
+fn appendStoredFunctionCallOutput(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call_output,
+        .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
+        .output = jsonStringField(object, "output") orelse return error.InvalidSessionLine,
+    });
+}
+
+fn applyRolloutSessionMeta(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    payload: std.json.Value,
+) !void {
+    if (payload != .object) return;
+    const object = if (payload.object.get("meta")) |meta_value|
+        if (meta_value == .object) meta_value.object else payload.object
+    else
+        payload.object;
+
+    if (jsonStringField(object, "id")) |value| try transcript.setId(allocator, value);
+    if (jsonStringField(object, "forked_from_id")) |value| try transcript.setForkedFromId(allocator, value);
+    if (jsonStringField(object, "source")) |value| try transcript.setSource(allocator, value);
+    if (jsonStringField(object, "thread_source")) |value| try transcript.setThreadSource(allocator, value);
+    if (jsonStringField(object, "model_provider")) |value| try transcript.setModelProvider(allocator, value);
+    if (jsonStringField(object, "cwd")) |value| try transcript.setCwd(allocator, value);
+    if (jsonStringField(object, "cli_version")) |value| try transcript.setCliVersion(allocator, value);
+}
+
+fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
 }
 
 pub fn resolveResumePath(allocator: std.mem.Allocator, codex_home: []const u8, target: ?[]const u8) ![]const u8 {
@@ -129,7 +215,18 @@ pub fn resolveResumePath(allocator: std.mem.Allocator, codex_home: []const u8, t
         try std.fmt.allocPrint(allocator, "rollout-{s}.jsonl", .{raw_target});
     defer allocator.free(filename);
 
-    return sessionFilePath(allocator, codex_home, filename);
+    const zig_path = try sessionFilePath(allocator, codex_home, filename);
+    errdefer allocator.free(zig_path);
+    if (fileExists(zig_path)) return zig_path;
+
+    if (isUuidLike(raw_target)) {
+        if (try findRolloutPathByThreadId(allocator, codex_home, raw_target)) |path| {
+            allocator.free(zig_path);
+            return path;
+        }
+    }
+
+    return zig_path;
 }
 
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -277,7 +374,98 @@ fn sessionIdFromFilename(allocator: std.mem.Allocator, filename: []const u8) ![]
         without_prefix[0 .. without_prefix.len - ".jsonl".len]
     else
         without_prefix;
-    return allocator.dupe(u8, without_suffix);
+    return allocator.dupe(u8, rolloutThreadIdFromStem(without_suffix) orelse without_suffix);
+}
+
+fn rolloutThreadIdFromStem(stem: []const u8) ?[]const u8 {
+    if (isUuidLike(stem)) return stem;
+    if (stem.len < 37) return null;
+    const uuid_start = stem.len - 36;
+    if (stem[uuid_start - 1] != '-') return null;
+    const candidate = stem[uuid_start..];
+    if (!isUuidLike(candidate)) return null;
+    return candidate;
+}
+
+fn findRolloutPathByThreadId(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+) !?[]const u8 {
+    const sessions_root = try std.fs.path.join(allocator, &.{ codex_home, "sessions" });
+    defer allocator.free(sessions_root);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    return try findRolloutPathByThreadIdInDir(allocator, io, sessions_root, "", &dir, thread_id, 0);
+}
+
+fn findRolloutPathByThreadIdInDir(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    dir: *std.Io.Dir,
+    thread_id: []const u8,
+    depth: usize,
+) !?[]const u8 {
+    if (depth > 8) return null;
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+
+        const relative_path = try relativeChildPath(allocator, relative_dir, entry.name);
+        defer allocator.free(relative_path);
+
+        const full_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(full_path);
+
+        const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch continue;
+        if (stat.kind == .file and isSessionFilename(entry.name)) {
+            const id = try sessionIdFromFilename(allocator, entry.name);
+            defer allocator.free(id);
+            if (std.mem.eql(u8, id, thread_id)) return try allocator.dupe(u8, full_path);
+            continue;
+        }
+
+        if (stat.kind != .directory) continue;
+        var child_dir = std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true }) catch continue;
+        defer child_dir.close(io);
+        if (try findRolloutPathByThreadIdInDir(allocator, io, root, relative_path, &child_dir, thread_id, depth + 1)) |path| {
+            return path;
+        }
+    }
+
+    return null;
+}
+
+fn relativeChildPath(allocator: std.mem.Allocator, relative_dir: []const u8, name: []const u8) ![]const u8 {
+    if (relative_dir.len == 0) return allocator.dupe(u8, name);
+    return std.fs.path.join(allocator, &.{ relative_dir, name });
+}
+
+fn fileExists(path: []const u8) bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch return false;
+    return stat.kind == .file;
+}
+
+fn isUuidLike(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |char, index| {
+        if (index == 8 or index == 13 or index == 18 or index == 23) {
+            if (char != '-') return false;
+            continue;
+        }
+        if (!std.ascii.isHex(char)) return false;
+    }
+    return true;
 }
 
 fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
@@ -333,39 +521,6 @@ fn readSessionTitle(allocator: std.mem.Allocator, path: []const u8) !?[]const u8
 
         return null;
     }
-}
-
-fn historyItemFromStoredLine(line: StoredLine) !api.HistoryItem {
-    if (std.mem.eql(u8, line.type, "message")) {
-        if (line.role == null or line.content_type == null or line.text == null) return error.InvalidSessionLine;
-        return .{
-            .kind = .message,
-            .role = line.role,
-            .content_type = line.content_type,
-            .text = line.text,
-        };
-    }
-
-    if (std.mem.eql(u8, line.type, "function_call")) {
-        if (line.call_id == null or line.name == null or line.arguments == null) return error.InvalidSessionLine;
-        return .{
-            .kind = .function_call,
-            .call_id = line.call_id,
-            .name = line.name,
-            .arguments = line.arguments,
-        };
-    }
-
-    if (std.mem.eql(u8, line.type, "function_call_output")) {
-        if (line.call_id == null or line.output == null) return error.InvalidSessionLine;
-        return .{
-            .kind = .function_call_output,
-            .call_id = line.call_id,
-            .output = line.output,
-        };
-    }
-
-    return error.InvalidSessionLine;
 }
 
 test "session store round trips transcript jsonl" {
@@ -529,4 +684,66 @@ test "resume target accepts ids and rollout filenames" {
     const filename_path = try resolveResumePath(allocator, root, "rollout-2024-01-04");
     defer allocator.free(filename_path);
     try std.testing.expectEqualStrings("rollout-2024-01-04.jsonl", std.fs.path.basename(filename_path));
+}
+
+test "session id from path extracts Rust rollout uuid suffix" {
+    const allocator = std.testing.allocator;
+    const id = try sessionIdFromPath(allocator, "/tmp/sessions/2025/01/05/rollout-2025-01-05T12-00-00-22222222-2222-4222-8222-222222222222.jsonl");
+    defer allocator.free(id);
+    try std.testing.expectEqualStrings("22222222-2222-4222-8222-222222222222", id);
+}
+
+test "resume target finds Rust rollout layout by uuid" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const path = try std.fs.path.join(allocator, &.{ root, "sessions", "2025", "01", "05", "rollout-2025-01-05T12-00-00-22222222-2222-4222-8222-222222222222.jsonl" });
+    defer allocator.free(path);
+    try ensureParentDir(path);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data = "\n",
+    });
+
+    const resolved = try resolveResumePath(allocator, root, "22222222-2222-4222-8222-222222222222");
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(path, resolved);
+}
+
+test "load transcript accepts Rust rollout response items and session metadata" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const path = try std.fs.path.join(allocator, &.{ root, "sessions", "2025", "01", "05", "rollout-2025-01-05T12-00-00-22222222-2222-4222-8222-222222222222.jsonl" });
+    defer allocator.free(path);
+    try ensureParentDir(path);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data =
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"22222222-2222-4222-8222-222222222222","timestamp":"2025-01-05T12:00:00Z","cwd":"/","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider"}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"rust hello"}]}}
+        \\
+        ,
+    });
+
+    var loaded = try loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqualStrings("22222222-2222-4222-8222-222222222222", loaded.id.?);
+    try std.testing.expectEqualStrings("cli", loaded.source.?);
+    try std.testing.expectEqualStrings("user", loaded.thread_source.?);
+    try std.testing.expectEqualStrings("mock_provider", loaded.model_provider.?);
+    try std.testing.expectEqualStrings("/", loaded.cwd.?);
+    try std.testing.expectEqualStrings("0.0.0", loaded.cli_version.?);
+    try std.testing.expectEqual(@as(usize, 1), loaded.history.items.len);
+    try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
+    try std.testing.expectEqualStrings("rust hello", loaded.history.items[0].text.?);
 }
