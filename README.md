@@ -80,6 +80,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   and `mcpServer/tool/call`
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
+- report bearer-token and file-backed OAuth state from `codex-zig mcp list`
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
@@ -298,6 +299,7 @@ loaded-thread stdio tool calls including non-object argument pass-through, and
 model-facing stdio MCP resource
 list/template/read tool calls, verifies
 file-backed MCP OAuth logout for streamable HTTP servers, verifies
+CLI MCP auth-status reporting for bearer-token and file-backed OAuth servers, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
