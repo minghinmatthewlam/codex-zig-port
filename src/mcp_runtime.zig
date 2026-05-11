@@ -225,8 +225,12 @@ fn listResourcesForModel(
 
     if (server_name) |name| {
         const server = servers.get(name) orelse return error.McpServerNotFound;
-        if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
-        return listResourcesForModelServer(allocator, server.*, cursor, kind);
+        if (!server.enabled) return error.McpServerUnavailable;
+        return switch (server.kind) {
+            .stdio => listResourcesForModelStdioServer(allocator, server.*, cursor, kind),
+            .streamable_http => listResourcesForModelHttpServer(allocator, codex_home, server.*, cursor, kind),
+            else => error.McpServerUnavailable,
+        };
     }
 
     std.mem.sort(mcp_cmd.McpServer, servers.items.items, {}, mcpServerNameLessThan);
@@ -240,8 +244,8 @@ fn listResourcesForModel(
 
     var first = true;
     for (servers.items.items) |server| {
-        if (!server.enabled or server.kind != .stdio) continue;
-        appendAllModelResourceItems(allocator, &out, server, kind, &first) catch |err| switch (err) {
+        if (!server.enabled) continue;
+        appendAllModelResourceItems(allocator, codex_home, &out, server, kind, &first) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => continue,
         };
@@ -251,7 +255,7 @@ fn listResourcesForModel(
     return out.toOwnedSlice(allocator);
 }
 
-fn listResourcesForModelServer(
+fn listResourcesForModelStdioServer(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
     cursor: ?[]const u8,
@@ -263,10 +267,35 @@ fn listResourcesForModelServer(
     var next_id: i64 = 2;
     var page = try listModelResourcePage(allocator, &client, &next_id, server.name, kind, cursor);
     defer page.deinit(allocator);
+    return renderModelResourcePageEnvelope(allocator, server.name, kind, page);
+}
 
+fn listResourcesForModelHttpServer(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    cursor: ?[]const u8,
+    kind: ResourceInventoryKind,
+) ![]const u8 {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+    try client.initialize();
+    var next_id: i64 = 2;
+    var page = try listModelResourcePageHttp(allocator, &client, &next_id, server.name, kind, cursor);
+    defer page.deinit(allocator);
+
+    return renderModelResourcePageEnvelope(allocator, server.name, kind, page);
+}
+
+fn renderModelResourcePageEnvelope(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    kind: ResourceInventoryKind,
+    page: ModelResourcePage,
+) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
-    const server_json = try std.json.Stringify.valueAlloc(allocator, server.name, .{});
+    const server_json = try std.json.Stringify.valueAlloc(allocator, server_name, .{});
     defer allocator.free(server_json);
     const key_json = try std.json.Stringify.valueAlloc(allocator, kind.responseItemsKey(), .{});
     defer allocator.free(key_json);
@@ -289,11 +318,16 @@ fn listResourcesForModelServer(
 
 fn appendAllModelResourceItems(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
     out: *std.ArrayList(u8),
     server: mcp_cmd.McpServer,
     kind: ResourceInventoryKind,
     first: *bool,
 ) !void {
+    if (server.kind == .streamable_http) {
+        return appendAllModelResourceItemsHttp(allocator, codex_home, out, server, kind, first);
+    }
+    if (server.kind != .stdio) return error.McpServerUnavailable;
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
     try client.initialize();
@@ -306,6 +340,39 @@ fn appendAllModelResourceItems(
     var cursor: ?[]const u8 = null;
     while (true) {
         var page = try listModelResourcePage(allocator, &client, &next_id, server.name, kind, cursor);
+        defer page.deinit(allocator);
+        try appendJsonArrayItems(allocator, out, page.items, first);
+        const next_cursor = page.next_cursor orelse break;
+        for (seen_cursors.items) |seen| {
+            if (std.mem.eql(u8, seen, next_cursor)) return error.InvalidMcpResponse;
+        }
+        const cursor_copy = try allocator.dupe(u8, next_cursor);
+        errdefer allocator.free(cursor_copy);
+        try seen_cursors.append(allocator, cursor_copy);
+        cursor = cursor_copy;
+    }
+}
+
+fn appendAllModelResourceItemsHttp(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    out: *std.ArrayList(u8),
+    server: mcp_cmd.McpServer,
+    kind: ResourceInventoryKind,
+    first: *bool,
+) !void {
+    var client = try HttpClient.start(allocator, codex_home, server);
+    defer client.deinit();
+    try client.initialize();
+    var next_id: i64 = 2;
+    var seen_cursors = std.ArrayList([]const u8).empty;
+    defer {
+        for (seen_cursors.items) |seen| allocator.free(seen);
+        seen_cursors.deinit(allocator);
+    }
+    var cursor: ?[]const u8 = null;
+    while (true) {
+        var page = try listModelResourcePageHttp(allocator, &client, &next_id, server.name, kind, cursor);
         defer page.deinit(allocator);
         try appendJsonArrayItems(allocator, out, page.items, first);
         const next_cursor = page.next_cursor orelse break;
@@ -347,7 +414,38 @@ fn listModelResourcePage(
     next_id.* += 1;
     var response = try client.request(id, kind.method(), params);
     defer response.deinit();
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    return parseModelResourcePage(allocator, server_name, kind, response.value);
+}
+
+fn listModelResourcePageHttp(
+    allocator: std.mem.Allocator,
+    client: *HttpClient,
+    next_id: *i64,
+    server_name: []const u8,
+    kind: ResourceInventoryKind,
+    cursor: ?[]const u8,
+) !ModelResourcePage {
+    const params = if (cursor) |cursor_value|
+        try buildCursorParams(allocator, cursor_value)
+    else
+        null;
+    defer if (params) |params_json| allocator.free(params_json);
+
+    const id = next_id.*;
+    next_id.* += 1;
+    var response = try client.request(id, kind.method(), params);
+    defer response.deinit();
+    return parseModelResourcePage(allocator, server_name, kind, response.value);
+}
+
+fn parseModelResourcePage(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    kind: ResourceInventoryKind,
+    response_value: std.json.Value,
+) !ModelResourcePage {
+    if (response_value != .object) return error.InvalidMcpResponse;
+    const result = response_value.object.get("result") orelse return error.InvalidMcpResponse;
     if (result != .object) return error.InvalidMcpResponse;
     const items = result.object.get(kind.primaryItemsKey()) orelse if (kind.alternateItemsKey()) |key|
         result.object.get(key) orelse return error.InvalidMcpResponse
