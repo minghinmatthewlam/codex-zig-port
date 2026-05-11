@@ -11001,6 +11001,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert request["title"] == "JSONRPCRequest"
         assert request["required"] == ["id", "method"]
         assert request["properties"]["id"]["$ref"] == "RequestId.json"
+        client_notification = json.loads(
+            (out_dir / "ClientNotification.json").read_text(encoding="utf-8")
+        )
+        assert client_notification["oneOf"][0]["properties"]["method"]["const"] == (
+            "initialized"
+        )
 
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert initialize["title"] == "InitializeParams"
@@ -12381,6 +12387,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
+        assert "ClientNotification" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
         assert "AuthMode" in bundle["$defs"]
         assert "PlanType" in bundle["$defs"]
@@ -12548,6 +12555,12 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "changedPaths"
             ]["items"]["$ref"]
             == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["ClientNotification"]["oneOf"][0]["properties"][
+                "method"
+            ]["const"]
+            == "initialized"
         )
         assert (
             bundle["$defs"]["FsCopyParams"]["properties"]["recursive"]["type"]
@@ -12941,6 +12954,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         request_id = (out_dir / "RequestId.ts").read_text(encoding="utf-8")
         assert request_id.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert "export type RequestId = string | number;" in request_id
+        client_notification = (out_dir / "ClientNotification.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'method: "initialized"' in client_notification
 
         initialize = (out_dir / "InitializeParams.ts").read_text(encoding="utf-8")
         assert "export interface InitializeParams" in initialize
@@ -14290,6 +14307,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { AuthMode } from "./AuthMode";' in index
+        assert 'export type { ClientNotification } from "./ClientNotification";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
         assert 'export type { PlanType } from "./PlanType";' in index
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
