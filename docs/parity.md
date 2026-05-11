@@ -124,3 +124,5 @@ Additional app-server thread read coverage: `thread/read` validates `threadId` a
 Additional app-server thread archive coverage: `thread/archive` validates `threadId`, returns the Rust-shaped missing-rollout error for valid missing threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation.
 
 Additional app-server thread unarchive coverage: `thread/unarchive` validates `threadId`, returns the Rust-shaped missing-archived-rollout error for valid missing threads in the current no-store runtime, and is included in current TypeScript and JSON schema generation with an opaque thread response until full thread schema parity lands.
+
+Additional app-server thread list coverage: `thread/list` validates cursor, limit, sorting, source/provider, archive, cwd, state-db, and search filters, returns an empty Rust-shaped page in the current no-store runtime, and is included in current TypeScript and JSON schema generation with opaque thread items until full thread schema parity lands.
