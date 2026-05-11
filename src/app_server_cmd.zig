@@ -3346,7 +3346,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/inject_items") or
         std.mem.eql(u8, method, "thread/name/set") or
         std.mem.eql(u8, method, "thread/memoryMode/set") or
-        std.mem.eql(u8, method, "thread/metadata/update");
+        std.mem.eql(u8, method, "thread/metadata/update") or
+        std.mem.eql(u8, method, "thread/read");
 }
 
 fn handleThreadMethod(
@@ -3481,6 +3482,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/read")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!threadReadIncludeTurnsParamIsValid(object)) {
+            return renderJsonRpcError(allocator, id_value, -32602, "includeTurns must be a boolean");
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotLoaded(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -3530,6 +3546,11 @@ fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
     const mode = object.get("mode") orelse return false;
     if (mode != .string) return false;
     return std.mem.eql(u8, mode.string, "enabled") or std.mem.eql(u8, mode.string, "disabled");
+}
+
+fn threadReadIncludeTurnsParamIsValid(object: std.json.ObjectMap) bool {
+    const include_turns = object.get("includeTurns") orelse return true;
+    return include_turns == .bool;
 }
 
 const ThreadMetadataGitInfoValidationError = struct {
@@ -3583,6 +3604,12 @@ fn renderInvalidThreadId(allocator: std.mem.Allocator, id_value: std.json.Value,
 
 fn renderThreadNotFound(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
     const message = try std.fmt.allocPrint(allocator, "thread not found: {s}", .{thread_id});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderThreadNotLoaded(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "thread not loaded: {s}", .{thread_id});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
 }
