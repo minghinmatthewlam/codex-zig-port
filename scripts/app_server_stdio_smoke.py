@@ -11104,6 +11104,77 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert login_completed["required"] == ["success"]
         assert login_completed["properties"]["loginId"]["type"] == ["string", "null"]
         assert login_completed["properties"]["success"]["type"] == "boolean"
+        rate_limit_reached_type = json.loads(
+            (out_dir / "RateLimitReachedType.json").read_text(encoding="utf-8")
+        )
+        assert rate_limit_reached_type["enum"] == [
+            "rate_limit_reached",
+            "workspace_owner_credits_depleted",
+            "workspace_member_credits_depleted",
+            "workspace_owner_usage_limit_reached",
+            "workspace_member_usage_limit_reached",
+        ]
+        rate_limit_window = json.loads(
+            (out_dir / "RateLimitWindow.json").read_text(encoding="utf-8")
+        )
+        assert rate_limit_window["required"] == ["usedPercent"]
+        assert rate_limit_window["properties"]["usedPercent"]["format"] == "int32"
+        credits_snapshot = json.loads(
+            (out_dir / "CreditsSnapshot.json").read_text(encoding="utf-8")
+        )
+        assert credits_snapshot["required"] == ["hasCredits", "unlimited"]
+        assert credits_snapshot["properties"]["balance"]["type"] == ["string", "null"]
+        rate_limit_snapshot = json.loads(
+            (out_dir / "RateLimitSnapshot.json").read_text(encoding="utf-8")
+        )
+        assert (
+            rate_limit_snapshot["properties"]["primary"]["anyOf"][0]["$ref"]
+            == "RateLimitWindow.json"
+        )
+        assert (
+            rate_limit_snapshot["properties"]["rateLimitReachedType"]["anyOf"][0][
+                "$ref"
+            ]
+            == "RateLimitReachedType.json"
+        )
+        rate_limits_response = json.loads(
+            (out_dir / "GetAccountRateLimitsResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert rate_limits_response["required"] == ["rateLimits"]
+        assert (
+            rate_limits_response["properties"]["rateLimitsByLimitId"][
+                "additionalProperties"
+            ]["$ref"]
+            == "RateLimitSnapshot.json"
+        )
+        rate_limits_updated = json.loads(
+            (out_dir / "AccountRateLimitsUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert rate_limits_updated["required"] == ["rateLimits"]
+        add_credits_type = json.loads(
+            (out_dir / "AddCreditsNudgeCreditType.json").read_text(encoding="utf-8")
+        )
+        assert add_credits_type["enum"] == ["credits", "usage_limit"]
+        add_credits_params = json.loads(
+            (out_dir / "SendAddCreditsNudgeEmailParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert add_credits_params["required"] == ["creditType"]
+        add_credits_status = json.loads(
+            (out_dir / "AddCreditsNudgeEmailStatus.json").read_text(encoding="utf-8")
+        )
+        assert add_credits_status["enum"] == ["sent", "cooldown_active"]
+        add_credits_response = json.loads(
+            (out_dir / "SendAddCreditsNudgeEmailResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert add_credits_response["required"] == ["status"]
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -12300,6 +12371,16 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CancelLoginAccountResponse" in bundle["$defs"]
         assert "LogoutAccountResponse" in bundle["$defs"]
         assert "AccountLoginCompletedNotification" in bundle["$defs"]
+        assert "RateLimitReachedType" in bundle["$defs"]
+        assert "RateLimitWindow" in bundle["$defs"]
+        assert "CreditsSnapshot" in bundle["$defs"]
+        assert "RateLimitSnapshot" in bundle["$defs"]
+        assert "GetAccountRateLimitsResponse" in bundle["$defs"]
+        assert "AccountRateLimitsUpdatedNotification" in bundle["$defs"]
+        assert "AddCreditsNudgeCreditType" in bundle["$defs"]
+        assert "SendAddCreditsNudgeEmailParams" in bundle["$defs"]
+        assert "AddCreditsNudgeEmailStatus" in bundle["$defs"]
+        assert "SendAddCreditsNudgeEmailResponse" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -12504,6 +12585,45 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["AccountLoginCompletedNotification"]["required"] == [
             "success"
         ]
+        assert bundle["$defs"]["RateLimitWindow"]["required"] == ["usedPercent"]
+        assert (
+            bundle["$defs"]["RateLimitSnapshot"]["properties"]["credits"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/CreditsSnapshot"
+        )
+        assert (
+            bundle["$defs"]["GetAccountRateLimitsResponse"]["properties"][
+                "rateLimits"
+            ]["$ref"]
+            == "#/$defs/RateLimitSnapshot"
+        )
+        assert (
+            bundle["$defs"]["AccountRateLimitsUpdatedNotification"]["properties"][
+                "rateLimits"
+            ]["$ref"]
+            == "#/$defs/RateLimitSnapshot"
+        )
+        assert bundle["$defs"]["AddCreditsNudgeCreditType"]["enum"] == [
+            "credits",
+            "usage_limit",
+        ]
+        assert (
+            bundle["$defs"]["SendAddCreditsNudgeEmailParams"]["properties"][
+                "creditType"
+            ]["$ref"]
+            == "#/$defs/AddCreditsNudgeCreditType"
+        )
+        assert bundle["$defs"]["AddCreditsNudgeEmailStatus"]["enum"] == [
+            "sent",
+            "cooldown_active",
+        ]
+        assert (
+            bundle["$defs"]["SendAddCreditsNudgeEmailResponse"]["properties"][
+                "status"
+            ]["$ref"]
+            == "#/$defs/AddCreditsNudgeEmailStatus"
+        )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -12824,6 +12944,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "account/login/cancel";' in client_request
         assert "params: CancelLoginAccountParams;" in client_request
         assert 'method: "account/logout";' in client_request
+        assert 'method: "account/rateLimits/read";' in client_request
+        assert 'method: "account/sendAddCreditsNudgeEmail";' in client_request
+        assert "params: SendAddCreditsNudgeEmailParams;" in client_request
         for method, params_type in [
             ("fs/readFile", "FsReadFileParams"),
             ("fs/writeFile", "FsWriteFileParams"),
@@ -12942,6 +13065,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: AccountLoginCompletedNotification;" in server_notification
         assert 'method: "account/updated";' in server_notification
         assert "params: AccountUpdatedNotification;" in server_notification
+        assert 'method: "account/rateLimits/updated";' in server_notification
+        assert (
+            "params: AccountRateLimitsUpdatedNotification;" in server_notification
+        )
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -12993,6 +13120,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: CancelLoginAccountResponse;" in client_response
         assert 'method: "account/logout";' in client_response
         assert "result: LogoutAccountResponse;" in client_response
+        assert 'method: "account/rateLimits/read";' in client_response
+        assert "result: GetAccountRateLimitsResponse;" in client_response
+        assert 'method: "account/sendAddCreditsNudgeEmail";' in client_response
+        assert "result: SendAddCreditsNudgeEmailResponse;" in client_response
         for method, response_type in [
             ("fs/readFile", "FsReadFileResponse"),
             ("fs/writeFile", "FsWriteFileResponse"),
@@ -13222,6 +13353,54 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "loginId: string | null;" in login_completed
         assert "success: boolean;" in login_completed
         assert "error: string | null;" in login_completed
+        rate_limit_reached_type = (
+            out_dir / "v2" / "RateLimitReachedType.ts"
+        ).read_text(encoding="utf-8")
+        assert '"workspace_owner_usage_limit_reached"' in rate_limit_reached_type
+        rate_limit_window = (out_dir / "v2" / "RateLimitWindow.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "usedPercent: number;" in rate_limit_window
+        assert "windowDurationMins: number | null;" in rate_limit_window
+        credits_snapshot = (out_dir / "v2" / "CreditsSnapshot.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "hasCredits: boolean;" in credits_snapshot
+        assert "balance: string | null;" in credits_snapshot
+        rate_limit_snapshot = (out_dir / "v2" / "RateLimitSnapshot.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { PlanType } from "../PlanType";' in rate_limit_snapshot
+        assert "primary: RateLimitWindow | null;" in rate_limit_snapshot
+        assert "credits: CreditsSnapshot | null;" in rate_limit_snapshot
+        rate_limits_response = (
+            out_dir / "v2" / "GetAccountRateLimitsResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "rateLimits: RateLimitSnapshot;" in rate_limits_response
+        assert (
+            "rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;"
+            in rate_limits_response
+        )
+        rate_limits_updated = (
+            out_dir / "v2" / "AccountRateLimitsUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "rateLimits: RateLimitSnapshot;" in rate_limits_updated
+        add_credits_type = (
+            out_dir / "v2" / "AddCreditsNudgeCreditType.ts"
+        ).read_text(encoding="utf-8")
+        assert '"credits" | "usage_limit"' in add_credits_type
+        add_credits_params = (
+            out_dir / "v2" / "SendAddCreditsNudgeEmailParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "creditType: AddCreditsNudgeCreditType;" in add_credits_params
+        add_credits_status = (
+            out_dir / "v2" / "AddCreditsNudgeEmailStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert '"sent" | "cooldown_active"' in add_credits_status
+        add_credits_response = (
+            out_dir / "v2" / "SendAddCreditsNudgeEmailResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "status: AddCreditsNudgeEmailStatus;" in add_credits_response
         git_diff_params = (out_dir / "v2" / "GitDiffToRemoteParams.ts").read_text(
             encoding="utf-8"
         )
@@ -14066,17 +14245,27 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         for account_export in [
             "Account",
             "AccountLoginCompletedNotification",
+            "AccountRateLimitsUpdatedNotification",
             "AccountUpdatedNotification",
+            "AddCreditsNudgeCreditType",
+            "AddCreditsNudgeEmailStatus",
             "CancelLoginAccountParams",
             "CancelLoginAccountResponse",
             "CancelLoginAccountStatus",
+            "CreditsSnapshot",
             "GetAccountParams",
+            "GetAccountRateLimitsResponse",
             "GetAccountResponse",
             "GetAuthStatusParams",
             "GetAuthStatusResponse",
             "LoginAccountParams",
             "LoginAccountResponse",
             "LogoutAccountResponse",
+            "RateLimitReachedType",
+            "RateLimitSnapshot",
+            "RateLimitWindow",
+            "SendAddCreditsNudgeEmailParams",
+            "SendAddCreditsNudgeEmailResponse",
         ]:
             assert (
                 f'export type {{ {account_export} }} from "./{account_export}";'
