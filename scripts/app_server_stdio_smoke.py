@@ -2568,6 +2568,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 local_image_path = codex_home / "local-smoke.png"
                 local_image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-smoke")
                 missing_local_image_path = codex_home / "missing-smoke.png"
+                skill_path = codex_home / "skills" / "plan-work" / "SKILL.md"
+                skill_path.parent.mkdir(parents=True)
+                skill_body = "# Plan Work\n\nUse the smoke planning workflow."
+                skill_path.write_text(skill_body, encoding="utf-8")
                 input_items = [
                     {
                         "type": "text",
@@ -2594,7 +2598,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     {
                         "type": "skill",
                         "name": "plan-work",
-                        "path": "/tmp/skills/plan-work/SKILL.md",
+                        "path": str(skill_path),
                     },
                     {
                         "type": "mention",
@@ -2695,6 +2699,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 assert model_prompt.startswith(f"{prompt}\n{missing_placeholder_prefix}")
                 assert "FileNotFound" in model_prompt
+                assert "<skill>\n<name>plan-work</name>" in model_prompt
+                assert f"<path>{skill_path}</path>" in model_prompt
+                assert skill_body in model_prompt
                 assert request_content[1] == {
                     "type": "input_image",
                     "image_url": "https://example.com/codex-zig-smoke.png",
@@ -2724,6 +2731,81 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "second text item" in stored
                 assert missing_placeholder_prefix in stored
                 assert "app turn reply" in stored
+
+                standalone_skill_path = (
+                    codex_home / "skills" / "standalone" / "SKILL.md"
+                )
+                standalone_skill_path.parent.mkdir(parents=True)
+                standalone_skill_body = (
+                    "# Standalone Skill\n\nUse this body without a text item."
+                )
+                standalone_skill_path.write_text(
+                    standalone_skill_body, encoding="utf-8"
+                )
+                standalone_items = [
+                    {
+                        "type": "skill",
+                        "name": "standalone",
+                        "path": str(standalone_skill_path),
+                    },
+                    {
+                        "type": "mention",
+                        "name": "Standalone Plugin",
+                        "path": "plugin://standalone@local",
+                    },
+                ]
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-standalone-skill",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": standalone_items,
+                        },
+                    },
+                )
+                standalone_turn_start = read_json_line(proc, 5)
+                assert standalone_turn_start["id"] == "turn-start-standalone-skill"
+                assert standalone_turn_start["result"]["turn"]["status"] == "inProgress"
+                standalone_started = read_json_line(proc, 5)
+                assert standalone_started["method"] == "turn/started"
+                standalone_user_started = read_json_line(proc, 5)
+                assert standalone_user_started["method"] == "item/started"
+                assert (
+                    standalone_user_started["params"]["item"]["content"]
+                    == standalone_items
+                )
+                standalone_user_completed = read_json_line(proc, 5)
+                assert standalone_user_completed["method"] == "item/completed"
+                assert (
+                    standalone_user_completed["params"]["item"]
+                    == standalone_user_started["params"]["item"]
+                )
+                standalone_agent_started = read_json_line(proc, 5)
+                assert standalone_agent_started["method"] == "item/started"
+                standalone_delta = read_json_line(proc, 5)
+                assert standalone_delta["method"] == "item/agentMessage/delta"
+                standalone_agent_completed = read_json_line(proc, 5)
+                assert standalone_agent_completed["method"] == "item/completed"
+                standalone_completed = read_json_line(proc, 5)
+                assert standalone_completed["method"] == "turn/completed"
+
+                assert server.request_paths == ["/responses", "/responses"]
+                standalone_request = server.request_bodies[1]
+                standalone_request_text = standalone_request["input"][-1]["content"][0][
+                    "text"
+                ]
+                assert standalone_request_text.startswith(
+                    "<skill>\n<name>standalone</name>"
+                )
+                assert f"<path>{standalone_skill_path}</path>" in standalone_request_text
+                assert standalone_skill_body in standalone_request_text
+                assert standalone_request_text.endswith("</skill>")
+                stored_after_standalone = rollout_path.read_text(encoding="utf-8")
+                assert "Standalone Skill" in stored_after_standalone
+                assert "Use this body without a text item." in stored_after_standalone
 
             assert proc.stdin is not None
             proc.stdin.close()
