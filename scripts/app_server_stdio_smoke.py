@@ -8763,6 +8763,95 @@ def run_windows_sandbox_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_feedback_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-feedback-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+
+        valid_params = {
+            "classification": "bug",
+            "reason": "smoke",
+            "threadId": "00000000-0000-4000-8000-000000000123",
+            "includeLogs": False,
+            "extraLogFiles": ["/tmp/codex-zig-feedback.log"],
+            "tags": {"surface": "app-server"},
+        }
+        parsed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-upload-parsed",
+                "method": "feedback/upload",
+                "params": valid_params,
+            },
+            env,
+        )
+        assert parsed["id"] == "feedback-upload-parsed"
+        assert parsed["error"]["code"] == -32603
+        assert "feedback/upload" in parsed["error"]["message"]
+        assert "parsed but not implemented yet" in parsed["error"]["message"]
+
+        invalid_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-invalid-thread",
+                "method": "feedback/upload",
+                "params": {**valid_params, "threadId": "not-a-thread"},
+            },
+            env,
+        )
+        assert invalid_thread["id"] == "feedback-invalid-thread"
+        assert invalid_thread["error"]["code"] == -32600
+        assert "invalid thread id" in invalid_thread["error"]["message"]
+
+        invalid_tags = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-invalid-tags",
+                "method": "feedback/upload",
+                "params": {**valid_params, "tags": {"surface": 1}},
+            },
+            env,
+        )
+        assert invalid_tags["error"]["code"] == -32602
+        assert "tags must be an object" in invalid_tags["error"]["message"]
+
+        missing_params = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-missing-params",
+                "method": "feedback/upload",
+            },
+            env,
+        )
+        assert missing_params["error"]["code"] == -32602
+        assert "params must be an object" in missing_params["error"]["message"]
+
+        codex_home.joinpath("config.toml").write_text(
+            "[feedback]\nenabled = false\n",
+            encoding="utf-8",
+        )
+        disabled = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-disabled",
+                "method": "feedback/upload",
+                "params": valid_params,
+            },
+            env,
+        )
+        assert disabled["id"] == "feedback-disabled"
+        assert disabled["error"]["code"] == -32600
+        assert disabled["error"]["message"] == "sending feedback is disabled by configuration"
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_model_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
 
@@ -13009,6 +13098,27 @@ def run_json_schema_smoke(binary: Path) -> None:
             "stderr",
             "stderrCapReached",
         ]
+        feedback_params = json.loads(
+            (out_dir / "FeedbackUploadParams.json").read_text(encoding="utf-8")
+        )
+        assert feedback_params["title"] == "FeedbackUploadParams"
+        assert feedback_params["required"] == ["classification", "includeLogs"]
+        assert (
+            feedback_params["properties"]["threadId"]["oneOf"][0]["$ref"]
+            == "ThreadId.json"
+        )
+        assert (
+            feedback_params["properties"]["tags"]["additionalProperties"]["type"]
+            == "string"
+        )
+        feedback_response = json.loads(
+            (out_dir / "FeedbackUploadResponse.json").read_text(encoding="utf-8")
+        )
+        assert feedback_response["required"] == ["threadId"]
+        assert (
+            feedback_response["properties"]["threadId"]["$ref"]
+            == "ThreadId.json"
+        )
         windows_sandbox_mode = json.loads(
             (out_dir / "WindowsSandboxSetupMode.json").read_text(encoding="utf-8")
         )
@@ -13775,6 +13885,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ProcessResizePtyResponse" in bundle["$defs"]
         assert "ProcessOutputDeltaNotification" in bundle["$defs"]
         assert "ProcessExitedNotification" in bundle["$defs"]
+        assert "FeedbackUploadParams" in bundle["$defs"]
+        assert "FeedbackUploadResponse" in bundle["$defs"]
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert "ThreadArchiveResponse" in bundle["$defs"]
@@ -14009,6 +14121,22 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["sandboxPolicy"]["oneOf"][0]["$ref"]
             == "#/$defs/SandboxPolicy"
+        )
+        assert bundle["$defs"]["FeedbackUploadParams"]["required"] == [
+            "classification",
+            "includeLogs",
+        ]
+        assert (
+            bundle["$defs"]["FeedbackUploadParams"]["properties"]["threadId"][
+                "oneOf"
+            ][0]["$ref"]
+            == "#/$defs/ThreadId"
+        )
+        assert (
+            bundle["$defs"]["FeedbackUploadResponse"]["properties"]["threadId"][
+                "$ref"
+            ]
+            == "#/$defs/ThreadId"
         )
         assert bundle["$defs"]["ModelProviderCapabilitiesReadResponse"][
             "properties"
@@ -14477,6 +14605,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { FeedbackUploadParams } from "./v2/FeedbackUploadParams";'
+            in client_request
+        )
+        assert (
             'import type { TurnInterruptParams } from "./v2/TurnInterruptParams";'
             in client_request
         )
@@ -14571,6 +14703,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "windowsSandbox/readiness";' in client_request
         assert 'method: "windowsSandbox/setupStart";' in client_request
         assert "params: WindowsSandboxSetupStartParams;" in client_request
+        assert 'method: "feedback/upload";' in client_request
+        assert "params: FeedbackUploadParams;" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
         assert 'method: "turn/start";' in client_request
@@ -14740,6 +14874,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { FeedbackUploadResponse } from "./v2/FeedbackUploadResponse";'
+            in client_response
+        )
+        assert (
             'import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";'
             in client_response
         )
@@ -14893,6 +15031,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: WindowsSandboxReadinessResponse;" in client_response
         assert 'method: "windowsSandbox/setupStart";' in client_response
         assert "result: WindowsSandboxSetupStartResponse;" in client_response
+        assert 'method: "feedback/upload";' in client_response
+        assert "result: FeedbackUploadResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -15639,6 +15779,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ProcessExitedNotification" in process_exited
         assert "stdoutCapReached: boolean;" in process_exited
+        feedback_params = (
+            out_dir / "v2" / "FeedbackUploadParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface FeedbackUploadParams" in feedback_params
+        assert 'import type { ThreadId } from "../ThreadId";' in feedback_params
+        assert "classification: string;" in feedback_params
+        assert "threadId?: ThreadId | null;" in feedback_params
+        assert "includeLogs: boolean;" in feedback_params
+        assert "tags?: Record<string, string> | null;" in feedback_params
+        feedback_response = (
+            out_dir / "v2" / "FeedbackUploadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface FeedbackUploadResponse" in feedback_response
+        assert "threadId: ThreadId;" in feedback_response
         windows_sandbox_setup_mode = (
             out_dir / "v2" / "WindowsSandboxSetupMode.ts"
         ).read_text(encoding="utf-8")
@@ -16692,6 +16846,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {process_export} }} from "./{process_export}";'
                 in v2_index
             )
+        assert 'export type { FeedbackUploadParams } from "./FeedbackUploadParams";' in v2_index
+        assert (
+            'export type { FeedbackUploadResponse } from "./FeedbackUploadResponse";'
+            in v2_index
+        )
 
         missing_out = subprocess.run(
             [str(binary), "app-server", "generate-ts"],
@@ -16861,6 +17020,8 @@ def main() -> None:
     print("app-server-command-exec-rpc-e2e: ok")
     run_process_rpc_smoke(binary)
     print("app-server-process-rpc-e2e: ok")
+    run_feedback_rpc_smoke(binary)
+    print("app-server-feedback-rpc-e2e: ok")
     run_windows_sandbox_rpc_smoke(binary)
     print("app-server-windows-sandbox-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
