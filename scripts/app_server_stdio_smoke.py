@@ -11072,6 +11072,19 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert fuzzy_session_completed["required"] == ["sessionId"]
+        mcp_reload_params = json.loads(
+            (out_dir / "ConfigMcpServerReloadParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_reload_params["title"] == "ConfigMcpServerReloadParams"
+        assert mcp_reload_params["additionalProperties"] is True
+        mcp_reload_response = json.loads(
+            (out_dir / "ConfigMcpServerReloadResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_reload_response["additionalProperties"] is False
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -11901,6 +11914,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "FuzzyFileSearchSessionStopResponse" in bundle["$defs"]
         assert "FuzzyFileSearchSessionUpdatedNotification" in bundle["$defs"]
         assert "FuzzyFileSearchSessionCompletedNotification" in bundle["$defs"]
+        assert "ConfigMcpServerReloadParams" in bundle["$defs"]
+        assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -12002,6 +12017,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["FuzzyFileSearchSessionUpdatedNotification"][
             "properties"
         ]["files"]["items"]["$ref"] == "#/$defs/FuzzyFileSearchMatch"
+        assert (
+            bundle["$defs"]["ConfigMcpServerReloadResponse"][
+                "additionalProperties"
+            ]
+            is False
+        )
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -12167,6 +12188,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FuzzyFileSearchSessionUpdateParams;" in client_request
         assert 'method: "fuzzyFileSearch/sessionStop";' in client_request
         assert "params: FuzzyFileSearchSessionStopParams;" in client_request
+        assert 'method: "config/mcpServer/reload";' in client_request
+        assert "params?: ConfigMcpServerReloadParams | null;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -12295,6 +12318,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: FuzzyFileSearchSessionUpdateResponse;" in client_response
         assert 'method: "fuzzyFileSearch/sessionStop";' in client_response
         assert "result: FuzzyFileSearchSessionStopResponse;" in client_response
+        assert 'method: "config/mcpServer/reload";' in client_response
+        assert "result: ConfigMcpServerReloadResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -12471,6 +12496,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "query: string;" in fuzzy_session_updated
         assert "files: FuzzyFileSearchMatch[];" in fuzzy_session_updated
+        mcp_reload_params = (
+            out_dir / "v2" / "ConfigMcpServerReloadParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ConfigMcpServerReloadParams {}" in (
+            mcp_reload_params
+        )
+        mcp_reload_response = (
+            out_dir / "v2" / "ConfigMcpServerReloadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ConfigMcpServerReloadResponse {}" in (
+            mcp_reload_response
+        )
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -13105,6 +13142,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
             in v2_index
         )
         assert (
