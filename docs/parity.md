@@ -58,17 +58,18 @@ precedence. Layer reads also preserve required empty user and system layers
 when the corresponding config files are absent.
 
 Current app-server TypeScript and JSON Schema generation coverage includes the
-minimal JSON-RPC envelope files plus command-exec request, response, follow-up,
-terminal-size, sandbox-policy, permission-profile, permission-profile helper,
-filesystem-path helper, absolute-path, network-access, and output-delta
-notification artifacts, model-provider capabilities read artifacts, thread
-token-usage notification artifacts, collaboration-mode list artifacts, and
-model-list catalog artifacts, plus experimental-feature list/enablement
-artifacts, memory-reset response artifacts, git-diff-to-remote artifacts,
-fuzzy-file-search artifacts, hooks-list artifacts, skills list/config artifacts,
-account read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC
-artifacts, MCP config reload artifacts, and MCP server status artifacts, in
-standalone files and the bundled schema `$defs`.
+minimal JSON-RPC envelope and client-notification files plus command-exec
+request, response, follow-up, terminal-size, sandbox-policy, permission-profile,
+permission-profile helper, filesystem-path helper, absolute-path,
+network-access, and output-delta notification artifacts, model-provider
+capabilities read artifacts, thread token-usage notification artifacts,
+collaboration-mode list artifacts, and model-list catalog artifacts, plus
+experimental-feature list/enablement artifacts, memory-reset response artifacts,
+git-diff-to-remote artifacts, fuzzy-file-search artifacts, hooks-list artifacts,
+skills list/config artifacts, account
+read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC artifacts,
+MCP config reload artifacts, and MCP server status artifacts, in standalone
+files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
 Additional app-server account generation coverage: `account/read`,
