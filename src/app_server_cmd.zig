@@ -936,6 +936,21 @@ const THREAD_INJECT_ITEMS_RESPONSE_TS =
     \\
     ;
 
+const THREAD_SET_NAME_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSetNameParams {
+    \\  threadId: string;
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const THREAD_SET_NAME_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSetNameResponse {}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -949,6 +964,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
+    \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
@@ -1009,6 +1025,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/inject_items";
     \\      params: ThreadInjectItemsParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/name/set";
+    \\      params: ThreadSetNameParams;
     \\    };
     \\
     ;
@@ -1026,6 +1046,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
+    \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
@@ -1101,6 +1122,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/inject_items";
     \\      result: ThreadInjectItemsResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/name/set";
+    \\      result: ThreadSetNameResponse;
     \\    };
     \\
     ;
@@ -1172,6 +1198,8 @@ const V2_INDEX_TS =
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
+    \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
+    \\export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
@@ -2029,6 +2057,31 @@ const THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_SET_NAME_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSetNameParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "name"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "name": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SET_NAME_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSetNameResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2496,6 +2549,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadInjectItemsResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSetNameParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "name"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSetNameResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2574,6 +2640,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadRollbackResponse.json", .contents = THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsParams.json", .contents = THREAD_INJECT_ITEMS_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadSetNameResponse.json", .contents = THREAD_SET_NAME_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2633,6 +2701,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRollbackResponse.ts", .contents = THREAD_ROLLBACK_RESPONSE_TS },
     .{ .name = "v2/ThreadInjectItemsParams.ts", .contents = THREAD_INJECT_ITEMS_PARAMS_TS },
     .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
+    .{ .name = "v2/ThreadSetNameParams.ts", .contents = THREAD_SET_NAME_PARAMS_TS },
+    .{ .name = "v2/ThreadSetNameResponse.ts", .contents = THREAD_SET_NAME_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
