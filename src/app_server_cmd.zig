@@ -14237,6 +14237,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (isCommandExecMethod(method)) {
         return try handleCommandExecMethod(allocator, state, id_value.?, method, object.get("params"));
     }
+    if (isFeedbackMethod(method)) {
+        return try handleFeedbackMethod(allocator, id_value.?, method, object.get("params"));
+    }
     if (isConfigMethod(method)) {
         return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -21516,6 +21519,83 @@ fn commandExecExitCode(term: std.process.Child.Term) i32 {
         .stopped => |sig| 128 + @as(i32, @intCast(@intFromEnum(sig))),
         .unknown => |code| @intCast(code),
     };
+}
+
+fn isFeedbackMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "feedback/upload");
+}
+
+fn handleFeedbackMethod(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "feedback/upload")) {
+        return handleFeedbackUpload(allocator, id_value, params_value);
+    }
+    return renderJsonRpcError(allocator, id_value, -32601, "unknown feedback method");
+}
+
+fn handleFeedbackUpload(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
+    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
+    const object = params.object;
+
+    const classification = object.get("classification") orelse return renderJsonRpcError(allocator, id_value, -32602, "classification must be a string");
+    if (classification != .string) return renderJsonRpcError(allocator, id_value, -32602, "classification must be a string");
+
+    const include_logs = object.get("includeLogs") orelse return renderJsonRpcError(allocator, id_value, -32602, "includeLogs must be a boolean");
+    if (include_logs != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeLogs must be a boolean");
+
+    if (object.get("reason")) |reason| {
+        if (reason != .null and reason != .string) {
+            return renderJsonRpcError(allocator, id_value, -32602, "reason must be a string or null");
+        }
+    }
+    if (object.get("threadId")) |thread_id| {
+        if (thread_id != .null) {
+            if (thread_id != .string) return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null");
+            if (!isUuidString(thread_id.string)) return renderInvalidThreadId(allocator, id_value, thread_id.string);
+        }
+    }
+    if (object.get("extraLogFiles")) |extra_log_files| {
+        if (extra_log_files != .null) {
+            if (extra_log_files != .array) {
+                return renderJsonRpcError(allocator, id_value, -32602, "extraLogFiles must be an array of strings or null");
+            }
+            for (extra_log_files.array.items) |file| {
+                if (file != .string) {
+                    return renderJsonRpcError(allocator, id_value, -32602, "extraLogFiles must be an array of strings or null");
+                }
+            }
+        }
+    }
+    if (object.get("tags")) |tags| {
+        if (tags != .null) {
+            if (tags != .object) {
+                return renderJsonRpcError(allocator, id_value, -32602, "tags must be an object with string values or null");
+            }
+            var iter = tags.object.iterator();
+            while (iter.next()) |entry| {
+                if (entry.value_ptr.* != .string) {
+                    return renderJsonRpcError(allocator, id_value, -32602, "tags must be an object with string values or null");
+                }
+            }
+        }
+    }
+
+    const feedback_enabled = config.loadFeedbackEnabled(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "feedback/upload failed to load config", err);
+    };
+    if (!feedback_enabled) {
+        return renderJsonRpcError(allocator, id_value, -32600, "sending feedback is disabled by configuration");
+    }
+    return renderParsedButNotImplemented(allocator, id_value, "feedback/upload");
 }
 
 fn isWindowsSandboxMethod(method: []const u8) bool {
