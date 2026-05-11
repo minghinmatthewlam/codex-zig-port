@@ -52,6 +52,8 @@ pub const McpServer = struct {
     enabled: bool = true,
     args: std.ArrayList([]const u8) = .empty,
     env_vars: std.ArrayList(KeyValue) = .empty,
+    http_headers: std.ArrayList(KeyValue) = .empty,
+    env_http_headers: std.ArrayList(KeyValue) = .empty,
 
     pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -62,6 +64,10 @@ pub const McpServer = struct {
         self.args.deinit(allocator);
         for (self.env_vars.items) |entry| entry.deinit(allocator);
         self.env_vars.deinit(allocator);
+        for (self.http_headers.items) |entry| entry.deinit(allocator);
+        self.http_headers.deinit(allocator);
+        for (self.env_http_headers.items) |entry| entry.deinit(allocator);
+        self.env_http_headers.deinit(allocator);
     }
 };
 
@@ -750,6 +756,10 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                         .value = env_value,
                     });
                 }
+            } else if (std.mem.eql(u8, subtable, "http_headers")) {
+                try appendTomlKeyValue(allocator, &server.http_headers, key, value);
+            } else if (std.mem.eql(u8, subtable, "env_http_headers")) {
+                try appendTomlKeyValue(allocator, &server.env_http_headers, key, value);
             }
             continue;
         }
@@ -849,6 +859,10 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
     } else if (jsonStringField(value.object, "bearerTokenEnvVar")) |token_env| {
         server.bearer_token_env_var = try allocator.dupe(u8, token_env);
     }
+    try appendJsonStringMap(allocator, &server.http_headers, value.object.get("http_headers"));
+    try appendJsonStringMap(allocator, &server.http_headers, value.object.get("httpHeaders"));
+    try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("env_http_headers"));
+    try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("envHttpHeaders"));
     if (value.object.get("enabled")) |enabled| {
         if (enabled == .bool) server.enabled = enabled.bool;
     }
@@ -937,6 +951,38 @@ fn appendEnvPair(allocator: std.mem.Allocator, server: *McpServer, raw: []const 
     });
 }
 
+fn appendTomlKeyValue(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), raw_key: []const u8, raw_value: []const u8) !void {
+    const key = try parseTomlKey(allocator, raw_key);
+    errdefer allocator.free(key);
+    const value = (try parseTomlString(allocator, raw_value)) orelse {
+        allocator.free(key);
+        return;
+    };
+    errdefer allocator.free(value);
+    try entries.append(allocator, .{
+        .key = key,
+        .value = value,
+    });
+}
+
+fn appendJsonStringMap(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), value: ?std.json.Value) !void {
+    const map = value orelse return;
+    if (map != .object) return;
+    var iterator = map.object.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.* != .string) continue;
+        try appendKeyValueCopy(allocator, entries, entry.key_ptr.*, entry.value_ptr.string);
+    }
+}
+
+fn appendKeyValueCopy(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), key: []const u8, value: []const u8) !void {
+    const key_copy = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_copy);
+    const value_copy = try allocator.dupe(u8, value);
+    errdefer allocator.free(value_copy);
+    try entries.append(allocator, .{ .key = key_copy, .value = value_copy });
+}
+
 fn renderUpdatedConfig(allocator: std.mem.Allocator, original_config: []const u8, servers: McpServers) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
@@ -988,17 +1034,35 @@ fn appendServersToml(allocator: std.mem.Allocator, output: *std.ArrayList(u8), s
         }
         if (!server.enabled) try output.appendSlice(allocator, "enabled = false\n");
         if (server.env_vars.items.len > 0) {
-            try output.append(allocator, '\n');
-            try output.appendSlice(allocator, "[mcp_servers.");
-            try output.appendSlice(allocator, server.name);
-            try output.appendSlice(allocator, ".env]\n");
-            for (server.env_vars.items) |entry| {
-                try output.appendSlice(allocator, entry.key);
-                try output.appendSlice(allocator, " = ");
-                try appendTomlString(allocator, output, entry.value);
-                try output.append(allocator, '\n');
-            }
+            try appendTomlKeyValueTable(allocator, output, server.name, "env", server.env_vars.items);
         }
+        if (server.http_headers.items.len > 0) {
+            try appendTomlKeyValueTable(allocator, output, server.name, "http_headers", server.http_headers.items);
+        }
+        if (server.env_http_headers.items.len > 0) {
+            try appendTomlKeyValueTable(allocator, output, server.name, "env_http_headers", server.env_http_headers.items);
+        }
+    }
+}
+
+fn appendTomlKeyValueTable(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    server_name: []const u8,
+    table_name: []const u8,
+    entries: []const KeyValue,
+) !void {
+    try output.append(allocator, '\n');
+    try output.appendSlice(allocator, "[mcp_servers.");
+    try output.appendSlice(allocator, server_name);
+    try output.append(allocator, '.');
+    try output.appendSlice(allocator, table_name);
+    try output.appendSlice(allocator, "]\n");
+    for (entries) |entry| {
+        try output.appendSlice(allocator, entry.key);
+        try output.appendSlice(allocator, " = ");
+        try appendTomlString(allocator, output, entry.value);
+        try output.append(allocator, '\n');
     }
 }
 
@@ -1022,6 +1086,14 @@ fn appendTomlString(allocator: std.mem.Allocator, output: *std.ArrayList(u8), va
         }
     }
     try output.append(allocator, '"');
+}
+
+fn parseTomlKey(allocator: std.mem.Allocator, raw_key: []const u8) ![]const u8 {
+    if (raw_key.len >= 2 and raw_key[0] == '"') {
+        if (try parseTomlString(allocator, raw_key)) |value| return value;
+        return error.InvalidTomlString;
+    }
+    return allocator.dupe(u8, raw_key);
 }
 
 fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {

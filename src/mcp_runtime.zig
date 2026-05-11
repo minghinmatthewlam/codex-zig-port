@@ -1107,6 +1107,7 @@ const HttpClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
     authorization_header: ?[]const u8,
+    extra_headers: std.ArrayList(mcp_cmd.KeyValue),
     session_id: ?[]const u8,
 
     const Response = struct {
@@ -1125,11 +1126,17 @@ const HttpClient = struct {
 
         const authorization_header = try mcpAuthorizationHeader(allocator, codex_home, server);
         errdefer if (authorization_header) |header| allocator.free(header);
+        var extra_headers = try configuredHttpHeaders(allocator, server);
+        errdefer {
+            for (extra_headers.items) |entry| entry.deinit(allocator);
+            extra_headers.deinit(allocator);
+        }
 
         return .{
             .allocator = allocator,
             .url = url_copy,
             .authorization_header = authorization_header,
+            .extra_headers = extra_headers,
             .session_id = null,
         };
     }
@@ -1142,6 +1149,8 @@ const HttpClient = struct {
     fn deinit(self: *HttpClient) void {
         if (self.session_id) |session_id| self.allocator.free(session_id);
         if (self.authorization_header) |header| self.allocator.free(header);
+        for (self.extra_headers.items) |entry| entry.deinit(self.allocator);
+        self.extra_headers.deinit(self.allocator);
         self.allocator.free(self.url);
     }
 
@@ -1200,6 +1209,9 @@ const HttpClient = struct {
         try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
         if (self.session_id) |session_id| {
             try headers.append(self.allocator, .{ .name = "Mcp-Session-Id", .value = session_id });
+        }
+        for (self.extra_headers.items) |header| {
+            try headers.append(self.allocator, .{ .name = header.key, .value = header.value });
         }
         if (self.authorization_header) |authorization| {
             try headers.append(self.allocator, .{ .name = "Authorization", .value = authorization });
@@ -1267,6 +1279,9 @@ const HttpClient = struct {
         try headers.append(self.allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
         if (self.session_id) |session_id| {
             try headers.append(self.allocator, .{ .name = "Mcp-Session-Id", .value = session_id });
+        }
+        for (self.extra_headers.items) |header| {
+            try headers.append(self.allocator, .{ .name = header.key, .value = header.value });
         }
         if (self.authorization_header) |authorization| {
             try headers.append(self.allocator, .{ .name = "Authorization", .value = authorization });
@@ -1353,6 +1368,39 @@ fn mcpAuthorizationHeader(
         return try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
     }
     return null;
+}
+
+fn configuredHttpHeaders(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) !std.ArrayList(mcp_cmd.KeyValue) {
+    var headers = std.ArrayList(mcp_cmd.KeyValue).empty;
+    errdefer {
+        for (headers.items) |entry| entry.deinit(allocator);
+        headers.deinit(allocator);
+    }
+
+    for (server.http_headers.items) |entry| {
+        try appendConfiguredHeader(allocator, &headers, entry.key, entry.value);
+    }
+    for (server.env_http_headers.items) |entry| {
+        const value = try env.getOwnedDynamic(allocator, entry.value) orelse return error.McpServerUnavailable;
+        errdefer allocator.free(value);
+        const key = try allocator.dupe(u8, entry.key);
+        errdefer allocator.free(key);
+        try headers.append(allocator, .{ .key = key, .value = value });
+    }
+    return headers;
+}
+
+fn appendConfiguredHeader(
+    allocator: std.mem.Allocator,
+    headers: *std.ArrayList(mcp_cmd.KeyValue),
+    key: []const u8,
+    value: []const u8,
+) !void {
+    const key_copy = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_copy);
+    const value_copy = try allocator.dupe(u8, value);
+    errdefer allocator.free(value_copy);
+    try headers.append(allocator, .{ .key = key_copy, .value = value_copy });
 }
 
 fn parseHttpResponse(allocator: std.mem.Allocator, body: []const u8, id: i64) !std.json.Parsed(std.json.Value) {
