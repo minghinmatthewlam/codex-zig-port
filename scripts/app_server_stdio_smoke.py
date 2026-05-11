@@ -57,6 +57,41 @@ EXPECTED_REALTIME_AUDIO_CHUNK = {
 }
 
 
+class TurnResponsesHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_bodies.append(json.loads(body))
+        payload = self.server.response_payloads.pop(0) if self.server.response_payloads else (
+            b'data: {"type":"response.output_text.delta","delta":"app turn reply"}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class TurnResponsesServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_bodies: list[dict]
+    response_payloads: list[bytes]
+
+
+def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
+    server = TurnResponsesServer(("127.0.0.1", 0), TurnResponsesHandler)
+    server.request_paths = []
+    server.request_bodies = []
+    server.response_payloads = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
 def toml_quoted_key(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -2470,6 +2505,135 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_turn_start_rpc_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-start-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-smoke"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-start-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-turn",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-turn"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                rollout_path = Path(thread["path"])
+                assert rollout_path.name == f"rollout-{thread_id}.jsonl"
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                prompt = "hello from app-server turn"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": prompt}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start"
+                turn = turn_start["result"]["turn"]
+                assert turn["id"] == "turn-0"
+                assert turn["status"] == "inProgress"
+                assert turn["items"] == []
+                assert turn["itemsView"] == "notLoaded"
+                assert turn["startedAt"] is None
+                started = read_json_line(proc, 5)
+                assert started["method"] == "turn/started"
+                assert started["params"]["threadId"] == thread_id
+                assert started["params"]["turn"]["id"] == "turn-0"
+                assert started["params"]["turn"]["status"] == "inProgress"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["threadId"] == thread_id
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert completed["params"]["turn"]["status"] == "completed"
+
+                assert server.request_paths == ["/responses"]
+                request = server.request_bodies[0]
+                assert request["model"] == "gpt-turn-smoke"
+                assert request["input"][0]["content"][0]["text"] == prompt
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-turn",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_turn = read_json_line(proc, 5)
+                assert read_after_turn["id"] == "thread-read-after-turn"
+                loaded_thread = read_after_turn["result"]["thread"]
+                assert loaded_thread["preview"] == prompt
+                assert loaded_thread["turns"][0]["items"][0]["content"][0]["text"] == prompt
+                assert loaded_thread["turns"][1]["items"][0]["text"] == "app turn reply"
+                stored = rollout_path.read_text(encoding="utf-8")
+                assert prompt in stored
+                assert "app turn reply" in stored
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_thread_resume_rpc_smoke(binary: Path) -> None:
@@ -10265,6 +10429,23 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_started_notification_schema["title"] == "ThreadStartedNotification"
         assert thread_started_notification_schema["required"] == ["thread"]
+        turn_start_params_schema = json.loads(
+            (out_dir / "TurnStartParams.json").read_text(encoding="utf-8")
+        )
+        assert turn_start_params_schema["required"] == ["threadId", "input"]
+        assert turn_start_params_schema["properties"]["input"]["type"] == "array"
+        turn_start_response_schema = json.loads(
+            (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
+        )
+        assert turn_start_response_schema["required"] == ["turn"]
+        turn_started_notification_schema = json.loads(
+            (out_dir / "TurnStartedNotification.json").read_text(encoding="utf-8")
+        )
+        assert turn_started_notification_schema["required"] == ["threadId", "turn"]
+        turn_completed_notification_schema = json.loads(
+            (out_dir / "TurnCompletedNotification.json").read_text(encoding="utf-8")
+        )
+        assert turn_completed_notification_schema["required"] == ["threadId", "turn"]
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -10728,6 +10909,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             "memory_consolidation",
             None,
         ]
+        assert "TurnStartParams" in bundle["$defs"]
+        assert "TurnStartResponse" in bundle["$defs"]
+        assert "TurnStartedNotification" in bundle["$defs"]
+        assert "TurnCompletedNotification" in bundle["$defs"]
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -10806,6 +10991,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecWriteParams;" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
+        assert 'method: "turn/start";' in client_request
+        assert "params: TurnStartParams;" in client_request
         assert 'method: "thread/resume";' in client_request
         assert "params: ThreadResumeParams;" in client_request
         assert 'method: "thread/fork";' in client_request
@@ -10869,9 +11056,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
+        assert 'method: "turn/started";' in server_notification
+        assert "params: TurnStartedNotification;" in server_notification
+        assert 'method: "turn/completed";' in server_notification
+        assert "params: TurnCompletedNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
+        assert 'method: "turn/start";' in client_response
+        assert "result: TurnStartResponse;" in client_response
         assert 'method: "thread/resume";' in client_response
         assert "result: ThreadResumeResponse;" in client_response
         assert 'method: "thread/fork";' in client_response
@@ -11002,6 +11195,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadStartedNotification" in thread_started_notification
         assert "thread: unknown;" in thread_started_notification
+        turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface TurnStartParams" in turn_start_params
+        assert "threadId: string;" in turn_start_params
+        assert "input: unknown[];" in turn_start_params
+        turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "turn: unknown;" in turn_start_response
+        turn_started_notification = (
+            out_dir / "v2" / "TurnStartedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in turn_started_notification
+        assert "turn: unknown;" in turn_started_notification
+        turn_completed_notification = (
+            out_dir / "v2" / "TurnCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in turn_completed_notification
+        assert "turn: unknown;" in turn_completed_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -11362,6 +11575,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
+        assert 'export type { TurnStartParams } from "./TurnStartParams";' in v2_index
+        assert 'export type { TurnStartResponse } from "./TurnStartResponse";' in v2_index
+        assert (
+            'export type { TurnStartedNotification } from "./TurnStartedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { TurnCompletedNotification } from "./TurnCompletedNotification";'
+            in v2_index
+        )
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
         assert 'export type { ThreadResumeResponse } from "./ThreadResumeResponse";' in v2_index
         assert 'export type { ThreadForkParams } from "./ThreadForkParams";' in v2_index
@@ -11625,6 +11848,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_turn_start_rpc_smoke(binary)
+    print("app-server-turn-start-rpc-e2e: ok")
     run_thread_resume_rpc_smoke(binary)
     print("app-server-thread-resume-rpc-e2e: ok")
     run_goal_feature_gate_smoke(binary)
