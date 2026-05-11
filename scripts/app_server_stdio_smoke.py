@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import hashlib
 import io
 import json
 import os
@@ -83,6 +84,40 @@ class TurnResponsesServer(ThreadingHTTPServer):
     response_payloads: list[bytes]
 
 
+class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_paths.append(self.path)
+        if self.path == "/.well-known/oauth-authorization-server/mcp":
+            payload = json.dumps(
+                {
+                    "authorization_endpoint": f"{self.server.base_url}/oauth/authorize",
+                    "token_endpoint": f"{self.server.base_url}/oauth/token",
+                    "scopes_supported": ["read", "write"],
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        payload = b"not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class McpOAuthDiscoveryServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    base_url: str
+
+
 def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server = TurnResponsesServer(("127.0.0.1", 0), TurnResponsesHandler)
     server.request_paths = []
@@ -92,8 +127,25 @@ def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
+    server = McpOAuthDiscoveryServer(("127.0.0.1", 0), McpOAuthDiscoveryHandler)
+    server.request_paths = []
+    server.base_url = f"http://127.0.0.1:{server.server_port}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"{server.base_url}/mcp"
+
+
 def toml_quoted_key(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def mcp_oauth_credential_key(name: str, url: str) -> str:
+    payload = json.dumps(
+        {"headers": {}, "type": "http", "url": url},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"{name}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
 def seed_memory_state_db(codex_home: Path) -> Path:
@@ -6760,6 +6812,9 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
     config_path = codex_home / "config.toml"
     server_path = codex_home / "status_server.py"
     plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
+    discovery_server, discovery_url = start_mcp_oauth_discovery_server()
+    oauth_url = "https://example.com/oauth"
+    oauth_key = mcp_oauth_credential_key("oauth", oauth_url)
     try:
         server_path.write_text(
             "\n".join(
@@ -6895,6 +6950,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         config_path.write_text(
             "\n".join(
                 [
+                    'mcp_oauth_credentials_store = "file"',
+                    "",
                     "[features]",
                     "plugins = true",
                     "",
@@ -6909,11 +6966,31 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     'url = "https://example.com/no-token"',
                     'bearer_token_env_var = "MISSING_MCP_TOKEN"',
                     "",
+                    "[mcp_servers.oauth]",
+                    f"url = {json.dumps(oauth_url)}",
+                    "",
+                    "[mcp_servers.oauth_discovery]",
+                    f"url = {json.dumps(discovery_url)}",
+                    "",
                     "[mcp_servers.remote]",
                     'url = "https://example.com/mcp"',
                     'bearer_token_env_var = "TEST_MCP_TOKEN"',
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    oauth_key: {
+                        "server_name": "oauth",
+                        "server_url": oauth_url,
+                        "client_id": "client",
+                        "access_token": "access",
+                    }
+                },
+                separators=(",", ":"),
             ),
             encoding="utf-8",
         )
@@ -7010,22 +7087,36 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                 "jsonrpc": "2.0",
                 "id": "mcp-status-second-page",
                 "method": "mcpServerStatus/list",
-                "params": {"cursor": "2", "limit": 2},
+                "params": {"cursor": "2", "limit": 4},
             },
             env,
         )
         assert second_page["id"] == "mcp-status-second-page"
         assert second_page["result"]["nextCursor"] is None
         second_entries = second_page["result"]["data"]
-        assert [entry["name"] for entry in second_entries] == ["plugin_remote", "remote"]
-        assert second_entries[0]["authStatus"] == "bearerToken"
+        assert [entry["name"] for entry in second_entries] == [
+            "oauth",
+            "oauth_discovery",
+            "plugin_remote",
+            "remote",
+        ]
+        assert second_entries[0]["authStatus"] == "oAuth"
         assert second_entries[0]["tools"] == {}
         assert second_entries[0]["resources"] == []
         assert second_entries[0]["resourceTemplates"] == []
-        assert second_entries[1]["authStatus"] == "bearerToken"
+        assert second_entries[1]["authStatus"] == "notLoggedIn"
         assert second_entries[1]["tools"] == {}
         assert second_entries[1]["resources"] == []
         assert second_entries[1]["resourceTemplates"] == []
+        assert second_entries[2]["authStatus"] == "bearerToken"
+        assert second_entries[2]["tools"] == {}
+        assert second_entries[2]["resources"] == []
+        assert second_entries[2]["resourceTemplates"] == []
+        assert second_entries[3]["authStatus"] == "bearerToken"
+        assert second_entries[3]["tools"] == {}
+        assert second_entries[3]["resources"] == []
+        assert second_entries[3]["resourceTemplates"] == []
+        assert "/.well-known/oauth-authorization-server/mcp" in discovery_server.request_paths
 
         zero_limit = request_stdio_app_server(
             binary,
@@ -7106,6 +7197,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert invalid_reload["id"] == "mcp-reload-invalid-params"
         assert invalid_reload["error"]["code"] == -32602
     finally:
+        discovery_server.shutdown()
+        discovery_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -13487,9 +13580,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "McpServerAuthStatus.json").read_text(encoding="utf-8")
         )
         assert mcp_auth_status["enum"] == [
-            "bearerToken",
-            "notLoggedIn",
             "unsupported",
+            "notLoggedIn",
+            "bearerToken",
+            "oAuth",
         ]
         mcp_status = json.loads(
             (out_dir / "McpServerStatus.json").read_text(encoding="utf-8")
@@ -16472,6 +16566,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "McpServerAuthStatus.ts"
         ).read_text(encoding="utf-8")
         assert '"bearerToken"' in mcp_auth_status
+        assert '"notLoggedIn"' in mcp_auth_status
+        assert '"oAuth"' in mcp_auth_status
         assert '"unsupported"' in mcp_auth_status
         mcp_status = (out_dir / "v2" / "McpServerStatus.ts").read_text(
             encoding="utf-8"
