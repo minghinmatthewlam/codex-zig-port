@@ -14096,7 +14096,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("fs/unwatch", "FsUnwatchResponse"),
         ]:
             assert f'method: "{method}";' in client_response
-        assert f"result: {response_type};" in client_response
+            assert f"result: {response_type};" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
         assert 'method: "externalAgentConfig/detect";' in client_response
