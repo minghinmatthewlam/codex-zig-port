@@ -877,6 +877,54 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_decrement_elicitation_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-rollback-zero",
+            "method": "thread/rollback",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000007",
+                "numTurns": 0,
+            },
+        }
+    )
+    thread_rollback_zero = read_line()
+    assert thread_rollback_zero["id"] == "thread-rollback-zero"
+    assert thread_rollback_zero["error"]["code"] == -32600
+    assert "numTurns must be >= 1" in thread_rollback_zero["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-rollback-invalid",
+            "method": "thread/rollback",
+            "params": {"threadId": "not-a-uuid", "numTurns": 1},
+        }
+    )
+    thread_rollback_invalid = read_line()
+    assert thread_rollback_invalid["id"] == "thread-rollback-invalid"
+    assert thread_rollback_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_rollback_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-rollback-missing",
+            "method": "thread/rollback",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000007",
+                "numTurns": 1,
+            },
+        }
+    )
+    thread_rollback_missing = read_line()
+    assert thread_rollback_missing["id"] == "thread-rollback-missing"
+    assert thread_rollback_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000007"
+        in thread_rollback_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
