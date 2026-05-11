@@ -951,6 +951,29 @@ const THREAD_SET_NAME_RESPONSE_TS =
     \\
     ;
 
+const THREAD_MEMORY_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadMemoryMode = "enabled" | "disabled";
+    \\
+    ;
+
+const THREAD_MEMORY_MODE_SET_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadMemoryMode } from "../ThreadMemoryMode";
+    \\
+    \\export interface ThreadMemoryModeSetParams {
+    \\  threadId: string;
+    \\  mode: ThreadMemoryMode;
+    \\}
+    \\
+    ;
+
+const THREAD_MEMORY_MODE_SET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadMemoryModeSetResponse {}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -963,6 +986,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
+    \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -1029,6 +1053,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/name/set";
     \\      params: ThreadSetNameParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/memoryMode/set";
+    \\      params: ThreadMemoryModeSetParams;
     \\    };
     \\
     ;
@@ -1045,6 +1073,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadInjectItemsResponse } from "./v2/ThreadInjectItemsResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
+    \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -1127,6 +1156,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/name/set";
     \\      result: ThreadSetNameResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/memoryMode/set";
+    \\      result: ThreadMemoryModeSetResponse;
     \\    };
     \\
     ;
@@ -1158,6 +1192,7 @@ const INDEX_TS =
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
     \\export type { RequestId } from "./RequestId";
     \\export type { ServerNotification } from "./ServerNotification";
+    \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
     \\export * as v2 from "./v2";
     \\
     ;
@@ -1196,6 +1231,8 @@ const V2_INDEX_TS =
     \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
+    \\export type { ThreadMemoryModeSetParams } from "./ThreadMemoryModeSetParams";
+    \\export type { ThreadMemoryModeSetResponse } from "./ThreadMemoryModeSetResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
@@ -2082,6 +2119,41 @@ const THREAD_SET_NAME_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_MEMORY_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMemoryMode",
+    \\  "type": "string",
+    \\  "enum": ["enabled", "disabled"]
+    \\}
+    \\
+;
+
+const THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMemoryModeSetParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "mode"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "mode": { "type": "string", "enum": ["enabled", "disabled"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadMemoryModeSetResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2562,6 +2634,23 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadSetNameResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadMemoryMode": {
+    \\      "type": "string",
+    \\      "enum": ["enabled", "disabled"]
+    \\    },
+    \\    "ThreadMemoryModeSetParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "mode"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "mode": { "type": "string", "enum": ["enabled", "disabled"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadMemoryModeSetResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2642,6 +2731,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadSetNameResponse.json", .contents = THREAD_SET_NAME_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadMemoryMode.json", .contents = THREAD_MEMORY_MODE_JSON_SCHEMA },
+    .{ .name = "ThreadMemoryModeSetParams.json", .contents = THREAD_MEMORY_MODE_SET_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadMemoryModeSetResponse.json", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2661,6 +2753,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
+    .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
@@ -2703,6 +2796,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
     .{ .name = "v2/ThreadSetNameParams.ts", .contents = THREAD_SET_NAME_PARAMS_TS },
     .{ .name = "v2/ThreadSetNameResponse.ts", .contents = THREAD_SET_NAME_RESPONSE_TS },
+    .{ .name = "v2/ThreadMemoryModeSetParams.ts", .contents = THREAD_MEMORY_MODE_SET_PARAMS_TS },
+    .{ .name = "v2/ThreadMemoryModeSetResponse.ts", .contents = THREAD_MEMORY_MODE_SET_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
