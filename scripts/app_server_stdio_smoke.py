@@ -11085,6 +11085,52 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert mcp_reload_response["additionalProperties"] is False
+        mcp_status_detail = json.loads(
+            (out_dir / "McpServerStatusDetail.json").read_text(encoding="utf-8")
+        )
+        assert mcp_status_detail["enum"] == ["full", "toolsAndAuthOnly"]
+        mcp_status_params = json.loads(
+            (out_dir / "McpServerStatusListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_status_params["properties"]["limit"]["minimum"] == 0
+        assert (
+            mcp_status_params["properties"]["detail"]["anyOf"][0]["$ref"]
+            == "#/$defs/McpServerStatusDetail"
+        )
+        mcp_auth_status = json.loads(
+            (out_dir / "McpServerAuthStatus.json").read_text(encoding="utf-8")
+        )
+        assert mcp_auth_status["enum"] == [
+            "bearerToken",
+            "notLoggedIn",
+            "unsupported",
+        ]
+        mcp_status = json.loads(
+            (out_dir / "McpServerStatus.json").read_text(encoding="utf-8")
+        )
+        assert mcp_status["required"] == [
+            "name",
+            "tools",
+            "resources",
+            "resourceTemplates",
+            "authStatus",
+        ]
+        assert mcp_status["properties"]["authStatus"]["$ref"] == (
+            "#/$defs/McpServerAuthStatus"
+        )
+        assert mcp_status["properties"]["resources"]["items"] is True
+        mcp_status_response = json.loads(
+            (out_dir / "McpServerStatusListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_status_response["required"] == ["data", "nextCursor"]
+        assert (
+            mcp_status_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/McpServerStatus"
+        )
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -11916,6 +11962,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "FuzzyFileSearchSessionCompletedNotification" in bundle["$defs"]
         assert "ConfigMcpServerReloadParams" in bundle["$defs"]
         assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
+        assert "McpServerStatusDetail" in bundle["$defs"]
+        assert "McpServerStatusListParams" in bundle["$defs"]
+        assert "McpServerAuthStatus" in bundle["$defs"]
+        assert "McpServerStatus" in bundle["$defs"]
+        assert "McpServerStatusListResponse" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -12022,6 +12073,26 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "additionalProperties"
             ]
             is False
+        )
+        assert bundle["$defs"]["McpServerStatusDetail"]["enum"] == [
+            "full",
+            "toolsAndAuthOnly",
+        ]
+        assert (
+            bundle["$defs"]["McpServerStatusListParams"]["properties"]["detail"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/McpServerStatusDetail"
+        )
+        assert (
+            bundle["$defs"]["McpServerStatus"]["properties"]["authStatus"]["$ref"]
+            == "#/$defs/McpServerAuthStatus"
+        )
+        assert (
+            bundle["$defs"]["McpServerStatusListResponse"]["properties"]["data"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/McpServerStatus"
         )
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
@@ -12190,6 +12261,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FuzzyFileSearchSessionStopParams;" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
+        assert 'method: "mcpServerStatus/list";' in client_request
+        assert "params?: McpServerStatusListParams | null;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -12320,6 +12393,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: FuzzyFileSearchSessionStopResponse;" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
+        assert 'method: "mcpServerStatus/list";' in client_response
+        assert "result: McpServerStatusListResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -12508,6 +12583,42 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ConfigMcpServerReloadResponse {}" in (
             mcp_reload_response
         )
+        mcp_status_detail = (
+            out_dir / "v2" / "McpServerStatusDetail.ts"
+        ).read_text(encoding="utf-8")
+        assert '"toolsAndAuthOnly"' in mcp_status_detail
+        mcp_status_params = (
+            out_dir / "v2" / "McpServerStatusListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { McpServerStatusDetail } from "./McpServerStatusDetail";' in (
+            mcp_status_params
+        )
+        assert "cursor?: string | null;" in mcp_status_params
+        assert "limit?: number | null;" in mcp_status_params
+        assert "detail?: McpServerStatusDetail | null;" in mcp_status_params
+        mcp_auth_status = (
+            out_dir / "v2" / "McpServerAuthStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert '"bearerToken"' in mcp_auth_status
+        assert '"unsupported"' in mcp_auth_status
+        mcp_status = (out_dir / "v2" / "McpServerStatus.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { McpServerAuthStatus } from "./McpServerAuthStatus";' in (
+            mcp_status
+        )
+        assert "tools: Record<string, unknown>;" in mcp_status
+        assert "resources: unknown[];" in mcp_status
+        assert "resourceTemplates: unknown[];" in mcp_status
+        assert "authStatus: McpServerAuthStatus;" in mcp_status
+        mcp_status_response = (
+            out_dir / "v2" / "McpServerStatusListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { McpServerStatus } from "./McpServerStatus";' in (
+            mcp_status_response
+        )
+        assert "data: McpServerStatus[];" in mcp_status_response
+        assert "nextCursor: string | null;" in mcp_status_response
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -13150,6 +13261,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerAuthStatus } from "./McpServerAuthStatus";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerStatus } from "./McpServerStatus";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerStatusDetail } from "./McpServerStatusDetail";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerStatusListParams } from "./McpServerStatusListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";'
             in v2_index
         )
         assert (
