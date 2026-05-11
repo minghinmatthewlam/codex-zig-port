@@ -66,18 +66,20 @@ token-usage notification artifacts, collaboration-mode list artifacts, and
 model-list catalog artifacts, plus experimental-feature list/enablement
 artifacts, memory-reset response artifacts, git-diff-to-remote artifacts,
 fuzzy-file-search artifacts, hooks-list artifacts, skills list/config artifacts,
-account read/auth/login artifacts, filesystem RPC artifacts, MCP config reload
-artifacts, and MCP server status artifacts, in
+account read/auth/login/rate-limit/nudge artifacts, filesystem RPC artifacts,
+MCP config reload artifacts, and MCP server status artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
-`account/logout`, `account/login/completed`, and `account/updated` now have
-generated TypeScript and JSON Schema artifacts for OpenAI auth modes, ChatGPT
-plan types, API key / ChatGPT / Bedrock account variants, refresh params,
-legacy auth-token status responses, login/cancel/logout envelopes, and
-account-login/account-update notification payloads.
+`account/logout`, `account/rateLimits/read`,
+`account/sendAddCreditsNudgeEmail`, `account/login/completed`,
+`account/rateLimits/updated`, and `account/updated` now have generated
+TypeScript and JSON Schema artifacts for OpenAI auth modes, ChatGPT plan types,
+API key / ChatGPT / Bedrock account variants, refresh params, legacy auth-token
+status responses, login/cancel/logout envelopes, rate-limit snapshots,
+add-credits nudge request/status payloads, and account notification payloads.
 
 Additional app-server filesystem generation coverage: `fs/readFile`,
 `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,
