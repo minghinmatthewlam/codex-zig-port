@@ -6560,7 +6560,7 @@ const SESSION_MIGRATION_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "SessionMigration",
     \\  "type": "object",
-    \\  "required": ["path", "cwd", "title"],
+    \\  "required": ["path", "cwd"],
     \\  "properties": {
     \\    "path": { "type": "string" },
     \\    "cwd": { "type": "string" },
@@ -6632,18 +6632,17 @@ const MIGRATION_DETAILS_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "MigrationDetails",
     \\  "type": "object",
-    \\  "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"],
     \\  "properties": {
-    \\    "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } },
-    \\    "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } },
-    \\    "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } },
-    \\    "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } },
-    \\    "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } },
-    \\    "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } }
+    \\    "plugins": { "type": "array", "default": [], "items": { "$ref": "#/$defs/PluginsMigration" } },
+    \\    "sessions": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SessionMigration" } },
+    \\    "mcpServers": { "type": "array", "default": [], "items": { "$ref": "#/$defs/McpServerMigration" } },
+    \\    "hooks": { "type": "array", "default": [], "items": { "$ref": "#/$defs/HookMigration" } },
+    \\    "subagents": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SubagentMigration" } },
+    \\    "commands": { "type": "array", "default": [], "items": { "$ref": "#/$defs/CommandMigration" } }
     \\  },
     \\  "$defs": {
     \\    "PluginsMigration": { "type": "object", "required": ["marketplaceName", "pluginNames"], "properties": { "marketplaceName": { "type": "string" }, "pluginNames": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
-    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd", "title"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
+    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
     \\    "McpServerMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
     \\    "HookMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
     \\    "SubagentMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
@@ -6659,7 +6658,7 @@ const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ExternalAgentConfigMigrationItem",
     \\  "type": "object",
-    \\  "required": ["itemType", "description", "cwd", "details"],
+    \\  "required": ["description", "itemType"],
     \\  "properties": {
     \\    "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
     \\    "description": { "type": "string" },
@@ -6673,9 +6672,9 @@ const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_JSON_SCHEMA =
     \\  },
     \\  "$defs": {
     \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"] },
-    \\    "MigrationDetails": { "type": "object", "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"], "properties": { "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } }, "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } }, "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } }, "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } }, "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } }, "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } } }, "additionalProperties": false },
+    \\    "MigrationDetails": { "type": "object", "properties": { "plugins": { "type": "array", "default": [], "items": { "$ref": "#/$defs/PluginsMigration" } }, "sessions": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SessionMigration" } }, "mcpServers": { "type": "array", "default": [], "items": { "$ref": "#/$defs/McpServerMigration" } }, "hooks": { "type": "array", "default": [], "items": { "$ref": "#/$defs/HookMigration" } }, "subagents": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SubagentMigration" } }, "commands": { "type": "array", "default": [], "items": { "$ref": "#/$defs/CommandMigration" } } }, "additionalProperties": false },
     \\    "PluginsMigration": { "type": "object", "required": ["marketplaceName", "pluginNames"], "properties": { "marketplaceName": { "type": "string" }, "pluginNames": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
-    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd", "title"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
+    \\    "SessionMigration": { "type": "object", "required": ["path", "cwd"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
     \\    "McpServerMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
     \\    "HookMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
     \\    "SubagentMigration": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } }, "additionalProperties": false },
@@ -10348,7 +10347,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "SessionMigration": {
     \\      "type": "object",
-    \\      "required": ["path", "cwd", "title"],
+    \\      "required": ["path", "cwd"],
     \\      "properties": {
     \\        "path": { "type": "string" },
     \\        "cwd": { "type": "string" },
@@ -10390,20 +10389,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "MigrationDetails": {
     \\      "type": "object",
-    \\      "required": ["plugins", "sessions", "mcpServers", "hooks", "subagents", "commands"],
     \\      "properties": {
-    \\        "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginsMigration" } },
-    \\        "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionMigration" } },
-    \\        "mcpServers": { "type": "array", "items": { "$ref": "#/$defs/McpServerMigration" } },
-    \\        "hooks": { "type": "array", "items": { "$ref": "#/$defs/HookMigration" } },
-    \\        "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubagentMigration" } },
-    \\        "commands": { "type": "array", "items": { "$ref": "#/$defs/CommandMigration" } }
+    \\        "plugins": { "type": "array", "default": [], "items": { "$ref": "#/$defs/PluginsMigration" } },
+    \\        "sessions": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SessionMigration" } },
+    \\        "mcpServers": { "type": "array", "default": [], "items": { "$ref": "#/$defs/McpServerMigration" } },
+    \\        "hooks": { "type": "array", "default": [], "items": { "$ref": "#/$defs/HookMigration" } },
+    \\        "subagents": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SubagentMigration" } },
+    \\        "commands": { "type": "array", "default": [], "items": { "$ref": "#/$defs/CommandMigration" } }
     \\      },
     \\      "additionalProperties": false
     \\    },
     \\    "ExternalAgentConfigMigrationItem": {
     \\      "type": "object",
-    \\      "required": ["itemType", "description", "cwd", "details"],
+    \\      "required": ["description", "itemType"],
     \\      "properties": {
     \\        "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
     \\        "description": { "type": "string" },

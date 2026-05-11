@@ -11987,12 +11987,14 @@ def run_json_schema_smoke(binary: Path) -> None:
                 encoding="utf-8"
             )
         )
-        assert external_item["required"] == [
-            "itemType",
-            "description",
-            "cwd",
-            "details",
-        ]
+        assert external_item["required"] == ["description", "itemType"]
+        migration_details = external_item["$defs"]["MigrationDetails"]
+        assert "required" not in migration_details
+        assert migration_details["properties"]["plugins"]["default"] == []
+        assert (
+            external_item["$defs"]["SessionMigration"]["required"]
+            == ["path", "cwd"]
+        )
         external_detect_params = json.loads(
             (out_dir / "ExternalAgentConfigDetectParams.json").read_text(
                 encoding="utf-8"
@@ -13478,6 +13480,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/ExternalAgentConfigMigrationItemType"
         )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigMigrationItem"]["required"]
+            == ["description", "itemType"]
+        )
+        assert "required" not in bundle["$defs"]["MigrationDetails"]
+        assert bundle["$defs"]["MigrationDetails"]["properties"]["plugins"][
+            "default"
+        ] == []
         assert (
             bundle["$defs"]["ExternalAgentConfigDetectResponse"]["properties"][
                 "items"
