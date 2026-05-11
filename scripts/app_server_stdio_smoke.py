@@ -11124,6 +11124,36 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert thread_name_updated_notification_schema["properties"]["threadName"][
             "type"
         ] == ["string", "null"]
+        thread_goal_updated_notification_schema = json.loads(
+            (out_dir / "ThreadGoalUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_goal_updated_notification_schema["title"]
+            == "ThreadGoalUpdatedNotification"
+        )
+        assert thread_goal_updated_notification_schema["required"] == [
+            "threadId",
+            "turnId",
+            "goal",
+        ]
+        assert thread_goal_updated_notification_schema["properties"]["turnId"][
+            "type"
+        ] == ["string", "null"]
+        assert thread_goal_updated_notification_schema["properties"]["goal"][
+            "$ref"
+        ] == "#/$defs/ThreadGoal"
+        thread_goal_cleared_notification_schema = json.loads(
+            (out_dir / "ThreadGoalClearedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_goal_cleared_notification_schema["title"]
+            == "ThreadGoalClearedNotification"
+        )
+        assert thread_goal_cleared_notification_schema["required"] == ["threadId"]
         turn_start_params_schema = json.loads(
             (out_dir / "TurnStartParams.json").read_text(encoding="utf-8")
         )
@@ -11646,6 +11676,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
         assert "ThreadNameUpdatedNotification" in bundle["$defs"]
+        assert "ThreadGoalUpdatedNotification" in bundle["$defs"]
+        assert "ThreadGoalClearedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ThreadGoalUpdatedNotification"]["properties"]["goal"][
+                "$ref"
+            ]
+            == "#/$defs/ThreadGoal"
+        )
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -11800,6 +11838,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadStartedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
         assert "params: ThreadNameUpdatedNotification;" in server_notification
+        assert 'method: "thread/goal/updated";' in server_notification
+        assert "params: ThreadGoalUpdatedNotification;" in server_notification
+        assert 'method: "thread/goal/cleared";' in server_notification
+        assert "params: ThreadGoalClearedNotification;" in server_notification
         assert 'method: "turn/started";' in server_notification
         assert "params: TurnStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
@@ -11954,6 +11996,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "threadId: string;" in thread_name_updated_notification
         assert "threadName?: string;" in thread_name_updated_notification
+        thread_goal_updated_notification = (
+            out_dir / "v2" / "ThreadGoalUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadGoal } from "./ThreadGoal";'
+            in thread_goal_updated_notification
+        )
+        assert (
+            "export interface ThreadGoalUpdatedNotification"
+            in thread_goal_updated_notification
+        )
+        assert "threadId: string;" in thread_goal_updated_notification
+        assert "turnId: string | null;" in thread_goal_updated_notification
+        assert "goal: ThreadGoal;" in thread_goal_updated_notification
+        thread_goal_cleared_notification = (
+            out_dir / "v2" / "ThreadGoalClearedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadGoalClearedNotification"
+            in thread_goal_cleared_notification
+        )
+        assert "threadId: string;" in thread_goal_cleared_notification
         turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
             encoding="utf-8"
         )
@@ -12361,6 +12425,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadGoalUpdatedNotification } from "./ThreadGoalUpdatedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadGoalClearedNotification } from "./ThreadGoalClearedNotification";'
             in v2_index
         )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
