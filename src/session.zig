@@ -490,6 +490,22 @@ fn runToolCall(
         };
     }
 
+    if (mcp_runtime.isResourceToolName(call.name)) {
+        var output = mcp_runtime.callResourceTool(allocator, cfg.codex_home, call.name, call.arguments) catch |err| {
+            return .{
+                .call_id = try allocator.dupe(u8, call.call_id),
+                .summary = try allocator.dupe(u8, "mcp resource failed"),
+                .output = try std.fmt.allocPrint(allocator, "mcp resource tool failed: {s}", .{@errorName(err)}),
+            };
+        };
+        defer output.deinit(allocator);
+        return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, output.summary),
+            .output = try allocator.dupe(u8, output.output),
+        };
+    }
+
     if (mcp_catalog.find(call.name)) |mcp_tool| {
         var output = mcp_runtime.callTool(allocator, cfg.codex_home, mcp_tool, call.arguments) catch |err| {
             return .{

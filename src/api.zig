@@ -584,12 +584,39 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"explanation":{"type":"string","description":"Optional short explanation for the plan update."},"plan":{"type":"array","description":"Ordered plan items.","items":{"type":"object","properties":{"step":{"type":"string","description":"A concise task step."},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Current status for the step."}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}
             ),
         };
+        const list_mcp_resources_tool = Tool{
+            .type = "function",
+            .name = "list_mcp_resources",
+            .description = "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"server":{"type":"string","description":"Optional MCP server name. When omitted, lists resources from every configured server."},"cursor":{"type":"string","description":"Opaque cursor returned by a previous list_mcp_resources call for the same server."}},"additionalProperties":false}
+            ),
+        };
+        const list_mcp_resource_templates_tool = Tool{
+            .type = "function",
+            .name = "list_mcp_resource_templates",
+            .description = "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"server":{"type":"string","description":"Optional MCP server name. When omitted, lists resource templates from all configured servers."},"cursor":{"type":"string","description":"Opaque cursor returned by a previous list_mcp_resource_templates call for the same server."}},"additionalProperties":false}
+            ),
+        };
+        const read_mcp_resource_tool = Tool{
+            .type = "function",
+            .name = "read_mcp_resource",
+            .description = "Read a specific resource from an MCP server given the server name and resource URI.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"server":{"type":"string","description":"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."},"uri":{"type":"string","description":"Resource URI to read. Must be one of the URIs returned by list_mcp_resources."}},"required":["server","uri"],"additionalProperties":false}
+            ),
+        };
         try tools_list.append(allocator, exec_command_tool);
         try tools_list.append(allocator, write_stdin_tool);
         try tools_list.append(allocator, shell_tool);
         try tools_list.append(allocator, shell_command_tool);
         try tools_list.append(allocator, apply_patch_tool);
         try tools_list.append(allocator, update_plan_tool);
+        try tools_list.append(allocator, list_mcp_resources_tool);
+        try tools_list.append(allocator, list_mcp_resource_templates_tool);
+        try tools_list.append(allocator, read_mcp_resource_tool);
         if (cfg.web_search_mode) |web_search_mode| {
             if (web_search_mode.externalWebAccess()) |external_web_access| {
                 try tools_list.append(allocator, .{
@@ -712,6 +739,7 @@ const baseInstructions =
     \\When you need to inspect files or run commands, call exec_command. Use write_stdin for running exec_command sessions. shell_command and shell remain supported.
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\For multi-step work, call update_plan with concise steps and current statuses.
+    \\Use list_mcp_resources, list_mcp_resource_templates, and read_mcp_resource to inspect configured MCP context resources.
     \\Configured MCP server tools may appear as mcp__server__tool function tools.
     \\Keep answers concise and report command outcomes.
 ;
@@ -998,6 +1026,63 @@ test "builds mcp function tools from catalog" {
     }
 
     try std.testing.expect(found);
+}
+
+test "builds mcp resource function tools" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "use resources",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    const expected = [_][]const u8{
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    };
+    for (expected) |expected_name| {
+        var found = false;
+        for (tools.items) |tool| {
+            const object = tool.object;
+            const name = object.get("name") orelse continue;
+            if (name == .string and std.mem.eql(u8, name.string, expected_name)) {
+                found = true;
+                try std.testing.expectEqualStrings("function", object.get("type").?.string);
+                try std.testing.expectEqualStrings("object", object.get("parameters").?.object.get("type").?.string);
+            }
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "can omit tools for compact-style turns" {
