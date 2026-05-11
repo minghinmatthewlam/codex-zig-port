@@ -89,6 +89,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   including generated completion notification artifacts, Rust-shaped
   configured-server checks, and explicit not-implemented errors for the browser
   OAuth flow
+- validate CLI MCP OAuth login requests with `codex-zig mcp login`, including
+  configured-server, streamable HTTP, and comma-separated scope checks before
+  returning the explicit not-implemented browser-flow error
 - remove file-backed MCP OAuth credentials for streamable HTTP servers with
   `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in
@@ -316,7 +319,8 @@ model-facing stdio and streamable HTTP MCP resource
 list/template/read tool calls, verifies model-facing streamable HTTP MCP tool
 discovery and execution with bearer-token auth plus session-id and teardown
 headers and GET SSE responses after accepted POSTs, verifies
-file-backed MCP OAuth logout for streamable HTTP servers, verifies
+CLI MCP OAuth login validation and file-backed MCP OAuth logout for
+streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, and
 OAuth-discovery not-logged-in servers, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
