@@ -649,6 +649,12 @@ const INITIALIZE_RESPONSE_TS =
     \\
     ;
 
+const MEMORY_RESET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MemoryResetResponse {}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -2006,6 +2012,9 @@ const CLIENT_REQUEST_TS =
     \\      params: InitializeParams;
     \\    }
     \\  | {
+    \\      method: "memory/reset";
+    \\    }
+    \\  | {
     \\      method: "modelProvider/capabilities/read";
     \\      params?: ModelProviderCapabilitiesReadParams | null;
     \\    }
@@ -2173,6 +2182,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
+    \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
@@ -2213,6 +2223,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "initialize";
     \\      result: InitializeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "memory/reset";
+    \\      result: MemoryResetResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2522,6 +2537,7 @@ const V2_INDEX_TS =
     \\export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";
     \\export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";
     \\export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
+    \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { FileSystemAccessMode } from "./FileSystemAccessMode";
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
@@ -2782,6 +2798,16 @@ const INITIALIZE_RESPONSE_JSON_SCHEMA =
     \\    "capabilities": { "type": "object" }
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MEMORY_RESET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MemoryResetResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -5477,6 +5503,10 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "MemoryResetResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -6883,6 +6913,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -7034,6 +7065,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RealtimeOutputModality.ts", .contents = REALTIME_OUTPUT_MODALITY_TS },
     .{ .name = "RealtimeVoicesList.ts", .contents = REALTIME_VOICES_LIST_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
+    .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
