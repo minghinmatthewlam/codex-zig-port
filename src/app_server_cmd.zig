@@ -777,6 +777,106 @@ const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const HOOKS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface HooksListParams {
+    \\  cwds?: string[] | null;
+    \\}
+    \\
+    ;
+
+const HOOK_EVENT_NAME_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookEventName =
+    \\  | "preToolUse"
+    \\  | "permissionRequest"
+    \\  | "postToolUse"
+    \\  | "preCompact"
+    \\  | "postCompact"
+    \\  | "sessionStart"
+    \\  | "userPromptSubmit"
+    \\  | "stop";
+    \\
+    ;
+
+const HOOK_HANDLER_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookHandlerType = "command";
+    \\
+    ;
+
+const HOOK_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookSource = "user" | "project" | "plugin";
+    \\
+    ;
+
+const HOOK_TRUST_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookTrustStatus = "untrusted" | "trusted" | "modified";
+    \\
+    ;
+
+const HOOK_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface HookError {
+    \\  path: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const HOOK_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HookEventName } from "./HookEventName";
+    \\import type { HookHandlerType } from "./HookHandlerType";
+    \\import type { HookSource } from "./HookSource";
+    \\import type { HookTrustStatus } from "./HookTrustStatus";
+    \\
+    \\export interface Hook {
+    \\  key: string;
+    \\  eventName: HookEventName;
+    \\  handlerType: HookHandlerType;
+    \\  matcher: string | null;
+    \\  command: string;
+    \\  timeoutSec: number;
+    \\  statusMessage: string | null;
+    \\  sourcePath: string;
+    \\  source: HookSource;
+    \\  pluginId: string | null;
+    \\  displayOrder: number;
+    \\  enabled: boolean;
+    \\  isManaged: boolean;
+    \\  currentHash: string;
+    \\  trustStatus: HookTrustStatus;
+    \\}
+    \\
+    ;
+
+const HOOKS_LIST_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { Hook } from "./Hook";
+    \\import type { HookError } from "./HookError";
+    \\
+    \\export interface HooksListEntry {
+    \\  cwd: string;
+    \\  hooks: Hook[];
+    \\  warnings: string[];
+    \\  errors: HookError[];
+    \\}
+    \\
+    ;
+
+const HOOKS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HooksListEntry } from "./HooksListEntry";
+    \\
+    \\export interface HooksListResponse {
+    \\  data: HooksListEntry[];
+    \\}
+    \\
+    ;
+
 const CONFIG_MCP_SERVER_RELOAD_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ConfigMcpServerReloadParams {}
@@ -2164,6 +2264,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FuzzyFileSearchSessionStopParams } from "./v2/FuzzyFileSearchSessionStopParams";
     \\import type { FuzzyFileSearchSessionUpdateParams } from "./v2/FuzzyFileSearchSessionUpdateParams";
     \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
+    \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
@@ -2226,6 +2327,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      params: FuzzyFileSearchSessionStopParams;
+    \\    }
+    \\  | {
+    \\      method: "hooks/list";
+    \\      params?: HooksListParams | null;
     \\    }
     \\  | {
     \\      method: "config/mcpServer/reload";
@@ -2409,6 +2514,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
+    \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
@@ -2481,6 +2587,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "fuzzyFileSearch/sessionStop";
     \\      result: FuzzyFileSearchSessionStopResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "hooks/list";
+    \\      result: HooksListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -2829,6 +2940,15 @@ const V2_INDEX_TS =
     \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\export type { FuzzyFileSearchSessionUpdateParams } from "./FuzzyFileSearchSessionUpdateParams";
     \\export type { FuzzyFileSearchSessionUpdateResponse } from "./FuzzyFileSearchSessionUpdateResponse";
+    \\export type { Hook } from "./Hook";
+    \\export type { HookError } from "./HookError";
+    \\export type { HookEventName } from "./HookEventName";
+    \\export type { HookHandlerType } from "./HookHandlerType";
+    \\export type { HookSource } from "./HookSource";
+    \\export type { HookTrustStatus } from "./HookTrustStatus";
+    \\export type { HooksListEntry } from "./HooksListEntry";
+    \\export type { HooksListParams } from "./HooksListParams";
+    \\export type { HooksListResponse } from "./HooksListResponse";
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
@@ -3336,6 +3456,263 @@ const FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["sessionId"],
     \\  "properties": {
     \\    "sessionId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const HOOKS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HooksListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cwds": {
+    \\      "type": ["array", "null"],
+    \\      "items": { "type": "string" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const HOOK_EVENT_NAME_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookEventName",
+    \\  "type": "string",
+    \\  "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\}
+    \\
+;
+
+const HOOK_HANDLER_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookHandlerType",
+    \\  "type": "string",
+    \\  "enum": ["command"]
+    \\}
+    \\
+;
+
+const HOOK_SOURCE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookSource",
+    \\  "type": "string",
+    \\  "enum": ["user", "project", "plugin"]
+    \\}
+    \\
+;
+
+const HOOK_TRUST_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookTrustStatus",
+    \\  "type": "string",
+    \\  "enum": ["untrusted", "trusted", "modified"]
+    \\}
+    \\
+;
+
+const HOOK_ERROR_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookError",
+    \\  "type": "object",
+    \\  "required": ["path", "message"],
+    \\  "properties": {
+    \\    "path": { "type": "string" },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const HOOK_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "Hook",
+    \\  "type": "object",
+    \\  "required": ["key", "eventName", "handlerType", "matcher", "command", "timeoutSec", "statusMessage", "sourcePath", "source", "pluginId", "displayOrder", "enabled", "isManaged", "currentHash", "trustStatus"],
+    \\  "properties": {
+    \\    "key": { "type": "string" },
+    \\    "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\    "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\    "matcher": { "type": ["string", "null"] },
+    \\    "command": { "type": "string" },
+    \\    "timeoutSec": { "type": "integer", "minimum": 1 },
+    \\    "statusMessage": { "type": ["string", "null"] },
+    \\    "sourcePath": { "type": "string" },
+    \\    "source": { "$ref": "#/$defs/HookSource" },
+    \\    "pluginId": { "type": ["string", "null"] },
+    \\    "displayOrder": { "type": "integer", "minimum": 0 },
+    \\    "enabled": { "type": "boolean" },
+    \\    "isManaged": { "type": "boolean" },
+    \\    "currentHash": { "type": "string" },
+    \\    "trustStatus": { "$ref": "#/$defs/HookTrustStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["user", "project", "plugin"]
+    \\    },
+    \\    "HookTrustStatus": {
+    \\      "type": "string",
+    \\      "enum": ["untrusted", "trusted", "modified"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const HOOKS_LIST_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HooksListEntry",
+    \\  "type": "object",
+    \\  "required": ["cwd", "hooks", "warnings", "errors"],
+    \\  "properties": {
+    \\    "cwd": { "type": "string" },
+    \\    "hooks": { "type": "array", "items": { "$ref": "#/$defs/Hook" } },
+    \\    "warnings": { "type": "array", "items": { "type": "string" } },
+    \\    "errors": { "type": "array", "items": { "$ref": "#/$defs/HookError" } }
+    \\  },
+    \\  "$defs": {
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["user", "project", "plugin"]
+    \\    },
+    \\    "HookTrustStatus": {
+    \\      "type": "string",
+    \\      "enum": ["untrusted", "trusted", "modified"]
+    \\    },
+    \\    "Hook": {
+    \\      "type": "object",
+    \\      "required": ["key", "eventName", "handlerType", "matcher", "command", "timeoutSec", "statusMessage", "sourcePath", "source", "pluginId", "displayOrder", "enabled", "isManaged", "currentHash", "trustStatus"],
+    \\      "properties": {
+    \\        "key": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "matcher": { "type": ["string", "null"] },
+    \\        "command": { "type": "string" },
+    \\        "timeoutSec": { "type": "integer", "minimum": 1 },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "sourcePath": { "type": "string" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "pluginId": { "type": ["string", "null"] },
+    \\        "displayOrder": { "type": "integer", "minimum": 0 },
+    \\        "enabled": { "type": "boolean" },
+    \\        "isManaged": { "type": "boolean" },
+    \\        "currentHash": { "type": "string" },
+    \\        "trustStatus": { "$ref": "#/$defs/HookTrustStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HookError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const HOOKS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HooksListResponse",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/HooksListEntry" } }
+    \\  },
+    \\  "$defs": {
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["user", "project", "plugin"]
+    \\    },
+    \\    "HookTrustStatus": {
+    \\      "type": "string",
+    \\      "enum": ["untrusted", "trusted", "modified"]
+    \\    },
+    \\    "Hook": {
+    \\      "type": "object",
+    \\      "required": ["key", "eventName", "handlerType", "matcher", "command", "timeoutSec", "statusMessage", "sourcePath", "source", "pluginId", "displayOrder", "enabled", "isManaged", "currentHash", "trustStatus"],
+    \\      "properties": {
+    \\        "key": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "matcher": { "type": ["string", "null"] },
+    \\        "command": { "type": "string" },
+    \\        "timeoutSec": { "type": "integer", "minimum": 1 },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "sourcePath": { "type": "string" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "pluginId": { "type": ["string", "null"] },
+    \\        "displayOrder": { "type": "integer", "minimum": 0 },
+    \\        "enabled": { "type": "boolean" },
+    \\        "isManaged": { "type": "boolean" },
+    \\        "currentHash": { "type": "string" },
+    \\        "trustStatus": { "$ref": "#/$defs/HookTrustStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HookError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HooksListEntry": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "hooks", "warnings", "errors"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "hooks": { "type": "array", "items": { "$ref": "#/$defs/Hook" } },
+    \\        "warnings": { "type": "array", "items": { "type": "string" } },
+    \\        "errors": { "type": "array", "items": { "$ref": "#/$defs/HookError" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -6268,6 +6645,82 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "HooksListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cwds": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "type": "string" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["user", "project", "plugin"]
+    \\    },
+    \\    "HookTrustStatus": {
+    \\      "type": "string",
+    \\      "enum": ["untrusted", "trusted", "modified"]
+    \\    },
+    \\    "HookError": {
+    \\      "type": "object",
+    \\      "required": ["path", "message"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "Hook": {
+    \\      "type": "object",
+    \\      "required": ["key", "eventName", "handlerType", "matcher", "command", "timeoutSec", "statusMessage", "sourcePath", "source", "pluginId", "displayOrder", "enabled", "isManaged", "currentHash", "trustStatus"],
+    \\      "properties": {
+    \\        "key": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "matcher": { "type": ["string", "null"] },
+    \\        "command": { "type": "string" },
+    \\        "timeoutSec": { "type": "integer", "minimum": 1 },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "sourcePath": { "type": "string" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "pluginId": { "type": ["string", "null"] },
+    \\        "displayOrder": { "type": "integer", "minimum": 0 },
+    \\        "enabled": { "type": "boolean" },
+    \\        "isManaged": { "type": "boolean" },
+    \\        "currentHash": { "type": "string" },
+    \\        "trustStatus": { "$ref": "#/$defs/HookTrustStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HooksListEntry": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "hooks", "warnings", "errors"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "hooks": { "type": "array", "items": { "$ref": "#/$defs/Hook" } },
+    \\        "warnings": { "type": "array", "items": { "type": "string" } },
+    \\        "errors": { "type": "array", "items": { "$ref": "#/$defs/HookError" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HooksListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/HooksListEntry" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ConfigMcpServerReloadParams": {
     \\      "type": "object",
     \\      "additionalProperties": true
@@ -7740,6 +8193,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "FuzzyFileSearchSessionStopResponse.json", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_JSON_SCHEMA },
     .{ .name = "FuzzyFileSearchSessionUpdatedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "FuzzyFileSearchSessionCompletedNotification.json", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "HooksListParams.json", .contents = HOOKS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "HookEventName.json", .contents = HOOK_EVENT_NAME_JSON_SCHEMA },
+    .{ .name = "HookHandlerType.json", .contents = HOOK_HANDLER_TYPE_JSON_SCHEMA },
+    .{ .name = "HookSource.json", .contents = HOOK_SOURCE_JSON_SCHEMA },
+    .{ .name = "HookTrustStatus.json", .contents = HOOK_TRUST_STATUS_JSON_SCHEMA },
+    .{ .name = "HookError.json", .contents = HOOK_ERROR_JSON_SCHEMA },
+    .{ .name = "Hook.json", .contents = HOOK_JSON_SCHEMA },
+    .{ .name = "HooksListEntry.json", .contents = HOOKS_LIST_ENTRY_JSON_SCHEMA },
+    .{ .name = "HooksListResponse.json", .contents = HOOKS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerStatusDetail.json", .contents = MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA },
@@ -7913,6 +8375,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/FuzzyFileSearchSessionStopResponse.ts", .contents = FUZZY_FILE_SEARCH_SESSION_STOP_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchSessionUpdatedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/FuzzyFileSearchSessionCompletedNotification.ts", .contents = FUZZY_FILE_SEARCH_SESSION_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/HooksListParams.ts", .contents = HOOKS_LIST_PARAMS_TS },
+    .{ .name = "v2/HookEventName.ts", .contents = HOOK_EVENT_NAME_TS },
+    .{ .name = "v2/HookHandlerType.ts", .contents = HOOK_HANDLER_TYPE_TS },
+    .{ .name = "v2/HookSource.ts", .contents = HOOK_SOURCE_TS },
+    .{ .name = "v2/HookTrustStatus.ts", .contents = HOOK_TRUST_STATUS_TS },
+    .{ .name = "v2/HookError.ts", .contents = HOOK_ERROR_TS },
+    .{ .name = "v2/Hook.ts", .contents = HOOK_TS },
+    .{ .name = "v2/HooksListEntry.ts", .contents = HOOKS_LIST_ENTRY_TS },
+    .{ .name = "v2/HooksListResponse.ts", .contents = HOOKS_LIST_RESPONSE_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
     .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
