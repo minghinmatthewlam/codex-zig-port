@@ -4137,6 +4137,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/realtime/stop") or
         std.mem.eql(u8, method, "thread/realtime/listVoices");
 }
 
@@ -4353,6 +4354,9 @@ fn handleThreadMethod(
             error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
         };
         return renderJsonRpcResult(allocator, id_value, THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON);
+    }
+    if (std.mem.eql(u8, method, "thread/realtime/stop")) {
+        return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
