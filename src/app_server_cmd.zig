@@ -2886,7 +2886,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/shellCommand") or
         std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
         std.mem.eql(u8, method, "thread/increment_elicitation") or
-        std.mem.eql(u8, method, "thread/decrement_elicitation");
+        std.mem.eql(u8, method, "thread/decrement_elicitation") or
+        std.mem.eql(u8, method, "thread/rollback");
 }
 
 fn handleThreadMethod(
@@ -2941,6 +2942,24 @@ fn handleThreadMethod(
     {
         return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
     }
+    if (std.mem.eql(u8, method, "thread/rollback")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        const num_turns = requiredThreadNumTurnsParam(object) catch |err| switch (err) {
+            error.InvalidNumTurns => return renderJsonRpcError(allocator, id_value, -32602, "numTurns must be an integer"),
+        };
+        if (num_turns == 0) {
+            return renderJsonRpcError(allocator, id_value, -32600, "numTurns must be >= 1");
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -2972,6 +2991,13 @@ fn requiredThreadIdParam(object: std.json.ObjectMap) ![]const u8 {
     const thread_id = object.get("threadId") orelse return error.MissingThreadId;
     if (thread_id != .string) return error.MissingThreadId;
     return thread_id.string;
+}
+
+fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
+    const num_turns = object.get("numTurns") orelse return error.InvalidNumTurns;
+    if (num_turns != .integer) return error.InvalidNumTurns;
+    if (num_turns.integer < 0 or num_turns.integer > std.math.maxInt(u32)) return error.InvalidNumTurns;
+    return @intCast(num_turns.integer);
 }
 
 fn renderThreadObjectParamsError(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
