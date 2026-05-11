@@ -17,6 +17,7 @@ const image_inputs = @import("input_images.zig");
 const memory_reset = @import("memory_reset.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const mcp_runtime = @import("mcp_runtime.zig");
 const model_catalog = @import("model_catalog.zig");
 const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
@@ -14451,7 +14452,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleExperimentalFeatureMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isMcpServerMethod(method)) {
-        return try handleMcpServerMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleMcpServerMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isWindowsSandboxMethod(method)) {
         return try handleWindowsSandboxMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -27712,13 +27713,21 @@ const McpStatusParams = struct {
     limit: ?usize = null,
 };
 
+const McpResourceReadParams = struct {
+    thread_id: ?[]const u8 = null,
+    server: []const u8,
+    uri: []const u8,
+};
+
 fn isMcpServerMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "config/mcpServer/reload") or
-        std.mem.eql(u8, method, "mcpServerStatus/list");
+        std.mem.eql(u8, method, "mcpServerStatus/list") or
+        std.mem.eql(u8, method, "mcpServer/resource/read");
 }
 
 fn handleMcpServerMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
@@ -27733,6 +27742,9 @@ fn handleMcpServerMethod(
     }
     if (std.mem.eql(u8, method, "mcpServerStatus/list")) {
         return handleMcpServerStatusList(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "mcpServer/resource/read")) {
+        return handleMcpResourceRead(allocator, state, id_value, params_value);
     }
     return renderJsonRpcError(allocator, id_value, -32601, "unknown MCP server method");
 }
@@ -27762,6 +27774,50 @@ fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Va
     };
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleMcpResourceRead(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = parseMcpResourceReadParams(params_value) catch |err| switch (err) {
+        error.InvalidMcpResourceReadParams => return renderJsonRpcError(allocator, id_value, -32602, "mcpServer/resource/read params must be an object"),
+        error.InvalidMcpResourceThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null"),
+        error.InvalidMcpResourceServer => return renderJsonRpcError(allocator, id_value, -32602, "server must be a string"),
+        error.InvalidMcpResourceUri => return renderJsonRpcError(allocator, id_value, -32602, "uri must be a string"),
+    };
+
+    if (params.thread_id) |thread_id| {
+        if (!isUuidString(thread_id)) return renderInvalidThreadId(allocator, id_value, thread_id);
+        if (findLoadedThreadIndex(state, thread_id) == null) return renderThreadNotFound(allocator, id_value, thread_id);
+    }
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/resource/read failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const result = mcp_runtime.readResource(allocator, codex_home, params.server, params.uri) catch |err| switch (err) {
+        error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
+        error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/resource/read failed", err),
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn renderMcpServerNotFound(allocator: std.mem.Allocator, id_value: std.json.Value, server: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "No MCP server named '{s}' found.", .{server});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderMcpServerUnavailable(allocator: std.mem.Allocator, id_value: std.json.Value, server: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "MCP server '{s}' is unavailable.", .{server});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
 }
 
 fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer) bool {
@@ -27799,6 +27855,32 @@ fn parseMcpStatusParams(params_value: ?std.json.Value) !McpStatusParams {
         if (detail != .string) return error.InvalidMcpStatusDetail;
         if (!std.mem.eql(u8, detail.string, "full") and !std.mem.eql(u8, detail.string, "toolsAndAuthOnly")) {
             return error.InvalidMcpStatusDetail;
+        }
+    }
+    return parsed;
+}
+
+fn parseMcpResourceReadParams(params_value: ?std.json.Value) !McpResourceReadParams {
+    const params = params_value orelse return error.InvalidMcpResourceReadParams;
+    if (params != .object) return error.InvalidMcpResourceReadParams;
+    const object = params.object;
+
+    const server = object.get("server") orelse return error.InvalidMcpResourceServer;
+    if (server != .string) return error.InvalidMcpResourceServer;
+    const uri = object.get("uri") orelse return error.InvalidMcpResourceUri;
+    if (uri != .string) return error.InvalidMcpResourceUri;
+
+    var parsed = McpResourceReadParams{
+        .server = server.string,
+        .uri = uri.string,
+    };
+    if (object.get("threadId")) |thread_id| {
+        if (thread_id == .null) {
+            parsed.thread_id = null;
+        } else if (thread_id == .string) {
+            parsed.thread_id = thread_id.string;
+        } else {
+            return error.InvalidMcpResourceThreadId;
         }
     }
     return parsed;

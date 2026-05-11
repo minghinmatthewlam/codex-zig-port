@@ -78,6 +78,19 @@ pub fn callTool(
     return callServerTool(allocator, server.*, spec.raw_tool_name, arguments_json);
 }
 
+pub fn readResource(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    uri: []const u8,
+) ![]const u8 {
+    var servers = try mcp_cmd.loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+    const server = servers.get(server_name) orelse return error.McpServerNotFound;
+    if (!server.enabled or server.kind != .stdio) return error.McpServerUnavailable;
+    return readServerResource(allocator, server.*, uri);
+}
+
 fn appendServerTools(
     allocator: std.mem.Allocator,
     server: mcp_cmd.McpServer,
@@ -162,6 +175,25 @@ fn callServerTool(
         .summary = summary,
         .output = output,
     };
+}
+
+fn readServerResource(
+    allocator: std.mem.Allocator,
+    server: mcp_cmd.McpServer,
+    uri: []const u8,
+) ![]const u8 {
+    var client = try StdioClient.start(allocator, server);
+    defer client.deinit();
+
+    try client.initialize();
+    const params = try buildReadResourceParams(allocator, uri);
+    defer allocator.free(params);
+    var response = try client.request(2, "resources/read", params);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    return renderResourceReadResult(allocator, result);
 }
 
 const StdioClient = struct {
@@ -394,6 +426,12 @@ fn buildCallToolParams(allocator: std.mem.Allocator, raw_tool_name: []const u8, 
     );
 }
 
+fn buildReadResourceParams(allocator: std.mem.Allocator, uri: []const u8) ![]const u8 {
+    const uri_json = try std.json.Stringify.valueAlloc(allocator, uri, .{});
+    defer allocator.free(uri_json);
+    return std.fmt.allocPrint(allocator, "{{\"uri\":{s}}}", .{uri_json});
+}
+
 fn isResponseForId(value: std.json.Value, id: i64) bool {
     if (value != .object) return false;
     const id_value = value.object.get("id") orelse return false;
@@ -409,6 +447,15 @@ fn renderCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]con
     defer allocator.free(text);
     if (text.len > 0) return allocator.dupe(u8, text);
     return std.json.Stringify.valueAlloc(allocator, result, .{});
+}
+
+fn renderResourceReadResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
+    if (result != .object) return error.InvalidMcpResponse;
+    const contents = result.object.get("contents") orelse return error.InvalidMcpResponse;
+    if (contents != .array) return error.InvalidMcpResponse;
+    const contents_json = try std.json.Stringify.valueAlloc(allocator, contents, .{});
+    defer allocator.free(contents_json);
+    return std.fmt.allocPrint(allocator, "{{\"contents\":{s}}}", .{contents_json});
 }
 
 fn renderTextContent(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
@@ -472,4 +519,22 @@ test "mcp call result renders text content" {
     const rendered = try renderCallResult(allocator, parsed.value);
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings("alpha\nbeta", rendered);
+}
+
+test "mcp resource read result keeps contents only" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"contents\":[{\"uri\":\"test://resource\",\"mimeType\":\"text/markdown\",\"text\":\"body\"}],\"extra\":true}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    const rendered = try renderResourceReadResult(allocator, parsed.value);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"contents\":[{\"uri\":\"test://resource\",\"mimeType\":\"text/markdown\",\"text\":\"body\"}]}",
+        rendered,
+    );
 }
