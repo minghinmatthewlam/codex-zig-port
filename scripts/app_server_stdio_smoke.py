@@ -925,6 +925,57 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_rollback_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-inject-invalid",
+            "method": "thread/inject_items",
+            "params": {"threadId": "not-a-uuid", "items": []},
+        }
+    )
+    thread_inject_items_invalid = read_line()
+    assert thread_inject_items_invalid["id"] == "thread-inject-invalid"
+    assert thread_inject_items_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_inject_items_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-inject-items-invalid",
+            "method": "thread/inject_items",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000008",
+                "items": {},
+            },
+        }
+    )
+    thread_inject_items_shape = read_line()
+    assert thread_inject_items_shape["id"] == "thread-inject-items-invalid"
+    assert thread_inject_items_shape["error"]["code"] == -32602
+    assert "items must be an array" in thread_inject_items_shape["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-inject-items-missing",
+            "method": "thread/inject_items",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000008",
+                "items": [],
+            },
+        }
+    )
+    thread_inject_items_missing = read_line()
+    assert thread_inject_items_missing["id"] == "thread-inject-items-missing"
+    assert thread_inject_items_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000008"
+        in thread_inject_items_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
