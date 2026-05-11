@@ -1115,6 +1115,29 @@ const THREAD_READ_RESPONSE_TS =
     \\
     ;
 
+const THREAD_TURNS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SortDirection } from "./SortDirection";
+    \\
+    \\export interface ThreadTurnsListParams {
+    \\  threadId: string;
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  sortDirection?: SortDirection | null;
+    \\}
+    \\
+    ;
+
+const THREAD_TURNS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadTurnsListResponse {
+    \\  data: unknown[];
+    \\  nextCursor: string | null;
+    \\  backwardsCursor: string | null;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -1136,6 +1159,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
+    \\import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
     \\import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
@@ -1228,6 +1252,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/read";
     \\      params: ThreadReadParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/turns/list";
+    \\      params: ThreadTurnsListParams;
     \\    };
     \\
     ;
@@ -1253,6 +1281,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
+    \\import type { ThreadTurnsListResponse } from "./v2/ThreadTurnsListResponse";
     \\import type { ThreadUnarchiveResponse } from "./v2/ThreadUnarchiveResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
@@ -1368,6 +1397,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/read";
     \\      result: ThreadReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/turns/list";
+    \\      result: ThreadTurnsListResponse;
     \\    };
     \\
     ;
@@ -1460,6 +1494,8 @@ const V2_INDEX_TS =
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadSortKey } from "./ThreadSortKey";
     \\export type { ThreadSourceKind } from "./ThreadSourceKind";
+    \\export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";
+    \\export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
     \\export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
     \\export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
@@ -2629,6 +2665,50 @@ const THREAD_READ_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_TURNS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadTurnsListParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "sortDirection": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/SortDirection" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "SortDirection": {
+    \\      "type": "string",
+    \\      "enum": ["asc", "desc"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadTurnsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor", "backwardsCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": true },
+    \\    "nextCursor": { "type": ["string", "null"] },
+    \\    "backwardsCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3271,6 +3351,32 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "thread": true
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadTurnsListParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadTurnsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor", "backwardsCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": true },
+    \\        "nextCursor": { "type": ["string", "null"] },
+    \\        "backwardsCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -3370,6 +3476,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadMetadataUpdateResponse.json", .contents = THREAD_METADATA_UPDATE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadReadParams.json", .contents = THREAD_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadReadResponse.json", .contents = THREAD_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadTurnsListParams.json", .contents = THREAD_TURNS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadTurnsListResponse.json", .contents = THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -3450,6 +3558,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadMetadataUpdateResponse.ts", .contents = THREAD_METADATA_UPDATE_RESPONSE_TS },
     .{ .name = "v2/ThreadReadParams.ts", .contents = THREAD_READ_PARAMS_TS },
     .{ .name = "v2/ThreadReadResponse.ts", .contents = THREAD_READ_RESPONSE_TS },
+    .{ .name = "v2/ThreadTurnsListParams.ts", .contents = THREAD_TURNS_LIST_PARAMS_TS },
+    .{ .name = "v2/ThreadTurnsListResponse.ts", .contents = THREAD_TURNS_LIST_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
