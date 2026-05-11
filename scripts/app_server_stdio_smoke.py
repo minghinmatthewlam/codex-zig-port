@@ -10076,6 +10076,118 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_external_agent_config_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-external-agent-", dir="/tmp"))
+    external_home = Path(tempfile.mkdtemp(prefix="codex-zig-external-agent-home-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["HOME"] = str(external_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        detect_default = rpc("external-agent-detect-default", "externalAgentConfig/detect", {})
+        assert detect_default["id"] == "external-agent-detect-default"
+        assert detect_default["result"] == {"items": []}
+
+        detect_nullable = rpc(
+            "external-agent-detect-null",
+            "externalAgentConfig/detect",
+            None,
+        )
+        assert detect_nullable["id"] == "external-agent-detect-null"
+        assert detect_nullable["result"] == {"items": []}
+
+        detect_scoped = rpc(
+            "external-agent-detect-scoped",
+            "externalAgentConfig/detect",
+            {"includeHome": True, "cwds": [str(codex_home)]},
+        )
+        assert detect_scoped["id"] == "external-agent-detect-scoped"
+        assert detect_scoped["result"] == {"items": []}
+
+        invalid_include_home = rpc(
+            "external-agent-detect-invalid-home",
+            "externalAgentConfig/detect",
+            {"includeHome": "yes"},
+        )
+        assert invalid_include_home["id"] == "external-agent-detect-invalid-home"
+        assert invalid_include_home["error"]["code"] == -32602
+        assert "includeHome must be a boolean" in invalid_include_home["error"]["message"]
+
+        invalid_cwds = rpc(
+            "external-agent-detect-invalid-cwds",
+            "externalAgentConfig/detect",
+            {"cwds": [str(codex_home), 3]},
+        )
+        assert invalid_cwds["id"] == "external-agent-detect-invalid-cwds"
+        assert invalid_cwds["error"]["code"] == -32602
+        assert "cwds must be an array of strings or null" in invalid_cwds["error"]["message"]
+
+        empty_import = rpc(
+            "external-agent-import-empty",
+            "externalAgentConfig/import",
+            {"migrationItems": []},
+        )
+        assert empty_import["id"] == "external-agent-import-empty"
+        assert empty_import["result"] == {}
+
+        invalid_import = rpc(
+            "external-agent-import-invalid",
+            "externalAgentConfig/import",
+            {"migrationItems": [{"itemType": "NOPE", "description": "bad"}]},
+        )
+        assert invalid_import["id"] == "external-agent-import-invalid"
+        assert invalid_import["error"]["code"] == -32602
+        assert "supported itemType" in invalid_import["error"]["message"]
+
+        nonempty_import = rpc(
+            "external-agent-import-nonempty",
+            "externalAgentConfig/import",
+            {
+                "migrationItems": [
+                    {
+                        "itemType": "CONFIG",
+                        "description": "Import config",
+                        "cwd": None,
+                        "details": None,
+                    }
+                ]
+            },
+        )
+        assert nonempty_import["id"] == "external-agent-import-nonempty"
+        assert nonempty_import["error"]["code"] == -32603
+        assert (
+            "migration items are parsed but not implemented yet"
+            in nonempty_import["error"]["message"]
+        )
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(external_home, ignore_errors=True)
+
+
 def encode_unsigned_jwt(payload: dict) -> str:
     def encode(value: bytes) -> str:
         return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -11864,6 +11976,57 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert mcp_reload_response["additionalProperties"] is False
+        external_item_type = json.loads(
+            (out_dir / "ExternalAgentConfigMigrationItemType.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert "MCP_SERVER_CONFIG" in external_item_type["enum"]
+        external_item = json.loads(
+            (out_dir / "ExternalAgentConfigMigrationItem.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_item["required"] == [
+            "itemType",
+            "description",
+            "cwd",
+            "details",
+        ]
+        external_detect_params = json.loads(
+            (out_dir / "ExternalAgentConfigDetectParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_detect_params["properties"]["includeHome"]["type"] == "boolean"
+        assert external_detect_params["properties"]["cwds"]["type"] == [
+            "array",
+            "null",
+        ]
+        external_detect_response = json.loads(
+            (out_dir / "ExternalAgentConfigDetectResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_detect_response["required"] == ["items"]
+        external_import_params = json.loads(
+            (out_dir / "ExternalAgentConfigImportParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_import_params["required"] == ["migrationItems"]
+        external_import_response = json.loads(
+            (out_dir / "ExternalAgentConfigImportResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_import_response["additionalProperties"] is False
+        external_import_completed = json.loads(
+            (
+                out_dir / "ExternalAgentConfigImportCompletedNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert external_import_completed["additionalProperties"] is False
         mcp_status_detail = json.loads(
             (out_dir / "McpServerStatusDetail.json").read_text(encoding="utf-8")
         )
@@ -12923,6 +13086,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "SkillsChangedNotification" in bundle["$defs"]
         assert "ConfigMcpServerReloadParams" in bundle["$defs"]
         assert "ConfigMcpServerReloadResponse" in bundle["$defs"]
+        assert "ExternalAgentConfigMigrationItemType" in bundle["$defs"]
+        assert "ExternalAgentConfigMigrationItem" in bundle["$defs"]
+        assert "ExternalAgentConfigDetectParams" in bundle["$defs"]
+        assert "ExternalAgentConfigDetectResponse" in bundle["$defs"]
+        assert "ExternalAgentConfigImportParams" in bundle["$defs"]
+        assert "ExternalAgentConfigImportResponse" in bundle["$defs"]
+        assert "ExternalAgentConfigImportCompletedNotification" in bundle["$defs"]
         assert "McpServerStatusDetail" in bundle["$defs"]
         assert "McpServerStatusListParams" in bundle["$defs"]
         assert "McpServerAuthStatus" in bundle["$defs"]
@@ -13298,6 +13468,40 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             is False
         )
+        assert (
+            "MCP_SERVER_CONFIG"
+            in bundle["$defs"]["ExternalAgentConfigMigrationItemType"]["enum"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigMigrationItem"]["properties"][
+                "itemType"
+            ]["$ref"]
+            == "#/$defs/ExternalAgentConfigMigrationItemType"
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigDetectResponse"]["properties"][
+                "items"
+            ]["items"]["$ref"]
+            == "#/$defs/ExternalAgentConfigMigrationItem"
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportParams"]["properties"][
+                "migrationItems"
+            ]["items"]["$ref"]
+            == "#/$defs/ExternalAgentConfigMigrationItem"
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportResponse"][
+                "additionalProperties"
+            ]
+            is False
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportCompletedNotification"][
+                "additionalProperties"
+            ]
+            is False
+        )
         assert bundle["$defs"]["McpServerStatusDetail"]["enum"] == [
             "full",
             "toolsAndAuthOnly",
@@ -13586,6 +13790,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";'
+            in client_request
+        )
+        assert (
+            'import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";'
+            in client_request
+        )
+        assert (
             'import type { TurnInterruptParams } from "./v2/TurnInterruptParams";'
             in client_request
         )
@@ -13643,6 +13855,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             assert f"params: {params_type};" in client_request
         assert 'method: "config/mcpServer/reload";' in client_request
         assert "params?: ConfigMcpServerReloadParams | null;" in client_request
+        assert 'method: "externalAgentConfig/detect";' in client_request
+        assert "params?: ExternalAgentConfigDetectParams | null;" in client_request
+        assert 'method: "externalAgentConfig/import";' in client_request
+        assert "params: ExternalAgentConfigImportParams;" in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
         assert "params?: McpServerStatusListParams | null;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
@@ -13739,6 +13955,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in server_notification
         )
         assert (
+            'import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";'
+            in server_notification
+        )
+        assert (
             'import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
             in server_notification
         )
@@ -13764,6 +13984,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "app/list/updated";' in server_notification
         assert "params: AppListUpdatedNotification;" in server_notification
+        assert 'method: "externalAgentConfig/import/completed";' in server_notification
+        assert (
+            "params: ExternalAgentConfigImportCompletedNotification;"
+            in server_notification
+        )
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -13805,6 +14030,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
+            in client_response
+        )
+        assert (
+            'import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";'
+            in client_response
+        )
+        assert (
+            'import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";'
             in client_response
         )
         assert (
@@ -13863,9 +14096,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("fs/unwatch", "FsUnwatchResponse"),
         ]:
             assert f'method: "{method}";' in client_response
-            assert f"result: {response_type};" in client_response
+        assert f"result: {response_type};" in client_response
         assert 'method: "config/mcpServer/reload";' in client_response
         assert "result: ConfigMcpServerReloadResponse;" in client_response
+        assert 'method: "externalAgentConfig/detect";' in client_response
+        assert "result: ExternalAgentConfigDetectResponse;" in client_response
+        assert 'method: "externalAgentConfig/import";' in client_response
+        assert "result: ExternalAgentConfigImportResponse;" in client_response
         assert 'method: "mcpServerStatus/list";' in client_response
         assert "result: McpServerStatusListResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
@@ -14416,6 +14653,60 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ConfigMcpServerReloadResponse {}" in (
             mcp_reload_response
+        )
+        external_type = (
+            out_dir / "v2" / "ExternalAgentConfigMigrationItemType.ts"
+        ).read_text(encoding="utf-8")
+        assert '"AGENTS_MD"' in external_type
+        assert '"MCP_SERVER_CONFIG"' in external_type
+        migration_details = (out_dir / "v2" / "MigrationDetails.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { PluginsMigration } from "./PluginsMigration";' in (
+            migration_details
+        )
+        assert "mcpServers: McpServerMigration[];" in migration_details
+        external_item = (
+            out_dir / "v2" / "ExternalAgentConfigMigrationItem.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";'
+            in external_item
+        )
+        assert "itemType: ExternalAgentConfigMigrationItemType;" in external_item
+        assert "details: MigrationDetails | null;" in external_item
+        external_detect_params = (
+            out_dir / "v2" / "ExternalAgentConfigDetectParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "includeHome?: boolean;" in external_detect_params
+        assert "cwds?: string[] | null;" in external_detect_params
+        external_detect_response = (
+            out_dir / "v2" / "ExternalAgentConfigDetectResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigrationItem";'
+            in external_detect_response
+        )
+        assert "items: ExternalAgentConfigMigrationItem[];" in external_detect_response
+        external_import_params = (
+            out_dir / "v2" / "ExternalAgentConfigImportParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "migrationItems: ExternalAgentConfigMigrationItem[];" in (
+            external_import_params
+        )
+        external_import_response = (
+            out_dir / "v2" / "ExternalAgentConfigImportResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ExternalAgentConfigImportResponse {}"
+            in external_import_response
+        )
+        external_import_completed = (
+            out_dir / "v2" / "ExternalAgentConfigImportCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ExternalAgentConfigImportCompletedNotification {}"
+            in external_import_completed
         )
         mcp_status_detail = (
             out_dir / "v2" / "McpServerStatusDetail.ts"
@@ -15278,6 +15569,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
             in v2_index
         )
+        for external_agent_export in [
+            "CommandMigration",
+            "ExternalAgentConfigDetectParams",
+            "ExternalAgentConfigDetectResponse",
+            "ExternalAgentConfigImportCompletedNotification",
+            "ExternalAgentConfigImportParams",
+            "ExternalAgentConfigImportResponse",
+            "ExternalAgentConfigMigrationItem",
+            "ExternalAgentConfigMigrationItemType",
+            "HookMigration",
+            "McpServerMigration",
+            "MigrationDetails",
+            "PluginsMigration",
+            "SessionMigration",
+            "SubagentMigration",
+        ]:
+            assert (
+                f'export type {{ {external_agent_export} }} from "./{external_agent_export}";'
+                in v2_index
+            )
         assert 'export type { Hook } from "./Hook";' in v2_index
         assert 'export type { HookError } from "./HookError";' in v2_index
         assert 'export type { HookEventName } from "./HookEventName";' in v2_index
@@ -15774,6 +16085,8 @@ def main() -> None:
     print("app-server-config-value-write-rpc-e2e: ok")
     run_config_batch_write_rpc_smoke(binary)
     print("app-server-config-batch-write-rpc-e2e: ok")
+    run_external_agent_config_rpc_smoke(binary)
+    print("app-server-external-agent-config-rpc-e2e: ok")
     run_account_read_rpc_smoke(binary)
     print("app-server-account-read-rpc-e2e: ok")
     run_get_auth_status_rpc_smoke(binary)
