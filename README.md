@@ -63,7 +63,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `network_rule` validation, and absolute host executable resolution
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio and streamable HTTP MCP tools as
-  `mcp__server__tool` calls
+  `mcp__server__tool` calls, including streamable HTTP MCP session-id reuse
+  after initialize
 - expose model-facing `list_mcp_resources`, `list_mcp_resource_templates`, and
   `read_mcp_resource` tools for configured stdio and streamable HTTP MCP
   servers
@@ -302,10 +303,10 @@ file-backed OAuth, and OAuth-discovery not-logged-in auth reporting,
 config-backed stdio resource reads with and without loaded thread IDs,
 loaded-thread stdio tool calls including non-object argument pass-through, and
 app-server streamable HTTP MCP resource reads and tool calls with bearer-token
-and file-backed OAuth auth,
+and file-backed OAuth auth plus streamable HTTP MCP session-id headers,
 model-facing stdio and streamable HTTP MCP resource
 list/template/read tool calls, verifies model-facing streamable HTTP MCP tool
-discovery and execution with bearer-token auth, verifies
+discovery and execution with bearer-token auth and session-id headers, verifies
 file-backed MCP OAuth logout for streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, and
 OAuth-discovery not-logged-in servers, verifies
