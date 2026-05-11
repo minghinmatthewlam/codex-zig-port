@@ -2698,6 +2698,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     == expected_git_info
                 )
                 assert metadata_loaded["result"]["thread"]["turns"] == []
+                rollout_metadata = rollout_path.read_text(encoding="utf-8")
+                assert '"git":{' in rollout_metadata
+                assert '"branch":"feature/app-server-smoke"' in rollout_metadata
+                assert (
+                    '"repository_url":"https://example.test/codex-zig.git"'
+                    in rollout_metadata
+                )
 
                 write_json_line(
                     proc,
@@ -2712,6 +2719,26 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert read_after_metadata["id"] == "thread-read-after-metadata"
                 assert (
                     read_after_metadata["result"]["thread"]["gitInfo"]
+                    == expected_git_info
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-resume-after-metadata",
+                        "method": "thread/resume",
+                        "params": {
+                            "threadId": thread_id,
+                            "path": str(rollout_path),
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                resume_after_metadata = read_json_line(proc, 5)
+                assert resume_after_metadata["id"] == "thread-resume-after-metadata"
+                assert (
+                    resume_after_metadata["result"]["thread"]["gitInfo"]
                     == expected_git_info
                 )
 
