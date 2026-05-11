@@ -1671,6 +1671,25 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-goal-set-ephemeral",
+            "method": "thread/goal/set",
+            "params": {
+                "threadId": thread_id,
+                "objective": "ship the zig port",
+            },
+        }
+    )
+    thread_goal_set_ephemeral = read_line()
+    assert thread_goal_set_ephemeral["id"] == "thread-goal-set-ephemeral"
+    assert thread_goal_set_ephemeral["error"]["code"] == -32600
+    assert (
+        f"ephemeral thread does not support goals: {thread_id}"
+        in thread_goal_set_ephemeral["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-goal-set-invalid-params",
             "method": "thread/goal/set",
             "params": [],
@@ -2648,6 +2667,19 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
             )
             assert read_json_line(proc, 5)["id"] == "initialize"
 
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "enable-goals-for-loaded-thread",
+                    "method": "experimentalFeature/enablement/set",
+                    "params": {"enablement": {"goals": True}},
+                },
+            )
+            enable_goals = read_json_line(proc, 5)
+            assert enable_goals["id"] == "enable-goals-for-loaded-thread"
+            assert enable_goals["result"]["enablement"] == {"goals": True}
+
             with tempfile.TemporaryDirectory(prefix="codex-zig-turn-start-cwd-", dir="/tmp") as cwd:
                 write_json_line(
                     proc,
@@ -2669,6 +2701,117 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 rollout_path = Path(thread["path"])
                 assert rollout_path.name == f"rollout-{thread_id}.jsonl"
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-set-loaded",
+                        "method": "thread/goal/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "objective": "  ship loaded goals  ",
+                            "status": "active",
+                            "tokenBudget": 1234,
+                        },
+                    },
+                )
+                goal_set_loaded = read_json_line(proc, 5)
+                assert goal_set_loaded["id"] == "thread-goal-set-loaded"
+                loaded_goal = goal_set_loaded["result"]["goal"]
+                assert loaded_goal["threadId"] == thread_id
+                assert loaded_goal["objective"] == "ship loaded goals"
+                assert loaded_goal["status"] == "active"
+                assert loaded_goal["tokenBudget"] == 1234
+                assert loaded_goal["tokensUsed"] == 0
+                assert loaded_goal["timeUsedSeconds"] == 0
+                assert isinstance(loaded_goal["createdAt"], int)
+                assert isinstance(loaded_goal["updatedAt"], int)
+                goal_updated = read_json_line(proc, 5)
+                assert goal_updated["method"] == "thread/goal/updated"
+                assert goal_updated["params"]["threadId"] == thread_id
+                assert goal_updated["params"]["turnId"] is None
+                assert goal_updated["params"]["goal"] == loaded_goal
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-loaded",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get_loaded = read_json_line(proc, 5)
+                assert goal_get_loaded["id"] == "thread-goal-get-loaded"
+                assert goal_get_loaded["result"]["goal"] == loaded_goal
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-update-loaded",
+                        "method": "thread/goal/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "status": "paused",
+                            "tokenBudget": None,
+                        },
+                    },
+                )
+                goal_update_loaded = read_json_line(proc, 5)
+                assert goal_update_loaded["id"] == "thread-goal-update-loaded"
+                updated_goal = goal_update_loaded["result"]["goal"]
+                assert updated_goal["objective"] == "ship loaded goals"
+                assert updated_goal["status"] == "paused"
+                assert updated_goal["tokenBudget"] is None
+                assert updated_goal["createdAt"] == loaded_goal["createdAt"]
+                assert updated_goal["updatedAt"] >= loaded_goal["updatedAt"]
+                goal_updated_again = read_json_line(proc, 5)
+                assert goal_updated_again["method"] == "thread/goal/updated"
+                assert goal_updated_again["params"]["goal"] == updated_goal
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-clear-loaded",
+                        "method": "thread/goal/clear",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_clear_loaded = read_json_line(proc, 5)
+                assert goal_clear_loaded["id"] == "thread-goal-clear-loaded"
+                assert goal_clear_loaded["result"] == {"cleared": True}
+                goal_cleared = read_json_line(proc, 5)
+                assert goal_cleared["method"] == "thread/goal/cleared"
+                assert goal_cleared["params"] == {"threadId": thread_id}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-cleared",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get_cleared = read_json_line(proc, 5)
+                assert goal_get_cleared["id"] == "thread-goal-get-cleared"
+                assert goal_get_cleared["result"] == {"goal": None}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-clear-loaded-again",
+                        "method": "thread/goal/clear",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_clear_loaded_again = read_json_line(proc, 5)
+                assert goal_clear_loaded_again["id"] == "thread-goal-clear-loaded-again"
+                assert goal_clear_loaded_again["result"] == {"cleared": False}
 
                 write_json_line(
                     proc,
