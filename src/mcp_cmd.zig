@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const cli_utils = @import("cli_utils.zig");
 const plugin_config = @import("plugin_config.zig");
@@ -7,6 +8,8 @@ const env = @import("env.zig");
 pub const ServerKind = enum { unknown, stdio, streamable_http };
 
 const McpOAuthCredentialsStore = enum { auto, file, keyring };
+const mcp_oauth_keyring_service = "Codex MCP Credentials";
+const security_binary = "/usr/bin/security";
 
 pub const McpAuthStatus = enum {
     unsupported,
@@ -430,12 +433,7 @@ fn runLogout(
     const url = server.url orelse return error.McpOAuthLogoutRequiresHttp;
 
     const store_mode = parseMcpOAuthCredentialsStore(config_bytes);
-    if (store_mode == .keyring) {
-        try cli_utils.writeStdout("MCP OAuth keyring credential deletion is not implemented in the Zig port yet.\n");
-        return error.UnsupportedMcpOAuthKeyring;
-    }
-
-    const removed = try deleteMcpOAuthFileCredentials(allocator, codex_home, name, url);
+    const removed = try deleteMcpOAuthCredentials(allocator, codex_home, store_mode, name, url);
     const message = if (removed)
         try std.fmt.allocPrint(allocator, "Removed OAuth credentials for '{s}'.\n", .{name})
     else
@@ -497,6 +495,96 @@ fn parseMcpOAuthCredentialsStore(config_bytes: []const u8) McpOAuthCredentialsSt
         if (std.mem.eql(u8, value, "\"auto\"")) return .auto;
     }
     return .auto;
+}
+
+fn deleteMcpOAuthCredentials(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: McpOAuthCredentialsStore,
+    server_name: []const u8,
+    server_url: []const u8,
+) !bool {
+    if (store_mode == .file) {
+        return deleteMcpOAuthFileCredentials(allocator, codex_home, server_name, server_url);
+    }
+
+    const keyring_removed = deleteMcpOAuthKeyringCredentials(allocator, server_name, server_url) catch |err| switch (err) {
+        error.UnsupportedMcpOAuthKeyring => if (store_mode == .auto) false else return err,
+        else => return err,
+    };
+    const file_removed = try deleteMcpOAuthFileCredentials(allocator, codex_home, server_name, server_url);
+    return keyring_removed or file_removed;
+}
+
+fn mcpOAuthKeyringSupported() bool {
+    return builtin.os.tag == .macos;
+}
+
+fn hasMcpOAuthKeyringCredentials(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) !bool {
+    if (!mcpOAuthKeyringSupported()) return error.UnsupportedMcpOAuthKeyring;
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+    const argv = [_][]const u8{ security_binary, "find-generic-password", "-s", mcp_oauth_keyring_service, "-a", key };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+    return classifySecurityGenericPasswordResult(result.term);
+}
+
+fn deleteMcpOAuthKeyringCredentials(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) !bool {
+    if (!mcpOAuthKeyringSupported()) return error.UnsupportedMcpOAuthKeyring;
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+    const argv = [_][]const u8{ security_binary, "delete-generic-password", "-s", mcp_oauth_keyring_service, "-a", key };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+    return classifySecurityGenericPasswordResult(result.term);
+}
+
+const SecurityCommandOutput = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    term: std.process.Child.Term,
+
+    fn deinit(self: *const SecurityCommandOutput, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runSecurityCommand(allocator: std.mem.Allocator, argv: []const []const u8) !SecurityCommandOutput {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv,
+        .stdout_limit = .limited(32 * 1024),
+        .stderr_limit = .limited(32 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(5_000),
+            .clock = .awake,
+        } },
+    });
+    errdefer allocator.free(result.stdout);
+    errdefer allocator.free(result.stderr);
+
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .term = result.term,
+    };
+}
+
+fn classifySecurityGenericPasswordResult(term: std.process.Child.Term) !bool {
+    return switch (term) {
+        .exited => |code| switch (code) {
+            0 => true,
+            44 => false,
+            else => error.McpOAuthKeyringUnavailable,
+        },
+        else => error.McpOAuthKeyringUnavailable,
+    };
 }
 
 fn deleteMcpOAuthFileCredentials(allocator: std.mem.Allocator, codex_home: []const u8, server_name: []const u8, server_url: []const u8) !bool {
@@ -590,9 +678,23 @@ pub fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const 
     if (!server.enabled) return .unsupported;
     if (server.kind != .streamable_http) return .unsupported;
     if (server.bearer_token_env_var != null) return .bearer_token;
-    if (parseMcpOAuthCredentialsStore(config_bytes) == .keyring) return .unsupported;
     const url = server.url orelse return .unsupported;
-    if (try hasMcpOAuthFileCredentials(allocator, codex_home, server.name, url)) return .oauth;
+
+    switch (parseMcpOAuthCredentialsStore(config_bytes)) {
+        .auto => {
+            if (mcpOAuthKeyringSupported() and (hasMcpOAuthKeyringCredentials(allocator, server.name, url) catch false)) return .oauth;
+            if (try hasMcpOAuthFileCredentials(allocator, codex_home, server.name, url)) return .oauth;
+        },
+        .file => {
+            if (try hasMcpOAuthFileCredentials(allocator, codex_home, server.name, url)) return .oauth;
+        },
+        .keyring => {
+            if (!mcpOAuthKeyringSupported()) return .unsupported;
+            const has_keyring_credentials = hasMcpOAuthKeyringCredentials(allocator, server.name, url) catch return .unsupported;
+            if (has_keyring_credentials) return .oauth;
+        },
+    }
+
     if (streamableHttpSupportsOAuth(allocator, url) catch false) return .not_logged_in;
     return .unsupported;
 }
@@ -1531,6 +1633,12 @@ test "mcp oauth file logout deletes empty credentials file" {
 
     try std.testing.expect(try deleteMcpOAuthFileCredentials(allocator, codex_home, "remote", "https://example.com/mcp"));
     try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), ".credentials.json", .{}));
+}
+
+test "mcp oauth keyring security exit classification" {
+    try std.testing.expect(try classifySecurityGenericPasswordResult(.{ .exited = 0 }));
+    try std.testing.expect(!try classifySecurityGenericPasswordResult(.{ .exited = 44 }));
+    try std.testing.expectError(error.McpOAuthKeyringUnavailable, classifySecurityGenericPasswordResult(.{ .exited = 1 }));
 }
 
 test "mcp list auth status reports bearer and file oauth credentials" {
