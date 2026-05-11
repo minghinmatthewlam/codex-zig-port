@@ -6784,6 +6784,50 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
     thread.updated_at = currentUnixSeconds();
 }
 
+fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !void {
+    const cut_index = rollbackCutIndex(&thread.transcript, num_turns) orelse return;
+    trimTranscriptHistoryFrom(allocator, &thread.transcript, cut_index);
+    try refreshLoadedThreadAfterRollback(allocator, thread);
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
+fn rollbackCutIndex(transcript: *const session_mod.Transcript, num_turns: u32) ?usize {
+    var earliest_user_index: ?usize = null;
+    var remaining = num_turns;
+    var index = transcript.history.items.len;
+    while (index > 0) {
+        index -= 1;
+        const item = transcript.history.items[index];
+        if (item.kind == .message and isHistoryRole(item, "user")) {
+            earliest_user_index = index;
+            if (remaining == 1) return index;
+            remaining -= 1;
+        }
+    }
+    return earliest_user_index;
+}
+
+fn trimTranscriptHistoryFrom(allocator: std.mem.Allocator, transcript: *session_mod.Transcript, cut_index: usize) void {
+    for (transcript.history.items[cut_index..]) |item| item.deinit(allocator);
+    transcript.history.shrinkRetainingCapacity(cut_index);
+}
+
+fn refreshLoadedThreadAfterRollback(allocator: std.mem.Allocator, thread: *LoadedThread) !void {
+    const preview = try resumePreview(allocator, &thread.transcript);
+    defer allocator.free(preview);
+    try replaceOwnedString(allocator, &thread.preview, preview);
+
+    const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
+    errdefer allocator.free(turns_json);
+    allocator.free(thread.turns_json);
+    thread.turns_json = turns_json;
+
+    thread.token_usage = thread.transcript.token_usage;
+    if (thread.token_usage_turn_id) |turn_id| allocator.free(turn_id);
+    thread.token_usage_turn_id = try transcriptTokenUsageTurnId(allocator, &thread.transcript);
+    thread.updated_at = currentUnixSeconds();
+}
+
 fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
     var response = std.ArrayList(u8).empty;
     errdefer response.deinit(allocator);
@@ -7148,7 +7192,16 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        rollbackLoadedThread(allocator, thread, num_turns) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed", err);
+        };
+        const result = try renderThreadReadResponse(allocator, thread, true);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/list")) {
         if (validateThreadListParams(params_value)) |message| {
