@@ -9488,7 +9488,6 @@ fn runCommandExecProcess(
             if (elapsedCommandExecMilliseconds(io_instance.io(), started) >= @as(u64, @intCast(limit))) {
                 child.kill(io_instance.io());
                 child_alive = false;
-                try drainCommandExecOutput(io_instance, allocator, &child, &stdout, &stderr, &stdout_observed_len, &stderr_observed_len, output_bytes_cap);
                 return finishCommandExecRunResult(allocator, COMMAND_EXEC_TIMEOUT_EXIT_CODE, &stdout, &stderr, stdout_observed_len, stderr_observed_len);
             }
         }

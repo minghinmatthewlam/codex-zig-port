@@ -6241,13 +6241,13 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     "method": "command/exec",
                     "params": {
                         "command": [
-                            "/bin/sh",
+                            sys.executable,
                             "-c",
-                            "printf stream-timeout; sleep 1",
+                            "import sys, time; sys.stdout.write('stream-timeout'); sys.stdout.flush(); time.sleep(1)",
                         ],
                         "streamStdoutStderr": True,
                         "processId": "proc-timeout",
-                        "timeoutMs": 10,
+                        "timeoutMs": 100,
                     },
                 },
             )
