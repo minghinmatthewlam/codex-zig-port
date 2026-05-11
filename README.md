@@ -92,10 +92,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - validate CLI MCP OAuth login requests with `codex-zig mcp login`, including
   configured-server, streamable HTTP, and comma-separated scope checks before
   returning the explicit not-implemented browser-flow error
-- remove file-backed MCP OAuth credentials for streamable HTTP servers with
-  `codex-zig mcp logout`
-- report bearer-token, file-backed OAuth, and OAuth-discovery not-logged-in
-  state from `codex-zig mcp list`
+- remove file-backed and macOS keychain-backed MCP OAuth credentials for
+  streamable HTTP servers with `codex-zig mcp logout`
+- report bearer-token, file-backed OAuth, macOS keychain-backed OAuth, and
+  OAuth-discovery not-logged-in state from `codex-zig mcp list`
 - list local app-server plugin marketplaces with `plugin/list`, including
   repo/home marketplace manifests, manifest metadata, and installed/enabled
   state from `$CODEX_HOME`
@@ -319,10 +319,10 @@ model-facing stdio and streamable HTTP MCP resource
 list/template/read tool calls, verifies model-facing streamable HTTP MCP tool
 discovery and execution with bearer-token auth plus session-id and teardown
 headers and GET SSE responses after accepted POSTs, verifies
-CLI MCP OAuth login validation and file-backed MCP OAuth logout for
-streamable HTTP servers, verifies
-CLI MCP auth-status reporting for bearer-token, file-backed OAuth, and
-OAuth-discovery not-logged-in servers, verifies
+CLI MCP OAuth login validation, file-backed MCP OAuth logout, and macOS
+keychain-backed MCP OAuth logout for streamable HTTP servers, verifies
+CLI MCP auth-status reporting for bearer-token, file-backed OAuth, macOS
+keychain-backed OAuth, and OAuth-discovery not-logged-in servers, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
