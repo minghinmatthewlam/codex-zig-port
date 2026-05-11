@@ -11011,6 +11011,17 @@ def run_json_schema_smoke(binary: Path) -> None:
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
+        assert initialize["properties"]["clientInfo"]["$ref"] == "#/$defs/ClientInfo"
+        assert (
+            initialize["properties"]["capabilities"]["anyOf"][0]["$ref"]
+            == "#/$defs/InitializeCapabilities"
+        )
+        assert (
+            initialize["$defs"]["InitializeCapabilities"]["properties"][
+                "experimentalApi"
+            ]["default"]
+            is False
+        )
         auth_mode = json.loads((out_dir / "AuthMode.json").read_text(encoding="utf-8"))
         assert auth_mode["enum"] == [
             "apikey",
@@ -12388,6 +12399,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "ClientNotification" in bundle["$defs"]
+        assert "ClientInfo" in bundle["$defs"]
+        assert "InitializeCapabilities" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
         assert "AuthMode" in bundle["$defs"]
         assert "PlanType" in bundle["$defs"]
@@ -12561,6 +12574,16 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "method"
             ]["const"]
             == "initialized"
+        )
+        assert (
+            bundle["$defs"]["InitializeParams"]["properties"]["clientInfo"]["$ref"]
+            == "#/$defs/ClientInfo"
+        )
+        assert (
+            bundle["$defs"]["InitializeParams"]["properties"]["capabilities"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/InitializeCapabilities"
         )
         assert (
             bundle["$defs"]["FsCopyParams"]["properties"]["recursive"]["type"]
@@ -12959,9 +12982,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "initialized"' in client_notification
 
+        client_info = (out_dir / "ClientInfo.ts").read_text(encoding="utf-8")
+        assert "export type ClientInfo" in client_info
+        assert "title: string | null" in client_info
+        initialize_capabilities = (out_dir / "InitializeCapabilities.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "experimentalApi: boolean;" in initialize_capabilities
         initialize = (out_dir / "InitializeParams.ts").read_text(encoding="utf-8")
-        assert "export interface InitializeParams" in initialize
+        assert 'import type { ClientInfo } from "./ClientInfo";' in initialize
+        assert (
+            'import type { InitializeCapabilities } from "./InitializeCapabilities";'
+            in initialize
+        )
+        assert "export type InitializeParams" in initialize
         assert "clientInfo: ClientInfo;" in initialize
+        assert "capabilities: InitializeCapabilities | null" in initialize
 
         absolute_path = (out_dir / "AbsolutePathBuf.ts").read_text(encoding="utf-8")
         assert "export type AbsolutePathBuf = string;" in absolute_path
@@ -14307,8 +14343,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
         assert 'export type { AuthMode } from "./AuthMode";' in index
+        assert 'export type { ClientInfo } from "./ClientInfo";' in index
         assert 'export type { ClientNotification } from "./ClientNotification";' in index
         assert 'export type { ClientRequest } from "./ClientRequest";' in index
+        assert 'export type { InitializeCapabilities } from "./InitializeCapabilities";' in index
+        assert 'export type { InitializeParams } from "./InitializeParams";' in index
         assert 'export type { PlanType } from "./PlanType";' in index
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
