@@ -136,3 +136,5 @@ Additional app-server realtime voice list coverage: `thread/realtime/listVoices`
 Additional app-server realtime stop coverage: `thread/realtime/stop` validates `threadId`, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
 
 Additional app-server realtime text append coverage: `thread/realtime/appendText` validates `threadId` and text string params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
+
+Additional app-server realtime audio append coverage: `thread/realtime/appendAudio` validates `threadId` and realtime audio chunk params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
