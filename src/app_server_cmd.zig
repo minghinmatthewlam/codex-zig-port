@@ -6829,6 +6829,19 @@ fn refreshLoadedThreadAfterRollback(allocator: std.mem.Allocator, thread: *Loade
     thread.updated_at = currentUnixSeconds();
 }
 
+fn setLoadedThreadName(allocator: std.mem.Allocator, thread: *LoadedThread, name: []const u8) !void {
+    const owned_name = try allocator.dupe(u8, name);
+    var owned_name_moved = false;
+    errdefer if (!owned_name_moved) allocator.free(owned_name);
+
+    try thread.transcript.setTitle(allocator, name);
+    if (thread.name) |existing| allocator.free(existing);
+    thread.name = owned_name;
+    owned_name_moved = true;
+    thread.updated_at = currentUnixSeconds();
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
 fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
     var response = std.ArrayList(u8).empty;
     errdefer response.deinit(allocator);
@@ -7234,13 +7247,22 @@ fn handleThreadMethod(
         };
         const name_value = object.get("name") orelse return renderJsonRpcError(allocator, id_value, -32602, "name must be a string");
         if (name_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "name must be a string");
-        if (std.mem.trim(u8, name_value.string, " \t\r\n").len == 0) {
+        const thread_name = std.mem.trim(u8, name_value.string, " \t\r\n");
+        if (thread_name.len == 0) {
             return renderJsonRpcError(allocator, id_value, -32600, "thread name must not be empty");
         }
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        const thread = &state.loaded_threads.items[thread_index];
+        setLoadedThreadName(allocator, thread, thread_name) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
+        };
+        try queueThreadNameUpdatedNotification(allocator, state, thread.id, thread_name);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/goal/set")) {
         if (!try appServerFeatureEnabled(allocator, state, "goals")) {
@@ -8327,6 +8349,19 @@ fn queueThreadTokenUsageNotification(allocator: std.mem.Allocator, state: *AppSe
     try appendJsonString(allocator, &notification, turn_id);
     try notification.appendSlice(allocator, ",\"tokenUsage\":");
     try appendThreadTokenUsageJson(allocator, &notification, token_usage);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
+}
+
+fn queueThreadNameUpdatedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8, thread_name: []const u8) !void {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/name/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"threadName\":");
+    try appendJsonString(allocator, &notification, thread_name);
     try notification.appendSlice(allocator, "}}");
     const owned = try notification.toOwnedSlice(allocator);
     errdefer allocator.free(owned);
