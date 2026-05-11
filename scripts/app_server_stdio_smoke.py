@@ -11602,7 +11602,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
+        assert "CommandExecTerminalSize" in bundle["$defs"]
         assert "CommandExecParams" in bundle["$defs"]
+        assert "CommandExecWriteParams" in bundle["$defs"]
+        assert "CommandExecWriteResponse" in bundle["$defs"]
+        assert "CommandExecTerminateParams" in bundle["$defs"]
+        assert "CommandExecTerminateResponse" in bundle["$defs"]
+        assert "CommandExecResizeParams" in bundle["$defs"]
+        assert "CommandExecResizeResponse" in bundle["$defs"]
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
@@ -11652,6 +11659,26 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
+        )
+        assert (
+            bundle["$defs"]["CommandExecParams"]["properties"]["size"]["oneOf"][0]["$ref"]
+            == "#/$defs/CommandExecTerminalSize"
+        )
+        assert (
+            bundle["$defs"]["CommandExecParams"]["properties"]["outputBytesCap"]["minimum"]
+            == 0
+        )
+        assert bundle["$defs"]["CommandExecParams"]["properties"]["cwd"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert (
+            bundle["$defs"]["CommandExecResizeParams"]["properties"]["size"]["$ref"]
+            == "#/$defs/CommandExecTerminalSize"
+        )
+        assert (
+            bundle["$defs"]["CommandExecWriteResponse"]["additionalProperties"]
+            is False
         )
         assert "ThreadStartParams" in bundle["$defs"]
         assert "ThreadStartResponse" in bundle["$defs"]
