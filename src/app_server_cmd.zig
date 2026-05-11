@@ -3863,7 +3863,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/name/set") or
         std.mem.eql(u8, method, "thread/memoryMode/set") or
         std.mem.eql(u8, method, "thread/metadata/update") or
-        std.mem.eql(u8, method, "thread/read");
+        std.mem.eql(u8, method, "thread/read") or
+        std.mem.eql(u8, method, "thread/turns/list");
 }
 
 fn handleThreadMethod(
@@ -4059,6 +4060,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotLoaded(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/turns/list")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (validateThreadTurnsListParams(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderThreadNotLoaded(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -4224,6 +4240,23 @@ fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
 fn threadReadIncludeTurnsParamIsValid(object: std.json.ObjectMap) bool {
     const include_turns = object.get("includeTurns") orelse return true;
     return include_turns == .bool;
+}
+
+fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
+    }
+    if (object.get("sortDirection")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    return null;
 }
 
 const ThreadMetadataGitInfoValidationError = struct {
