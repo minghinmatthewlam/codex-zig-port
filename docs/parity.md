@@ -64,7 +64,8 @@ filesystem-path helper, absolute-path, network-access, and output-delta
 notification artifacts, model-provider capabilities read artifacts, thread
 token-usage notification artifacts, collaboration-mode list artifacts, and
 model-list catalog artifacts, plus experimental-feature list/enablement
-artifacts, memory-reset response artifacts, and git-diff-to-remote artifacts, in
+artifacts, memory-reset response artifacts, git-diff-to-remote artifacts, and
+fuzzy-file-search artifacts, in
 standalone files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
@@ -127,6 +128,8 @@ Additional app-server experimental-feature generation coverage: `experimentalFea
 Additional app-server memory-reset generation coverage: `memory/reset` is included in current TypeScript and JSON schema generation as a no-params request with an empty Rust-shaped response object until broader app-server utility RPC generation parity lands.
 
 Additional app-server git-diff-to-remote generation coverage: `gitDiffToRemote` is included in current TypeScript and JSON schema generation with required `cwd` params and Rust-shaped `sha`/`diff` response fields until broader legacy desktop utility RPC generation parity lands.
+
+Additional app-server fuzzy-file-search generation coverage: `fuzzyFileSearch`, `fuzzyFileSearch/sessionStart`, `fuzzyFileSearch/sessionUpdate`, `fuzzyFileSearch/sessionStop`, `fuzzyFileSearch/sessionUpdated`, and `fuzzyFileSearch/sessionCompleted` are included in current TypeScript and JSON schema generation with direct result files, session params/responses, match type/item shapes, and session notification payloads until broader legacy desktop utility RPC generation parity lands.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
