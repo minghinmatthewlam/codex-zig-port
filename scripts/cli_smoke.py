@@ -2059,6 +2059,70 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         assert "bearer\tstreamable_http\tenabled\tBearer token" in listed_text.stdout
         assert "docs\tstdio\tenabled\tUnsupported" in listed_text.stdout
 
+        missing_login = subprocess.run(
+            [str(binary.resolve()), "mcp", "login", "missing"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert missing_login.returncode != 0
+        assert "No MCP server named 'missing' found." in missing_login.stderr
+
+        stdio_login = subprocess.run(
+            [str(binary.resolve()), "mcp", "login", "docs"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert stdio_login.returncode != 0
+        assert "OAuth login is only supported for streamable HTTP servers." in (
+            stdio_login.stderr
+        )
+
+        invalid_scopes_login = subprocess.run(
+            [str(binary.resolve()), "mcp", "login", "remote", "--scopes", "read,"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert invalid_scopes_login.returncode != 0
+        assert "error: InvalidMcpOAuthScopes" in invalid_scopes_login.stderr
+
+        remote_login = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "login",
+                "remote",
+                "--scopes",
+                "read,write",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert remote_login.returncode != 0
+        assert remote_login.stdout == (
+            "MCP OAuth login is not implemented in the Zig port yet.\n"
+        )
+        assert "error: UnsupportedMcpOAuth" in remote_login.stderr
+
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
             cwd=temp_root,
