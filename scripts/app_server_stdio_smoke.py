@@ -2643,6 +2643,40 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-fork-exclude-turns",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "excludeTurns": True,
+                        "ephemeral": True,
+                    },
+                },
+            )
+            fork_excluded = read_json_line(proc, 5)
+            assert fork_excluded["id"] == "thread-fork-exclude-turns"
+            forked_thread = fork_excluded["result"]["thread"]
+            forked_thread_id = forked_thread["id"]
+            assert forked_thread["forkedFromId"] == resume_thread_id
+            assert forked_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-fork-turns-list",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": forked_thread_id, "limit": 1},
+                },
+            )
+            fork_turns = read_json_line(proc, 5)
+            assert fork_turns["id"] == "thread-fork-turns-list"
+            assert fork_turns["result"]["data"][0]["id"] == "turn-1"
+            assert fork_turns["result"]["data"][0]["items"][0]["text"] == "saved hi"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume-by-path-exclude-turns",
                     "method": "thread/resume",
                     "params": {
@@ -2656,6 +2690,19 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert resumed_by_path["id"] == "thread-resume-by-path-exclude-turns"
             assert resumed_by_path["result"]["thread"]["id"] == resume_thread_id
             assert resumed_by_path["result"]["thread"]["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-excluded-turns-list",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": resume_thread_id, "limit": 1},
+                },
+            )
+            excluded_resume_turns = read_json_line(proc, 5)
+            assert excluded_resume_turns["id"] == "thread-resume-excluded-turns-list"
+            assert excluded_resume_turns["result"]["data"][0]["id"] == "turn-1"
 
             write_json_line(
                 proc,
@@ -9844,6 +9891,7 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadForkParams.json").read_text(encoding="utf-8")
         )
         assert thread_fork_params_schema["required"] == ["threadId"]
+        assert thread_fork_params_schema["properties"]["excludeTurns"]["type"] == "boolean"
         thread_fork_response_schema = json.loads(
             (out_dir / "ThreadForkResponse.json").read_text(encoding="utf-8")
         )
@@ -10556,6 +10604,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface ThreadForkParams" in thread_fork_params
         assert "threadId: string;" in thread_fork_params
         assert "ephemeral?: boolean;" in thread_fork_params
+        assert "excludeTurns?: boolean;" in thread_fork_params
         thread_fork_response = (out_dir / "v2" / "ThreadForkResponse.ts").read_text(
             encoding="utf-8"
         )
