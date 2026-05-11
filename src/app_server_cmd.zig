@@ -826,6 +826,109 @@ const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const RATE_LIMIT_REACHED_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RateLimitReachedType =
+    \\  | "rate_limit_reached"
+    \\  | "workspace_owner_credits_depleted"
+    \\  | "workspace_member_credits_depleted"
+    \\  | "workspace_owner_usage_limit_reached"
+    \\  | "workspace_member_usage_limit_reached";
+    \\
+    ;
+
+const RATE_LIMIT_WINDOW_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RateLimitWindow {
+    \\  usedPercent: number;
+    \\  windowDurationMins: number | null;
+    \\  resetsAt: number | null;
+    \\}
+    \\
+    ;
+
+const CREDITS_SNAPSHOT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CreditsSnapshot {
+    \\  hasCredits: boolean;
+    \\  unlimited: boolean;
+    \\  balance: string | null;
+    \\}
+    \\
+    ;
+
+const RATE_LIMIT_SNAPSHOT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PlanType } from "../PlanType";
+    \\import type { CreditsSnapshot } from "./CreditsSnapshot";
+    \\import type { RateLimitReachedType } from "./RateLimitReachedType";
+    \\import type { RateLimitWindow } from "./RateLimitWindow";
+    \\
+    \\export interface RateLimitSnapshot {
+    \\  limitId: string | null;
+    \\  limitName: string | null;
+    \\  primary: RateLimitWindow | null;
+    \\  secondary: RateLimitWindow | null;
+    \\  credits: CreditsSnapshot | null;
+    \\  planType: PlanType | null;
+    \\  rateLimitReachedType: RateLimitReachedType | null;
+    \\}
+    \\
+    ;
+
+const GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RateLimitSnapshot } from "./RateLimitSnapshot";
+    \\
+    \\export interface GetAccountRateLimitsResponse {
+    \\  rateLimits: RateLimitSnapshot;
+    \\  rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+    \\}
+    \\
+    ;
+
+const ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RateLimitSnapshot } from "./RateLimitSnapshot";
+    \\
+    \\export interface AccountRateLimitsUpdatedNotification {
+    \\  rateLimits: RateLimitSnapshot;
+    \\}
+    \\
+    ;
+
+const ADD_CREDITS_NUDGE_CREDIT_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AddCreditsNudgeCreditType = "credits" | "usage_limit";
+    \\
+    ;
+
+const SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AddCreditsNudgeCreditType } from "./AddCreditsNudgeCreditType";
+    \\
+    \\export interface SendAddCreditsNudgeEmailParams {
+    \\  creditType: AddCreditsNudgeCreditType;
+    \\}
+    \\
+    ;
+
+const ADD_CREDITS_NUDGE_EMAIL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AddCreditsNudgeEmailStatus = "sent" | "cooldown_active";
+    \\
+    ;
+
+const SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AddCreditsNudgeEmailStatus } from "./AddCreditsNudgeEmailStatus";
+    \\
+    \\export interface SendAddCreditsNudgeEmailResponse {
+    \\  status: AddCreditsNudgeEmailStatus;
+    \\}
+    \\
+    ;
+
 const MEMORY_RESET_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface MemoryResetResponse {}
@@ -2781,6 +2884,7 @@ const CLIENT_REQUEST_TS =
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
+    \\import type { SendAddCreditsNudgeEmailParams } from "./v2/SendAddCreditsNudgeEmailParams";
     \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
     \\import type { SkillsListParams } from "./v2/SkillsListParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
@@ -2873,6 +2977,13 @@ const CLIENT_REQUEST_TS =
     \\    }
     \\  | {
     \\      method: "account/logout";
+    \\    }
+    \\  | {
+    \\      method: "account/rateLimits/read";
+    \\    }
+    \\  | {
+    \\      method: "account/sendAddCreditsNudgeEmail";
+    \\      params: SendAddCreditsNudgeEmailParams;
     \\    }
     \\  | {
     \\      method: "fs/readFile";
@@ -3104,6 +3215,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FsWatchResponse } from "./v2/FsWatchResponse";
     \\import type { FsWriteFileResponse } from "./v2/FsWriteFileResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
+    \\import type { GetAccountRateLimitsResponse } from "./v2/GetAccountRateLimitsResponse";
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
@@ -3111,6 +3223,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
+    \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
     \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
@@ -3221,6 +3334,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "account/logout";
     \\      result: LogoutAccountResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/rateLimits/read";
+    \\      result: GetAccountRateLimitsResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/sendAddCreditsNudgeEmail";
+    \\      result: SendAddCreditsNudgeEmailResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -3478,6 +3601,7 @@ const CLIENT_RESPONSE_TS =
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { AccountLoginCompletedNotification } from "./v2/AccountLoginCompletedNotification";
+    \\import type { AccountRateLimitsUpdatedNotification } from "./v2/AccountRateLimitsUpdatedNotification";
     \\import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
@@ -3503,6 +3627,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "account/updated";
     \\      params: AccountUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "account/rateLimits/updated";
+    \\      params: AccountRateLimitsUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "command/exec/outputDelta";
@@ -3596,7 +3724,10 @@ const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
     \\export type { Account } from "./Account";
     \\export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
+    \\export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
     \\export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
+    \\export type { AddCreditsNudgeCreditType } from "./AddCreditsNudgeCreditType";
+    \\export type { AddCreditsNudgeEmailStatus } from "./AddCreditsNudgeEmailStatus";
     \\export type { ByteRange } from "./ByteRange";
     \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
     \\export type { CancelLoginAccountResponse } from "./CancelLoginAccountResponse";
@@ -3615,6 +3746,7 @@ const V2_INDEX_TS =
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { CreditsSnapshot } from "./CreditsSnapshot";
     \\export type { McpServerAuthStatus } from "./McpServerAuthStatus";
     \\export type { McpServerStatus } from "./McpServerStatus";
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
@@ -3654,6 +3786,7 @@ const V2_INDEX_TS =
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { GetAccountParams } from "./GetAccountParams";
+    \\export type { GetAccountRateLimitsResponse } from "./GetAccountRateLimitsResponse";
     \\export type { GetAccountResponse } from "./GetAccountResponse";
     \\export type { GetAuthStatusParams } from "./GetAuthStatusParams";
     \\export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
@@ -3712,7 +3845,12 @@ const V2_INDEX_TS =
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
+    \\export type { RateLimitReachedType } from "./RateLimitReachedType";
+    \\export type { RateLimitSnapshot } from "./RateLimitSnapshot";
+    \\export type { RateLimitWindow } from "./RateLimitWindow";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
+    \\export type { SendAddCreditsNudgeEmailParams } from "./SendAddCreditsNudgeEmailParams";
+    \\export type { SendAddCreditsNudgeEmailResponse } from "./SendAddCreditsNudgeEmailResponse";
     \\export type { SortDirection } from "./SortDirection";
     \\export type { ThreadApproveGuardianDeniedActionParams } from "./ThreadApproveGuardianDeniedActionParams";
     \\export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveGuardianDeniedActionResponse";
@@ -4277,6 +4415,190 @@ const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\    "loginId": { "type": ["string", "null"] },
     \\    "success": { "type": "boolean" },
     \\    "error": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const RATE_LIMIT_REACHED_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RateLimitReachedType",
+    \\  "enum": [
+    \\    "rate_limit_reached",
+    \\    "workspace_owner_credits_depleted",
+    \\    "workspace_member_credits_depleted",
+    \\    "workspace_owner_usage_limit_reached",
+    \\    "workspace_member_usage_limit_reached"
+    \\  ],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const RATE_LIMIT_WINDOW_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RateLimitWindow",
+    \\  "type": "object",
+    \\  "required": ["usedPercent"],
+    \\  "properties": {
+    \\    "usedPercent": { "type": "integer", "format": "int32" },
+    \\    "windowDurationMins": { "type": ["integer", "null"], "format": "int64" },
+    \\    "resetsAt": { "type": ["integer", "null"], "format": "int64" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CREDITS_SNAPSHOT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CreditsSnapshot",
+    \\  "type": "object",
+    \\  "required": ["hasCredits", "unlimited"],
+    \\  "properties": {
+    \\    "hasCredits": { "type": "boolean" },
+    \\    "unlimited": { "type": "boolean" },
+    \\    "balance": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const RATE_LIMIT_SNAPSHOT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RateLimitSnapshot",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "limitId": { "type": ["string", "null"] },
+    \\    "limitName": { "type": ["string", "null"] },
+    \\    "primary": {
+    \\      "anyOf": [
+    \\        { "$ref": "RateLimitWindow.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "secondary": {
+    \\      "anyOf": [
+    \\        { "$ref": "RateLimitWindow.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "credits": {
+    \\      "anyOf": [
+    \\        { "$ref": "CreditsSnapshot.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "planType": {
+    \\      "anyOf": [
+    \\        { "$ref": "PlanType.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "rateLimitReachedType": {
+    \\      "anyOf": [
+    \\        { "$ref": "RateLimitReachedType.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const GET_ACCOUNT_RATE_LIMITS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAccountRateLimitsResponse",
+    \\  "type": "object",
+    \\  "required": ["rateLimits"],
+    \\  "properties": {
+    \\    "rateLimits": { "$ref": "RateLimitSnapshot.json" },
+    \\    "rateLimitsByLimitId": {
+    \\      "type": ["object", "null"],
+    \\      "additionalProperties": { "$ref": "RateLimitSnapshot.json" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AccountRateLimitsUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["rateLimits"],
+    \\  "properties": {
+    \\    "rateLimits": { "$ref": "RateLimitSnapshot.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AddCreditsNudgeCreditType",
+    \\  "enum": ["credits", "usage_limit"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SendAddCreditsNudgeEmailParams",
+    \\  "type": "object",
+    \\  "required": ["creditType"],
+    \\  "properties": {
+    \\    "creditType": { "$ref": "#/$defs/AddCreditsNudgeCreditType" }
+    \\  },
+    \\  "$defs": {
+    \\    "AddCreditsNudgeCreditType": {
+    \\      "enum": ["credits", "usage_limit"],
+    \\      "type": "string"
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AddCreditsNudgeEmailStatus",
+    \\  "enum": ["sent", "cooldown_active"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SendAddCreditsNudgeEmailResponse",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/AddCreditsNudgeEmailStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "AddCreditsNudgeEmailStatus": {
+    \\      "enum": ["sent", "cooldown_active"],
+    \\      "type": "string"
+    \\    }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -9070,6 +9392,118 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "RateLimitReachedType": {
+    \\      "enum": [
+    \\        "rate_limit_reached",
+    \\        "workspace_owner_credits_depleted",
+    \\        "workspace_member_credits_depleted",
+    \\        "workspace_owner_usage_limit_reached",
+    \\        "workspace_member_usage_limit_reached"
+    \\      ],
+    \\      "type": "string"
+    \\    },
+    \\    "RateLimitWindow": {
+    \\      "type": "object",
+    \\      "required": ["usedPercent"],
+    \\      "properties": {
+    \\        "usedPercent": { "type": "integer", "format": "int32" },
+    \\        "windowDurationMins": { "type": ["integer", "null"], "format": "int64" },
+    \\        "resetsAt": { "type": ["integer", "null"], "format": "int64" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "CreditsSnapshot": {
+    \\      "type": "object",
+    \\      "required": ["hasCredits", "unlimited"],
+    \\      "properties": {
+    \\        "hasCredits": { "type": "boolean" },
+    \\        "unlimited": { "type": "boolean" },
+    \\        "balance": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "RateLimitSnapshot": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "limitId": { "type": ["string", "null"] },
+    \\        "limitName": { "type": ["string", "null"] },
+    \\        "primary": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/RateLimitWindow" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "secondary": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/RateLimitWindow" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "credits": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/CreditsSnapshot" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "planType": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/PlanType" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "rateLimitReachedType": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/RateLimitReachedType" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "GetAccountRateLimitsResponse": {
+    \\      "type": "object",
+    \\      "required": ["rateLimits"],
+    \\      "properties": {
+    \\        "rateLimits": { "$ref": "#/$defs/RateLimitSnapshot" },
+    \\        "rateLimitsByLimitId": {
+    \\          "type": ["object", "null"],
+    \\          "additionalProperties": { "$ref": "#/$defs/RateLimitSnapshot" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AccountRateLimitsUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["rateLimits"],
+    \\      "properties": {
+    \\        "rateLimits": { "$ref": "#/$defs/RateLimitSnapshot" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AddCreditsNudgeCreditType": {
+    \\      "enum": ["credits", "usage_limit"],
+    \\      "type": "string"
+    \\    },
+    \\    "SendAddCreditsNudgeEmailParams": {
+    \\      "type": "object",
+    \\      "required": ["creditType"],
+    \\      "properties": {
+    \\        "creditType": { "$ref": "#/$defs/AddCreditsNudgeCreditType" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AddCreditsNudgeEmailStatus": {
+    \\      "enum": ["sent", "cooldown_active"],
+    \\      "type": "string"
+    \\    },
+    \\    "SendAddCreditsNudgeEmailResponse": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/AddCreditsNudgeEmailStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "FsReadFileParams": {
     \\      "type": "object",
     \\      "required": ["path"],
@@ -10459,6 +10893,16 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CancelLoginAccountResponse.json", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA },
     .{ .name = "LogoutAccountResponse.json", .contents = LOGOUT_ACCOUNT_RESPONSE_JSON_SCHEMA },
     .{ .name = "AccountLoginCompletedNotification.json", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "RateLimitReachedType.json", .contents = RATE_LIMIT_REACHED_TYPE_JSON_SCHEMA },
+    .{ .name = "RateLimitWindow.json", .contents = RATE_LIMIT_WINDOW_JSON_SCHEMA },
+    .{ .name = "CreditsSnapshot.json", .contents = CREDITS_SNAPSHOT_JSON_SCHEMA },
+    .{ .name = "RateLimitSnapshot.json", .contents = RATE_LIMIT_SNAPSHOT_JSON_SCHEMA },
+    .{ .name = "GetAccountRateLimitsResponse.json", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AccountRateLimitsUpdatedNotification.json", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
+    .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
+    .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
+    .{ .name = "SendAddCreditsNudgeEmailResponse.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_JSON_SCHEMA },
     .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteParams.json", .contents = GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteResponse.json", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA },
@@ -10689,6 +11133,16 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CancelLoginAccountResponse.ts", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_TS },
     .{ .name = "v2/LogoutAccountResponse.ts", .contents = LOGOUT_ACCOUNT_RESPONSE_TS },
     .{ .name = "v2/AccountLoginCompletedNotification.ts", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/RateLimitReachedType.ts", .contents = RATE_LIMIT_REACHED_TYPE_TS },
+    .{ .name = "v2/RateLimitWindow.ts", .contents = RATE_LIMIT_WINDOW_TS },
+    .{ .name = "v2/CreditsSnapshot.ts", .contents = CREDITS_SNAPSHOT_TS },
+    .{ .name = "v2/RateLimitSnapshot.ts", .contents = RATE_LIMIT_SNAPSHOT_TS },
+    .{ .name = "v2/GetAccountRateLimitsResponse.ts", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS },
+    .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
+    .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
+    .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
+    .{ .name = "v2/SendAddCreditsNudgeEmailResponse.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_TS },
     .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
     .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PARAMS_TS },
