@@ -740,6 +740,92 @@ const ACCOUNT_UPDATED_NOTIFICATION_TS =
     \\
     ;
 
+const LOGIN_ACCOUNT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type LoginAccountParams =
+    \\  | {
+    \\      type: "apiKey";
+    \\      apiKey: string;
+    \\    }
+    \\  | {
+    \\      type: "chatgpt";
+    \\      codexStreamlinedLogin?: boolean;
+    \\    }
+    \\  | {
+    \\      type: "chatgptDeviceCode";
+    \\    }
+    \\  | {
+    \\      type: "chatgptAuthTokens";
+    \\      accessToken: string;
+    \\      chatgptAccountId: string;
+    \\      chatgptPlanType?: string | null;
+    \\    };
+    \\
+    ;
+
+const LOGIN_ACCOUNT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type LoginAccountResponse =
+    \\  | {
+    \\      type: "apiKey";
+    \\    }
+    \\  | {
+    \\      type: "chatgpt";
+    \\      loginId: string;
+    \\      authUrl: string;
+    \\    }
+    \\  | {
+    \\      type: "chatgptDeviceCode";
+    \\      loginId: string;
+    \\      verificationUrl: string;
+    \\      userCode: string;
+    \\    }
+    \\  | {
+    \\      type: "chatgptAuthTokens";
+    \\    };
+    \\
+    ;
+
+const CANCEL_LOGIN_ACCOUNT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CancelLoginAccountParams {
+    \\  loginId: string;
+    \\}
+    \\
+    ;
+
+const CANCEL_LOGIN_ACCOUNT_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CancelLoginAccountStatus = "canceled" | "notFound";
+    \\
+    ;
+
+const CANCEL_LOGIN_ACCOUNT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CancelLoginAccountStatus } from "./CancelLoginAccountStatus";
+    \\
+    \\export interface CancelLoginAccountResponse {
+    \\  status: CancelLoginAccountStatus;
+    \\}
+    \\
+    ;
+
+const LOGOUT_ACCOUNT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface LogoutAccountResponse {}
+    \\
+    ;
+
+const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AccountLoginCompletedNotification {
+    \\  loginId: string | null;
+    \\  success: boolean;
+    \\  error: string | null;
+    \\}
+    \\
+    ;
+
 const MEMORY_RESET_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface MemoryResetResponse {}
@@ -2665,6 +2751,7 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_TS =
 
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
+    \\import type { CancelLoginAccountParams } from "./v2/CancelLoginAccountParams";
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
@@ -2690,6 +2777,7 @@ const CLIENT_REQUEST_TS =
     \\import type { FsWriteFileParams } from "./v2/FsWriteFileParams";
     \\import type { GitDiffToRemoteParams } from "./v2/GitDiffToRemoteParams";
     \\import type { HooksListParams } from "./v2/HooksListParams";
+    \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
@@ -2774,6 +2862,17 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "getAuthStatus";
     \\      params?: GetAuthStatusParams | null;
+    \\    }
+    \\  | {
+    \\      method: "account/login/start";
+    \\      params: LoginAccountParams;
+    \\    }
+    \\  | {
+    \\      method: "account/login/cancel";
+    \\      params: CancelLoginAccountParams;
+    \\    }
+    \\  | {
+    \\      method: "account/logout";
     \\    }
     \\  | {
     \\      method: "fs/readFile";
@@ -2980,6 +3079,7 @@ const CLIENT_REQUEST_TS =
 
 const CLIENT_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { CancelLoginAccountResponse } from "./v2/CancelLoginAccountResponse";
     \\import type { CommandExecResponse } from "./v2/CommandExecResponse";
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
     \\import type { CommandExecTerminateResponse } from "./v2/CommandExecTerminateResponse";
@@ -3005,6 +3105,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { FsWriteFileResponse } from "./v2/FsWriteFileResponse";
     \\import type { GitDiffToRemoteResponse } from "./v2/GitDiffToRemoteResponse";
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
+    \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
+    \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
@@ -3104,6 +3206,21 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "getAuthStatus";
     \\      result: GetAuthStatusResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/login/start";
+    \\      result: LoginAccountResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/login/cancel";
+    \\      result: CancelLoginAccountResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/logout";
+    \\      result: LogoutAccountResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -3360,6 +3477,7 @@ const CLIENT_RESPONSE_TS =
 
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AccountLoginCompletedNotification } from "./v2/AccountLoginCompletedNotification";
     \\import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
@@ -3378,6 +3496,10 @@ const SERVER_NOTIFICATION_TS =
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\
     \\export type ServerNotification =
+    \\  | {
+    \\      method: "account/login/completed";
+    \\      params: AccountLoginCompletedNotification;
+    \\    }
     \\  | {
     \\      method: "account/updated";
     \\      params: AccountUpdatedNotification;
@@ -3473,8 +3595,12 @@ const INDEX_TS =
 const V2_INDEX_TS =
     GENERATED_TS_HEADER ++
     \\export type { Account } from "./Account";
+    \\export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
     \\export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
     \\export type { ByteRange } from "./ByteRange";
+    \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
+    \\export type { CancelLoginAccountResponse } from "./CancelLoginAccountResponse";
+    \\export type { CancelLoginAccountStatus } from "./CancelLoginAccountStatus";
     \\export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
     \\export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";
     \\export type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -3531,6 +3657,9 @@ const V2_INDEX_TS =
     \\export type { GetAccountResponse } from "./GetAccountResponse";
     \\export type { GetAuthStatusParams } from "./GetAuthStatusParams";
     \\export type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
+    \\export type { LoginAccountParams } from "./LoginAccountParams";
+    \\export type { LoginAccountResponse } from "./LoginAccountResponse";
+    \\export type { LogoutAccountResponse } from "./LogoutAccountResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { Skill } from "./Skill";
     \\export type { SkillDependencies } from "./SkillDependencies";
@@ -3984,6 +4113,170 @@ const ACCOUNT_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\        { "type": "null" }
     \\      ]
     \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const LOGIN_ACCOUNT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "LoginAccountParams",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "apiKey"],
+    \\      "properties": {
+    \\        "type": { "const": "apiKey" },
+    \\        "apiKey": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgpt" },
+    \\        "codexStreamlinedLogin": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgptDeviceCode" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "accessToken", "chatgptAccountId"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgptAuthTokens" },
+    \\        "accessToken": { "type": "string" },
+    \\        "chatgptAccountId": { "type": "string" },
+    \\        "chatgptPlanType": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "LoginAccountResponse",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "apiKey" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "loginId", "authUrl"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgpt" },
+    \\        "loginId": { "type": "string" },
+    \\        "authUrl": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "loginId", "verificationUrl", "userCode"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgptDeviceCode" },
+    \\        "loginId": { "type": "string" },
+    \\        "verificationUrl": { "type": "string" },
+    \\        "userCode": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "chatgptAuthTokens" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const CANCEL_LOGIN_ACCOUNT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CancelLoginAccountParams",
+    \\  "type": "object",
+    \\  "required": ["loginId"],
+    \\  "properties": {
+    \\    "loginId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CANCEL_LOGIN_ACCOUNT_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CancelLoginAccountStatus",
+    \\  "enum": ["canceled", "notFound"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const CANCEL_LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CancelLoginAccountResponse",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/CancelLoginAccountStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "CancelLoginAccountStatus": {
+    \\      "enum": ["canceled", "notFound"],
+    \\      "type": "string"
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const LOGOUT_ACCOUNT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "LogoutAccountResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AccountLoginCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["success"],
+    \\  "properties": {
+    \\    "loginId": { "type": ["string", "null"] },
+    \\    "success": { "type": "boolean" },
+    \\    "error": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -8661,6 +8954,122 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "LoginAccountParams": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "apiKey"],
+    \\          "properties": {
+    \\            "type": { "const": "apiKey" },
+    \\            "apiKey": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgpt" },
+    \\            "codexStreamlinedLogin": { "type": "boolean" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgptDeviceCode" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "accessToken", "chatgptAccountId"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgptAuthTokens" },
+    \\            "accessToken": { "type": "string" },
+    \\            "chatgptAccountId": { "type": "string" },
+    \\            "chatgptPlanType": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "LoginAccountResponse": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "apiKey" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "loginId", "authUrl"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgpt" },
+    \\            "loginId": { "type": "string" },
+    \\            "authUrl": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "loginId", "verificationUrl", "userCode"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgptDeviceCode" },
+    \\            "loginId": { "type": "string" },
+    \\            "verificationUrl": { "type": "string" },
+    \\            "userCode": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "chatgptAuthTokens" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "CancelLoginAccountParams": {
+    \\      "type": "object",
+    \\      "required": ["loginId"],
+    \\      "properties": {
+    \\        "loginId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CancelLoginAccountStatus": {
+    \\      "enum": ["canceled", "notFound"],
+    \\      "type": "string"
+    \\    },
+    \\    "CancelLoginAccountResponse": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/CancelLoginAccountStatus" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "LogoutAccountResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AccountLoginCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["success"],
+    \\      "properties": {
+    \\        "loginId": { "type": ["string", "null"] },
+    \\        "success": { "type": "boolean" },
+    \\        "error": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "FsReadFileParams": {
     \\      "type": "object",
     \\      "required": ["path"],
@@ -10043,6 +10452,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "GetAccountParams.json", .contents = GET_ACCOUNT_PARAMS_JSON_SCHEMA },
     .{ .name = "GetAccountResponse.json", .contents = GET_ACCOUNT_RESPONSE_JSON_SCHEMA },
     .{ .name = "AccountUpdatedNotification.json", .contents = ACCOUNT_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "LoginAccountParams.json", .contents = LOGIN_ACCOUNT_PARAMS_JSON_SCHEMA },
+    .{ .name = "LoginAccountResponse.json", .contents = LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CancelLoginAccountParams.json", .contents = CANCEL_LOGIN_ACCOUNT_PARAMS_JSON_SCHEMA },
+    .{ .name = "CancelLoginAccountStatus.json", .contents = CANCEL_LOGIN_ACCOUNT_STATUS_JSON_SCHEMA },
+    .{ .name = "CancelLoginAccountResponse.json", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "LogoutAccountResponse.json", .contents = LOGOUT_ACCOUNT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AccountLoginCompletedNotification.json", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "MemoryResetResponse.json", .contents = MEMORY_RESET_RESPONSE_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteParams.json", .contents = GIT_DIFF_TO_REMOTE_PARAMS_JSON_SCHEMA },
     .{ .name = "GitDiffToRemoteResponse.json", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_JSON_SCHEMA },
@@ -10266,6 +10682,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/GetAccountParams.ts", .contents = GET_ACCOUNT_PARAMS_TS },
     .{ .name = "v2/GetAccountResponse.ts", .contents = GET_ACCOUNT_RESPONSE_TS },
     .{ .name = "v2/AccountUpdatedNotification.ts", .contents = ACCOUNT_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/LoginAccountParams.ts", .contents = LOGIN_ACCOUNT_PARAMS_TS },
+    .{ .name = "v2/LoginAccountResponse.ts", .contents = LOGIN_ACCOUNT_RESPONSE_TS },
+    .{ .name = "v2/CancelLoginAccountParams.ts", .contents = CANCEL_LOGIN_ACCOUNT_PARAMS_TS },
+    .{ .name = "v2/CancelLoginAccountStatus.ts", .contents = CANCEL_LOGIN_ACCOUNT_STATUS_TS },
+    .{ .name = "v2/CancelLoginAccountResponse.ts", .contents = CANCEL_LOGIN_ACCOUNT_RESPONSE_TS },
+    .{ .name = "v2/LogoutAccountResponse.ts", .contents = LOGOUT_ACCOUNT_RESPONSE_TS },
+    .{ .name = "v2/AccountLoginCompletedNotification.ts", .contents = ACCOUNT_LOGIN_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
     .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PARAMS_TS },
