@@ -2512,6 +2512,120 @@ const COMMAND_EXEC_RESIZE_PARAMS_TS =
     \\
     ;
 
+const PROCESS_TERMINAL_SIZE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ProcessTerminalSize {
+    \\  rows: number;
+    \\  cols: number;
+    \\}
+    \\
+    ;
+
+const PROCESS_OUTPUT_STREAM_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ProcessOutputStream = "stdout" | "stderr";
+    \\
+    ;
+
+const PROCESS_SPAWN_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { ProcessTerminalSize } from "./ProcessTerminalSize";
+    \\
+    \\export interface ProcessSpawnParams {
+    \\  command: string[];
+    \\  processHandle: string;
+    \\  cwd: AbsolutePathBuf;
+    \\  tty?: boolean;
+    \\  streamStdin?: boolean;
+    \\  streamStdoutStderr?: boolean;
+    \\  outputBytesCap?: number | null;
+    \\  timeoutMs?: number | null;
+    \\  env?: Record<string, string | null> | null;
+    \\  size?: ProcessTerminalSize | null;
+    \\}
+    \\
+    ;
+
+const PROCESS_SPAWN_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ProcessSpawnResponse = Record<string, never>;
+    \\
+    ;
+
+const PROCESS_WRITE_STDIN_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ProcessWriteStdinParams {
+    \\  processHandle: string;
+    \\  deltaBase64?: string | null;
+    \\  closeStdin?: boolean;
+    \\}
+    \\
+    ;
+
+const PROCESS_WRITE_STDIN_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ProcessWriteStdinResponse = Record<string, never>;
+    \\
+    ;
+
+const PROCESS_KILL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ProcessKillParams {
+    \\  processHandle: string;
+    \\}
+    \\
+    ;
+
+const PROCESS_KILL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ProcessKillResponse = Record<string, never>;
+    \\
+    ;
+
+const PROCESS_RESIZE_PTY_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ProcessTerminalSize } from "./ProcessTerminalSize";
+    \\
+    \\export interface ProcessResizePtyParams {
+    \\  processHandle: string;
+    \\  size: ProcessTerminalSize;
+    \\}
+    \\
+    ;
+
+const PROCESS_RESIZE_PTY_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ProcessResizePtyResponse = Record<string, never>;
+    \\
+    ;
+
+const PROCESS_OUTPUT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ProcessOutputStream } from "./ProcessOutputStream";
+    \\
+    \\export interface ProcessOutputDeltaNotification {
+    \\  processHandle: string;
+    \\  stream: ProcessOutputStream;
+    \\  deltaBase64: string;
+    \\  capReached: boolean;
+    \\}
+    \\
+    ;
+
+const PROCESS_EXITED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ProcessExitedNotification {
+    \\  processHandle: string;
+    \\  exitCode: number;
+    \\  stdout: string;
+    \\  stdoutCapReached: boolean;
+    \\  stderr: string;
+    \\  stderrCapReached: boolean;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -3482,6 +3596,10 @@ const CLIENT_REQUEST_TS =
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
+    \\import type { ProcessKillParams } from "./v2/ProcessKillParams";
+    \\import type { ProcessResizePtyParams } from "./v2/ProcessResizePtyParams";
+    \\import type { ProcessSpawnParams } from "./v2/ProcessSpawnParams";
+    \\import type { ProcessWriteStdinParams } from "./v2/ProcessWriteStdinParams";
     \\import type { SendAddCreditsNudgeEmailParams } from "./v2/SendAddCreditsNudgeEmailParams";
     \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
     \\import type { SkillsListParams } from "./v2/SkillsListParams";
@@ -3682,6 +3800,22 @@ const CLIENT_REQUEST_TS =
     \\      params: CommandExecResizeParams;
     \\    }
     \\  | {
+    \\      method: "process/spawn";
+    \\      params: ProcessSpawnParams;
+    \\    }
+    \\  | {
+    \\      method: "process/writeStdin";
+    \\      params: ProcessWriteStdinParams;
+    \\    }
+    \\  | {
+    \\      method: "process/kill";
+    \\      params: ProcessKillParams;
+    \\    }
+    \\  | {
+    \\      method: "process/resizePty";
+    \\      params: ProcessResizePtyParams;
+    \\    }
+    \\  | {
     \\      method: "thread/start";
     \\      params?: ThreadStartParams | null;
     \\    }
@@ -3851,6 +3985,10 @@ const CLIENT_RESPONSE_TS =
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
+    \\import type { ProcessKillResponse } from "./v2/ProcessKillResponse";
+    \\import type { ProcessResizePtyResponse } from "./v2/ProcessResizePtyResponse";
+    \\import type { ProcessSpawnResponse } from "./v2/ProcessSpawnResponse";
+    \\import type { ProcessWriteStdinResponse } from "./v2/ProcessWriteStdinResponse";
     \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
     \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
@@ -4097,6 +4235,26 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "process/spawn";
+    \\      result: ProcessSpawnResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "process/writeStdin";
+    \\      result: ProcessWriteStdinResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "process/kill";
+    \\      result: ProcessKillResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "process/resizePty";
+    \\      result: ProcessResizePtyResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/start";
     \\      result: ThreadStartResponse;
     \\    }
@@ -4272,6 +4430,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
+    \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
+    \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
@@ -4305,6 +4465,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "command/exec/outputDelta";
     \\      params: CommandExecOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "process/outputDelta";
+    \\      params: ProcessOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "process/exited";
+    \\      params: ProcessExitedNotification;
     \\    }
     \\  | {
     \\      method: "fuzzyFileSearch/sessionUpdated";
@@ -4463,6 +4631,18 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { ProcessExitedNotification } from "./ProcessExitedNotification";
+    \\export type { ProcessKillParams } from "./ProcessKillParams";
+    \\export type { ProcessKillResponse } from "./ProcessKillResponse";
+    \\export type { ProcessOutputDeltaNotification } from "./ProcessOutputDeltaNotification";
+    \\export type { ProcessOutputStream } from "./ProcessOutputStream";
+    \\export type { ProcessResizePtyParams } from "./ProcessResizePtyParams";
+    \\export type { ProcessResizePtyResponse } from "./ProcessResizePtyResponse";
+    \\export type { ProcessSpawnParams } from "./ProcessSpawnParams";
+    \\export type { ProcessSpawnResponse } from "./ProcessSpawnResponse";
+    \\export type { ProcessTerminalSize } from "./ProcessTerminalSize";
+    \\export type { ProcessWriteStdinParams } from "./ProcessWriteStdinParams";
+    \\export type { ProcessWriteStdinResponse } from "./ProcessWriteStdinResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
     \\export type { CommandMigration } from "./CommandMigration";
@@ -8033,6 +8213,186 @@ const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\    "stream": { "enum": ["stdout", "stderr"] },
     \\    "deltaBase64": { "type": "string" },
     \\    "capReached": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_TERMINAL_SIZE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessTerminalSize",
+    \\  "type": "object",
+    \\  "required": ["rows", "cols"],
+    \\  "properties": {
+    \\    "rows": { "type": "integer", "minimum": 1 },
+    \\    "cols": { "type": "integer", "minimum": 1 }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_OUTPUT_STREAM_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessOutputStream",
+    \\  "enum": ["stdout", "stderr"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const PROCESS_SPAWN_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessSpawnParams",
+    \\  "type": "object",
+    \\  "required": ["command", "processHandle", "cwd"],
+    \\  "properties": {
+    \\    "command": {
+    \\      "type": "array",
+    \\      "items": { "type": "string" }
+    \\    },
+    \\    "processHandle": { "type": "string" },
+    \\    "cwd": { "$ref": "AbsolutePathBuf.json" },
+    \\    "tty": { "type": "boolean" },
+    \\    "streamStdin": { "type": "boolean" },
+    \\    "streamStdoutStderr": { "type": "boolean" },
+    \\    "outputBytesCap": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "timeoutMs": { "type": ["integer", "null"] },
+    \\    "env": {
+    \\      "type": ["object", "null"],
+    \\      "additionalProperties": { "type": ["string", "null"] }
+    \\    },
+    \\    "size": {
+    \\      "oneOf": [
+    \\        { "$ref": "ProcessTerminalSize.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PROCESS_SPAWN_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessSpawnResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_WRITE_STDIN_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessWriteStdinParams",
+    \\  "type": "object",
+    \\  "required": ["processHandle"],
+    \\  "properties": {
+    \\    "processHandle": { "type": "string" },
+    \\    "deltaBase64": { "type": ["string", "null"] },
+    \\    "closeStdin": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PROCESS_WRITE_STDIN_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessWriteStdinResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_KILL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessKillParams",
+    \\  "type": "object",
+    \\  "required": ["processHandle"],
+    \\  "properties": {
+    \\    "processHandle": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PROCESS_KILL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessKillResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_RESIZE_PTY_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessResizePtyParams",
+    \\  "type": "object",
+    \\  "required": ["processHandle", "size"],
+    \\  "properties": {
+    \\    "processHandle": { "type": "string" },
+    \\    "size": { "$ref": "ProcessTerminalSize.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PROCESS_RESIZE_PTY_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessResizePtyResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessOutputDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["processHandle", "stream", "deltaBase64", "capReached"],
+    \\  "properties": {
+    \\    "processHandle": { "type": "string" },
+    \\    "stream": { "$ref": "ProcessOutputStream.json" },
+    \\    "deltaBase64": { "type": "string" },
+    \\    "capReached": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ProcessExitedNotification",
+    \\  "type": "object",
+    \\  "required": ["processHandle", "exitCode", "stdout", "stdoutCapReached", "stderr", "stderrCapReached"],
+    \\  "properties": {
+    \\    "processHandle": { "type": "string" },
+    \\    "exitCode": { "type": "integer" },
+    \\    "stdout": { "type": "string" },
+    \\    "stdoutCapReached": { "type": "boolean" },
+    \\    "stderr": { "type": "string" },
+    \\    "stderrCapReached": { "type": "boolean" }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -11615,6 +11975,111 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "capReached": { "type": "boolean" }
     \\      }
     \\    },
+    \\    "ProcessTerminalSize": {
+    \\      "type": "object",
+    \\      "required": ["rows", "cols"],
+    \\      "properties": {
+    \\        "rows": { "type": "integer", "minimum": 1 },
+    \\        "cols": { "type": "integer", "minimum": 1 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessOutputStream": {
+    \\      "enum": ["stdout", "stderr"],
+    \\      "type": "string"
+    \\    },
+    \\    "ProcessSpawnParams": {
+    \\      "type": "object",
+    \\      "required": ["command", "processHandle", "cwd"],
+    \\      "properties": {
+    \\        "command": { "type": "array", "items": { "type": "string" } },
+    \\        "processHandle": { "type": "string" },
+    \\        "cwd": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "tty": { "type": "boolean" },
+    \\        "streamStdin": { "type": "boolean" },
+    \\        "streamStdoutStderr": { "type": "boolean" },
+    \\        "outputBytesCap": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "timeoutMs": { "type": ["integer", "null"] },
+    \\        "env": {
+    \\          "type": ["object", "null"],
+    \\          "additionalProperties": { "type": ["string", "null"] }
+    \\        },
+    \\        "size": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/ProcessTerminalSize" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ProcessSpawnResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessWriteStdinParams": {
+    \\      "type": "object",
+    \\      "required": ["processHandle"],
+    \\      "properties": {
+    \\        "processHandle": { "type": "string" },
+    \\        "deltaBase64": { "type": ["string", "null"] },
+    \\        "closeStdin": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ProcessWriteStdinResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessKillParams": {
+    \\      "type": "object",
+    \\      "required": ["processHandle"],
+    \\      "properties": {
+    \\        "processHandle": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ProcessKillResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessResizePtyParams": {
+    \\      "type": "object",
+    \\      "required": ["processHandle", "size"],
+    \\      "properties": {
+    \\        "processHandle": { "type": "string" },
+    \\        "size": { "$ref": "#/$defs/ProcessTerminalSize" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ProcessResizePtyResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessOutputDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["processHandle", "stream", "deltaBase64", "capReached"],
+    \\      "properties": {
+    \\        "processHandle": { "type": "string" },
+    \\        "stream": { "$ref": "#/$defs/ProcessOutputStream" },
+    \\        "deltaBase64": { "type": "string" },
+    \\        "capReached": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ProcessExitedNotification": {
+    \\      "type": "object",
+    \\      "required": ["processHandle", "exitCode", "stdout", "stdoutCapReached", "stderr", "stderrCapReached"],
+    \\      "properties": {
+    \\        "processHandle": { "type": "string" },
+    \\        "exitCode": { "type": "integer" },
+    \\        "stdout": { "type": "string" },
+    \\        "stdoutCapReached": { "type": "boolean" },
+    \\        "stderr": { "type": "string" },
+    \\        "stderrCapReached": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadStartParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -12710,6 +13175,18 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CommandExecResizeParams.json", .contents = COMMAND_EXEC_RESIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "CommandExecResizeResponse.json", .contents = COMMAND_EXEC_RESIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecOutputDeltaNotification.json", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ProcessTerminalSize.json", .contents = PROCESS_TERMINAL_SIZE_JSON_SCHEMA },
+    .{ .name = "ProcessOutputStream.json", .contents = PROCESS_OUTPUT_STREAM_JSON_SCHEMA },
+    .{ .name = "ProcessSpawnParams.json", .contents = PROCESS_SPAWN_PARAMS_JSON_SCHEMA },
+    .{ .name = "ProcessSpawnResponse.json", .contents = PROCESS_SPAWN_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ProcessWriteStdinParams.json", .contents = PROCESS_WRITE_STDIN_PARAMS_JSON_SCHEMA },
+    .{ .name = "ProcessWriteStdinResponse.json", .contents = PROCESS_WRITE_STDIN_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ProcessKillParams.json", .contents = PROCESS_KILL_PARAMS_JSON_SCHEMA },
+    .{ .name = "ProcessKillResponse.json", .contents = PROCESS_KILL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ProcessResizePtyParams.json", .contents = PROCESS_RESIZE_PTY_PARAMS_JSON_SCHEMA },
+    .{ .name = "ProcessResizePtyResponse.json", .contents = PROCESS_RESIZE_PTY_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ProcessOutputDeltaNotification.json", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ProcessExitedNotification.json", .contents = PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListParams.json", .contents = THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
@@ -13016,6 +13493,18 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecResizeParams.ts", .contents = COMMAND_EXEC_RESIZE_PARAMS_TS },
     .{ .name = "v2/CommandExecResizeResponse.ts", .contents = COMMAND_EXEC_RESIZE_RESPONSE_TS },
     .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ProcessTerminalSize.ts", .contents = PROCESS_TERMINAL_SIZE_TS },
+    .{ .name = "v2/ProcessOutputStream.ts", .contents = PROCESS_OUTPUT_STREAM_TS },
+    .{ .name = "v2/ProcessSpawnParams.ts", .contents = PROCESS_SPAWN_PARAMS_TS },
+    .{ .name = "v2/ProcessSpawnResponse.ts", .contents = PROCESS_SPAWN_RESPONSE_TS },
+    .{ .name = "v2/ProcessWriteStdinParams.ts", .contents = PROCESS_WRITE_STDIN_PARAMS_TS },
+    .{ .name = "v2/ProcessWriteStdinResponse.ts", .contents = PROCESS_WRITE_STDIN_RESPONSE_TS },
+    .{ .name = "v2/ProcessKillParams.ts", .contents = PROCESS_KILL_PARAMS_TS },
+    .{ .name = "v2/ProcessKillResponse.ts", .contents = PROCESS_KILL_RESPONSE_TS },
+    .{ .name = "v2/ProcessResizePtyParams.ts", .contents = PROCESS_RESIZE_PTY_PARAMS_TS },
+    .{ .name = "v2/ProcessResizePtyResponse.ts", .contents = PROCESS_RESIZE_PTY_RESPONSE_TS },
+    .{ .name = "v2/ProcessOutputDeltaNotification.ts", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ProcessExitedNotification.ts", .contents = PROCESS_EXITED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadLoadedListParams.ts", .contents = THREAD_LOADED_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },

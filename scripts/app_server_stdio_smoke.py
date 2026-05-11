@@ -12416,6 +12416,52 @@ def run_json_schema_smoke(binary: Path) -> None:
             "stdout",
             "stderr",
         ]
+        process_spawn = json.loads(
+            (out_dir / "ProcessSpawnParams.json").read_text(encoding="utf-8")
+        )
+        assert process_spawn["title"] == "ProcessSpawnParams"
+        assert process_spawn["required"] == ["command", "processHandle", "cwd"]
+        assert process_spawn["properties"]["cwd"]["$ref"] == "AbsolutePathBuf.json"
+        assert (
+            process_spawn["properties"]["size"]["oneOf"][0]["$ref"]
+            == "ProcessTerminalSize.json"
+        )
+        process_write_stdin = json.loads(
+            (out_dir / "ProcessWriteStdinParams.json").read_text(encoding="utf-8")
+        )
+        assert process_write_stdin["required"] == ["processHandle"]
+        process_resize_pty = json.loads(
+            (out_dir / "ProcessResizePtyParams.json").read_text(encoding="utf-8")
+        )
+        assert (
+            process_resize_pty["properties"]["size"]["$ref"]
+            == "ProcessTerminalSize.json"
+        )
+        process_output_delta = json.loads(
+            (out_dir / "ProcessOutputDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert process_output_delta["required"] == [
+            "processHandle",
+            "stream",
+            "deltaBase64",
+            "capReached",
+        ]
+        assert process_output_delta["properties"]["stream"]["$ref"] == (
+            "ProcessOutputStream.json"
+        )
+        process_exited = json.loads(
+            (out_dir / "ProcessExitedNotification.json").read_text(encoding="utf-8")
+        )
+        assert process_exited["required"] == [
+            "processHandle",
+            "exitCode",
+            "stdout",
+            "stdoutCapReached",
+            "stderr",
+            "stderrCapReached",
+        ]
         command_exec_write_response = json.loads(
             (out_dir / "CommandExecWriteResponse.json").read_text(encoding="utf-8")
         )
@@ -13128,6 +13174,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CommandExecResizeParams" in bundle["$defs"]
         assert "CommandExecResizeResponse" in bundle["$defs"]
         assert "CommandExecOutputDeltaNotification" in bundle["$defs"]
+        assert "ProcessTerminalSize" in bundle["$defs"]
+        assert "ProcessOutputStream" in bundle["$defs"]
+        assert "ProcessSpawnParams" in bundle["$defs"]
+        assert "ProcessSpawnResponse" in bundle["$defs"]
+        assert "ProcessWriteStdinParams" in bundle["$defs"]
+        assert "ProcessWriteStdinResponse" in bundle["$defs"]
+        assert "ProcessKillParams" in bundle["$defs"]
+        assert "ProcessKillResponse" in bundle["$defs"]
+        assert "ProcessResizePtyParams" in bundle["$defs"]
+        assert "ProcessResizePtyResponse" in bundle["$defs"]
+        assert "ProcessOutputDeltaNotification" in bundle["$defs"]
+        assert "ProcessExitedNotification" in bundle["$defs"]
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert "ThreadArchiveResponse" in bundle["$defs"]
@@ -13562,6 +13620,28 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["CommandExecWriteResponse"]["additionalProperties"]
             is False
         )
+        assert (
+            bundle["$defs"]["ProcessSpawnParams"]["properties"]["cwd"]["$ref"]
+            == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["ProcessSpawnParams"]["properties"]["size"]["oneOf"][0]["$ref"]
+            == "#/$defs/ProcessTerminalSize"
+        )
+        assert (
+            bundle["$defs"]["ProcessOutputDeltaNotification"]["properties"][
+                "stream"
+            ]["$ref"]
+            == "#/$defs/ProcessOutputStream"
+        )
+        assert (
+            bundle["$defs"]["ProcessResizePtyParams"]["properties"]["size"]["$ref"]
+            == "#/$defs/ProcessTerminalSize"
+        )
+        assert (
+            bundle["$defs"]["ProcessSpawnResponse"]["additionalProperties"]
+            is False
+        )
         assert "ThreadStartParams" in bundle["$defs"]
         assert "ThreadStartResponse" in bundle["$defs"]
         assert bundle["$defs"]["ThreadStartParams"]["properties"]["threadSource"]["enum"] == [
@@ -13891,6 +13971,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
         assert "params: CommandExecWriteParams;" in client_request
+        for method, params_type in [
+            ("process/spawn", "ProcessSpawnParams"),
+            ("process/writeStdin", "ProcessWriteStdinParams"),
+            ("process/kill", "ProcessKillParams"),
+            ("process/resizePty", "ProcessResizePtyParams"),
+        ]:
+            assert f'method: "{method}";' in client_request
+            assert f"params: {params_type};" in client_request
         assert 'method: "thread/start";' in client_request
         assert "params?: ThreadStartParams | null;" in client_request
         assert 'method: "turn/start";' in client_request
@@ -13999,6 +14087,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params: ExternalAgentConfigImportCompletedNotification;"
             in server_notification
         )
+        assert 'method: "process/outputDelta";' in server_notification
+        assert "params: ProcessOutputDeltaNotification;" in server_notification
+        assert 'method: "process/exited";' in server_notification
+        assert "params: ProcessExitedNotification;" in server_notification
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -14192,6 +14284,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadRealtimeAppendTextResponse;" in client_response
         assert 'method: "thread/realtime/appendAudio";' in client_response
         assert "result: ThreadRealtimeAppendAudioResponse;" in client_response
+        for method, response_type in [
+            ("process/spawn", "ProcessSpawnResponse"),
+            ("process/writeStdin", "ProcessWriteStdinResponse"),
+            ("process/kill", "ProcessKillResponse"),
+            ("process/resizePty", "ProcessResizePtyResponse"),
+        ]:
+            assert f'method: "{method}";' in client_response
+            assert f"result: {response_type};" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -14913,6 +15013,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface CommandExecOutputDeltaNotification" in command_exec_delta
         assert "deltaBase64: string;" in command_exec_delta
+        process_spawn = (out_dir / "v2" / "ProcessSpawnParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ProcessSpawnParams" in process_spawn
+        assert "processHandle: string;" in process_spawn
+        assert "cwd: AbsolutePathBuf;" in process_spawn
+        assert "size?: ProcessTerminalSize | null;" in process_spawn
+        process_write_stdin = (
+            out_dir / "v2" / "ProcessWriteStdinParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "deltaBase64?: string | null;" in process_write_stdin
+        process_resize_pty = (
+            out_dir / "v2" / "ProcessResizePtyParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "size: ProcessTerminalSize;" in process_resize_pty
+        process_output_delta = (
+            out_dir / "v2" / "ProcessOutputDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ProcessOutputDeltaNotification" in process_output_delta
+        assert "stream: ProcessOutputStream;" in process_output_delta
+        process_exited = (
+            out_dir / "v2" / "ProcessExitedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ProcessExitedNotification" in process_exited
+        assert "stdoutCapReached: boolean;" in process_exited
         assert (
             out_dir / "v2" / "CommandExecWriteResponse.ts"
         ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
@@ -15917,6 +16042,24 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
         )
+        for process_export in [
+            "ProcessExitedNotification",
+            "ProcessKillParams",
+            "ProcessKillResponse",
+            "ProcessOutputDeltaNotification",
+            "ProcessOutputStream",
+            "ProcessResizePtyParams",
+            "ProcessResizePtyResponse",
+            "ProcessSpawnParams",
+            "ProcessSpawnResponse",
+            "ProcessTerminalSize",
+            "ProcessWriteStdinParams",
+            "ProcessWriteStdinResponse",
+        ]:
+            assert (
+                f'export type {{ {process_export} }} from "./{process_export}";'
+                in v2_index
+            )
 
         missing_out = subprocess.run(
             [str(binary), "app-server", "generate-ts"],
