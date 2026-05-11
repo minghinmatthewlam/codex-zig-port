@@ -2565,6 +2565,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert rollout_path.name == f"rollout-{thread_id}.jsonl"
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
+                local_image_path = codex_home / "local-smoke.png"
+                local_image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-smoke")
                 input_items = [
                     {
                         "type": "text",
@@ -2579,6 +2581,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     {
                         "type": "image",
                         "url": "https://example.com/codex-zig-smoke.png",
+                    },
+                    {
+                        "type": "localImage",
+                        "path": str(local_image_path),
                     },
                     {"type": "text", "text": "second text item"},
                 ]
@@ -2619,6 +2625,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert user_item["content"] == [
                     input_items[0],
                     input_items[1],
+                    input_items[2],
                     {
                         "type": "text",
                         "text": "second text item",
@@ -2670,6 +2677,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "image_url": "https://example.com/codex-zig-smoke.png",
                     "detail": "auto",
                 }
+                assert request_content[2]["type"] == "input_image"
+                assert request_content[2]["image_url"].startswith("data:image/png;base64,")
+                assert request_content[2]["detail"] == "auto"
 
                 write_json_line(
                     proc,
