@@ -2591,6 +2591,36 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert started["params"]["threadId"] == thread_id
                 assert started["params"]["turn"]["id"] == "turn-0"
                 assert started["params"]["turn"]["status"] == "inProgress"
+                user_item_started = read_json_line(proc, 5)
+                assert user_item_started["method"] == "item/started"
+                assert user_item_started["params"]["threadId"] == thread_id
+                assert user_item_started["params"]["turnId"] == "turn-0"
+                assert isinstance(user_item_started["params"]["startedAtMs"], int)
+                user_item = user_item_started["params"]["item"]
+                assert user_item["type"] == "userMessage"
+                assert user_item["id"] == "item-0"
+                assert user_item["content"][0]["text"] == prompt
+                user_item_completed = read_json_line(proc, 5)
+                assert user_item_completed["method"] == "item/completed"
+                assert user_item_completed["params"]["threadId"] == thread_id
+                assert user_item_completed["params"]["turnId"] == "turn-0"
+                assert isinstance(user_item_completed["params"]["completedAtMs"], int)
+                assert user_item_completed["params"]["item"] == user_item
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["threadId"] == thread_id
+                assert agent_item_started["params"]["turnId"] == "turn-0"
+                assert isinstance(agent_item_started["params"]["startedAtMs"], int)
+                agent_item = agent_item_started["params"]["item"]
+                assert agent_item["type"] == "agentMessage"
+                assert agent_item["id"] == "item-1"
+                assert agent_item["text"] == "app turn reply"
+                agent_item_completed = read_json_line(proc, 5)
+                assert agent_item_completed["method"] == "item/completed"
+                assert agent_item_completed["params"]["threadId"] == thread_id
+                assert agent_item_completed["params"]["turnId"] == "turn-0"
+                assert isinstance(agent_item_completed["params"]["completedAtMs"], int)
+                assert agent_item_completed["params"]["item"] == agent_item
                 completed = read_json_line(proc, 5)
                 assert completed["method"] == "turn/completed"
                 assert completed["params"]["threadId"] == thread_id
@@ -10446,6 +10476,24 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "TurnCompletedNotification.json").read_text(encoding="utf-8")
         )
         assert turn_completed_notification_schema["required"] == ["threadId", "turn"]
+        item_started_notification_schema = json.loads(
+            (out_dir / "ItemStartedNotification.json").read_text(encoding="utf-8")
+        )
+        assert item_started_notification_schema["required"] == [
+            "item",
+            "threadId",
+            "turnId",
+            "startedAtMs",
+        ]
+        item_completed_notification_schema = json.loads(
+            (out_dir / "ItemCompletedNotification.json").read_text(encoding="utf-8")
+        )
+        assert item_completed_notification_schema["required"] == [
+            "item",
+            "threadId",
+            "turnId",
+            "completedAtMs",
+        ]
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -10913,6 +10961,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "TurnStartResponse" in bundle["$defs"]
         assert "TurnStartedNotification" in bundle["$defs"]
         assert "TurnCompletedNotification" in bundle["$defs"]
+        assert "ItemStartedNotification" in bundle["$defs"]
+        assert "ItemCompletedNotification" in bundle["$defs"]
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -11060,6 +11110,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: TurnStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
         assert "params: TurnCompletedNotification;" in server_notification
+        assert 'method: "item/started";' in server_notification
+        assert "params: ItemStartedNotification;" in server_notification
+        assert 'method: "item/completed";' in server_notification
+        assert "params: ItemCompletedNotification;" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
@@ -11215,6 +11269,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "threadId: string;" in turn_completed_notification
         assert "turn: unknown;" in turn_completed_notification
+        item_started_notification = (
+            out_dir / "v2" / "ItemStartedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ItemStartedNotification" in item_started_notification
+        assert "item: unknown;" in item_started_notification
+        assert "threadId: string;" in item_started_notification
+        assert "turnId: string;" in item_started_notification
+        assert "startedAtMs: number;" in item_started_notification
+        item_completed_notification = (
+            out_dir / "v2" / "ItemCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ItemCompletedNotification" in item_completed_notification
+        assert "item: unknown;" in item_completed_notification
+        assert "threadId: string;" in item_completed_notification
+        assert "turnId: string;" in item_completed_notification
+        assert "completedAtMs: number;" in item_completed_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -11583,6 +11653,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { TurnCompletedNotification } from "./TurnCompletedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ItemStartedNotification } from "./ItemStartedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ItemCompletedNotification } from "./ItemCompletedNotification";'
             in v2_index
         )
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
