@@ -1003,6 +1003,23 @@ const THREAD_METADATA_UPDATE_RESPONSE_TS =
     \\
     ;
 
+const THREAD_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadReadParams {
+    \\  threadId: string;
+    \\  includeTurns: boolean;
+    \\}
+    \\
+    ;
+
+const THREAD_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadReadResponse {
+    \\  thread: unknown;
+    \\}
+    \\
+    ;
+
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
@@ -1017,6 +1034,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
+    \\import type { ThreadReadParams } from "./v2/ThreadReadParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -1091,6 +1109,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/metadata/update";
     \\      params: ThreadMetadataUpdateParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/read";
+    \\      params: ThreadReadParams;
     \\    };
     \\
     ;
@@ -1109,6 +1131,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
+    \\import type { ThreadReadResponse } from "./v2/ThreadReadResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -1201,6 +1224,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/metadata/update";
     \\      result: ThreadMetadataUpdateResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/read";
+    \\      result: ThreadReadResponse;
     \\    };
     \\
     ;
@@ -1276,6 +1304,8 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
     \\export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
+    \\export type { ThreadReadParams } from "./ThreadReadParams";
+    \\export type { ThreadReadResponse } from "./ThreadReadResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
@@ -2257,6 +2287,35 @@ const THREAD_METADATA_UPDATE_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadReadParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "includeTurns": { "type": "boolean", "default": false }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadReadResponse",
+    \\  "type": "object",
+    \\  "required": ["thread"],
+    \\  "properties": {
+    \\    "thread": true
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2785,6 +2844,23 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "thread": true
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadReadParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "includeTurns": { "type": "boolean", "default": false }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["thread"],
+    \\      "properties": {
+    \\        "thread": true
+    \\      },
+    \\      "additionalProperties": false
     \\    }
     \\  }
     \\}
@@ -2871,6 +2947,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadMetadataGitInfoUpdateParams.json", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadMetadataUpdateParams.json", .contents = THREAD_METADATA_UPDATE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadMetadataUpdateResponse.json", .contents = THREAD_METADATA_UPDATE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadReadParams.json", .contents = THREAD_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadReadResponse.json", .contents = THREAD_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -2938,6 +3016,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadMetadataGitInfoUpdateParams.ts", .contents = THREAD_METADATA_GIT_INFO_UPDATE_PARAMS_TS },
     .{ .name = "v2/ThreadMetadataUpdateParams.ts", .contents = THREAD_METADATA_UPDATE_PARAMS_TS },
     .{ .name = "v2/ThreadMetadataUpdateResponse.ts", .contents = THREAD_METADATA_UPDATE_RESPONSE_TS },
+    .{ .name = "v2/ThreadReadParams.ts", .contents = THREAD_READ_PARAMS_TS },
+    .{ .name = "v2/ThreadReadResponse.ts", .contents = THREAD_READ_RESPONSE_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
