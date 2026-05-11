@@ -28,6 +28,8 @@ const skills_list = @import("skills_list.zig");
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
+const THREAD_TURNS_DEFAULT_LIMIT = 25;
+const THREAD_TURNS_MAX_LIMIT = 100;
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
 const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
 const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH";
@@ -5785,6 +5787,20 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
+        if (findLoadedThread(state, thread_id)) |thread| {
+            const result = renderThreadTurnsListResponse(allocator, thread, object) catch |err| switch (err) {
+                error.InvalidThreadTurnsCursor => {
+                    const cursor = optionalStringParam(object, "cursor") orelse "";
+                    const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor});
+                    defer allocator.free(message);
+                    return renderJsonRpcError(allocator, id_value, -32600, message);
+                },
+                error.InvalidThreadTurnsCursorAnchor => return renderJsonRpcError(allocator, id_value, -32600, "invalid cursor: anchor turn is no longer present"),
+                else => |other| return other,
+            };
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
         return renderThreadNotLoaded(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/realtime/listVoices")) {
@@ -6483,6 +6499,118 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
     return result.toOwnedSlice(allocator);
 }
 
+const ThreadTurnsCursor = struct {
+    turn_id: []const u8,
+    include_anchor: bool,
+};
+
+fn renderThreadTurnsListResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, params: std.json.ObjectMap) ![]const u8 {
+    var parsed_turns = try std.json.parseFromSlice(std.json.Value, allocator, thread.turns_json, .{});
+    defer parsed_turns.deinit();
+    if (parsed_turns.value != .array) return error.InvalidThreadTurnsData;
+
+    const turns = parsed_turns.value.array.items;
+    var cursor_parse: ?std.json.Parsed(std.json.Value) = null;
+    defer if (cursor_parse) |*parsed| parsed.deinit();
+    const anchor: ?ThreadTurnsCursor = if (optionalStringParam(params, "cursor")) |cursor| blk: {
+        cursor_parse = std.json.parseFromSlice(std.json.Value, allocator, cursor, .{}) catch return error.InvalidThreadTurnsCursor;
+        break :blk threadTurnsCursorFromValue(cursor_parse.?.value) orelse return error.InvalidThreadTurnsCursor;
+    } else null;
+
+    const anchor_index = if (anchor) |value| findTurnIndexById(turns, value.turn_id) else null;
+    if (anchor != null and anchor_index == null) return error.InvalidThreadTurnsCursorAnchor;
+
+    var indices = std.ArrayList(usize).empty;
+    defer indices.deinit(allocator);
+    const sort_direction = optionalStringParam(params, "sortDirection") orelse "desc";
+    if (std.mem.eql(u8, sort_direction, "asc")) {
+        for (turns, 0..) |_, index| {
+            if (anchor) |value| {
+                const anchor_pos = anchor_index.?;
+                if (value.include_anchor) {
+                    if (index < anchor_pos) continue;
+                } else if (index <= anchor_pos) continue;
+            }
+            try indices.append(allocator, index);
+        }
+    } else {
+        var index = turns.len;
+        while (index > 0) {
+            index -= 1;
+            if (anchor) |value| {
+                const anchor_pos = anchor_index.?;
+                if (value.include_anchor) {
+                    if (index > anchor_pos) continue;
+                } else if (index >= anchor_pos) continue;
+            }
+            try indices.append(allocator, index);
+        }
+    }
+
+    const requested_limit = threadTurnsListLimit(params) orelse THREAD_TURNS_DEFAULT_LIMIT;
+    const page_size = @min(@max(requested_limit, 1), THREAD_TURNS_MAX_LIMIT);
+    const page_len = @min(indices.items.len, page_size);
+    const more_turns_available = indices.items.len > page_size;
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (indices.items[0..page_len], 0..) |turn_index, out_index| {
+        if (out_index > 0) try result.append(allocator, ',');
+        const turn_json = try std.json.Stringify.valueAlloc(allocator, turns[turn_index], .{});
+        defer allocator.free(turn_json);
+        try result.appendSlice(allocator, turn_json);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (more_turns_available) {
+        const last_turn_id = turnIdFromValue(turns[indices.items[page_len - 1]]) orelse return error.InvalidThreadTurnsData;
+        const next_cursor = try serializeThreadTurnsCursor(allocator, last_turn_id, false);
+        defer allocator.free(next_cursor);
+        try appendJsonString(allocator, &result, next_cursor);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"backwardsCursor\":");
+    if (page_len > 0) {
+        const first_turn_id = turnIdFromValue(turns[indices.items[0]]) orelse return error.InvalidThreadTurnsData;
+        const backwards_cursor = try serializeThreadTurnsCursor(allocator, first_turn_id, true);
+        defer allocator.free(backwards_cursor);
+        try appendJsonString(allocator, &result, backwards_cursor);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.append(allocator, '}');
+    return result.toOwnedSlice(allocator);
+}
+
+fn threadTurnsCursorFromValue(value: std.json.Value) ?ThreadTurnsCursor {
+    if (value != .object) return null;
+    const turn_id = value.object.get("turnId") orelse return null;
+    if (turn_id != .string) return null;
+    const include_anchor = value.object.get("includeAnchor") orelse return null;
+    if (include_anchor != .bool) return null;
+    return .{ .turn_id = turn_id.string, .include_anchor = include_anchor.bool };
+}
+
+fn findTurnIndexById(turns: []const std.json.Value, turn_id: []const u8) ?usize {
+    for (turns, 0..) |turn, index| {
+        const id = turnIdFromValue(turn) orelse continue;
+        if (std.mem.eql(u8, id, turn_id)) return index;
+    }
+    return null;
+}
+
+fn turnIdFromValue(turn: std.json.Value) ?[]const u8 {
+    if (turn != .object) return null;
+    const id = turn.object.get("id") orelse return null;
+    if (id != .string) return null;
+    return id.string;
+}
+
+fn serializeThreadTurnsCursor(allocator: std.mem.Allocator, turn_id: []const u8, include_anchor: bool) ![]const u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{ .turnId = turn_id, .includeAnchor = include_anchor }, .{});
+}
+
 fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread, include_turns: bool) !void {
     try result.appendSlice(allocator, "{\"id\":");
     try appendJsonString(allocator, result, thread.id);
@@ -6715,6 +6843,12 @@ fn threadReadIncludeTurnsParamIsValid(object: std.json.ObjectMap) bool {
 fn threadReadIncludeTurnsParam(object: std.json.ObjectMap) bool {
     const include_turns = object.get("includeTurns") orelse return false;
     return include_turns.bool;
+}
+
+fn threadTurnsListLimit(object: std.json.ObjectMap) ?usize {
+    const limit = object.get("limit") orelse return null;
+    if (limit == .null) return null;
+    return @intCast(limit.integer);
 }
 
 fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
