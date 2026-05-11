@@ -5976,16 +5976,31 @@ fn handleThreadResume(
     const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
         error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/resume"),
     };
-    if (object.get("history")) |history| {
-        if (history != .null) {
-            return renderJsonRpcError(allocator, id_value, -32603, "thread/resume history is parsed but not implemented yet");
-        }
-    }
-
     var cfg = config.load(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config", err);
     };
     defer cfg.deinit(allocator);
+
+    if (object.get("history")) |history| {
+        if (history != .null) {
+            var thread = createLoadedThreadFromHistoryParams(allocator, cfg, object, history.array.items) catch |err| switch (err) {
+                error.EmptyHistory => return renderJsonRpcError(allocator, id_value, -32600, "history must not be empty"),
+                error.InvalidHistory => return renderJsonRpcError(allocator, id_value, -32602, "history entries must be response items"),
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to create thread from history", err),
+            };
+            var thread_moved = false;
+            errdefer if (!thread_moved) thread.deinit(allocator);
+
+            const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
+            const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
+            defer allocator.free(result);
+
+            try upsertLoadedThread(allocator, state, thread);
+            thread_moved = true;
+
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
+    }
 
     const resume_path_raw = try threadResumePath(allocator, cfg.codex_home, object);
     defer allocator.free(resume_path_raw);
@@ -6176,6 +6191,83 @@ fn createLoadedThreadFromStartParams(
         .path = path,
         .source = source,
         .thread_source = thread_source,
+        .name = null,
+        .turns_json = turns_json,
+        .created_at = now,
+        .updated_at = now,
+    };
+}
+
+fn createLoadedThreadFromHistoryParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    history: []const std.json.Value,
+) !LoadedThread {
+    var transcript = try transcriptFromResponseHistory(allocator, history);
+    defer transcript.deinit(allocator);
+
+    const thread_id = try generateUuidString(allocator);
+    errdefer allocator.free(thread_id);
+    const session_id = try allocator.dupe(u8, thread_id);
+    errdefer allocator.free(session_id);
+    const preview = try resumePreview(allocator, &transcript);
+    errdefer allocator.free(preview);
+    const source = try allocator.dupe(u8, "appServer");
+    errdefer allocator.free(source);
+    const turns_json = try renderTranscriptTurnsJson(allocator, &transcript, true);
+    errdefer allocator.free(turns_json);
+
+    const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
+    errdefer allocator.free(model);
+
+    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+    defer if (configured_model_provider) |value| allocator.free(value);
+    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
+    errdefer allocator.free(model_provider);
+
+    const service_tier = try threadStartServiceTier(allocator, cfg, params);
+    errdefer if (service_tier) |value| allocator.free(value);
+
+    const cwd = try threadStartCwd(allocator, params);
+    errdefer allocator.free(cwd);
+
+    const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
+    errdefer allocator.free(approval_policy);
+
+    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse "user");
+    errdefer allocator.free(approvals_reviewer);
+
+    const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
+    errdefer allocator.free(sandbox_mode);
+
+    const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
+        try allocator.dupe(u8, effort.label())
+    else
+        null;
+    errdefer if (reasoning_effort) |value| allocator.free(value);
+
+    const path = try session_store.createSessionPathForId(allocator, cfg.codex_home, thread_id);
+    errdefer allocator.free(path);
+
+    const now = currentUnixSeconds();
+    return .{
+        .id = thread_id,
+        .session_id = session_id,
+        .forked_from_id = null,
+        .preview = preview,
+        .model = model,
+        .model_provider = model_provider,
+        .service_tier = service_tier,
+        .cwd = cwd,
+        .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
+        .sandbox_mode = sandbox_mode,
+        .reasoning_effort = reasoning_effort,
+        .ephemeral = false,
+        .path = path,
+        .source = source,
+        .thread_source = null,
         .name = null,
         .turns_json = turns_json,
         .created_at = now,
@@ -6401,6 +6493,104 @@ fn resumePreview(allocator: std.mem.Allocator, transcript: *const session_mod.Tr
         if (item.kind == .message and item.text != null) return allocator.dupe(u8, item.text.?);
     }
     return allocator.dupe(u8, "");
+}
+
+fn transcriptFromResponseHistory(allocator: std.mem.Allocator, history: []const std.json.Value) !session_mod.Transcript {
+    if (history.len == 0) return error.EmptyHistory;
+
+    var transcript = session_mod.Transcript{};
+    errdefer transcript.deinit(allocator);
+
+    for (history) |item| {
+        if (item != .object) return error.InvalidHistory;
+        const object = item.object;
+        const item_type_value = object.get("type") orelse return error.InvalidHistory;
+        if (item_type_value != .string) return error.InvalidHistory;
+        const item_type = item_type_value.string;
+
+        if (std.mem.eql(u8, item_type, "message")) {
+            try appendResponseHistoryMessage(allocator, &transcript, object);
+        } else if (std.mem.eql(u8, item_type, "function_call")) {
+            try appendResponseHistoryFunctionCall(allocator, &transcript, object);
+        } else if (std.mem.eql(u8, item_type, "function_call_output")) {
+            try appendResponseHistoryFunctionCallOutput(allocator, &transcript, object);
+        }
+    }
+
+    return transcript;
+}
+
+fn appendResponseHistoryMessage(
+    allocator: std.mem.Allocator,
+    transcript: *session_mod.Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const role_value = object.get("role") orelse return error.InvalidHistory;
+    if (role_value != .string) return error.InvalidHistory;
+    const content_value = object.get("content") orelse return error.InvalidHistory;
+    if (content_value != .array) return error.InvalidHistory;
+
+    var content_type = defaultHistoryContentType(role_value.string);
+    var text: []const u8 = "";
+    for (content_value.array.items) |content_item| {
+        if (content_item != .object) continue;
+        const content_object = content_item.object;
+        if (content_object.get("type")) |type_value| {
+            if (type_value == .string) content_type = type_value.string;
+        }
+        const text_value = content_object.get("text") orelse continue;
+        if (text_value != .string) continue;
+        text = text_value.string;
+        break;
+    }
+
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .message,
+        .role = role_value.string,
+        .content_type = content_type,
+        .text = text,
+    });
+}
+
+fn appendResponseHistoryFunctionCall(
+    allocator: std.mem.Allocator,
+    transcript: *session_mod.Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
+    const name = requiredJsonStringField(object, "name") orelse return error.InvalidHistory;
+    const arguments = requiredJsonStringField(object, "arguments") orelse return error.InvalidHistory;
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call,
+        .call_id = call_id,
+        .name = name,
+        .arguments = arguments,
+    });
+}
+
+fn appendResponseHistoryFunctionCallOutput(
+    allocator: std.mem.Allocator,
+    transcript: *session_mod.Transcript,
+    object: std.json.ObjectMap,
+) !void {
+    const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
+    const output = requiredJsonStringField(object, "output") orelse return error.InvalidHistory;
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call_output,
+        .call_id = call_id,
+        .output = output,
+    });
+}
+
+fn defaultHistoryContentType(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "assistant")) return "output_text";
+    return "input_text";
+}
+
+fn requiredJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
 }
 
 fn renderTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript, include_turns: bool) ![]const u8 {
