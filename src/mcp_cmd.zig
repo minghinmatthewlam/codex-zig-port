@@ -10,12 +10,14 @@ const McpOAuthCredentialsStore = enum { auto, file, keyring };
 
 const McpAuthStatus = enum {
     unsupported,
+    not_logged_in,
     bearer_token,
     oauth,
 
     fn display(self: McpAuthStatus) []const u8 {
         return switch (self) {
             .unsupported => "Unsupported",
+            .not_logged_in => "Not logged in",
             .bearer_token => "Bearer token",
             .oauth => "OAuth",
         };
@@ -24,6 +26,7 @@ const McpAuthStatus = enum {
     fn json(self: McpAuthStatus) []const u8 {
         return switch (self) {
             .unsupported => "Unsupported",
+            .not_logged_in => "NotLoggedIn",
             .bearer_token => "BearerToken",
             .oauth => "OAuth",
         };
@@ -515,7 +518,103 @@ fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, 
     if (parseMcpOAuthCredentialsStore(config_bytes) == .keyring) return .unsupported;
     const url = server.url orelse return .unsupported;
     if (try hasMcpOAuthFileCredentials(allocator, codex_home, server.name, url)) return .oauth;
+    if (streamableHttpSupportsOAuth(allocator, url) catch false) return .not_logged_in;
     return .unsupported;
+}
+
+fn streamableHttpSupportsOAuth(allocator: std.mem.Allocator, url: []const u8) !bool {
+    var candidates = try discoveryUrls(allocator, url);
+    defer {
+        for (candidates.items) |candidate| allocator.free(candidate);
+        candidates.deinit(allocator);
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    const headers = [_]std.http.Header{
+        .{ .name = "MCP-Protocol-Version", .value = "2024-11-05" },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+
+    for (candidates.items) |candidate| {
+        var response_body: std.Io.Writer.Allocating = .init(allocator);
+        defer response_body.deinit();
+        const result = client.fetch(.{
+            .location = .{ .url = candidate },
+            .method = .GET,
+            .response_writer = &response_body.writer,
+            .extra_headers = &headers,
+        }) catch continue;
+        if (result.status != .ok) continue;
+        const body = response_body.written();
+        if (oauthDiscoveryMetadataIsSupported(allocator, body) catch false) return true;
+    }
+    return false;
+}
+
+fn discoveryUrls(allocator: std.mem.Allocator, url: []const u8) !std.ArrayList([]const u8) {
+    var candidates = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (candidates.items) |candidate| allocator.free(candidate);
+        candidates.deinit(allocator);
+    }
+
+    const scheme = std.mem.indexOf(u8, url, "://") orelse return error.InvalidMcpOAuthDiscoveryUrl;
+    const authority_start = scheme + 3;
+    const path_start = std.mem.indexOfScalarPos(u8, url, authority_start, '/') orelse url.len;
+    const origin = url[0..path_start];
+    const raw_path = if (path_start < url.len) url[path_start..] else "";
+    const path_without_query = if (std.mem.indexOfScalar(u8, raw_path, '?')) |query| raw_path[0..query] else raw_path;
+    const trimmed = std.mem.trim(u8, path_without_query, "/");
+    const canonical = "/.well-known/oauth-authorization-server";
+
+    if (trimmed.len == 0) {
+        try candidates.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}", .{ origin, canonical }));
+        return candidates;
+    }
+
+    try appendUniqueDiscoveryUrl(allocator, &candidates, origin, canonical, trimmed, .canonical_then_path);
+    try appendUniqueDiscoveryUrl(allocator, &candidates, origin, canonical, trimmed, .path_then_canonical);
+    try appendUniqueDiscoveryUrl(allocator, &candidates, origin, canonical, trimmed, .canonical);
+    return candidates;
+}
+
+const DiscoveryUrlKind = enum { canonical_then_path, path_then_canonical, canonical };
+
+fn appendUniqueDiscoveryUrl(
+    allocator: std.mem.Allocator,
+    candidates: *std.ArrayList([]const u8),
+    origin: []const u8,
+    canonical: []const u8,
+    trimmed_path: []const u8,
+    kind: DiscoveryUrlKind,
+) !void {
+    const candidate = switch (kind) {
+        .canonical_then_path => try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ origin, canonical, trimmed_path }),
+        .path_then_canonical => try std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ origin, trimmed_path, canonical }),
+        .canonical => try std.fmt.allocPrint(allocator, "{s}{s}", .{ origin, canonical }),
+    };
+    errdefer allocator.free(candidate);
+    for (candidates.items) |existing| {
+        if (std.mem.eql(u8, existing, candidate)) {
+            allocator.free(candidate);
+            return;
+        }
+    }
+    try candidates.append(allocator, candidate);
+}
+
+fn oauthDiscoveryMetadataIsSupported(allocator: std.mem.Allocator, body: []const u8) !bool {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const authorization_endpoint = parsed.value.object.get("authorization_endpoint") orelse return false;
+    const token_endpoint = parsed.value.object.get("token_endpoint") orelse return false;
+    return authorization_endpoint == .string and token_endpoint == .string;
 }
 
 fn computeMcpOAuthStoreKey(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) ![]const u8 {
@@ -1200,6 +1299,43 @@ test "mcp list auth status reports bearer and file oauth credentials" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"OAuth\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"BearerToken\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"Unsupported\"") != null);
+}
+
+test "mcp oauth discovery paths match Rust candidate order" {
+    const allocator = std.testing.allocator;
+    var root = try discoveryUrls(allocator, "https://example.com");
+    defer {
+        for (root.items) |candidate| allocator.free(candidate);
+        root.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), root.items.len);
+    try std.testing.expectEqualStrings("https://example.com/.well-known/oauth-authorization-server", root.items[0]);
+
+    var nested = try discoveryUrls(allocator, "https://example.com/mcp/v1?ignored=true");
+    defer {
+        for (nested.items) |candidate| allocator.free(candidate);
+        nested.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 3), nested.items.len);
+    try std.testing.expectEqualStrings("https://example.com/.well-known/oauth-authorization-server/mcp/v1", nested.items[0]);
+    try std.testing.expectEqualStrings("https://example.com/mcp/v1/.well-known/oauth-authorization-server", nested.items[1]);
+    try std.testing.expectEqualStrings("https://example.com/.well-known/oauth-authorization-server", nested.items[2]);
+}
+
+test "mcp oauth discovery metadata requires authorization and token endpoints" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try oauthDiscoveryMetadataIsSupported(
+        allocator,
+        "{\"authorization_endpoint\":\"https://auth.example/authorize\",\"token_endpoint\":\"https://auth.example/token\"}",
+    ));
+    try std.testing.expect(!try oauthDiscoveryMetadataIsSupported(
+        allocator,
+        "{\"authorization_endpoint\":\"https://auth.example/authorize\"}",
+    ));
+    try std.testing.expect(!try oauthDiscoveryMetadataIsSupported(
+        allocator,
+        "{\"authorization_endpoint\":123,\"token_endpoint\":null}",
+    ));
 }
 
 test "mcp config loads enabled plugin mcp servers" {
