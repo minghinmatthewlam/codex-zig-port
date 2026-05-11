@@ -113,6 +113,9 @@ const LoadedThread = struct {
     token_usage_turn_id: ?[]const u8,
     name: ?[]const u8,
     elicitation_count: u64,
+    git_sha: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_origin_url: ?[]const u8,
     transcript: session_mod.Transcript,
     turns_json: []const u8,
     created_at: i64,
@@ -137,6 +140,9 @@ const LoadedThread = struct {
         allocator.free(self.cli_version);
         if (self.token_usage_turn_id) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
+        if (self.git_sha) |value| allocator.free(value);
+        if (self.git_branch) |value| allocator.free(value);
+        if (self.git_origin_url) |value| allocator.free(value);
         self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
     }
@@ -6884,6 +6890,49 @@ fn setLoadedThreadName(allocator: std.mem.Allocator, thread: *LoadedThread, name
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn updateLoadedThreadGitInfo(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    git_info: std.json.ObjectMap,
+) !void {
+    try patchLoadedThreadGitInfoField(allocator, git_info, "sha", &thread.git_sha);
+    try patchLoadedThreadGitInfoField(allocator, git_info, "branch", &thread.git_branch);
+    try patchLoadedThreadGitInfoField(allocator, git_info, "originUrl", &thread.git_origin_url);
+    thread.updated_at = currentUnixSeconds();
+}
+
+fn patchLoadedThreadGitInfoField(
+    allocator: std.mem.Allocator,
+    git_info: std.json.ObjectMap,
+    field_name: []const u8,
+    slot: *?[]const u8,
+) !void {
+    const value = git_info.get(field_name) orelse return;
+    if (value == .null) {
+        clearOptionalOwnedString(allocator, slot);
+        return;
+    }
+    if (value != .string) return error.InvalidThreadMetadataGitInfo;
+    const normalized = std.mem.trim(u8, value.string, " \t\r\n");
+    if (normalized.len == 0) return error.InvalidThreadMetadataGitInfo;
+    try replaceOptionalOwnedString(allocator, slot, normalized);
+}
+
+fn replaceOptionalOwnedString(
+    allocator: std.mem.Allocator,
+    slot: *?[]const u8,
+    value: []const u8,
+) !void {
+    const owned = try allocator.dupe(u8, value);
+    clearOptionalOwnedString(allocator, slot);
+    slot.* = owned;
+}
+
+fn clearOptionalOwnedString(allocator: std.mem.Allocator, slot: *?[]const u8) void {
+    if (slot.*) |existing| allocator.free(existing);
+    slot.* = null;
+}
+
 fn appendInjectedResponseItem(
     allocator: std.mem.Allocator,
     transcript: *session_mod.Transcript,
@@ -7443,6 +7492,22 @@ fn handleThreadMethod(
         if (validateThreadMetadataGitInfoParams(object)) |validation_error| {
             return renderJsonRpcError(allocator, id_value, validation_error.code, validation_error.message);
         }
+        if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+            const thread = &state.loaded_threads.items[thread_index];
+            if (thread.ephemeral) {
+                const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support metadata updates: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            const git_info = object.get("gitInfo").?.object;
+            updateLoadedThreadGitInfo(allocator, thread, git_info) catch |err| switch (err) {
+                error.InvalidThreadMetadataGitInfo => return renderJsonRpcError(allocator, id_value, -32600, "invalid gitInfo patch"),
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
+            };
+            const result = try renderThreadReadResponse(allocator, thread, false);
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/read")) {
@@ -7833,6 +7898,9 @@ fn createLoadedThreadFromStartParams(
         .token_usage_turn_id = null,
         .name = null,
         .elicitation_count = 0,
+        .git_sha = null,
+        .git_branch = null,
+        .git_origin_url = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -7923,6 +7991,9 @@ fn createLoadedThreadFromHistoryParams(
         .token_usage_turn_id = null,
         .name = null,
         .elicitation_count = 0,
+        .git_sha = null,
+        .git_branch = null,
+        .git_origin_url = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8020,6 +8091,9 @@ fn createLoadedThreadFromResumeParams(
         .token_usage_turn_id = token_usage_turn_id,
         .name = name,
         .elicitation_count = 0,
+        .git_sha = null,
+        .git_branch = null,
+        .git_origin_url = null,
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .created_at = now,
@@ -8141,6 +8215,9 @@ fn createLoadedThreadFromForkParams(
         .token_usage_turn_id = token_usage_turn_id,
         .name = null,
         .elicitation_count = 0,
+        .git_sha = null,
+        .git_branch = null,
+        .git_origin_url = null,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,
@@ -8672,10 +8749,26 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     try appendJsonString(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);
-    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":null,\"name\":");
+    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":");
+    try appendLoadedThreadGitInfoJson(allocator, result, thread);
+    try result.appendSlice(allocator, ",\"name\":");
     try appendOptionalJsonString(allocator, result, thread.name);
     try result.appendSlice(allocator, ",\"turns\":");
     try result.appendSlice(allocator, if (include_turns) thread.turns_json else "[]");
+    try result.append(allocator, '}');
+}
+
+fn appendLoadedThreadGitInfoJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    if (thread.git_sha == null and thread.git_branch == null and thread.git_origin_url == null) {
+        try result.appendSlice(allocator, "null");
+        return;
+    }
+    try result.appendSlice(allocator, "{\"sha\":");
+    try appendOptionalJsonString(allocator, result, thread.git_sha);
+    try result.appendSlice(allocator, ",\"branch\":");
+    try appendOptionalJsonString(allocator, result, thread.git_branch);
+    try result.appendSlice(allocator, ",\"originUrl\":");
+    try appendOptionalJsonString(allocator, result, thread.git_origin_url);
     try result.append(allocator, '}');
 }
 
