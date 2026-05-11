@@ -27809,6 +27809,12 @@ fn renderExperimentalFeatureEnablementResponse(allocator: std.mem.Allocator, ena
 const McpStatusParams = struct {
     cursor: ?usize = null,
     limit: ?usize = null,
+    detail: McpStatusDetail = .full,
+};
+
+const McpStatusDetail = enum {
+    full,
+    tools_and_auth_only,
 };
 
 const McpResourceReadParams = struct {
@@ -28004,7 +28010,11 @@ fn parseMcpStatusParams(params_value: ?std.json.Value) !McpStatusParams {
             return parsed;
         }
         if (detail != .string) return error.InvalidMcpStatusDetail;
-        if (!std.mem.eql(u8, detail.string, "full") and !std.mem.eql(u8, detail.string, "toolsAndAuthOnly")) {
+        if (std.mem.eql(u8, detail.string, "full")) {
+            parsed.detail = .full;
+        } else if (std.mem.eql(u8, detail.string, "toolsAndAuthOnly")) {
+            parsed.detail = .tools_and_auth_only;
+        } else {
             return error.InvalidMcpStatusDetail;
         }
     }
@@ -28117,7 +28127,7 @@ fn renderMcpServerStatusListResponse(
     try out.appendSlice(allocator, "{\"data\":[");
     for (servers.items.items[start..end], 0..) |server, index| {
         if (index > 0) try out.appendSlice(allocator, ",");
-        try appendMcpServerStatusJson(allocator, &out, server);
+        try appendMcpServerStatusJson(allocator, &out, server, params.detail == .full);
     }
     try out.appendSlice(allocator, "],\"nextCursor\":");
     if (end < total) {
@@ -28133,21 +28143,30 @@ fn renderMcpServerStatusListResponse(
     return out.toOwnedSlice(allocator);
 }
 
-fn appendMcpServerStatusJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), server: mcp_cmd.McpServer) !void {
+fn appendMcpServerStatusJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    server: mcp_cmd.McpServer,
+    include_resource_inventory: bool,
+) !void {
     const name_json = try std.json.Stringify.valueAlloc(allocator, server.name, .{});
     defer allocator.free(name_json);
     const auth_status = try mcpAuthStatus(allocator, server);
     defer allocator.free(auth_status);
     const auth_status_json = try std.json.Stringify.valueAlloc(allocator, auth_status, .{});
     defer allocator.free(auth_status_json);
-    const tools_json = mcp_runtime.serverToolsStatusJson(allocator, server) catch try allocator.dupe(u8, "{}");
-    defer allocator.free(tools_json);
+    const inventory = mcp_runtime.serverStatusInventoryJson(allocator, server, include_resource_inventory) catch try mcp_runtime.ServerStatusInventoryJson.empty(allocator);
+    defer inventory.deinit(allocator);
 
     try out.appendSlice(allocator, "{\"name\":");
     try out.appendSlice(allocator, name_json);
     try out.appendSlice(allocator, ",\"tools\":");
-    try out.appendSlice(allocator, tools_json);
-    try out.appendSlice(allocator, ",\"resources\":[],\"resourceTemplates\":[],\"authStatus\":");
+    try out.appendSlice(allocator, inventory.tools);
+    try out.appendSlice(allocator, ",\"resources\":");
+    try out.appendSlice(allocator, inventory.resources);
+    try out.appendSlice(allocator, ",\"resourceTemplates\":");
+    try out.appendSlice(allocator, inventory.resource_templates);
+    try out.appendSlice(allocator, ",\"authStatus\":");
     try out.appendSlice(allocator, auth_status_json);
     try out.appendSlice(allocator, "}");
 }

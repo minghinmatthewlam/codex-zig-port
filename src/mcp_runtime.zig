@@ -44,6 +44,31 @@ pub const CallOutput = struct {
     }
 };
 
+pub const ServerStatusInventoryJson = struct {
+    tools: []const u8,
+    resources: []const u8,
+    resource_templates: []const u8,
+
+    pub fn empty(allocator: std.mem.Allocator) !ServerStatusInventoryJson {
+        const tools = try allocator.dupe(u8, "{}");
+        errdefer allocator.free(tools);
+        const resources = try allocator.dupe(u8, "[]");
+        errdefer allocator.free(resources);
+        const resource_templates = try allocator.dupe(u8, "[]");
+        return .{
+            .tools = tools,
+            .resources = resources,
+            .resource_templates = resource_templates,
+        };
+    }
+
+    pub fn deinit(self: ServerStatusInventoryJson, allocator: std.mem.Allocator) void {
+        allocator.free(self.tools);
+        allocator.free(self.resources);
+        allocator.free(self.resource_templates);
+    }
+};
+
 pub fn loadCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalog {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
@@ -106,20 +131,37 @@ pub fn callToolByName(
     return callServerToolJson(allocator, server.*, raw_tool_name, arguments_json, meta_json);
 }
 
-pub fn serverToolsStatusJson(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) ![]const u8 {
-    if (!server.enabled or server.kind != .stdio) return allocator.dupe(u8, "{}");
+pub fn serverStatusInventoryJson(
+    allocator: std.mem.Allocator,
+    server: mcp_cmd.McpServer,
+    include_resource_inventory: bool,
+) !ServerStatusInventoryJson {
+    if (!server.enabled or server.kind != .stdio) return ServerStatusInventoryJson.empty(allocator);
     var client = try StdioClient.start(allocator, server);
     defer client.deinit();
 
     try client.initialize();
-    var response = try client.request(2, "tools/list", null);
-    defer response.deinit();
+    var next_id: i64 = 2;
 
-    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
-    if (result != .object) return error.InvalidMcpResponse;
-    const tools = result.object.get("tools") orelse return error.InvalidMcpResponse;
-    if (tools != .array) return error.InvalidMcpResponse;
-    return renderStatusTools(allocator, tools);
+    const tools_json = listStatusTools(allocator, &client, &next_id) catch try allocator.dupe(u8, "{}");
+    errdefer allocator.free(tools_json);
+
+    const resources_json = if (include_resource_inventory)
+        listStatusResources(allocator, &client, &next_id) catch try allocator.dupe(u8, "[]")
+    else
+        try allocator.dupe(u8, "[]");
+    errdefer allocator.free(resources_json);
+
+    const resource_templates_json = if (include_resource_inventory)
+        listStatusResourceTemplates(allocator, &client, &next_id) catch try allocator.dupe(u8, "[]")
+    else
+        try allocator.dupe(u8, "[]");
+
+    return .{
+        .tools = tools_json,
+        .resources = resources_json,
+        .resource_templates = resource_templates_json,
+    };
 }
 
 fn appendServerTools(
@@ -502,6 +544,12 @@ fn buildReadResourceParams(allocator: std.mem.Allocator, uri: []const u8) ![]con
     return std.fmt.allocPrint(allocator, "{{\"uri\":{s}}}", .{uri_json});
 }
 
+fn buildCursorParams(allocator: std.mem.Allocator, cursor: []const u8) ![]const u8 {
+    const cursor_json = try std.json.Stringify.valueAlloc(allocator, cursor, .{});
+    defer allocator.free(cursor_json);
+    return std.fmt.allocPrint(allocator, "{{\"cursor\":{s}}}", .{cursor_json});
+}
+
 fn isResponseForId(value: std.json.Value, id: i64) bool {
     if (value != .object) return false;
     const id_value = value.object.get("id") orelse return false;
@@ -517,6 +565,102 @@ fn renderCallResult(allocator: std.mem.Allocator, result: std.json.Value) ![]con
     defer allocator.free(text);
     if (text.len > 0) return allocator.dupe(u8, text);
     return std.json.Stringify.valueAlloc(allocator, result, .{});
+}
+
+fn listStatusTools(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+    const id = next_id.*;
+    next_id.* += 1;
+    var response = try client.request(id, "tools/list", null);
+    defer response.deinit();
+
+    const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+    if (result != .object) return error.InvalidMcpResponse;
+    const tools = result.object.get("tools") orelse return error.InvalidMcpResponse;
+    if (tools != .array) return error.InvalidMcpResponse;
+    return renderStatusTools(allocator, tools);
+}
+
+fn listStatusResources(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+    return listStatusItems(allocator, client, next_id, "resources/list", "resources", null, "name", "uri");
+}
+
+fn listStatusResourceTemplates(allocator: std.mem.Allocator, client: *StdioClient, next_id: *i64) ![]const u8 {
+    return listStatusItems(allocator, client, next_id, "resources/templates/list", "resourceTemplates", "resource_templates", "name", "uriTemplate");
+}
+
+fn listStatusItems(
+    allocator: std.mem.Allocator,
+    client: *StdioClient,
+    next_id: *i64,
+    method: []const u8,
+    primary_items_key: []const u8,
+    alternate_items_key: ?[]const u8,
+    first_required_string: []const u8,
+    second_required_string: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var seen_cursors = std.ArrayList([]const u8).empty;
+    defer {
+        for (seen_cursors.items) |cursor| allocator.free(cursor);
+        seen_cursors.deinit(allocator);
+    }
+
+    try out.append(allocator, '[');
+    var first_item = true;
+    var cursor: ?[]const u8 = null;
+
+    while (true) {
+        const params = if (cursor) |cursor_value|
+            try buildCursorParams(allocator, cursor_value)
+        else
+            null;
+        defer if (params) |params_json| allocator.free(params_json);
+
+        const id = next_id.*;
+        next_id.* += 1;
+        var response = try client.request(id, method, params);
+        defer response.deinit();
+
+        const result = response.value.object.get("result") orelse return error.InvalidMcpResponse;
+        if (result != .object) return error.InvalidMcpResponse;
+        const items = result.object.get(primary_items_key) orelse if (alternate_items_key) |key|
+            result.object.get(key) orelse return error.InvalidMcpResponse
+        else
+            return error.InvalidMcpResponse;
+        if (items != .array) return error.InvalidMcpResponse;
+
+        for (items.array.items) |item| {
+            if (!isStatusItemWithRequiredStrings(item, first_required_string, second_required_string)) continue;
+            if (!first_item) try out.append(allocator, ',');
+            first_item = false;
+            const item_json = try std.json.Stringify.valueAlloc(allocator, item, .{});
+            defer allocator.free(item_json);
+            try out.appendSlice(allocator, item_json);
+        }
+
+        const next_cursor = result.object.get("nextCursor") orelse result.object.get("next_cursor") orelse break;
+        if (next_cursor == .null) break;
+        if (next_cursor != .string) return error.InvalidMcpResponse;
+        for (seen_cursors.items) |seen| {
+            if (std.mem.eql(u8, seen, next_cursor.string)) return error.InvalidMcpResponse;
+        }
+        const cursor_copy = try allocator.dupe(u8, next_cursor.string);
+        errdefer allocator.free(cursor_copy);
+        try seen_cursors.append(allocator, cursor_copy);
+        cursor = cursor_copy;
+    }
+
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
+fn isStatusItemWithRequiredStrings(item: std.json.Value, first_required_string: []const u8, second_required_string: []const u8) bool {
+    if (item != .object) return false;
+    const first = item.object.get(first_required_string) orelse return false;
+    if (first != .string or first.string.len == 0) return false;
+    const second = item.object.get(second_required_string) orelse return false;
+    return second == .string and second.string.len > 0;
 }
 
 fn renderResourceReadResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
