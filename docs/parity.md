@@ -150,6 +150,16 @@ Follow-up methods validate params and base64 payloads, then return
 Rust-shaped inactive-process errors until true async process lifecycle, PTY,
 stdin streaming, kill, and resize support are implemented.
 
+Current app-server Windows sandbox RPC coverage includes generated TypeScript
+and JSON Schema artifacts for `windowsSandbox/readiness`,
+`windowsSandbox/setupStart`, `windowsSandbox/setupCompleted`, setup modes, and
+readiness states. Runtime coverage returns Rust-shaped non-Windows readiness
+(`notConfigured`) and accepts setup-start requests by returning `{ started:
+true }` before emitting a post-response `windowsSandbox/setupCompleted`
+notification with the Rust-shaped non-Windows setup failure for the requested
+mode. Full Windows setup execution, config persistence, and Windows readiness
+state detection remain planned.
+
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |
 | `cli` base interactive command | partial | First milestone launches `codex-zig` interactive loop, accepts an optional initial prompt, rejects unknown top-level flags, supports `--` before prompt text, exposes `help [COMMAND]`, includes top-level `apply` / `a`, recognizes planned Rust top-level commands (`remote-control`, `app`, `update`, `cloud` / `cloud-tasks`, hidden `responses-api-proxy`, and `exec-server`) with explicit not-implemented errors, rejects the removed Rust top-level `marketplace` namespace, and supports global `-m/--model`, `-i/--image`, `--enable`, `--disable`, `--oss`, `--local-provider`, `-p/--profile`, `-c/--config`, `-a/--ask-for-approval`, `-s/--sandbox`, `-C/--cd`, `--add-dir`, `--search`, `--remote`, `--remote-auth-token-env`, `--remote-control`, `--remote-control-bind`, `--no-alt-screen`, `--version`, and `--yolo` overrides, including Rust-compatible rejection when dangerous bypass is combined with an explicit approval policy. Remote app-server flags and local remote-control flags are parsed and rejected for non-interactive subcommands, but remote TUI transport and the local remote-control server are not implemented yet. Full command behavior parity is planned. |
