@@ -951,6 +951,55 @@ const THREAD_ROLLBACK_RESPONSE_TS =
     \\
     ;
 
+const THREAD_SORT_KEY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadSortKey = "created_at" | "updated_at";
+    \\
+    ;
+
+const SORT_DIRECTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type SortDirection = "asc" | "desc";
+    \\
+    ;
+
+const THREAD_SOURCE_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadSourceKind = "cli" | "vscode" | "exec" | "appServer" | "subAgent" | "subAgentReview" | "subAgentCompact" | "subAgentThreadSpawn" | "subAgentOther" | "unknown";
+    \\
+    ;
+
+const THREAD_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SortDirection } from "./SortDirection";
+    \\import type { ThreadSortKey } from "./ThreadSortKey";
+    \\import type { ThreadSourceKind } from "./ThreadSourceKind";
+    \\
+    \\export interface ThreadListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  sortKey?: ThreadSortKey | null;
+    \\  sortDirection?: SortDirection | null;
+    \\  modelProviders?: string[] | null;
+    \\  sourceKinds?: ThreadSourceKind[] | null;
+    \\  archived?: boolean | null;
+    \\  cwd?: string | string[] | null;
+    \\  useStateDbOnly?: boolean;
+    \\  searchTerm?: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadListResponse {
+    \\  data: unknown[];
+    \\  nextCursor: string | null;
+    \\  backwardsCursor: string | null;
+    \\}
+    \\
+    ;
+
 const THREAD_INJECT_ITEMS_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadInjectItemsParams {
@@ -1062,6 +1111,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
     \\import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
+    \\import type { ThreadListParams } from "./v2/ThreadListParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
@@ -1135,6 +1185,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadRollbackParams;
     \\    }
     \\  | {
+    \\      method: "thread/list";
+    \\      params: ThreadListParams;
+    \\    }
+    \\  | {
     \\      method: "thread/inject_items";
     \\      params: ThreadInjectItemsParams;
     \\    }
@@ -1169,6 +1223,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
     \\import type { ThreadInjectItemsResponse } from "./v2/ThreadInjectItemsResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
+    \\import type { ThreadListResponse } from "./v2/ThreadListResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
@@ -1259,6 +1314,11 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/list";
+    \\      result: ThreadListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/inject_items";
     \\      result: ThreadInjectItemsResponse;
     \\    }
@@ -1339,6 +1399,7 @@ const V2_INDEX_TS =
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
+    \\export type { SortDirection } from "./SortDirection";
     \\export type { ThreadArchiveParams } from "./ThreadArchiveParams";
     \\export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";
     \\export type { ThreadBackgroundTerminalsCleanParams } from "./ThreadBackgroundTerminalsCleanParams";
@@ -1351,6 +1412,8 @@ const V2_INDEX_TS =
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
     \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
+    \\export type { ThreadListParams } from "./ThreadListParams";
+    \\export type { ThreadListResponse } from "./ThreadListResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
     \\export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
     \\export type { ThreadMemoryModeSetParams } from "./ThreadMemoryModeSetParams";
@@ -1366,6 +1429,8 @@ const V2_INDEX_TS =
     \\export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
+    \\export type { ThreadSortKey } from "./ThreadSortKey";
+    \\export type { ThreadSourceKind } from "./ThreadSourceKind";
     \\export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
     \\export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
@@ -2221,6 +2286,36 @@ const THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_SORT_KEY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSortKey",
+    \\  "type": "string",
+    \\  "enum": ["created_at", "updated_at"]
+    \\}
+    \\
+;
+
+const SORT_DIRECTION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SortDirection",
+    \\  "type": "string",
+    \\  "enum": ["asc", "desc"]
+    \\}
+    \\
+;
+
+const THREAD_SOURCE_KIND_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSourceKind",
+    \\  "type": "string",
+    \\  "enum": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]
+    \\}
+    \\
+;
+
 const THREAD_ROLLBACK_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2244,6 +2339,60 @@ const THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA =
     \\  "required": ["thread"],
     \\  "properties": {
     \\    "thread": true
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "sortKey": {
+    \\      "anyOf": [
+    \\        { "$ref": "ThreadSortKey.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "sortDirection": {
+    \\      "anyOf": [
+    \\        { "$ref": "SortDirection.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "modelProviders": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\    "sourceKinds": { "type": ["array", "null"], "items": { "$ref": "ThreadSourceKind.json" } },
+    \\    "archived": { "type": ["boolean", "null"] },
+    \\    "cwd": {
+    \\      "anyOf": [
+    \\        { "type": "string" },
+    \\        { "type": "array", "items": { "type": "string" } },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "useStateDbOnly": { "type": "boolean" },
+    \\    "searchTerm": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor", "backwardsCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": true },
+    \\    "nextCursor": { "type": ["string", "null"] },
+    \\    "backwardsCursor": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -2890,6 +3039,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadSortKey": {
+    \\      "type": "string",
+    \\      "enum": ["created_at", "updated_at"]
+    \\    },
+    \\    "SortDirection": {
+    \\      "type": "string",
+    \\      "enum": ["asc", "desc"]
+    \\    },
+    \\    "ThreadSourceKind": {
+    \\      "type": "string",
+    \\      "enum": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]
+    \\    },
     \\    "ThreadRollbackParams": {
     \\      "type": "object",
     \\      "required": ["threadId", "numTurns"],
@@ -2904,6 +3065,48 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "required": ["thread"],
     \\      "properties": {
     \\        "thread": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortKey": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadSortKey" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "modelProviders": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "sourceKinds": { "type": ["array", "null"], "items": { "$ref": "#/$defs/ThreadSourceKind" } },
+    \\        "archived": { "type": ["boolean", "null"] },
+    \\        "cwd": {
+    \\          "anyOf": [
+    \\            { "type": "string" },
+    \\            { "type": "array", "items": { "type": "string" } },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "useStateDbOnly": { "type": "boolean" },
+    \\        "searchTerm": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor", "backwardsCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": true },
+    \\        "nextCursor": { "type": ["string", "null"] },
+    \\        "backwardsCursor": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": false
     \\    },
@@ -3075,8 +3278,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadIncrementElicitationResponse.json", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadDecrementElicitationParams.json", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadDecrementElicitationResponse.json", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSortKey.json", .contents = THREAD_SORT_KEY_JSON_SCHEMA },
+    .{ .name = "SortDirection.json", .contents = SORT_DIRECTION_JSON_SCHEMA },
+    .{ .name = "ThreadSourceKind.json", .contents = THREAD_SOURCE_KIND_JSON_SCHEMA },
     .{ .name = "ThreadRollbackParams.json", .contents = THREAD_ROLLBACK_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRollbackResponse.json", .contents = THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadListParams.json", .contents = THREAD_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadListResponse.json", .contents = THREAD_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsParams.json", .contents = THREAD_INJECT_ITEMS_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
@@ -3149,8 +3357,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadIncrementElicitationResponse.ts", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_TS },
     .{ .name = "v2/ThreadDecrementElicitationParams.ts", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_TS },
     .{ .name = "v2/ThreadDecrementElicitationResponse.ts", .contents = THREAD_DECREMENT_ELICITATION_RESPONSE_TS },
+    .{ .name = "v2/ThreadSortKey.ts", .contents = THREAD_SORT_KEY_TS },
+    .{ .name = "v2/SortDirection.ts", .contents = SORT_DIRECTION_TS },
+    .{ .name = "v2/ThreadSourceKind.ts", .contents = THREAD_SOURCE_KIND_TS },
     .{ .name = "v2/ThreadRollbackParams.ts", .contents = THREAD_ROLLBACK_PARAMS_TS },
     .{ .name = "v2/ThreadRollbackResponse.ts", .contents = THREAD_ROLLBACK_RESPONSE_TS },
+    .{ .name = "v2/ThreadListParams.ts", .contents = THREAD_LIST_PARAMS_TS },
+    .{ .name = "v2/ThreadListResponse.ts", .contents = THREAD_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadInjectItemsParams.ts", .contents = THREAD_INJECT_ITEMS_PARAMS_TS },
     .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
     .{ .name = "v2/ThreadSetNameParams.ts", .contents = THREAD_SET_NAME_PARAMS_TS },
