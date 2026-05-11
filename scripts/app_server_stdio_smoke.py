@@ -3318,6 +3318,197 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_control_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-control-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-control-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-control",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-control"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                steer_input = [{"type": "text", "text": "steer the active turn"}]
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-steer-no-active",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": steer_input,
+                            "responsesapiClientMetadata": {"surface": "smoke"},
+                            "expectedTurnId": "turn-0",
+                        },
+                    },
+                )
+                steer_no_active = read_json_line(proc, 5)
+                assert steer_no_active["id"] == "turn-steer-no-active"
+                assert steer_no_active["error"]["code"] == -32600
+                assert steer_no_active["error"]["message"] == "no active turn to steer"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-steer-empty-expected",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": steer_input,
+                            "expectedTurnId": "",
+                        },
+                    },
+                )
+                steer_empty_expected = read_json_line(proc, 5)
+                assert steer_empty_expected["id"] == "turn-steer-empty-expected"
+                assert steer_empty_expected["error"]["code"] == -32600
+                assert (
+                    steer_empty_expected["error"]["message"]
+                    == "expectedTurnId must not be empty"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-steer-invalid-input",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [],
+                            "expectedTurnId": "turn-0",
+                        },
+                    },
+                )
+                steer_invalid_input = read_json_line(proc, 5)
+                assert steer_invalid_input["id"] == "turn-steer-invalid-input"
+                assert steer_invalid_input["error"]["code"] == -32600
+                assert steer_invalid_input["error"]["message"] == "input must not be empty"
+
+                missing_thread_id = "22222222-2222-4222-8222-222222222222"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-steer-missing-thread",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": missing_thread_id,
+                            "input": steer_input,
+                            "expectedTurnId": "turn-0",
+                        },
+                    },
+                )
+                steer_missing_thread = read_json_line(proc, 5)
+                assert steer_missing_thread["id"] == "turn-steer-missing-thread"
+                assert steer_missing_thread["error"]["code"] == -32600
+                assert (
+                    steer_missing_thread["error"]["message"]
+                    == f"thread not found: {missing_thread_id}"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-interrupt-startup",
+                        "method": "turn/interrupt",
+                        "params": {"threadId": thread_id, "turnId": ""},
+                    },
+                )
+                interrupt_startup = read_json_line(proc, 5)
+                assert interrupt_startup["id"] == "turn-interrupt-startup"
+                assert interrupt_startup["result"] == {}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-interrupt-no-active",
+                        "method": "turn/interrupt",
+                        "params": {"threadId": thread_id, "turnId": "turn-0"},
+                    },
+                )
+                interrupt_no_active = read_json_line(proc, 5)
+                assert interrupt_no_active["id"] == "turn-interrupt-no-active"
+                assert interrupt_no_active["error"]["code"] == -32600
+                assert (
+                    interrupt_no_active["error"]["message"]
+                    == "no active turn to interrupt"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-interrupt-missing-thread",
+                        "method": "turn/interrupt",
+                        "params": {"threadId": missing_thread_id, "turnId": "turn-0"},
+                    },
+                )
+                interrupt_missing_thread = read_json_line(proc, 5)
+                assert interrupt_missing_thread["id"] == "turn-interrupt-missing-thread"
+                assert interrupt_missing_thread["error"]["code"] == -32600
+                assert (
+                    interrupt_missing_thread["error"]["message"]
+                    == f"thread not found: {missing_thread_id}"
+                )
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_thread_resume_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
     try:
@@ -12188,6 +12379,33 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
         assert turn_start_response_schema["required"] == ["turn"]
+        turn_steer_params_schema = json.loads(
+            (out_dir / "TurnSteerParams.json").read_text(encoding="utf-8")
+        )
+        assert turn_steer_params_schema["required"] == [
+            "threadId",
+            "input",
+            "expectedTurnId",
+        ]
+        assert turn_steer_params_schema["properties"]["input"]["type"] == "array"
+        assert (
+            turn_steer_params_schema["properties"]["responsesapiClientMetadata"][
+                "additionalProperties"
+            ]["type"]
+            == "string"
+        )
+        turn_steer_response_schema = json.loads(
+            (out_dir / "TurnSteerResponse.json").read_text(encoding="utf-8")
+        )
+        assert turn_steer_response_schema["required"] == ["turnId"]
+        turn_interrupt_params_schema = json.loads(
+            (out_dir / "TurnInterruptParams.json").read_text(encoding="utf-8")
+        )
+        assert turn_interrupt_params_schema["required"] == ["threadId", "turnId"]
+        turn_interrupt_response_schema = json.loads(
+            (out_dir / "TurnInterruptResponse.json").read_text(encoding="utf-8")
+        )
+        assert turn_interrupt_response_schema["additionalProperties"] is False
         turn_started_notification_schema = json.loads(
             (out_dir / "TurnStartedNotification.json").read_text(encoding="utf-8")
         )
@@ -13147,6 +13365,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["UserInput"]["oneOf"][0]["properties"]["type"]["const"] == "text"
         assert bundle["$defs"]["UserInput"]["oneOf"][4]["properties"]["type"]["const"] == "mention"
         assert "TurnStartResponse" in bundle["$defs"]
+        assert "TurnSteerParams" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["TurnSteerParams"]["properties"]["input"]["items"]["$ref"]
+            == "#/$defs/UserInput"
+        )
+        assert "TurnSteerResponse" in bundle["$defs"]
+        assert bundle["$defs"]["TurnSteerResponse"]["required"] == ["turnId"]
+        assert "TurnInterruptParams" in bundle["$defs"]
+        assert bundle["$defs"]["TurnInterruptParams"]["required"] == [
+            "threadId",
+            "turnId",
+        ]
+        assert "TurnInterruptResponse" in bundle["$defs"]
         assert "TurnStartedNotification" in bundle["$defs"]
         assert "TurnCompletedNotification" in bundle["$defs"]
         assert "ItemStartedNotification" in bundle["$defs"]
@@ -13319,6 +13550,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
+        turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { UserInput } from "./UserInput";' in turn_steer_params
+        assert "expectedTurnId: string;" in turn_steer_params
+        assert (
+            "responsesapiClientMetadata?: Record<string, string> | null;"
+            in turn_steer_params
+        )
+        turn_interrupt_params = (
+            out_dir / "v2" / "TurnInterruptParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "turnId: string;" in turn_interrupt_params
 
         client_request = (out_dir / "ClientRequest.ts").read_text(encoding="utf-8")
         assert (
@@ -13339,6 +13583,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";'
+            in client_request
+        )
+        assert (
+            'import type { TurnInterruptParams } from "./v2/TurnInterruptParams";'
+            in client_request
+        )
+        assert (
+            'import type { TurnSteerParams } from "./v2/TurnSteerParams";'
             in client_request
         )
         assert 'method: "initialize";' in client_request
@@ -13417,6 +13669,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: ThreadStartParams | null;" in client_request
         assert 'method: "turn/start";' in client_request
         assert "params: TurnStartParams;" in client_request
+        assert 'method: "turn/steer";' in client_request
+        assert "params: TurnSteerParams;" in client_request
+        assert 'method: "turn/interrupt";' in client_request
+        assert "params: TurnInterruptParams;" in client_request
         assert 'method: "thread/resume";' in client_request
         assert "params: ThreadResumeParams;" in client_request
         assert 'method: "thread/fork";' in client_request
@@ -13551,6 +13807,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
             in client_response
         )
+        assert (
+            'import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";'
+            in client_response
+        )
+        assert (
+            'import type { TurnSteerResponse } from "./v2/TurnSteerResponse";'
+            in client_response
+        )
         assert 'method: "memory/reset";' in client_response
         assert "result: MemoryResetResponse;" in client_response
         assert 'method: "gitDiffToRemote";' in client_response
@@ -13623,6 +13887,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
         assert "result: TurnStartResponse;" in client_response
+        assert 'method: "turn/steer";' in client_response
+        assert "result: TurnSteerResponse;" in client_response
+        assert 'method: "turn/interrupt";' in client_response
+        assert "result: TurnInterruptResponse;" in client_response
         assert 'method: "thread/resume";' in client_response
         assert "result: ThreadResumeResponse;" in client_response
         assert 'method: "thread/fork";' in client_response
@@ -14432,6 +14700,27 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "turn: unknown;" in turn_start_response
+        turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface TurnSteerParams" in turn_steer_params
+        assert "threadId: string;" in turn_steer_params
+        assert "input: UserInput[];" in turn_steer_params
+        assert "expectedTurnId: string;" in turn_steer_params
+        turn_steer_response = (out_dir / "v2" / "TurnSteerResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "turnId: string;" in turn_steer_response
+        turn_interrupt_params = (
+            out_dir / "v2" / "TurnInterruptParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface TurnInterruptParams" in turn_interrupt_params
+        assert "threadId: string;" in turn_interrupt_params
+        assert "turnId: string;" in turn_interrupt_params
+        turn_interrupt_response = (
+            out_dir / "v2" / "TurnInterruptResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface TurnInterruptResponse {}" in turn_interrupt_response
         turn_started_notification = (
             out_dir / "v2" / "TurnStartedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -15151,6 +15440,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
         assert 'export type { TurnStartParams } from "./TurnStartParams";' in v2_index
         assert 'export type { TurnStartResponse } from "./TurnStartResponse";' in v2_index
+        assert 'export type { TurnSteerParams } from "./TurnSteerParams";' in v2_index
+        assert 'export type { TurnSteerResponse } from "./TurnSteerResponse";' in v2_index
+        assert (
+            'export type { TurnInterruptParams } from "./TurnInterruptParams";'
+            in v2_index
+        )
+        assert (
+            'export type { TurnInterruptResponse } from "./TurnInterruptResponse";'
+            in v2_index
+        )
         assert (
             'export type { TurnStartedNotification } from "./TurnStartedNotification";'
             in v2_index
@@ -15436,6 +15735,8 @@ def main() -> None:
     print("app-server-thread-started-opt-out-e2e: ok")
     run_turn_start_rpc_smoke(binary)
     print("app-server-turn-start-rpc-e2e: ok")
+    run_turn_control_rpc_smoke(binary)
+    print("app-server-turn-control-rpc-e2e: ok")
     run_thread_resume_rpc_smoke(binary)
     print("app-server-thread-resume-rpc-e2e: ok")
     run_goal_feature_gate_smoke(binary)
