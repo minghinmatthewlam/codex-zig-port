@@ -8488,6 +8488,25 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadMemoryModeSetResponse.json").read_text(encoding="utf-8")
         )
         assert thread_memory_mode_set_response["additionalProperties"] is False
+        thread_metadata_git_info = json.loads(
+            (out_dir / "ThreadMetadataGitInfoUpdateParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_metadata_git_info["properties"]["sha"]["type"] == [
+            "string",
+            "null",
+        ]
+        thread_metadata_update = json.loads(
+            (out_dir / "ThreadMetadataUpdateParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_metadata_update["required"] == ["threadId"]
+        assert "gitInfo" in thread_metadata_update["properties"]
+        thread_metadata_update_response = json.loads(
+            (out_dir / "ThreadMetadataUpdateResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_metadata_update_response["required"] == ["thread"]
+        assert thread_metadata_update_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8508,6 +8527,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert "ThreadSetNameResponse" in bundle["$defs"]
         assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
+        assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8611,6 +8631,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadSetNameParams;" in client_request
         assert 'method: "thread/memoryMode/set";' in client_request
         assert "params: ThreadMemoryModeSetParams;" in client_request
+        assert 'method: "thread/metadata/update";' in client_request
+        assert "params: ThreadMetadataUpdateParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
@@ -8630,6 +8652,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadSetNameResponse;" in client_response
         assert 'method: "thread/memoryMode/set";' in client_response
         assert "result: ThreadMemoryModeSetResponse;" in client_response
+        assert 'method: "thread/metadata/update";' in client_response
+        assert "result: ThreadMetadataUpdateResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8779,6 +8803,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadMemoryModeSetResponse {}"
             in thread_memory_mode_set_response
         )
+        thread_metadata_git_info = (
+            out_dir / "v2" / "ThreadMetadataGitInfoUpdateParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "sha?: string | null;" in thread_metadata_git_info
+        assert "branch?: string | null;" in thread_metadata_git_info
+        assert "originUrl?: string | null;" in thread_metadata_git_info
+        thread_metadata_update = (
+            out_dir / "v2" / "ThreadMetadataUpdateParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";'
+            in thread_metadata_update
+        )
+        assert "threadId: string;" in thread_metadata_update
+        assert (
+            "gitInfo?: ThreadMetadataGitInfoUpdateParams | null;"
+            in thread_metadata_update
+        )
+        thread_metadata_update_response = (
+            out_dir / "v2" / "ThreadMetadataUpdateResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "thread: unknown;" in thread_metadata_update_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8817,6 +8863,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadMemoryModeSetResponse } from "./ThreadMemoryModeSetResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";'
             in v2_index
         )
         assert (
