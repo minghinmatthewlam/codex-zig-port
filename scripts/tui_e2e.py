@@ -1124,34 +1124,56 @@ def run_debug_stub_smoke(
     binary: Path,
     env: dict[str, str],
     workspace: Path,
+    port: int,
 ) -> None:
-    app_server_help = subprocess.run(
-        [str(binary), "debug", "app-server", "--help"],
-        cwd=workspace,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    if "codex-zig debug app-server send-message-v2" not in app_server_help.stderr:
-        raise AssertionError(
-            f"expected debug app-server help output:\n{app_server_help.stderr}"
-        )
+    debug_env = env.copy()
+    with tempfile.TemporaryDirectory(prefix="codex-zig-debug-app-server.") as debug_home:
+        debug_env["CODEX_HOME"] = debug_home
+        auth_source = Path(env["CODEX_HOME"]) / "auth.json"
+        auth_target = Path(debug_home) / "auth.json"
+        auth_target.write_text(auth_source.read_text(encoding="utf-8"), encoding="utf-8")
 
-    send_message = subprocess.run(
-        [str(binary), "debug", "app-server", "send-message-v2", "hello"],
-        cwd=workspace,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if send_message.returncode == 0:
-        raise AssertionError("debug app-server send-message-v2 unexpectedly succeeded")
-    if "parsed but not implemented yet" not in send_message.stderr:
-        raise AssertionError(
-            f"expected send-message-v2 not-implemented output:\n{send_message.stderr}"
+        app_server_help = subprocess.run(
+            [str(binary), "debug", "app-server", "--help"],
+            cwd=workspace,
+            env=debug_env,
+            text=True,
+            capture_output=True,
+            check=True,
         )
+        if "codex-zig debug app-server send-message-v2" not in app_server_help.stderr:
+            raise AssertionError(
+                f"expected debug app-server help output:\n{app_server_help.stderr}"
+            )
+
+        send_message = subprocess.run(
+            [
+                str(binary),
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+                "debug",
+                "app-server",
+                "send-message-v2",
+                "side question",
+            ],
+            cwd=workspace,
+            env=debug_env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "< turn/start response:" not in send_message.stdout:
+            raise AssertionError(
+                f"expected send-message-v2 turn response:\n{send_message.stdout}\n{send_message.stderr}"
+            )
+        if '"delta":"side answer\\n"' not in send_message.stdout:
+            raise AssertionError(
+                f"expected send-message-v2 streamed answer:\n{send_message.stdout}"
+            )
+        if '"method":"turn/completed"' not in send_message.stdout:
+            raise AssertionError(
+                f"expected send-message-v2 completion notification:\n{send_message.stdout}"
+            )
 
     trace_help = subprocess.run(
         [str(binary), "debug", "trace-reduce", "--help"],
@@ -1549,7 +1571,7 @@ def run_e2e(binary: Path) -> str:
             run_unimplemented_command_smoke(binary, env, workspace)
             run_plugin_marketplace_smoke(binary, env, workspace)
             run_debug_clear_memories_smoke(binary, env, workspace)
-            run_debug_stub_smoke(binary, env, workspace)
+            run_debug_stub_smoke(binary, env, workspace, port)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
 

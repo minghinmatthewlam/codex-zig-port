@@ -2907,6 +2907,46 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_debug_app_server_send_message_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-debug-app-server-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+        result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "debug",
+                "app-server",
+                "send-message-v2",
+                "debug app-server smoke",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stderr == ""
+        assert "< initialize response:" in result.stdout
+        assert "< thread/start response:" in result.stdout
+        assert "< turn/start response:" in result.stdout
+        assert '"method":"turn/started"' in result.stdout
+        assert '"method":"item/agentMessage/delta"' in result.stdout
+        assert '"delta":"stored reply"' in result.stdout
+        assert '"method":"turn/completed"' in result.stdout
+        assert len(server.request_bodies) == 1
+        assert (
+            server.request_bodies[0]["input"][-1]["content"][0]["text"]
+            == "debug app-server smoke"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_debug_trace_reduce_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-trace-reduce-", dir="/tmp"))
     try:
@@ -3129,6 +3169,7 @@ def main() -> None:
     run_full_auto_compat_smoke(binary)
     run_removed_top_level_command_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
+    run_debug_app_server_send_message_smoke(binary)
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
     print("cli-features-profile-e2e: ok")
@@ -3154,6 +3195,7 @@ def main() -> None:
     print("cli-full-auto-compat-e2e: ok")
     print("cli-removed-top-level-e2e: ok")
     print("cli-sandbox-permission-profile-e2e: ok")
+    print("cli-debug-app-server-send-message-e2e: ok")
     print("cli-debug-trace-reduce-e2e: ok")
 
 
