@@ -1145,6 +1145,57 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_metadata_missing["error"]["message"]
     )
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-read-invalid-include-turns",
+            "method": "thread/read",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000012",
+                "includeTurns": "yes",
+            },
+        }
+    )
+    thread_read_invalid_include_turns = read_line()
+    assert thread_read_invalid_include_turns["id"] == "thread-read-invalid-include-turns"
+    assert thread_read_invalid_include_turns["error"]["code"] == -32602
+    assert (
+        "includeTurns must be a boolean"
+        in thread_read_invalid_include_turns["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-read-invalid",
+            "method": "thread/read",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_read_invalid = read_line()
+    assert thread_read_invalid["id"] == "thread-read-invalid"
+    assert thread_read_invalid["error"]["code"] == -32600
+    assert "invalid thread id: not-a-uuid" in thread_read_invalid["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-read-missing",
+            "method": "thread/read",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000012",
+                "includeTurns": True,
+            },
+        }
+    )
+    thread_read_missing = read_line()
+    assert thread_read_missing["id"] == "thread-read-missing"
+    assert thread_read_missing["error"]["code"] == -32600
+    assert (
+        "thread not loaded: 00000000-0000-0000-0000-000000000012"
+        in thread_read_missing["error"]["message"]
+    )
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
