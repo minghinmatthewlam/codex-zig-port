@@ -11010,6 +11010,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert memory_reset_response["title"] == "MemoryResetResponse"
         assert memory_reset_response["additionalProperties"] is False
+        git_diff_params = json.loads(
+            (out_dir / "GitDiffToRemoteParams.json").read_text(encoding="utf-8")
+        )
+        assert git_diff_params["title"] == "GitDiffToRemoteParams"
+        assert git_diff_params["required"] == ["cwd"]
+        assert git_diff_params["properties"]["cwd"]["minLength"] == 1
+        git_diff_response = json.loads(
+            (out_dir / "GitDiffToRemoteResponse.json").read_text(encoding="utf-8")
+        )
+        assert git_diff_response["required"] == ["sha", "diff"]
+        assert git_diff_response["properties"]["sha"]["type"] == "string"
+        assert git_diff_response["properties"]["diff"]["type"] == "string"
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -11825,6 +11837,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
+        assert "GitDiffToRemoteParams" in bundle["$defs"]
+        assert "GitDiffToRemoteResponse" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -11913,6 +11927,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["MemoryResetResponse"]["additionalProperties"] is False
         )
+        assert bundle["$defs"]["GitDiffToRemoteParams"]["properties"]["cwd"][
+            "minLength"
+        ] == 1
+        assert bundle["$defs"]["GitDiffToRemoteResponse"]["required"] == [
+            "sha",
+            "diff",
+        ]
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -12068,6 +12089,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "initialize";' in client_request
         assert "params: InitializeParams;" in client_request
         assert 'method: "memory/reset";' in client_request
+        assert 'method: "gitDiffToRemote";' in client_request
+        assert "params: GitDiffToRemoteParams;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -12176,6 +12199,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "memory/reset";' in client_response
         assert "result: MemoryResetResponse;" in client_response
+        assert 'method: "gitDiffToRemote";' in client_response
+        assert "result: GitDiffToRemoteResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -12323,6 +12348,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface MemoryResetResponse {}" in memory_reset_response
+        git_diff_params = (out_dir / "v2" / "GitDiffToRemoteParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "cwd: string;" in git_diff_params
+        git_diff_response = (
+            out_dir / "v2" / "GitDiffToRemoteResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "sha: string;" in git_diff_response
+        assert "diff: string;" in git_diff_response
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -12933,6 +12967,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";'
+            in v2_index
+        )
+        assert (
+            'export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";'
+            in v2_index
+        )
+        assert (
+            'export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
             in v2_index
         )
         assert (
