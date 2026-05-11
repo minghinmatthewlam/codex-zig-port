@@ -64,8 +64,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - apply focused `apply_patch` file edits after user confirmation
 - discover and execute configured stdio and streamable HTTP MCP tools as
   `mcp__server__tool` calls, including streamable HTTP MCP session-id reuse and
-  JSON-RPC responses delivered over GET SSE streams after accepted POSTs, plus
-  best-effort session teardown
+  configured static/env HTTP headers, JSON-RPC responses delivered over GET SSE
+  streams after accepted POSTs, plus best-effort session teardown
 - expose model-facing `list_mcp_resources`, `list_mcp_resource_templates`, and
   `read_mcp_resource` tools for configured stdio and streamable HTTP MCP
   servers
@@ -83,8 +83,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - read resources with and without loaded thread IDs, and call tools on
   configured stdio and streamable HTTP MCP servers through app-server
   `mcpServer/resource/read` and `mcpServer/tool/call`, including streamable
-  HTTP GET SSE responses after accepted POSTs and forwarded MCP JSON-RPC
-  error code/message/data payloads
+  HTTP configured static/env headers, GET SSE responses after accepted POSTs,
+  and forwarded MCP JSON-RPC error code/message/data payloads
 - validate app-server MCP OAuth login requests with `mcpServer/oauth/login`,
   including generated completion notification artifacts, Rust-shaped
   configured-server checks, and explicit not-implemented errors for the browser
