@@ -10690,6 +10690,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_started_notification_schema["title"] == "ThreadStartedNotification"
         assert thread_started_notification_schema["required"] == ["thread"]
+        thread_name_updated_notification_schema = json.loads(
+            (out_dir / "ThreadNameUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_name_updated_notification_schema["title"]
+            == "ThreadNameUpdatedNotification"
+        )
+        assert thread_name_updated_notification_schema["required"] == ["threadId"]
+        assert thread_name_updated_notification_schema["properties"]["threadName"][
+            "type"
+        ] == ["string", "null"]
         turn_start_params_schema = json.loads(
             (out_dir / "TurnStartParams.json").read_text(encoding="utf-8")
         )
@@ -11211,6 +11224,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
+        assert "ThreadNameUpdatedNotification" in bundle["$defs"]
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -11363,6 +11377,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
+        assert 'method: "thread/name/updated";' in server_notification
+        assert "params: ThreadNameUpdatedNotification;" in server_notification
         assert 'method: "turn/started";' in server_notification
         assert "params: TurnStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
@@ -11508,6 +11524,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadStartedNotification" in thread_started_notification
         assert "thread: unknown;" in thread_started_notification
+        thread_name_updated_notification = (
+            out_dir / "v2" / "ThreadNameUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export type ThreadNameUpdatedNotification"
+            in thread_name_updated_notification
+        )
+        assert "threadId: string;" in thread_name_updated_notification
+        assert "threadName?: string;" in thread_name_updated_notification
         turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
             encoding="utf-8"
         )
@@ -11911,6 +11936,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";'
             in v2_index
         )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
