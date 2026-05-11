@@ -8558,6 +8558,17 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_metadata_update_response["required"] == ["thread"]
         assert thread_metadata_update_response["additionalProperties"] is False
+        thread_read = json.loads(
+            (out_dir / "ThreadReadParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_read["required"] == ["threadId"]
+        assert thread_read["properties"]["includeTurns"]["type"] == "boolean"
+        assert thread_read["properties"]["includeTurns"]["default"] is False
+        thread_read_response = json.loads(
+            (out_dir / "ThreadReadResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_read_response["required"] == ["thread"]
+        assert thread_read_response["additionalProperties"] is False
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -8579,6 +8590,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadSetNameResponse" in bundle["$defs"]
         assert "ThreadMemoryModeSetResponse" in bundle["$defs"]
         assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
+        assert "ThreadReadResponse" in bundle["$defs"]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -8684,6 +8696,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadMemoryModeSetParams;" in client_request
         assert 'method: "thread/metadata/update";' in client_request
         assert "params: ThreadMetadataUpdateParams;" in client_request
+        assert 'method: "thread/read";' in client_request
+        assert "params: ThreadReadParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert 'method: "thread/compact/start";' in client_response
         assert "result: ThreadCompactStartResponse;" in client_response
@@ -8705,6 +8719,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadMemoryModeSetResponse;" in client_response
         assert 'method: "thread/metadata/update";' in client_response
         assert "result: ThreadMetadataUpdateResponse;" in client_response
+        assert 'method: "thread/read";' in client_response
+        assert "result: ThreadReadResponse;" in client_response
 
         command_exec = (out_dir / "v2" / "CommandExecParams.ts").read_text(
             encoding="utf-8"
@@ -8876,6 +8892,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadMetadataUpdateResponse.ts"
         ).read_text(encoding="utf-8")
         assert "thread: unknown;" in thread_metadata_update_response
+        thread_read = (out_dir / "v2" / "ThreadReadParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "threadId: string;" in thread_read
+        assert "includeTurns: boolean;" in thread_read
+        thread_read_response = (out_dir / "v2" / "ThreadReadResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "thread: unknown;" in thread_read_response
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -8928,6 +8953,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";'
             in v2_index
         )
+        assert 'export type { ThreadReadParams } from "./ThreadReadParams";' in v2_index
+        assert 'export type { ThreadReadResponse } from "./ThreadReadResponse";' in v2_index
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
