@@ -841,6 +841,22 @@ const THREAD_ARCHIVE_RESPONSE_TS =
     \\
     ;
 
+const THREAD_UNARCHIVE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadUnarchiveParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_UNARCHIVE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadUnarchiveResponse {
+    \\  thread: unknown;
+    \\}
+    \\
+    ;
+
 const THREAD_COMPACT_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadCompactStartParams {
@@ -1053,6 +1069,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
+    \\import type { ThreadUnarchiveParams } from "./v2/ThreadUnarchiveParams";
     \\import type { ThreadUnsubscribeParams } from "./v2/ThreadUnsubscribeParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
@@ -1088,6 +1105,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/archive";
     \\      params: ThreadArchiveParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/unarchive";
+    \\      params: ThreadUnarchiveParams;
     \\    }
     \\  | {
     \\      method: "thread/compact/start";
@@ -1155,6 +1176,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
+    \\import type { ThreadUnarchiveResponse } from "./v2/ThreadUnarchiveResponse";
     \\import type { ThreadUnsubscribeResponse } from "./v2/ThreadUnsubscribeResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
@@ -1199,6 +1221,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/archive";
     \\      result: ThreadArchiveResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/unarchive";
+    \\      result: ThreadUnarchiveResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -1339,6 +1366,8 @@ const V2_INDEX_TS =
     \\export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
+    \\export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
+    \\export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
@@ -2028,6 +2057,34 @@ const THREAD_ARCHIVE_RESPONSE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ThreadArchiveResponse",
     \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_UNARCHIVE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnarchiveParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_UNARCHIVE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnarchiveResponse",
+    \\  "type": "object",
+    \\  "required": ["thread"],
+    \\  "properties": {
+    \\    "thread": true
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -2746,6 +2803,22 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadUnarchiveParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadUnarchiveResponse": {
+    \\      "type": "object",
+    \\      "required": ["thread"],
+    \\      "properties": {
+    \\        "thread": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadCompactStartParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -2990,6 +3063,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadUnsubscribeResponse.json", .contents = THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadArchiveParams.json", .contents = THREAD_ARCHIVE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadArchiveResponse.json", .contents = THREAD_ARCHIVE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadUnarchiveParams.json", .contents = THREAD_UNARCHIVE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadUnarchiveResponse.json", .contents = THREAD_UNARCHIVE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadCompactStartParams.json", .contents = THREAD_COMPACT_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadCompactStartResponse.json", .contents = THREAD_COMPACT_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadShellCommandParams.json", .contents = THREAD_SHELL_COMMAND_PARAMS_JSON_SCHEMA },
@@ -3062,6 +3137,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadUnsubscribeResponse.ts", .contents = THREAD_UNSUBSCRIBE_RESPONSE_TS },
     .{ .name = "v2/ThreadArchiveParams.ts", .contents = THREAD_ARCHIVE_PARAMS_TS },
     .{ .name = "v2/ThreadArchiveResponse.ts", .contents = THREAD_ARCHIVE_RESPONSE_TS },
+    .{ .name = "v2/ThreadUnarchiveParams.ts", .contents = THREAD_UNARCHIVE_PARAMS_TS },
+    .{ .name = "v2/ThreadUnarchiveResponse.ts", .contents = THREAD_UNARCHIVE_RESPONSE_TS },
     .{ .name = "v2/ThreadCompactStartParams.ts", .contents = THREAD_COMPACT_START_PARAMS_TS },
     .{ .name = "v2/ThreadCompactStartResponse.ts", .contents = THREAD_COMPACT_START_RESPONSE_TS },
     .{ .name = "v2/ThreadShellCommandParams.ts", .contents = THREAD_SHELL_COMMAND_PARAMS_TS },
