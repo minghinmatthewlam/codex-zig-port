@@ -689,6 +689,87 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in too_large_loaded_threads_limit["error"]["message"]
     )
 
+    with tempfile.TemporaryDirectory(prefix="codex-zig-thread-start-", dir="/tmp") as thread_cwd:
+        thread_cwd_real = os.path.realpath(thread_cwd)
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start",
+                "method": "thread/start",
+                "params": {
+                    "cwd": thread_cwd,
+                    "model": "gpt-test",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "approvalsReviewer": "user",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                    "threadSource": "user",
+                },
+            }
+        )
+        thread_start = read_line()
+        assert thread_start["id"] == "thread-start"
+        start_result = thread_start["result"]
+        started_thread = start_result["thread"]
+        thread_id = started_thread["id"]
+        assert isinstance(thread_id, str)
+        assert len(thread_id) == 36
+        assert started_thread["sessionId"] == thread_id
+        assert started_thread["preview"] == ""
+        assert started_thread["ephemeral"] is True
+        assert started_thread["status"] == {"type": "idle"}
+        assert started_thread["path"] is None
+        assert started_thread["cwd"] == thread_cwd_real
+        assert started_thread["source"] == "appServer"
+        assert started_thread["threadSource"] == "user"
+        assert started_thread["turns"] == []
+        assert start_result["model"] == "gpt-test"
+        assert start_result["modelProvider"] == "mock_provider"
+        assert start_result["cwd"] == thread_cwd_real
+        assert start_result["approvalPolicy"] == "never"
+        assert start_result["approvalsReviewer"] == "user"
+        assert start_result["sandbox"] == {"type": "dangerFullAccess"}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-threads-after-start",
+                "method": "thread/loaded/list",
+            }
+        )
+        loaded_threads_after_start = read_line()
+        assert loaded_threads_after_start["id"] == "loaded-threads-after-start"
+        assert loaded_threads_after_start["result"] == {
+            "data": [thread_id],
+            "nextCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "read-started-thread",
+                "method": "thread/read",
+                "params": {"threadId": thread_id, "includeTurns": False},
+            }
+        )
+        read_started_thread = read_line()
+        assert read_started_thread["id"] == "read-started-thread"
+        assert read_started_thread["result"]["thread"]["id"] == thread_id
+        assert read_started_thread["result"]["thread"]["status"] == {"type": "idle"}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "unsubscribe-started-thread",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": thread_id},
+            }
+        )
+        unsubscribe_started_thread = read_line()
+        assert unsubscribe_started_thread["id"] == "unsubscribe-started-thread"
+        assert unsubscribe_started_thread["result"] == {"status": "notSubscribed"}
+
     write_line(
         {
             "jsonrpc": "2.0",
@@ -9372,6 +9453,21 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadLoadedListResponse.json").read_text(encoding="utf-8")
         )
         assert thread_loaded_list_response["required"] == ["data", "nextCursor"]
+        thread_start_params_schema = json.loads(
+            (out_dir / "ThreadStartParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_start_params_schema["title"] == "ThreadStartParams"
+        assert thread_start_params_schema["properties"]["approvalPolicy"]["enum"] == [
+            "untrusted",
+            "on-failure",
+            "on-request",
+            "never",
+            None,
+        ]
+        thread_start_response_schema = json.loads(
+            (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_start_response_schema["required"][0] == "thread"
         thread_unsubscribe = json.loads(
             (out_dir / "ThreadUnsubscribeParams.json").read_text(encoding="utf-8")
         )
@@ -9798,6 +9894,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["CommandExecParams"]["properties"]["permissionProfile"]["oneOf"][0]["$ref"]
             == "#/$defs/PermissionProfile"
         )
+        assert "ThreadStartParams" in bundle["$defs"]
+        assert "ThreadStartResponse" in bundle["$defs"]
+        assert bundle["$defs"]["ThreadStartParams"]["properties"]["threadSource"]["enum"] == [
+            "user",
+            "subagent",
+            "memory_consolidation",
+            None,
+        ]
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
         )
@@ -9862,6 +9966,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
         assert "params: CommandExecWriteParams;" in client_request
+        assert 'method: "thread/start";' in client_request
+        assert "params?: ThreadStartParams | null;" in client_request
         assert 'method: "thread/loaded/list";' in client_request
         assert "params?: ThreadLoadedListParams | null;" in client_request
         assert 'method: "thread/unsubscribe";' in client_request
@@ -9917,6 +10023,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "thread/realtime/appendAudio";' in client_request
         assert "params: ThreadRealtimeAppendAudioParams;" in client_request
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
+        assert 'method: "thread/start";' in client_response
+        assert "result: ThreadStartResponse;" in client_response
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
         assert 'method: "thread/unarchive";' in client_response
@@ -10023,6 +10131,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadLoadedListResponse" in thread_loaded_list
         assert "nextCursor: string | null;" in thread_loaded_list
+        thread_start_params = (out_dir / "v2" / "ThreadStartParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ThreadStartParams" in thread_start_params
+        assert "model?: string | null;" in thread_start_params
+        assert (
+            'threadSource?: "user" | "subagent" | "memory_consolidation" | null;'
+            in thread_start_params
+        )
+        thread_start_response = (out_dir / "v2" / "ThreadStartResponse.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface ThreadStartResponse" in thread_start_response
+        assert "thread: unknown;" in thread_start_response
+        assert "modelProvider: string;" in thread_start_response
         thread_unsubscribe = (
             out_dir / "v2" / "ThreadUnsubscribeResponse.ts"
         ).read_text(encoding="utf-8")
@@ -10351,6 +10474,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert v2_index.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
+        assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
+        assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
         assert 'export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";' in v2_index
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert 'export type { ThreadArchiveParams } from "./ThreadArchiveParams";' in v2_index
