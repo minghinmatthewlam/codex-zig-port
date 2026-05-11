@@ -7204,7 +7204,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                         "-c",
                         "printf before-timeout && printf timeout-err >&2; sleep 1",
                     ],
-                    "timeoutMs": 10,
+                    "timeoutMs": 200,
                 },
             },
             env,
