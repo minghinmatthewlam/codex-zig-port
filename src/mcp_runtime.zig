@@ -232,7 +232,10 @@ fn listResourcesForModel(
     var first = true;
     for (servers.items.items) |server| {
         if (!server.enabled or server.kind != .stdio) continue;
-        appendAllModelResourceItems(allocator, &out, server, kind, &first) catch continue;
+        appendAllModelResourceItems(allocator, &out, server, kind, &first) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
     }
 
     try out.appendSlice(allocator, "]}");
