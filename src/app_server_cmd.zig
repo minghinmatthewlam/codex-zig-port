@@ -2626,6 +2626,60 @@ const PROCESS_EXITED_NOTIFICATION_TS =
     \\
     ;
 
+const WINDOWS_SANDBOX_SETUP_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WindowsSandboxSetupMode = "elevated" | "unelevated";
+    \\
+    ;
+
+const WINDOWS_SANDBOX_READINESS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WindowsSandboxReadiness = "ready" | "notConfigured" | "updateRequired";
+    \\
+    ;
+
+const WINDOWS_SANDBOX_SETUP_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { WindowsSandboxSetupMode } from "./WindowsSandboxSetupMode";
+    \\
+    \\export interface WindowsSandboxSetupStartParams {
+    \\  mode: WindowsSandboxSetupMode;
+    \\  cwd?: AbsolutePathBuf | null;
+    \\}
+    \\
+    ;
+
+const WINDOWS_SANDBOX_SETUP_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface WindowsSandboxSetupStartResponse {
+    \\  started: boolean;
+    \\}
+    \\
+    ;
+
+const WINDOWS_SANDBOX_READINESS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WindowsSandboxReadiness } from "./WindowsSandboxReadiness";
+    \\
+    \\export interface WindowsSandboxReadinessResponse {
+    \\  status: WindowsSandboxReadiness;
+    \\}
+    \\
+    ;
+
+const WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WindowsSandboxSetupMode } from "./WindowsSandboxSetupMode";
+    \\
+    \\export interface WindowsSandboxSetupCompletedNotification {
+    \\  mode: WindowsSandboxSetupMode;
+    \\  success: boolean;
+    \\  error: string | null;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -3635,6 +3689,7 @@ const CLIENT_REQUEST_TS =
     \\import type { TurnInterruptParams } from "./v2/TurnInterruptParams";
     \\import type { TurnStartParams } from "./v2/TurnStartParams";
     \\import type { TurnSteerParams } from "./v2/TurnSteerParams";
+    \\import type { WindowsSandboxSetupStartParams } from "./v2/WindowsSandboxSetupStartParams";
     \\import type { InitializeParams } from "./InitializeParams";
     \\
     \\export type ClientRequest =
@@ -3814,6 +3869,13 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "process/resizePty";
     \\      params: ProcessResizePtyParams;
+    \\    }
+    \\  | {
+    \\      method: "windowsSandbox/readiness";
+    \\    }
+    \\  | {
+    \\      method: "windowsSandbox/setupStart";
+    \\      params: WindowsSandboxSetupStartParams;
     \\    }
     \\  | {
     \\      method: "thread/start";
@@ -4024,6 +4086,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { TurnInterruptResponse } from "./v2/TurnInterruptResponse";
     \\import type { TurnStartResponse } from "./v2/TurnStartResponse";
     \\import type { TurnSteerResponse } from "./v2/TurnSteerResponse";
+    \\import type { WindowsSandboxReadinessResponse } from "./v2/WindowsSandboxReadinessResponse";
+    \\import type { WindowsSandboxSetupStartResponse } from "./v2/WindowsSandboxSetupStartResponse";
     \\import type { InitializeResponse } from "./InitializeResponse";
     \\import type { RequestId } from "./RequestId";
     \\
@@ -4255,6 +4319,16 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "windowsSandbox/readiness";
+    \\      result: WindowsSandboxReadinessResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "windowsSandbox/setupStart";
+    \\      result: WindowsSandboxSetupStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/start";
     \\      result: ThreadStartResponse;
     \\    }
@@ -4440,6 +4514,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
+    \\import type { WindowsSandboxSetupCompletedNotification } from "./v2/WindowsSandboxSetupCompletedNotification";
     \\
     \\export type ServerNotification =
     \\  | {
@@ -4473,6 +4548,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "process/exited";
     \\      params: ProcessExitedNotification;
+    \\    }
+    \\  | {
+    \\      method: "windowsSandbox/setupCompleted";
+    \\      params: WindowsSandboxSetupCompletedNotification;
     \\    }
     \\  | {
     \\      method: "fuzzyFileSearch/sessionUpdated";
@@ -4643,6 +4722,12 @@ const V2_INDEX_TS =
     \\export type { ProcessTerminalSize } from "./ProcessTerminalSize";
     \\export type { ProcessWriteStdinParams } from "./ProcessWriteStdinParams";
     \\export type { ProcessWriteStdinResponse } from "./ProcessWriteStdinResponse";
+    \\export type { WindowsSandboxReadiness } from "./WindowsSandboxReadiness";
+    \\export type { WindowsSandboxReadinessResponse } from "./WindowsSandboxReadinessResponse";
+    \\export type { WindowsSandboxSetupCompletedNotification } from "./WindowsSandboxSetupCompletedNotification";
+    \\export type { WindowsSandboxSetupMode } from "./WindowsSandboxSetupMode";
+    \\export type { WindowsSandboxSetupStartParams } from "./WindowsSandboxSetupStartParams";
+    \\export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
     \\export type { CommandMigration } from "./CommandMigration";
@@ -8399,6 +8484,90 @@ const PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const WINDOWS_SANDBOX_SETUP_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxSetupMode",
+    \\  "enum": ["elevated", "unelevated"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const WINDOWS_SANDBOX_READINESS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxReadiness",
+    \\  "enum": ["ready", "notConfigured", "updateRequired"],
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const WINDOWS_SANDBOX_SETUP_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxSetupStartParams",
+    \\  "type": "object",
+    \\  "required": ["mode"],
+    \\  "properties": {
+    \\    "mode": { "$ref": "WindowsSandboxSetupMode.json" },
+    \\    "cwd": {
+    \\      "oneOf": [
+    \\        { "$ref": "AbsolutePathBuf.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const WINDOWS_SANDBOX_SETUP_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxSetupStartResponse",
+    \\  "type": "object",
+    \\  "required": ["started"],
+    \\  "properties": {
+    \\    "started": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const WINDOWS_SANDBOX_READINESS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxReadinessResponse",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "WindowsSandboxReadiness.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsSandboxSetupCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["mode", "success", "error"],
+    \\  "properties": {
+    \\    "mode": { "$ref": "WindowsSandboxSetupMode.json" },
+    \\    "success": { "type": "boolean" },
+    \\    "error": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_START_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12080,6 +12249,54 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "WindowsSandboxSetupMode": {
+    \\      "enum": ["elevated", "unelevated"],
+    \\      "type": "string"
+    \\    },
+    \\    "WindowsSandboxReadiness": {
+    \\      "enum": ["ready", "notConfigured", "updateRequired"],
+    \\      "type": "string"
+    \\    },
+    \\    "WindowsSandboxSetupStartParams": {
+    \\      "type": "object",
+    \\      "required": ["mode"],
+    \\      "properties": {
+    \\        "mode": { "$ref": "#/$defs/WindowsSandboxSetupMode" },
+    \\        "cwd": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "WindowsSandboxSetupStartResponse": {
+    \\      "type": "object",
+    \\      "required": ["started"],
+    \\      "properties": {
+    \\        "started": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "WindowsSandboxReadinessResponse": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/WindowsSandboxReadiness" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "WindowsSandboxSetupCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["mode", "success", "error"],
+    \\      "properties": {
+    \\        "mode": { "$ref": "#/$defs/WindowsSandboxSetupMode" },
+    \\        "success": { "type": "boolean" },
+    \\        "error": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadStartParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -13187,6 +13404,12 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ProcessResizePtyResponse.json", .contents = PROCESS_RESIZE_PTY_RESPONSE_JSON_SCHEMA },
     .{ .name = "ProcessOutputDeltaNotification.json", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ProcessExitedNotification.json", .contents = PROCESS_EXITED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxSetupMode.json", .contents = WINDOWS_SANDBOX_SETUP_MODE_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxReadiness.json", .contents = WINDOWS_SANDBOX_READINESS_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxSetupStartParams.json", .contents = WINDOWS_SANDBOX_SETUP_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxSetupStartResponse.json", .contents = WINDOWS_SANDBOX_SETUP_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxReadinessResponse.json", .contents = WINDOWS_SANDBOX_READINESS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "WindowsSandboxSetupCompletedNotification.json", .contents = WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListParams.json", .contents = THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
@@ -13505,6 +13728,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ProcessResizePtyResponse.ts", .contents = PROCESS_RESIZE_PTY_RESPONSE_TS },
     .{ .name = "v2/ProcessOutputDeltaNotification.ts", .contents = PROCESS_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ProcessExitedNotification.ts", .contents = PROCESS_EXITED_NOTIFICATION_TS },
+    .{ .name = "v2/WindowsSandboxSetupMode.ts", .contents = WINDOWS_SANDBOX_SETUP_MODE_TS },
+    .{ .name = "v2/WindowsSandboxReadiness.ts", .contents = WINDOWS_SANDBOX_READINESS_TS },
+    .{ .name = "v2/WindowsSandboxSetupStartParams.ts", .contents = WINDOWS_SANDBOX_SETUP_START_PARAMS_TS },
+    .{ .name = "v2/WindowsSandboxSetupStartResponse.ts", .contents = WINDOWS_SANDBOX_SETUP_START_RESPONSE_TS },
+    .{ .name = "v2/WindowsSandboxReadinessResponse.ts", .contents = WINDOWS_SANDBOX_READINESS_RESPONSE_TS },
+    .{ .name = "v2/WindowsSandboxSetupCompletedNotification.ts", .contents = WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadLoadedListParams.ts", .contents = THREAD_LOADED_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
