@@ -8327,6 +8327,77 @@ def run_process_rpc_smoke(binary: Path) -> None:
             assert cap_exited["params"]["stdout"] == "capped"
             assert cap_exited["params"]["stdoutCapReached"] is True
 
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-null-cap",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": ["/bin/sh", "-c", "printf uncapped-output"],
+                        "processHandle": "proc-null-cap",
+                        "cwd": str(cwd),
+                        "outputBytesCap": None,
+                    },
+                },
+            )
+            null_cap_response = read_json_line(proc, 5)
+            null_cap_exited = read_json_line(proc, 5)
+            assert null_cap_response["id"] == "process-spawn-null-cap"
+            assert null_cap_response["result"] == {}
+            assert null_cap_exited["params"]["stdout"] == "uncapped-output"
+            assert null_cap_exited["params"]["stdoutCapReached"] is False
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-timeout",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys, time; sys.stdout.write('before-timeout'); sys.stdout.flush(); time.sleep(1)",
+                        ],
+                        "processHandle": "proc-timeout",
+                        "cwd": str(cwd),
+                        "timeoutMs": 100,
+                    },
+                },
+            )
+            timeout_response = read_json_line(proc, 5)
+            timeout_exited = read_json_line(proc, 5)
+            assert timeout_response["id"] == "process-spawn-timeout"
+            assert timeout_response["result"] == {}
+            assert timeout_exited["params"]["exitCode"] == 124
+            assert timeout_exited["params"]["stdout"] == "before-timeout"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-null-timeout",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys, time; time.sleep(0.2); sys.stdout.write('after-timeout')",
+                        ],
+                        "processHandle": "proc-null-timeout",
+                        "cwd": str(cwd),
+                        "timeoutMs": None,
+                    },
+                },
+            )
+            null_timeout_response = read_json_line(proc, 5)
+            null_timeout_exited = read_json_line(proc, 5)
+            assert null_timeout_response["id"] == "process-spawn-null-timeout"
+            assert null_timeout_response["result"] == {}
+            assert null_timeout_exited["params"]["exitCode"] == 0
+            assert null_timeout_exited["params"]["stdout"] == "after-timeout"
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
