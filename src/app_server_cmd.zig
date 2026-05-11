@@ -3205,7 +3205,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/rollback") or
         std.mem.eql(u8, method, "thread/inject_items") or
         std.mem.eql(u8, method, "thread/name/set") or
-        std.mem.eql(u8, method, "thread/memoryMode/set");
+        std.mem.eql(u8, method, "thread/memoryMode/set") or
+        std.mem.eql(u8, method, "thread/metadata/update");
 }
 
 fn handleThreadMethod(
@@ -3325,6 +3326,21 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
+    if (std.mem.eql(u8, method, "thread/metadata/update")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (validateThreadMetadataGitInfoParams(object)) |validation_error| {
+            return renderJsonRpcError(allocator, id_value, validation_error.code, validation_error.message);
+        }
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
@@ -3374,6 +3390,43 @@ fn threadMemoryModeParamIsValid(object: std.json.ObjectMap) bool {
     const mode = object.get("mode") orelse return false;
     if (mode != .string) return false;
     return std.mem.eql(u8, mode.string, "enabled") or std.mem.eql(u8, mode.string, "disabled");
+}
+
+const ThreadMetadataGitInfoValidationError = struct {
+    code: i64,
+    message: []const u8,
+};
+
+fn validateThreadMetadataGitInfoParams(object: std.json.ObjectMap) ?ThreadMetadataGitInfoValidationError {
+    const git_info = object.get("gitInfo") orelse return .{ .code = -32600, .message = "gitInfo must include at least one field" };
+    if (git_info == .null) return .{ .code = -32600, .message = "gitInfo must include at least one field" };
+    if (git_info != .object) return .{ .code = -32602, .message = "gitInfo must be an object or null" };
+
+    var saw_field = false;
+    if (validateThreadMetadataGitInfoField(git_info.object, "sha", &saw_field)) |err| return err;
+    if (validateThreadMetadataGitInfoField(git_info.object, "branch", &saw_field)) |err| return err;
+    if (validateThreadMetadataGitInfoField(git_info.object, "originUrl", &saw_field)) |err| return err;
+    if (!saw_field) return .{ .code = -32600, .message = "gitInfo must include at least one field" };
+    return null;
+}
+
+fn validateThreadMetadataGitInfoField(
+    object: std.json.ObjectMap,
+    field_name: []const u8,
+    saw_field: *bool,
+) ?ThreadMetadataGitInfoValidationError {
+    const value = object.get(field_name) orelse return null;
+    saw_field.* = true;
+    if (value == .null) return null;
+    if (value != .string) {
+        return .{ .code = -32602, .message = "gitInfo fields must be strings or null" };
+    }
+    if (std.mem.trim(u8, value.string, " \t\r\n").len == 0) {
+        if (std.mem.eql(u8, field_name, "sha")) return .{ .code = -32600, .message = "gitInfo.sha must not be empty" };
+        if (std.mem.eql(u8, field_name, "branch")) return .{ .code = -32600, .message = "gitInfo.branch must not be empty" };
+        return .{ .code = -32600, .message = "gitInfo.originUrl must not be empty" };
+    }
+    return null;
 }
 
 fn renderThreadObjectParamsError(allocator: std.mem.Allocator, id_value: std.json.Value, method: []const u8) ![]const u8 {
