@@ -6227,6 +6227,8 @@ const TurnStartInput = struct {
     user_content_json: []const u8,
     image_urls: []const []const u8,
     local_image_paths: []const []const u8,
+    skills: []const TurnNamedPathInput,
+    mentions: []const TurnNamedPathInput,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
@@ -6235,6 +6237,28 @@ const TurnStartInput = struct {
         allocator.free(self.image_urls);
         for (self.local_image_paths) |path| allocator.free(path);
         allocator.free(self.local_image_paths);
+        for (self.skills) |item| item.deinit(allocator);
+        allocator.free(self.skills);
+        for (self.mentions) |item| item.deinit(allocator);
+        allocator.free(self.mentions);
+    }
+};
+
+const TurnNamedPathInput = struct {
+    name: []const u8,
+    path: []const u8,
+
+    fn init(allocator: std.mem.Allocator, name: []const u8, path: []const u8) !TurnNamedPathInput {
+        const owned_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(owned_name);
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        return .{ .name = owned_name, .path = owned_path };
+    }
+
+    fn deinit(self: TurnNamedPathInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
     }
 };
 
@@ -6318,7 +6342,9 @@ fn handleTurnStart(
     defer local_images.deinit(allocator);
     const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
     defer if (request_input_images.len > 0) allocator.free(request_input_images);
-    const prompt_for_turn = try turnPromptWithLocalImagePlaceholders(allocator, input.prompt, local_images.missing_placeholders);
+    var skill_injections = try loadTurnSkillInjections(allocator, input.skills);
+    defer skill_injections.deinit(allocator);
+    const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks);
     defer allocator.free(prompt_for_turn);
 
     const response = try renderTurnStartResponse(allocator, turn_id);
@@ -6396,6 +6422,18 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         for (local_image_paths.items) |path| allocator.free(path);
         local_image_paths.deinit(allocator);
     };
+    var skills = std.ArrayList(TurnNamedPathInput).empty;
+    var skills_moved = false;
+    errdefer if (!skills_moved) {
+        for (skills.items) |item| item.deinit(allocator);
+        skills.deinit(allocator);
+    };
+    var mentions = std.ArrayList(TurnNamedPathInput).empty;
+    var mentions_moved = false;
+    errdefer if (!mentions_moved) {
+        for (mentions.items) |item| item.deinit(allocator);
+        mentions.deinit(allocator);
+    };
     var input_items: usize = 0;
     var text_items: usize = 0;
     for (input.array.items) |item| {
@@ -6437,6 +6475,11 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             const name = item.object.get("name") orelse return error.InvalidTurnInput;
             const path = item.object.get("path") orelse return error.InvalidTurnInput;
             if (name != .string or path != .string) return error.InvalidTurnInput;
+            const skill = try TurnNamedPathInput.init(allocator, name.string, path.string);
+            skills.append(allocator, skill) catch |err| {
+                skill.deinit(allocator);
+                return err;
+            };
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartNamedPathInputJson(allocator, &user_content, "skill", name.string, path.string);
             input_items += 1;
@@ -6444,6 +6487,11 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             const name = item.object.get("name") orelse return error.InvalidTurnInput;
             const path = item.object.get("path") orelse return error.InvalidTurnInput;
             if (name != .string or path != .string) return error.InvalidTurnInput;
+            const mention = try TurnNamedPathInput.init(allocator, name.string, path.string);
+            mentions.append(allocator, mention) catch |err| {
+                mention.deinit(allocator);
+                return err;
+            };
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartNamedPathInputJson(allocator, &user_content, "mention", name.string, path.string);
             input_items += 1;
@@ -6451,7 +6499,7 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             return error.UnsupportedTurnInput;
         }
     }
-    if (input_items == 0 or (prompt.items.len == 0 and image_urls.items.len == 0 and local_image_paths.items.len == 0)) return error.EmptyTurnInput;
+    if (input_items == 0) return error.EmptyTurnInput;
     try user_content.append(allocator, ']');
     const prompt_owned = try prompt.toOwnedSlice(allocator);
     errdefer allocator.free(prompt_owned);
@@ -6465,11 +6513,25 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
     }
     const local_image_paths_owned = try local_image_paths.toOwnedSlice(allocator);
     local_image_paths_moved = true;
+    errdefer {
+        for (local_image_paths_owned) |path| allocator.free(path);
+        allocator.free(local_image_paths_owned);
+    }
+    const skills_owned = try skills.toOwnedSlice(allocator);
+    skills_moved = true;
+    errdefer {
+        for (skills_owned) |item| item.deinit(allocator);
+        allocator.free(skills_owned);
+    }
+    const mentions_owned = try mentions.toOwnedSlice(allocator);
+    mentions_moved = true;
     return .{
         .prompt = prompt_owned,
         .user_content_json = user_content_owned,
         .image_urls = image_urls_owned,
         .local_image_paths = local_image_paths_owned,
+        .skills = skills_owned,
+        .mentions = mentions_owned,
     };
 }
 
@@ -6597,12 +6659,67 @@ fn renderLocalImageErrorPlaceholder(
     return std.fmt.allocPrint(allocator, "Codex could not read the local image at `{s}`: {s}", .{ path, @errorName(err) });
 }
 
-fn turnPromptWithLocalImagePlaceholders(
+const TurnSkillInjections = struct {
+    blocks: []const []const u8 = &.{},
+
+    fn deinit(self: *TurnSkillInjections, allocator: std.mem.Allocator) void {
+        for (self.blocks) |block| allocator.free(block);
+        if (self.blocks.len > 0) allocator.free(self.blocks);
+    }
+};
+
+fn loadTurnSkillInjections(allocator: std.mem.Allocator, skills: []const TurnNamedPathInput) !TurnSkillInjections {
+    if (skills.len == 0) return .{};
+
+    var blocks = std.ArrayList([]const u8).empty;
+    var blocks_moved = false;
+    errdefer if (!blocks_moved) {
+        for (blocks.items) |block| allocator.free(block);
+        blocks.deinit(allocator);
+    };
+
+    for (skills) |skill| {
+        const contents = std.Io.Dir.cwd().readFileAlloc(
+            std.Io.Threaded.global_single_threaded.io(),
+            skill.path,
+            allocator,
+            .limited(512 * 1024),
+        ) catch |err| blk: {
+            break :blk try std.fmt.allocPrint(allocator, "Codex could not read the skill file: {s}", .{@errorName(err)});
+        };
+        defer allocator.free(contents);
+
+        const block = try renderTurnSkillBlock(allocator, skill, contents);
+        blocks.append(allocator, block) catch |err| {
+            allocator.free(block);
+            return err;
+        };
+    }
+
+    const blocks_owned = try blocks.toOwnedSlice(allocator);
+    blocks_moved = true;
+    return .{ .blocks = blocks_owned };
+}
+
+fn renderTurnSkillBlock(
+    allocator: std.mem.Allocator,
+    skill: TurnNamedPathInput,
+    contents: []const u8,
+) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "<skill>\n<name>{s}</name>\n<path>{s}</path>\n{s}\n</skill>",
+        .{ skill.name, skill.path, contents },
+    );
+}
+
+fn turnPromptWithContextBlocks(
     allocator: std.mem.Allocator,
     prompt: []const u8,
     placeholders: []const []const u8,
+    skill_blocks: []const []const u8,
 ) ![]const u8 {
-    if (placeholders.len == 0) return allocator.dupe(u8, prompt);
+    if (placeholders.len == 0 and skill_blocks.len == 0) return allocator.dupe(u8, prompt);
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -6610,6 +6727,10 @@ fn turnPromptWithLocalImagePlaceholders(
     for (placeholders) |placeholder| {
         if (out.items.len > 0) try out.append(allocator, '\n');
         try out.appendSlice(allocator, placeholder);
+    }
+    for (skill_blocks) |skill_block| {
+        if (out.items.len > 0) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, skill_block);
     }
     return out.toOwnedSlice(allocator);
 }
