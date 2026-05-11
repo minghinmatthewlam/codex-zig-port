@@ -948,6 +948,7 @@ const THREAD_FORK_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadForkParams {
     \\  threadId: string;
+    \\  path?: string | null;
     \\  model?: string | null;
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
@@ -2774,6 +2775,7 @@ const THREAD_FORK_PARAMS_JSON_SCHEMA =
     \\  "required": ["threadId"],
     \\  "properties": {
     \\    "threadId": { "type": "string" },
+    \\    "path": { "type": ["string", "null"] },
     \\    "model": { "type": ["string", "null"] },
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
@@ -4320,6 +4322,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "required": ["threadId"],
     \\      "properties": {
     \\        "threadId": { "type": "string" },
+    \\        "path": { "type": ["string", "null"] },
     \\        "model": { "type": ["string", "null"] },
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
@@ -6027,6 +6030,21 @@ fn handleThreadFork(
     const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
         error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/fork"),
     };
+
+    var cfg = config.load(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    if (optionalStringParam(object, "path")) |path| {
+        var source = createLoadedThreadFromForkPath(allocator, cfg, object, path) catch |err| switch (err) {
+            error.FileNotFound => return renderNoRolloutFoundForThreadResume(allocator, id_value, object),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
+        };
+        defer source.deinit(allocator);
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &source);
+    }
+
     const source_thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
         error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
     };
@@ -6036,19 +6054,24 @@ fn handleThreadFork(
     const source = findLoadedThread(state, source_thread_id) orelse {
         return renderThreadNotFound(allocator, id_value, source_thread_id);
     };
+    return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source);
+}
 
-    var cfg = config.load(allocator) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
-    };
-    defer cfg.deinit(allocator);
-
-    var thread = createLoadedThreadFromForkParams(allocator, cfg, object, source) catch |err| {
+fn handleThreadForkWithSource(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params: std.json.ObjectMap,
+    cfg: config.Config,
+    source: *const LoadedThread,
+) ![]const u8 {
+    var thread = createLoadedThreadFromForkParams(allocator, cfg, params, source) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to create thread", err);
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
 
-    const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
+    const include_turns = !(optionalBoolParam(params, "excludeTurns") orelse false);
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
     defer allocator.free(result);
     const started_notification = try renderThreadStartedNotification(allocator, &thread);
@@ -6234,6 +6257,21 @@ fn createLoadedThreadFromResumeParams(
         .created_at = now,
         .updated_at = now,
     };
+}
+
+fn createLoadedThreadFromForkPath(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    path_raw: []const u8,
+) !LoadedThread {
+    var transcript = try session_store.loadTranscript(allocator, path_raw);
+    defer transcript.deinit(allocator);
+
+    const path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path_raw, allocator);
+    defer allocator.free(path);
+
+    return createLoadedThreadFromResumeParams(allocator, cfg, params, path, &transcript);
 }
 
 fn createLoadedThreadFromForkParams(
@@ -7235,7 +7273,7 @@ fn validateThreadForkParams(params_value: ?std.json.Value) ?[]const u8 {
     const thread_id = object.get("threadId") orelse return "threadId must be a string";
     if (thread_id != .string) return "threadId must be a string";
 
-    inline for (&.{ "model", "modelProvider", "serviceTier", "cwd", "baseInstructions", "developerInstructions" }) |name| {
+    inline for (&.{ "path", "model", "modelProvider", "serviceTier", "cwd", "baseInstructions", "developerInstructions" }) |name| {
         if (object.get(name)) |value| {
             if (value != .null and value != .string) return name ++ " must be a string or null";
         }
