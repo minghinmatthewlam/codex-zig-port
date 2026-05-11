@@ -2586,6 +2586,16 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "type": "localImage",
                         "path": str(local_image_path),
                     },
+                    {
+                        "type": "skill",
+                        "name": "plan-work",
+                        "path": "/tmp/skills/plan-work/SKILL.md",
+                    },
+                    {
+                        "type": "mention",
+                        "name": "Demo Plugin",
+                        "path": "plugin://demo@local",
+                    },
                     {"type": "text", "text": "second text item"},
                 ]
                 prompt = "hello from app-server turn\nsecond text item"
@@ -2626,6 +2636,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     input_items[0],
                     input_items[1],
                     input_items[2],
+                    input_items[3],
+                    input_items[4],
                     {
                         "type": "text",
                         "text": "second text item",
