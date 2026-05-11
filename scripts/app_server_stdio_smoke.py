@@ -11022,6 +11022,56 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert git_diff_response["required"] == ["sha", "diff"]
         assert git_diff_response["properties"]["sha"]["type"] == "string"
         assert git_diff_response["properties"]["diff"]["type"] == "string"
+        fuzzy_params = json.loads(
+            (out_dir / "FuzzyFileSearchParams.json").read_text(encoding="utf-8")
+        )
+        assert fuzzy_params["required"] == ["query", "roots"]
+        assert fuzzy_params["properties"]["roots"]["items"]["type"] == "string"
+        assert fuzzy_params["properties"]["cancellationToken"]["type"] == [
+            "string",
+            "null",
+        ]
+        fuzzy_match_type = json.loads(
+            (out_dir / "FuzzyFileSearchMatchType.json").read_text(encoding="utf-8")
+        )
+        assert fuzzy_match_type["enum"] == ["file", "directory"]
+        fuzzy_match = json.loads(
+            (out_dir / "FuzzyFileSearchMatch.json").read_text(encoding="utf-8")
+        )
+        assert fuzzy_match["properties"]["match_type"]["$ref"] == (
+            "#/$defs/FuzzyFileSearchMatchType"
+        )
+        assert fuzzy_match["properties"]["score"]["maximum"] == 4294967295
+        fuzzy_response = json.loads(
+            (out_dir / "FuzzyFileSearchResponse.json").read_text(encoding="utf-8")
+        )
+        assert fuzzy_response["properties"]["files"]["items"]["$ref"] == (
+            "#/$defs/FuzzyFileSearchMatch"
+        )
+        fuzzy_session_start = json.loads(
+            (out_dir / "FuzzyFileSearchSessionStartParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert fuzzy_session_start["required"] == ["sessionId", "roots"]
+        fuzzy_session_update = json.loads(
+            (out_dir / "FuzzyFileSearchSessionUpdateParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert fuzzy_session_update["required"] == ["sessionId", "query"]
+        fuzzy_session_updated = json.loads(
+            (out_dir / "FuzzyFileSearchSessionUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert fuzzy_session_updated["required"] == ["sessionId", "query", "files"]
+        fuzzy_session_completed = json.loads(
+            (out_dir / "FuzzyFileSearchSessionCompletedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert fuzzy_session_completed["required"] == ["sessionId"]
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -11839,6 +11889,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
+        assert "FuzzyFileSearchParams" in bundle["$defs"]
+        assert "FuzzyFileSearchMatchType" in bundle["$defs"]
+        assert "FuzzyFileSearchMatch" in bundle["$defs"]
+        assert "FuzzyFileSearchResponse" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionStartParams" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionUpdateParams" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionStopParams" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionStartResponse" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionUpdateResponse" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionStopResponse" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionUpdatedNotification" in bundle["$defs"]
+        assert "FuzzyFileSearchSessionCompletedNotification" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -11934,6 +11996,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "sha",
             "diff",
         ]
+        assert bundle["$defs"]["FuzzyFileSearchResponse"]["properties"]["files"][
+            "items"
+        ]["$ref"] == "#/$defs/FuzzyFileSearchMatch"
+        assert bundle["$defs"]["FuzzyFileSearchSessionUpdatedNotification"][
+            "properties"
+        ]["files"]["items"]["$ref"] == "#/$defs/FuzzyFileSearchMatch"
         assert bundle["$defs"]["ExperimentalFeatureListResponse"]["properties"][
             "data"
         ]["items"]["$ref"] == "#/$defs/ExperimentalFeature"
@@ -12091,6 +12159,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "memory/reset";' in client_request
         assert 'method: "gitDiffToRemote";' in client_request
         assert "params: GitDiffToRemoteParams;" in client_request
+        assert 'method: "fuzzyFileSearch";' in client_request
+        assert "params: FuzzyFileSearchParams;" in client_request
+        assert 'method: "fuzzyFileSearch/sessionStart";' in client_request
+        assert "params: FuzzyFileSearchSessionStartParams;" in client_request
+        assert 'method: "fuzzyFileSearch/sessionUpdate";' in client_request
+        assert "params: FuzzyFileSearchSessionUpdateParams;" in client_request
+        assert 'method: "fuzzyFileSearch/sessionStop";' in client_request
+        assert "params: FuzzyFileSearchSessionStopParams;" in client_request
         assert 'method: "modelProvider/capabilities/read";' in client_request
         assert (
             "params?: ModelProviderCapabilitiesReadParams | null;"
@@ -12176,6 +12252,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         server_notification = (out_dir / "ServerNotification.ts").read_text(
             encoding="utf-8"
         )
+        assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
+        assert (
+            "params: FuzzyFileSearchSessionUpdatedNotification;"
+            in server_notification
+        )
+        assert 'method: "fuzzyFileSearch/sessionCompleted";' in server_notification
+        assert (
+            "params: FuzzyFileSearchSessionCompletedNotification;"
+            in server_notification
+        )
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
@@ -12201,6 +12287,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: MemoryResetResponse;" in client_response
         assert 'method: "gitDiffToRemote";' in client_response
         assert "result: GitDiffToRemoteResponse;" in client_response
+        assert 'method: "fuzzyFileSearch";' in client_response
+        assert "result: FuzzyFileSearchResponse;" in client_response
+        assert 'method: "fuzzyFileSearch/sessionStart";' in client_response
+        assert "result: FuzzyFileSearchSessionStartResponse;" in client_response
+        assert 'method: "fuzzyFileSearch/sessionUpdate";' in client_response
+        assert "result: FuzzyFileSearchSessionUpdateResponse;" in client_response
+        assert 'method: "fuzzyFileSearch/sessionStop";' in client_response
+        assert "result: FuzzyFileSearchSessionStopResponse;" in client_response
         assert 'method: "modelProvider/capabilities/read";' in client_response
         assert (
             "result: ModelProviderCapabilitiesReadResponse;" in client_response
@@ -12357,6 +12451,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "sha: string;" in git_diff_response
         assert "diff: string;" in git_diff_response
+        fuzzy_params = (out_dir / "v2" / "FuzzyFileSearchParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "query: string;" in fuzzy_params
+        assert "roots: string[];" in fuzzy_params
+        assert "cancellationToken?: string | null;" in fuzzy_params
+        fuzzy_match = (out_dir / "v2" / "FuzzyFileSearchMatch.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "match_type: FuzzyFileSearchMatchType;" in fuzzy_match
+        assert "indices: number[];" in fuzzy_match
+        fuzzy_response = (
+            out_dir / "v2" / "FuzzyFileSearchResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "files: FuzzyFileSearchMatch[];" in fuzzy_response
+        fuzzy_session_updated = (
+            out_dir / "v2" / "FuzzyFileSearchSessionUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "query: string;" in fuzzy_session_updated
+        assert "files: FuzzyFileSearchMatch[];" in fuzzy_session_updated
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -12975,6 +13089,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";'
+            in v2_index
+        )
+        assert (
+            'export type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";'
             in v2_index
         )
         assert (
