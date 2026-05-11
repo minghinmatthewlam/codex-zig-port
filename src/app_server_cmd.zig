@@ -6904,7 +6904,24 @@ fn updateLoadedThreadGitInfo(
     try patchLoadedThreadGitInfoField(allocator, git_info, "sha", &thread.git_sha);
     try patchLoadedThreadGitInfoField(allocator, git_info, "branch", &thread.git_branch);
     try patchLoadedThreadGitInfoField(allocator, git_info, "originUrl", &thread.git_origin_url);
+    try syncLoadedThreadGitInfoToTranscript(allocator, thread);
     thread.updated_at = currentUnixSeconds();
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
+fn syncLoadedThreadGitInfoToTranscript(allocator: std.mem.Allocator, thread: *LoadedThread) !void {
+    if (thread.git_sha) |value|
+        try thread.transcript.setGitSha(allocator, value)
+    else
+        thread.transcript.clearGitSha(allocator);
+    if (thread.git_branch) |value|
+        try thread.transcript.setGitBranch(allocator, value)
+    else
+        thread.transcript.clearGitBranch(allocator);
+    if (thread.git_origin_url) |value|
+        try thread.transcript.setGitOriginUrl(allocator, value)
+    else
+        thread.transcript.clearGitOriginUrl(allocator);
 }
 
 fn patchLoadedThreadGitInfoField(
@@ -8052,6 +8069,12 @@ fn createLoadedThreadFromResumeParams(
     errdefer if (token_usage_turn_id) |value| allocator.free(value);
     const name = if (transcript.title) |title| try allocator.dupe(u8, title) else null;
     errdefer if (name) |value| allocator.free(value);
+    const git_sha = if (transcript.git_sha) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_sha) |value| allocator.free(value);
+    const git_branch = if (transcript.git_branch) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_branch) |value| allocator.free(value);
+    const git_origin_url = if (transcript.git_origin_url) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_origin_url) |value| allocator.free(value);
     const turns_json = try renderTranscriptTurnsJson(allocator, transcript, true);
     errdefer allocator.free(turns_json);
     var transcript_copy = try transcript.clone(allocator);
@@ -8109,9 +8132,9 @@ fn createLoadedThreadFromResumeParams(
         .token_usage_turn_id = token_usage_turn_id,
         .name = name,
         .elicitation_count = 0,
-        .git_sha = null,
-        .git_branch = null,
-        .git_origin_url = null,
+        .git_sha = git_sha,
+        .git_branch = git_branch,
+        .git_origin_url = git_origin_url,
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .created_at = now,
@@ -8154,6 +8177,12 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(cli_version);
     const token_usage_turn_id = if (source.token_usage_turn_id) |value| try allocator.dupe(u8, value) else null;
     errdefer if (token_usage_turn_id) |value| allocator.free(value);
+    const git_sha = if (source.git_sha) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_sha) |value| allocator.free(value);
+    const git_branch = if (source.git_branch) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_branch) |value| allocator.free(value);
+    const git_origin_url = if (source.git_origin_url) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_origin_url) |value| allocator.free(value);
     const turns_json = try allocator.dupe(u8, source.turns_json);
     errdefer allocator.free(turns_json);
     var transcript = try source.transcript.clone(allocator);
@@ -8233,9 +8262,9 @@ fn createLoadedThreadFromForkParams(
         .token_usage_turn_id = token_usage_turn_id,
         .name = null,
         .elicitation_count = 0,
-        .git_sha = null,
-        .git_branch = null,
-        .git_origin_url = null,
+        .git_sha = git_sha,
+        .git_branch = git_branch,
+        .git_origin_url = git_origin_url,
         .transcript = transcript,
         .turns_json = turns_json,
         .created_at = now,

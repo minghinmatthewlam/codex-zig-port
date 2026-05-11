@@ -17,6 +17,9 @@ pub const Transcript = struct {
     cwd: ?[]const u8 = null,
     cli_version: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
+    git_sha: ?[]const u8 = null,
+    git_branch: ?[]const u8 = null,
+    git_origin_url: ?[]const u8 = null,
     token_usage: ?TokenUsageInfo = null,
     token_usage_turn_index: ?usize = null,
     title: ?[]const u8 = null,
@@ -40,6 +43,9 @@ pub const Transcript = struct {
         clearOptionalString(allocator, &self.cwd);
         clearOptionalString(allocator, &self.cli_version);
         clearOptionalString(allocator, &self.memory_mode);
+        clearOptionalString(allocator, &self.git_sha);
+        clearOptionalString(allocator, &self.git_branch);
+        clearOptionalString(allocator, &self.git_origin_url);
     }
 
     pub fn setId(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
@@ -74,6 +80,30 @@ pub const Transcript = struct {
         try replaceOptionalString(allocator, &self.memory_mode, value);
     }
 
+    pub fn setGitSha(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.git_sha, value);
+    }
+
+    pub fn clearGitSha(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.git_sha);
+    }
+
+    pub fn setGitBranch(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.git_branch, value);
+    }
+
+    pub fn clearGitBranch(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.git_branch);
+    }
+
+    pub fn setGitOriginUrl(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.git_origin_url, value);
+    }
+
+    pub fn clearGitOriginUrl(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.git_origin_url);
+    }
+
     pub fn setTitle(self: *Transcript, allocator: std.mem.Allocator, title: []const u8) !void {
         const copy = try allocator.dupe(u8, title);
         self.clearTitle(allocator);
@@ -103,6 +133,9 @@ pub const Transcript = struct {
         if (self.cwd) |value| try copy.setCwd(allocator, value);
         if (self.cli_version) |value| try copy.setCliVersion(allocator, value);
         if (self.memory_mode) |value| try copy.setMemoryMode(allocator, value);
+        if (self.git_sha) |value| try copy.setGitSha(allocator, value);
+        if (self.git_branch) |value| try copy.setGitBranch(allocator, value);
+        if (self.git_origin_url) |value| try copy.setGitOriginUrl(allocator, value);
         copy.token_usage = self.token_usage;
         copy.token_usage_turn_index = self.token_usage_turn_index;
         if (self.title) |title| try copy.setTitle(allocator, title);
