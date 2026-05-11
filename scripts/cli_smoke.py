@@ -176,6 +176,61 @@ class StreamableMcpToolHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if method == "resources/list":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "resources": [
+                            {
+                                "uri": "https://remote.example/resource.md",
+                                "name": "remote-resource",
+                                "description": "Remote MCP resource.",
+                                "mimeType": "text/markdown",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+            return
+        if method == "resources/templates/list":
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "resourceTemplates": [
+                            {
+                                "uriTemplate": "https://remote.example/{slug}.md",
+                                "name": "remote-template",
+                                "description": "Remote MCP template.",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+            return
+        if method == "resources/read":
+            uri = request.get("params", {}).get("uri")
+            self.write_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "contents": [
+                            {
+                                "uri": uri,
+                                "mimeType": "text/markdown",
+                                "text": "remote resource body",
+                            }
+                        ]
+                    },
+                }
+            )
+            return
         self.write_rpc(
             {
                 "jsonrpc": "2.0",
@@ -1385,13 +1440,24 @@ def run_exec_provider_command_auth_refresh_interval_smoke(binary: Path) -> None:
 def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-resources-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
     server.response_payloads = [
         function_call_response_payload("call-resources", "list_mcp_resources", {}),
         function_call_response_payload("call-templates", "list_mcp_resource_templates", {"server": "docs"}),
         function_call_response_payload(
+            "call-http-templates",
+            "list_mcp_resource_templates",
+            {"server": "remote-docs"},
+        ),
+        function_call_response_payload(
             "call-read",
             "read_mcp_resource",
             {"server": "docs", "uri": "file:///tmp/codex-resource.md"},
+        ),
+        function_call_response_payload(
+            "call-http-read",
+            "read_mcp_resource",
+            {"server": "remote-docs", "uri": "https://remote.example/resource.md"},
         ),
         (
             b'data: {"type":"response.output_text.delta","delta":"resource done"}\n\n'
@@ -1518,6 +1584,10 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
                     f"command = {json.dumps(sys.executable)}",
                     f"args = [{json.dumps(str(server_path))}]",
                     "",
+                    "[mcp_servers.remote-docs]",
+                    f"url = {json.dumps(mcp_url)}",
+                    'bearer_token_env_var = "RESOURCE_HTTP_MCP_TOKEN"',
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -1525,6 +1595,7 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["OPENAI_API_KEY"] = "test-api-key"
+        env["RESOURCE_HTTP_MCP_TOKEN"] = "resource-http-token"
         env.pop("CODEX_ACCESS_TOKEN", None)
 
         result = subprocess.run(
@@ -1538,7 +1609,7 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
             check=True,
         )
         assert result.stdout == "resource done\n"
-        assert len(server.request_bodies) == 4
+        assert len(server.request_bodies) == 6
         first_tools = {tool.get("name") for tool in server.request_bodies[0]["tools"] if tool.get("type") == "function"}
         assert "list_mcp_resources" in first_tools
         assert "list_mcp_resource_templates" in first_tools
@@ -1559,6 +1630,13 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
                 "name": "second-resource",
                 "mimeType": "text/markdown",
             },
+            {
+                "server": "remote-docs",
+                "uri": "https://remote.example/resource.md",
+                "name": "remote-resource",
+                "description": "Remote MCP resource.",
+                "mimeType": "text/markdown",
+            },
         ]
 
         templates_output = json.loads(server.request_bodies[2]["input"][-1]["output"])
@@ -1574,7 +1652,20 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
             ],
         }
 
-        read_output = json.loads(server.request_bodies[3]["input"][-1]["output"])
+        http_templates_output = json.loads(server.request_bodies[3]["input"][-1]["output"])
+        assert http_templates_output == {
+            "server": "remote-docs",
+            "resourceTemplates": [
+                {
+                    "server": "remote-docs",
+                    "uriTemplate": "https://remote.example/{slug}.md",
+                    "name": "remote-template",
+                    "description": "Remote MCP template.",
+                }
+            ],
+        }
+
+        read_output = json.loads(server.request_bodies[4]["input"][-1]["output"])
         assert read_output == {
             "server": "docs",
             "uri": "file:///tmp/codex-resource.md",
@@ -1586,9 +1677,42 @@ def run_exec_mcp_resource_tools_smoke(binary: Path) -> None:
                 }
             ],
         }
+
+        http_read_output = json.loads(server.request_bodies[5]["input"][-1]["output"])
+        assert http_read_output == {
+            "server": "remote-docs",
+            "uri": "https://remote.example/resource.md",
+            "contents": [
+                {
+                    "uri": "https://remote.example/resource.md",
+                    "mimeType": "text/markdown",
+                    "text": "remote resource body",
+                }
+            ],
+        }
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "initialize",
+            "notifications/initialized",
+            "resources/list",
+            "initialize",
+            "notifications/initialized",
+            "resources/templates/list",
+            "initialize",
+            "notifications/initialized",
+            "resources/read",
+        ]
+        assert mcp_server.request_headers[2]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[5]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[8]["Authorization"] == "Bearer resource-http-token"
+        assert mcp_server.request_headers[11]["Authorization"] == "Bearer resource-http-token"
     finally:
         server.shutdown()
         server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
