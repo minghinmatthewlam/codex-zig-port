@@ -16163,7 +16163,16 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderNoRolloutFoundForThreadId(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const archived_path = session_store.archiveRollout(allocator, cfg.codex_home, thread_id) catch |err| switch (err) {
+            error.FileNotFound => return renderNoRolloutFoundForThreadId(allocator, id_value, thread_id),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
+        };
+        defer allocator.free(archived_path);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/unarchive")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -16175,7 +16184,22 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderNoArchivedRolloutFoundForThreadId(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const unarchived_path = session_store.unarchiveRollout(allocator, cfg.codex_home, thread_id) catch |err| switch (err) {
+            error.FileNotFound => return renderNoArchivedRolloutFoundForThreadId(allocator, id_value, thread_id),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed", err),
+        };
+        defer allocator.free(unarchived_path);
+        var unarchived_thread = createStoredThreadFromPath(allocator, cfg, object, unarchived_path) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load thread", err);
+        };
+        defer unarchived_thread.deinit(allocator);
+        const result = try renderThreadReadResponse(allocator, &unarchived_thread, false);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/compact/start")) {
         return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
@@ -16824,10 +16848,19 @@ fn createStoredThreadFromParams(
     const resume_path_raw = try threadResumePath(allocator, cfg.codex_home, params);
     defer allocator.free(resume_path_raw);
 
-    var transcript = try session_store.loadTranscript(allocator, resume_path_raw);
+    return createStoredThreadFromPath(allocator, cfg, params, resume_path_raw);
+}
+
+fn createStoredThreadFromPath(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    path_raw: []const u8,
+) !LoadedThread {
+    var transcript = try session_store.loadTranscript(allocator, path_raw);
     defer transcript.deinit(allocator);
 
-    const resume_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), resume_path_raw, allocator);
+    const resume_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path_raw, allocator);
     defer allocator.free(resume_path);
 
     return createLoadedThreadFromResumeParams(allocator, cfg, params, resume_path, &transcript);

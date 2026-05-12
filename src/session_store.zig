@@ -469,13 +469,21 @@ pub fn resolveResumePath(allocator: std.mem.Allocator, codex_home: []const u8, t
     if (fileExists(zig_path)) return zig_path;
 
     if (isUuidLike(raw_target)) {
-        if (try findRolloutPathByThreadId(allocator, codex_home, raw_target)) |path| {
+        if (try findRolloutPathByThreadId(allocator, codex_home, raw_target, false)) |path| {
             allocator.free(zig_path);
             return path;
         }
     }
 
     return zig_path;
+}
+
+pub fn archiveRollout(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) ![]const u8 {
+    return moveRolloutArchiveState(allocator, codex_home, thread_id, true);
+}
+
+pub fn unarchiveRollout(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) ![]const u8 {
+    return moveRolloutArchiveState(allocator, codex_home, thread_id, false);
 }
 
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -667,8 +675,9 @@ fn findRolloutPathByThreadId(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     thread_id: []const u8,
+    archived: bool,
 ) !?[]const u8 {
-    const sessions_root = try std.fs.path.join(allocator, &.{ codex_home, "sessions" });
+    const sessions_root = try rolloutRootPath(allocator, codex_home, archived);
     defer allocator.free(sessions_root);
 
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -679,6 +688,42 @@ fn findRolloutPathByThreadId(
     defer dir.close(io);
 
     return try findRolloutPathByThreadIdInDir(allocator, io, sessions_root, "", &dir, thread_id, 0);
+}
+
+fn moveRolloutArchiveState(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    archive: bool,
+) ![]const u8 {
+    const source_root = try rolloutRootPath(allocator, codex_home, !archive);
+    defer allocator.free(source_root);
+    const destination_root = try rolloutRootPath(allocator, codex_home, archive);
+    defer allocator.free(destination_root);
+
+    const source_path = (try findRolloutPathByThreadId(allocator, codex_home, thread_id, !archive)) orelse return error.FileNotFound;
+    defer allocator.free(source_path);
+
+    if (!std.mem.startsWith(u8, source_path, source_root) or source_path.len <= source_root.len or source_path[source_root.len] != std.fs.path.sep) {
+        return error.InvalidSessionPath;
+    }
+    const relative_path = source_path[source_root.len + 1 ..];
+    const destination_path = try std.fs.path.join(allocator, &.{ destination_root, relative_path });
+    errdefer allocator.free(destination_path);
+    try ensureParentDir(destination_path);
+    try std.Io.Dir.rename(
+        std.Io.Dir.cwd(),
+        source_path,
+        std.Io.Dir.cwd(),
+        destination_path,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
+    return destination_path;
+}
+
+fn rolloutRootPath(allocator: std.mem.Allocator, codex_home: []const u8, archived: bool) ![]const u8 {
+    const root_name: []const u8 = if (archived) "archived_sessions" else "sessions";
+    return std.fs.path.join(allocator, &.{ codex_home, root_name });
 }
 
 fn findRolloutPathByThreadIdInDir(
@@ -711,10 +756,12 @@ fn findRolloutPathByThreadIdInDir(
         }
 
         if (stat.kind != .directory) continue;
-        var child_dir = std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true }) catch continue;
-        defer child_dir.close(io);
-        if (try findRolloutPathByThreadIdInDir(allocator, io, root, relative_path, &child_dir, thread_id, depth + 1)) |path| {
-            return path;
+        {
+            var child_dir = std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true }) catch continue;
+            defer child_dir.close(io);
+            if (try findRolloutPathByThreadIdInDir(allocator, io, root, relative_path, &child_dir, thread_id, depth + 1)) |path| {
+                return path;
+            }
         }
     }
 

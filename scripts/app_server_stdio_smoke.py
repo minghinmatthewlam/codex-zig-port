@@ -4443,6 +4443,82 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-archive-saved-zig-rollout",
+                    "method": "thread/archive",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            archived_saved_zig = read_json_line(proc, 5)
+            assert archived_saved_zig["id"] == "thread-archive-saved-zig-rollout"
+            assert archived_saved_zig["result"] == {}
+            archived_rollout_path = (
+                codex_home / "archived_sessions" / "zig" / rollout_path.name
+            )
+            assert not rollout_path.exists()
+            assert archived_rollout_path.exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-archived-zig-rollout-missing-active",
+                    "method": "thread/read",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            read_archived_missing = read_json_line(proc, 5)
+            assert read_archived_missing["id"] == "thread-read-archived-zig-rollout-missing-active"
+            assert read_archived_missing["error"]["code"] == -32600
+            assert (
+                f"thread not loaded: {resume_thread_id}"
+                in read_archived_missing["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-archived-zig-rollout",
+                    "method": "thread/list",
+                    "params": {
+                        "archived": True,
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "saved hello",
+                    },
+                },
+            )
+            archived_zig_list = read_json_line(proc, 5)
+            assert archived_zig_list["id"] == "thread-list-archived-zig-rollout"
+            archived_zig_threads = archived_zig_list["result"]["data"]
+            assert [thread["id"] for thread in archived_zig_threads] == [resume_thread_id]
+            assert archived_zig_threads[0]["path"] == os.path.realpath(
+                archived_rollout_path
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-unarchive-saved-zig-rollout",
+                    "method": "thread/unarchive",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            unarchived_saved_zig = read_json_line(proc, 5)
+            assert unarchived_saved_zig["id"] == "thread-unarchive-saved-zig-rollout"
+            unarchived_thread = unarchived_saved_zig["result"]["thread"]
+            assert unarchived_thread["id"] == resume_thread_id
+            assert unarchived_thread["name"] == "Resume Smoke"
+            assert unarchived_thread["preview"] == "saved hello"
+            assert unarchived_thread["path"] == os.path.realpath(rollout_path)
+            assert unarchived_thread["turns"] == []
+            assert rollout_path.exists()
+            assert not archived_rollout_path.exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume",
                     "method": "thread/resume",
                     "params": {
