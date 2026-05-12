@@ -8556,6 +8556,8 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         user_hooks_json.write_text(
             json.dumps(
                 {
+                    "env": {"FOO": "local", "LOCAL_ONLY": True, "SUPPRESSED": None},
+                    "sandbox": {"enabled": True},
                     "hooks": {
                         "PreToolUse": [
                             {
@@ -15313,6 +15315,262 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert detect_after_import["id"] == "external-agent-detect-after-config"
         assert detect_after_import["result"] == {"items": []}
 
+        (external_home / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "docs": {
+                            "command": "docs-server",
+                            "args": ["serve", "--stdio"],
+                            "env": {
+                                "DOCS_TOKEN": "${DOCS_TOKEN}",
+                                "STATIC": "yes",
+                            },
+                        },
+                        "api": {
+                            "type": "http",
+                            "url": "https://example.com/mcp",
+                            "headers": {
+                                "Authorization": "Bearer ${API_TOKEN}",
+                                "X-Team": "${TEAM}",
+                                "X-Static": "static",
+                            },
+                        },
+                        "disabled": {
+                            "command": "disabled-server",
+                            "enabled": False,
+                        },
+                        "templated": {
+                            "command": "${MCP_COMMAND}",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        detected_mcp = rpc(
+            "external-agent-detect-mcp",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_mcp["id"] == "external-agent-detect-mcp"
+        assert detected_mcp["result"]["items"] == [
+            {
+                "itemType": "MCP_SERVER_CONFIG",
+                "description": (
+                    f"Migrate MCP servers from {external_home} into "
+                    f"{codex_home / 'config.toml'}"
+                ),
+                "cwd": None,
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [{"name": "api"}, {"name": "docs"}],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [],
+                },
+            }
+        ]
+
+        mcp_import = rpc(
+            "external-agent-import-mcp",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_mcp["result"]["items"]},
+        )
+        assert mcp_import["id"] == "external-agent-import-mcp"
+        assert mcp_import["result"] == {}
+        mcp_notification = read_json_line(proc, 5)
+        assert mcp_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        home_config_text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        for fragment in (
+            "[mcp_servers.api]\n",
+            'url = "https://example.com/mcp"\n',
+            'bearer_token_env_var = "API_TOKEN"\n',
+            "[mcp_servers.api.env_http_headers]\n",
+            'X-Team = "TEAM"\n',
+            "[mcp_servers.api.http_headers]\n",
+            'X-Static = "static"\n',
+            "[mcp_servers.docs]\n",
+            'command = "docs-server"\n',
+            'args = ["serve", "--stdio"]\n',
+            'env_vars = ["DOCS_TOKEN"]\n',
+            "[mcp_servers.docs.env]\n",
+            'STATIC = "yes"\n',
+        ):
+            assert fragment in home_config_text
+
+        detect_after_mcp = rpc(
+            "external-agent-detect-after-mcp",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_mcp["id"] == "external-agent-detect-after-mcp"
+        assert detect_after_mcp["result"] == {"items": []}
+
+        (claude_home / "settings.json").write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "FOO": "project",
+                        "PROJECT_ONLY": "yes",
+                        "SUPPRESSED": "base",
+                        "CI": False,
+                        "IGNORED": None,
+                        "LIST": ["a", "b"],
+                        "MAP": {"x": 1},
+                    },
+                    "sandbox": {"enabled": False},
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo Claude Code",
+                                        "timeout": 3,
+                                        "statusMessage": "Run Claude hook",
+                                    },
+                                    {
+                                        "type": "webhook",
+                                        "url": "https://example.com/hook",
+                                    },
+                                ],
+                            },
+                            {
+                                "if": "unsupported",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo skipped",
+                                    }
+                                ],
+                            },
+                        ],
+                        "UserPromptSubmit": [
+                            {
+                                "matcher": "ignored",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo prompt",
+                                        "timeoutSec": 4,
+                                        "async": False,
+                                    }
+                                ],
+                            }
+                        ],
+                        "Stop": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo done",
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (claude_home / "hooks").mkdir()
+        (claude_home / "hooks" / "pre.sh").write_text("echo hook\n", encoding="utf-8")
+        detected_hooks = rpc(
+            "external-agent-detect-hooks",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_hooks["id"] == "external-agent-detect-hooks"
+        assert detected_hooks["result"]["items"] == [
+            {
+                "itemType": "HOOKS",
+                "description": (
+                    f"Migrate hooks from {claude_home} to {codex_home / 'hooks.json'}"
+                ),
+                "cwd": None,
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [
+                        {"name": "PreToolUse"},
+                        {"name": "UserPromptSubmit"},
+                        {"name": "Stop"},
+                    ],
+                    "subagents": [],
+                    "commands": [],
+                },
+            }
+        ]
+
+        hooks_import = rpc(
+            "external-agent-import-hooks",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_hooks["result"]["items"]},
+        )
+        assert hooks_import["id"] == "external-agent-import-hooks"
+        assert hooks_import["result"] == {}
+        hooks_notification = read_json_line(proc, 5)
+        assert hooks_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert json.loads((codex_home / "hooks.json").read_text(encoding="utf-8")) == {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo Claude Code",
+                                "timeout": 3,
+                                "statusMessage": "Run Codex hook",
+                            }
+                        ],
+                    }
+                ],
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo prompt",
+                                "timeoutSec": 4,
+                            }
+                        ]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo done",
+                            }
+                        ]
+                    }
+                ],
+            }
+        }
+        assert (codex_home / "hooks" / "pre.sh").read_text(encoding="utf-8") == (
+            "echo hook\n"
+        )
+
+        detect_after_hooks = rpc(
+            "external-agent-detect-after-hooks",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_hooks["id"] == "external-agent-detect-after-hooks"
+        assert detect_after_hooks["result"] == {"items": []}
+
         (claude_home / "CLAUDE.md").write_text(
             "Use Claude Code, CLAUDE.md, claude_code, and xclaude.",
             encoding="utf-8",
@@ -15566,6 +15824,20 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                         "PROJECT_SUPPRESSED": "base",
                     },
                     "sandbox": {"enabled": False},
+                    "hooks": {
+                        "PostToolUse": [
+                            {
+                                "matcher": "Edit",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo project",
+                                        "statusMessage": "Project Claude hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
                 }
             ),
             encoding="utf-8",
@@ -15579,6 +15851,21 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                         "PROJECT_SUPPRESSED": None,
                     },
                     "sandbox": {"enabled": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (project_root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "project_api": {
+                            "url": "https://project.example/mcp",
+                            "headers": {
+                                "Authorization": "Bearer ${PROJECT_API_TOKEN}",
+                            },
+                        }
+                    }
                 }
             ),
             encoding="utf-8",
@@ -15633,6 +15920,38 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 ),
                 "cwd": str(project_root),
                 "details": None,
+            },
+            {
+                "itemType": "MCP_SERVER_CONFIG",
+                "description": (
+                    f"Migrate MCP servers from {project_root} into "
+                    f"{project_root / '.codex' / 'config.toml'}"
+                ),
+                "cwd": str(project_root),
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [{"name": "project_api"}],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [],
+                },
+            },
+            {
+                "itemType": "HOOKS",
+                "description": (
+                    f"Migrate hooks from {project_claude} to "
+                    f"{project_root / '.codex' / 'hooks.json'}"
+                ),
+                "cwd": str(project_root),
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [{"name": "PostToolUse"}],
+                    "subagents": [],
+                    "commands": [],
+                },
             },
             {
                 "itemType": "SKILLS",
@@ -15698,19 +16017,40 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "method": "externalAgentConfig/import/completed",
             "params": {},
         }
-        assert (project_root / ".codex" / "config.toml").read_text(
+        project_config_text = (project_root / ".codex" / "config.toml").read_text(
             encoding="utf-8"
-        ) == (
-            'sandbox_mode = "workspace-write"\n'
-            "\n"
-            "[shell_environment_policy]\n"
-            'inherit = "core"\n'
-            "\n"
-            "[shell_environment_policy.set]\n"
-            'PROJECT_BAR = "project"\n'
-            'PROJECT_BOOL = "true"\n'
-            'PROJECT_OVERRIDE = "local"\n'
         )
+        for fragment in (
+            'sandbox_mode = "workspace-write"\n',
+            "[shell_environment_policy]\n",
+            'inherit = "core"\n',
+            "[shell_environment_policy.set]\n",
+            'PROJECT_BAR = "project"\n',
+            'PROJECT_BOOL = "true"\n',
+            'PROJECT_OVERRIDE = "local"\n',
+            "[mcp_servers.project_api]\n",
+            'url = "https://project.example/mcp"\n',
+            'bearer_token_env_var = "PROJECT_API_TOKEN"\n',
+        ):
+            assert fragment in project_config_text
+        assert json.loads(
+            (project_root / ".codex" / "hooks.json").read_text(encoding="utf-8")
+        ) == {
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo project",
+                                "statusMessage": "Project Codex hook",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
         assert (project_root / "AGENTS.md").read_text(encoding="utf-8") == (
             "Project Codex uses AGENTS.md."
         )
