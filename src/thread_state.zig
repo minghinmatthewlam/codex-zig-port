@@ -81,6 +81,18 @@ const UPDATE_GIT_INFO_QUERY =
     \\WHERE id = ?
 ;
 
+const UPDATE_ARCHIVE_QUERY =
+    \\UPDATE threads
+    \\SET rollout_path = ?, archived = 1, archived_at = ?, updated_at = ?, updated_at_ms = ?
+    \\WHERE id = ?
+;
+
+const UPDATE_UNARCHIVE_QUERY =
+    \\UPDATE threads
+    \\SET rollout_path = ?, archived = 0, archived_at = NULL, updated_at = ?, updated_at_ms = ?
+    \\WHERE id = ?
+;
+
 pub const ThreadMetadata = struct {
     lifecycle_loaded: bool = false,
     title: ?[]const u8,
@@ -417,6 +429,30 @@ pub fn updateThreadGitInfo(
     return try finishStateUpdate(statement);
 }
 
+pub fn markThreadArchived(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_ARCHIVE_QUERY) orelse return false;
+    errdefer statement.deinit();
+    const times = try fileModifiedTimes(rollout_path);
+    const archived_at_seconds = currentUnixSeconds();
+    try sqlite.bindText(statement.statement, 1, rollout_path);
+    try sqlite.bindInt64(statement.statement, 2, archived_at_seconds);
+    try sqlite.bindInt64(statement.statement, 3, times.seconds);
+    try sqlite.bindInt64(statement.statement, 4, times.milliseconds);
+    try sqlite.bindText(statement.statement, 5, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+pub fn markThreadUnarchived(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_UNARCHIVE_QUERY) orelse return false;
+    errdefer statement.deinit();
+    const times = try fileModifiedTimes(rollout_path);
+    try sqlite.bindText(statement.statement, 1, rollout_path);
+    try sqlite.bindInt64(statement.statement, 2, times.seconds);
+    try sqlite.bindInt64(statement.statement, 3, times.milliseconds);
+    try sqlite.bindText(statement.statement, 4, thread_id);
+    return try finishStateUpdate(statement);
+}
+
 const StateUpdateStatement = struct {
     db: *sqlite.Db,
     statement: *sqlite.Statement,
@@ -457,4 +493,22 @@ fn finishStateUpdate(statement: StateUpdateStatement) !bool {
 fn stateRolloutPath(allocator: std.mem.Allocator, codex_home: []const u8, path: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     return std.fs.path.join(allocator, &.{ codex_home, path });
+}
+
+fn currentUnixSeconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_s));
+}
+
+const FileModifiedTimes = struct {
+    seconds: i64,
+    milliseconds: i64,
+};
+
+fn fileModifiedTimes(path: []const u8) !FileModifiedTimes {
+    const stat = try std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{ .follow_symlinks = true });
+    return .{
+        .seconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+        .milliseconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_ms)),
+    };
 }

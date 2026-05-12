@@ -16284,6 +16284,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
         };
         defer allocator.free(archived_path);
+        _ = thread_state.markThreadArchived(allocator, cfg.codex_home, thread_id, archived_path) catch {};
         _ = removeLoadedThread(allocator, state, thread_id);
         _ = removeThreadSubscription(allocator, state, thread_id);
         try queueThreadIdNotification(allocator, state, "thread/archived", thread_id);
@@ -16292,6 +16293,7 @@ fn handleThreadMethod(
             descendant_index -= 1;
             const descendant_id = archive_thread_ids.items[descendant_index];
             const descendant_archived_path = session_store.archiveRollout(allocator, cfg.codex_home, descendant_id) catch continue;
+            _ = thread_state.markThreadArchived(allocator, cfg.codex_home, descendant_id, descendant_archived_path) catch {};
             allocator.free(descendant_archived_path);
             _ = removeLoadedThread(allocator, state, descendant_id);
             _ = removeThreadSubscription(allocator, state, descendant_id);
@@ -16318,6 +16320,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed", err),
         };
         defer allocator.free(unarchived_path);
+        _ = thread_state.markThreadUnarchived(allocator, cfg.codex_home, thread_id, unarchived_path) catch {};
         var unarchived_thread = createStoredThreadFromPath(allocator, cfg, object, unarchived_path) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load thread", err);
         };
