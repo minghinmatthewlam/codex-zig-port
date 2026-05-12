@@ -4266,6 +4266,68 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-saved-rust-rollout",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["cli"],
+                        "cwd": "/",
+                        "searchTerm": "rust rollout",
+                        "limit": 1,
+                    },
+                },
+            )
+            saved_rust_list = read_json_line(proc, 5)
+            assert saved_rust_list["id"] == "thread-list-saved-rust-rollout"
+            saved_rust_threads = saved_rust_list["result"]["data"]
+            assert len(saved_rust_threads) == 1
+            saved_rust_thread = saved_rust_threads[0]
+            assert saved_rust_thread["id"] == rust_thread_id
+            assert saved_rust_thread["sessionId"] == rust_thread_id
+            assert saved_rust_thread["preview"] == "rust rollout hello"
+            assert saved_rust_thread["ephemeral"] is False
+            assert saved_rust_thread["modelProvider"] == "mock_provider"
+            assert saved_rust_thread["path"] == os.path.realpath(rust_rollout_path)
+            assert saved_rust_thread["cwd"] == "/"
+            assert saved_rust_thread["cliVersion"] == "0.0.0"
+            assert saved_rust_thread["source"] == "cli"
+            assert saved_rust_thread["threadSource"] == "user"
+            assert saved_rust_thread["gitInfo"] == {
+                "sha": "rollout-sha",
+                "branch": "rollout-branch",
+                "originUrl": "https://example.test/rollout.git",
+            }
+            assert saved_rust_thread["turns"] == []
+            assert saved_rust_list["result"]["nextCursor"] is None
+            assert saved_rust_list["result"]["backwardsCursor"] == rust_thread_id
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-saved-zig-rollout",
+                    "method": "thread/list",
+                    "params": {
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "saved hello",
+                    },
+                },
+            )
+            saved_zig_list = read_json_line(proc, 5)
+            assert saved_zig_list["id"] == "thread-list-saved-zig-rollout"
+            saved_zig_threads = saved_zig_list["result"]["data"]
+            assert [thread["id"] for thread in saved_zig_threads] == [resume_thread_id]
+            saved_zig_thread = saved_zig_threads[0]
+            assert saved_zig_thread["name"] == "Resume Smoke"
+            assert saved_zig_thread["preview"] == "saved hello"
+            assert saved_zig_thread["path"] == os.path.realpath(rollout_path)
+            assert saved_zig_thread["source"] == "cli"
+            assert saved_zig_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume",
                     "method": "thread/resume",
                     "params": {

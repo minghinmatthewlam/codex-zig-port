@@ -16278,7 +16278,11 @@ fn handleThreadMethod(
         if (validateThreadListParams(params_value)) |message| {
             return renderJsonRpcError(allocator, id_value, -32602, message);
         }
-        const result = try renderThreadListResult(allocator, state, params_value.?);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/list failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const result = try renderThreadListResult(allocator, state, cfg, params_value.?);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -17401,6 +17405,16 @@ fn findLoadedThread(state: *const AppServerState, thread_id: []const u8) ?*const
     return &state.loaded_threads.items[index];
 }
 
+fn findLoadedThreadForRolloutFile(state: *const AppServerState, file: session_store.RolloutFile) ?*const LoadedThread {
+    for (state.loaded_threads.items) |*thread| {
+        if (std.mem.eql(u8, thread.id, file.id)) return thread;
+        if (thread.path) |path| {
+            if (std.mem.eql(u8, path, file.path)) return thread;
+        }
+    }
+    return null;
+}
+
 fn findLoadedThreadIndex(state: *const AppServerState, thread_id: []const u8) ?usize {
     for (state.loaded_threads.items, 0..) |thread, index| {
         if (std.mem.eql(u8, thread.id, thread_id)) return index;
@@ -17473,28 +17487,167 @@ const ThreadListSortContext = struct {
     direction: ThreadListSortDirection,
 };
 
+const SavedThreadListItem = struct {
+    id: []const u8,
+    session_id: []const u8,
+    forked_from_id: ?[]const u8,
+    preview: []const u8,
+    model_provider: []const u8,
+    created_at: i64,
+    updated_at: i64,
+    path: []const u8,
+    cwd: []const u8,
+    cli_version: []const u8,
+    source: []const u8,
+    thread_source: ?[]const u8,
+    git_sha: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_origin_url: ?[]const u8,
+    name: ?[]const u8,
+
+    fn fromRolloutFile(
+        allocator: std.mem.Allocator,
+        file: session_store.RolloutFile,
+        fallback_model_provider: []const u8,
+    ) !SavedThreadListItem {
+        var summary = try session_store.loadThreadListSummary(allocator, file.path, file.id);
+        defer summary.deinit(allocator);
+
+        const id = try allocator.dupe(u8, summary.id);
+        errdefer allocator.free(id);
+        const session_id = try allocator.dupe(u8, id);
+        errdefer allocator.free(session_id);
+        const forked_from_id = if (summary.forked_from_id) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (forked_from_id) |value| allocator.free(value);
+        const preview = try allocator.dupe(u8, summary.preview);
+        errdefer allocator.free(preview);
+        const model_provider = try allocator.dupe(u8, summary.model_provider orelse fallback_model_provider);
+        errdefer allocator.free(model_provider);
+        const path = try allocator.dupe(u8, file.path);
+        errdefer allocator.free(path);
+        const cwd = try allocator.dupe(u8, summary.cwd orelse "");
+        errdefer allocator.free(cwd);
+        const cli_version = try allocator.dupe(u8, summary.cli_version orelse "0.0.1");
+        errdefer allocator.free(cli_version);
+        const source = try allocator.dupe(u8, summary.source orelse "cli");
+        errdefer allocator.free(source);
+        const thread_source = if (summary.thread_source) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (thread_source) |value| allocator.free(value);
+        const git_sha = if (summary.git_sha) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (git_sha) |value| allocator.free(value);
+        const git_branch = if (summary.git_branch) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (git_branch) |value| allocator.free(value);
+        const git_origin_url = if (summary.git_origin_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (git_origin_url) |value| allocator.free(value);
+        const name = if (summary.title) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (name) |value| allocator.free(value);
+
+        return .{
+            .id = id,
+            .session_id = session_id,
+            .forked_from_id = forked_from_id,
+            .preview = preview,
+            .model_provider = model_provider,
+            .created_at = file.modified_at_seconds,
+            .updated_at = file.modified_at_seconds,
+            .path = path,
+            .cwd = cwd,
+            .cli_version = cli_version,
+            .source = source,
+            .thread_source = thread_source,
+            .git_sha = git_sha,
+            .git_branch = git_branch,
+            .git_origin_url = git_origin_url,
+            .name = name,
+        };
+    }
+
+    fn deinit(self: *SavedThreadListItem, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        if (self.forked_from_id) |value| allocator.free(value);
+        allocator.free(self.preview);
+        allocator.free(self.model_provider);
+        allocator.free(self.path);
+        allocator.free(self.cwd);
+        allocator.free(self.cli_version);
+        allocator.free(self.source);
+        if (self.thread_source) |value| allocator.free(value);
+        if (self.git_sha) |value| allocator.free(value);
+        if (self.git_branch) |value| allocator.free(value);
+        if (self.git_origin_url) |value| allocator.free(value);
+        if (self.name) |value| allocator.free(value);
+    }
+};
+
+const ThreadListItem = union(enum) {
+    loaded: *const LoadedThread,
+    saved: SavedThreadListItem,
+
+    fn deinit(self: *ThreadListItem, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .loaded => {},
+            .saved => |*saved| saved.deinit(allocator),
+        }
+    }
+};
+
 fn renderThreadListResult(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
+    cfg: config.Config,
     params_value: std.json.Value,
 ) ![]const u8 {
     const params = params_value.object;
-    var threads = std.ArrayList(*const LoadedThread).empty;
-    defer threads.deinit(allocator);
+    var threads = std.ArrayList(ThreadListItem).empty;
+    defer {
+        for (threads.items) |*thread| thread.deinit(allocator);
+        threads.deinit(allocator);
+    }
 
-    for (state.loaded_threads.items) |*thread| {
-        if (threadMatchesThreadListParams(thread, params)) {
-            try threads.append(allocator, thread);
+    const state_db_only = optionalBoolParam(params, "useStateDbOnly") orelse false;
+    const archived = optionalBoolParam(params, "archived") orelse false;
+    if (!state_db_only) {
+        if (!archived) {
+            for (state.loaded_threads.items) |*thread| {
+                const item = ThreadListItem{ .loaded = thread };
+                if (threadListItemMatchesParams(item, params)) {
+                    try threads.append(allocator, item);
+                }
+            }
+        }
+
+        if (threadListShouldScanSavedRollouts(params)) {
+            const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+            defer if (fallback_model_provider) |value| allocator.free(value);
+            const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
+            defer session_store.freeRolloutFiles(allocator, rollout_files);
+            for (rollout_files) |file| {
+                if (!archived and findLoadedThreadForRolloutFile(state, file) != null) continue;
+                var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider orelse "openai") catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => continue,
+                };
+                var saved_moved = false;
+                errdefer if (!saved_moved) saved.deinit(allocator);
+                const item = ThreadListItem{ .saved = saved };
+                if (threadListItemMatchesParams(item, params)) {
+                    try threads.append(allocator, item);
+                    saved_moved = true;
+                } else {
+                    saved.deinit(allocator);
+                }
+            }
         }
     }
 
-    std.mem.sort(*const LoadedThread, threads.items, threadListSortContext(params), threadListLessThan);
+    std.mem.sort(ThreadListItem, threads.items, threadListSortContext(params), threadListLessThan);
 
     const cursor = optionalStringParam(params, "cursor");
     var start: usize = 0;
     if (cursor) |cursor_value| {
         for (threads.items, 0..) |thread, index| {
-            if (std.mem.eql(u8, thread.id, cursor_value)) {
+            if (std.mem.eql(u8, threadListItemId(thread), cursor_value)) {
                 start = index + 1;
                 break;
             }
@@ -17510,17 +17663,17 @@ fn renderThreadListResult(
     try result.appendSlice(allocator, "{\"data\":[");
     for (page, 0..) |thread, index| {
         if (index > 0) try result.appendSlice(allocator, ",");
-        try appendLoadedThreadJson(allocator, &result, thread, false);
+        try appendThreadListItemJson(allocator, &result, thread);
     }
     try result.appendSlice(allocator, "],\"nextCursor\":");
     if (capped_end < threads.items.len and page.len > 0) {
-        try appendJsonString(allocator, &result, page[page.len - 1].id);
+        try appendJsonString(allocator, &result, threadListItemId(page[page.len - 1]));
     } else {
         try result.appendSlice(allocator, "null");
     }
     try result.appendSlice(allocator, ",\"backwardsCursor\":");
     if (page.len > 0) {
-        try appendJsonString(allocator, &result, page[0].id);
+        try appendJsonString(allocator, &result, threadListItemId(page[0]));
     } else {
         try result.appendSlice(allocator, "null");
     }
@@ -17528,16 +17681,25 @@ fn renderThreadListResult(
     return result.toOwnedSlice(allocator);
 }
 
-fn threadMatchesThreadListParams(thread: *const LoadedThread, params: std.json.ObjectMap) bool {
+fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap) bool {
     if (optionalBoolParam(params, "useStateDbOnly") orelse false) return false;
-    if (optionalBoolParam(params, "archived") orelse false) return false;
-    if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), thread.model_provider)) return false;
-    if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), thread.source)) return false;
-    if (!threadListCwdMatches(params.get("cwd"), thread.cwd)) return false;
+    if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), threadListItemModelProvider(thread))) return false;
+    if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), threadListItemSource(thread))) return false;
+    if (!threadListCwdMatches(params.get("cwd"), threadListItemCwd(thread))) return false;
     if (optionalStringParam(params, "searchTerm")) |search| {
-        if (search.len > 0 and !threadMatchesSearchTerm(thread, search)) return false;
+        if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
     }
     return true;
+}
+
+fn threadListShouldScanSavedRollouts(params: std.json.ObjectMap) bool {
+    const source_kinds = params.get("sourceKinds") orelse return true;
+    if (source_kinds == .null) return true;
+    if (source_kinds.array.items.len == 0) return true;
+    for (source_kinds.array.items) |source| {
+        if (!std.mem.eql(u8, source.string, "appServer")) return true;
+    }
+    return false;
 }
 
 fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {
@@ -17561,11 +17723,11 @@ fn threadListCwdMatches(value: ?std.json.Value, cwd: []const u8) bool {
     return false;
 }
 
-fn threadMatchesSearchTerm(thread: *const LoadedThread, search: []const u8) bool {
-    if (thread.name) |name| {
+fn threadListItemMatchesSearchTerm(thread: ThreadListItem, search: []const u8) bool {
+    if (threadListItemName(thread)) |name| {
         if (std.mem.indexOf(u8, name, search) != null) return true;
     }
-    return std.mem.indexOf(u8, thread.preview, search) != null;
+    return std.mem.indexOf(u8, threadListItemPreview(thread), search) != null;
 }
 
 fn threadListSortContext(params: std.json.ObjectMap) ThreadListSortContext {
@@ -17577,19 +17739,75 @@ fn threadListSortContext(params: std.json.ObjectMap) ThreadListSortContext {
     };
 }
 
-fn threadListLessThan(context: ThreadListSortContext, lhs: *const LoadedThread, rhs: *const LoadedThread) bool {
+fn threadListLessThan(context: ThreadListSortContext, lhs: ThreadListItem, rhs: ThreadListItem) bool {
     const lhs_timestamp = switch (context.key) {
-        .created_at => lhs.created_at,
-        .updated_at => lhs.updated_at,
+        .created_at => threadListItemCreatedAt(lhs),
+        .updated_at => threadListItemUpdatedAt(lhs),
     };
     const rhs_timestamp = switch (context.key) {
-        .created_at => rhs.created_at,
-        .updated_at => rhs.updated_at,
+        .created_at => threadListItemCreatedAt(rhs),
+        .updated_at => threadListItemUpdatedAt(rhs),
     };
     if (lhs_timestamp != rhs_timestamp) {
         return if (context.direction == .asc) lhs_timestamp < rhs_timestamp else lhs_timestamp > rhs_timestamp;
     }
-    return stringLessThan({}, lhs.id, rhs.id);
+    return stringLessThan({}, threadListItemId(lhs), threadListItemId(rhs));
+}
+
+fn threadListItemId(thread: ThreadListItem) []const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.id,
+        .saved => |saved| saved.id,
+    };
+}
+
+fn threadListItemPreview(thread: ThreadListItem) []const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.preview,
+        .saved => |saved| saved.preview,
+    };
+}
+
+fn threadListItemModelProvider(thread: ThreadListItem) []const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.model_provider,
+        .saved => |saved| saved.model_provider,
+    };
+}
+
+fn threadListItemSource(thread: ThreadListItem) []const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.source,
+        .saved => |saved| saved.source,
+    };
+}
+
+fn threadListItemCwd(thread: ThreadListItem) []const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.cwd,
+        .saved => |saved| saved.cwd,
+    };
+}
+
+fn threadListItemName(thread: ThreadListItem) ?[]const u8 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.name,
+        .saved => |saved| saved.name,
+    };
+}
+
+fn threadListItemCreatedAt(thread: ThreadListItem) i64 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.created_at,
+        .saved => |saved| saved.created_at,
+    };
+}
+
+fn threadListItemUpdatedAt(thread: ThreadListItem) i64 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.updated_at,
+        .saved => |saved| saved.updated_at,
+    };
 }
 
 fn threadListLimit(params: std.json.ObjectMap) ?usize {
@@ -18082,7 +18300,64 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     try result.append(allocator, '}');
 }
 
+fn appendThreadListItemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: ThreadListItem) !void {
+    switch (thread) {
+        .loaded => |loaded| try appendLoadedThreadJson(allocator, result, loaded, false),
+        .saved => |saved| try appendSavedThreadListItemJson(allocator, result, saved),
+    }
+}
+
+fn appendSavedThreadListItemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: SavedThreadListItem) !void {
+    try result.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, result, thread.id);
+    try result.appendSlice(allocator, ",\"sessionId\":");
+    try appendJsonString(allocator, result, thread.session_id);
+    try result.appendSlice(allocator, ",\"forkedFromId\":");
+    try appendOptionalJsonString(allocator, result, thread.forked_from_id);
+    try result.appendSlice(allocator, ",\"preview\":");
+    try appendJsonString(allocator, result, thread.preview);
+    try result.appendSlice(allocator, ",\"ephemeral\":false,\"modelProvider\":");
+    try appendJsonString(allocator, result, thread.model_provider);
+    try result.appendSlice(allocator, ",\"createdAt\":");
+    const created_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.created_at});
+    defer allocator.free(created_at);
+    try result.appendSlice(allocator, created_at);
+    try result.appendSlice(allocator, ",\"updatedAt\":");
+    const updated_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.updated_at});
+    defer allocator.free(updated_at);
+    try result.appendSlice(allocator, updated_at);
+    try result.appendSlice(allocator, ",\"status\":{\"type\":\"idle\"},\"path\":");
+    try appendJsonString(allocator, result, thread.path);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, result, thread.cwd);
+    try result.appendSlice(allocator, ",\"cliVersion\":");
+    try appendJsonString(allocator, result, thread.cli_version);
+    try result.appendSlice(allocator, ",\"source\":");
+    try appendJsonString(allocator, result, thread.source);
+    try result.appendSlice(allocator, ",\"threadSource\":");
+    try appendOptionalJsonString(allocator, result, thread.thread_source);
+    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":");
+    try appendSavedThreadListGitInfoJson(allocator, result, thread);
+    try result.appendSlice(allocator, ",\"name\":");
+    try appendOptionalJsonString(allocator, result, thread.name);
+    try result.appendSlice(allocator, ",\"turns\":[]}");
+}
+
 fn appendLoadedThreadGitInfoJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    if (thread.git_sha == null and thread.git_branch == null and thread.git_origin_url == null) {
+        try result.appendSlice(allocator, "null");
+        return;
+    }
+    try result.appendSlice(allocator, "{\"sha\":");
+    try appendOptionalJsonString(allocator, result, thread.git_sha);
+    try result.appendSlice(allocator, ",\"branch\":");
+    try appendOptionalJsonString(allocator, result, thread.git_branch);
+    try result.appendSlice(allocator, ",\"originUrl\":");
+    try appendOptionalJsonString(allocator, result, thread.git_origin_url);
+    try result.append(allocator, '}');
+}
+
+fn appendSavedThreadListGitInfoJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: SavedThreadListItem) !void {
     if (thread.git_sha == null and thread.git_branch == null and thread.git_origin_url == null) {
         try result.appendSlice(allocator, "null");
         return;

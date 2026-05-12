@@ -37,6 +37,47 @@ pub const SessionSummary = struct {
     }
 };
 
+pub const RolloutFile = struct {
+    id: []const u8,
+    path: []const u8,
+    modified_at_seconds: i64,
+
+    pub fn deinit(self: RolloutFile, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.path);
+    }
+};
+
+pub const ThreadListSummary = struct {
+    id: []const u8,
+    forked_from_id: ?[]const u8,
+    preview: []const u8,
+    model_provider: ?[]const u8,
+    cwd: ?[]const u8,
+    cli_version: ?[]const u8,
+    source: ?[]const u8,
+    thread_source: ?[]const u8,
+    git_sha: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_origin_url: ?[]const u8,
+    title: ?[]const u8,
+
+    pub fn deinit(self: *ThreadListSummary, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.forked_from_id) |value| allocator.free(value);
+        allocator.free(self.preview);
+        if (self.model_provider) |value| allocator.free(value);
+        if (self.cwd) |value| allocator.free(value);
+        if (self.cli_version) |value| allocator.free(value);
+        if (self.source) |value| allocator.free(value);
+        if (self.thread_source) |value| allocator.free(value);
+        if (self.git_sha) |value| allocator.free(value);
+        if (self.git_branch) |value| allocator.free(value);
+        if (self.git_origin_url) |value| allocator.free(value);
+        if (self.title) |value| allocator.free(value);
+    }
+};
+
 pub fn createSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     try ensureSessionsDir(allocator, codex_home);
 
@@ -116,6 +157,78 @@ pub fn loadTranscript(allocator: std.mem.Allocator, path: []const u8) !session.T
     }
 
     return transcript;
+}
+
+pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fallback_id: []const u8) !ThreadListSummary {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+
+    var buffer: [64 * 1024]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    while (true) {
+        const line_raw = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+            error.StreamTooLong => break,
+            else => return err,
+        } orelse break;
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer parsed.deinit();
+
+        appendTranscriptLine(allocator, &transcript, parsed.value) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        if (transcriptFirstMessagePreview(&transcript) != null) break;
+    }
+
+    const id = if (transcript.id) |value| try allocator.dupe(u8, value) else try allocator.dupe(u8, fallback_id);
+    errdefer allocator.free(id);
+    const forked_from_id = if (transcript.forked_from_id) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (forked_from_id) |value| allocator.free(value);
+    const preview = try transcriptPreview(allocator, &transcript);
+    errdefer allocator.free(preview);
+    const model_provider = if (transcript.model_provider) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (model_provider) |value| allocator.free(value);
+    const cwd = if (transcript.cwd) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (cwd) |value| allocator.free(value);
+    const cli_version = if (transcript.cli_version) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (cli_version) |value| allocator.free(value);
+    const source = if (transcript.source) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (source) |value| allocator.free(value);
+    const thread_source = if (transcript.thread_source) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (thread_source) |value| allocator.free(value);
+    const git_sha = if (transcript.git_sha) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_sha) |value| allocator.free(value);
+    const git_branch = if (transcript.git_branch) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_branch) |value| allocator.free(value);
+    const git_origin_url = if (transcript.git_origin_url) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (git_origin_url) |value| allocator.free(value);
+    const title = if (transcript.title) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (title) |value| allocator.free(value);
+
+    return .{
+        .id = id,
+        .forked_from_id = forked_from_id,
+        .preview = preview,
+        .model_provider = model_provider,
+        .cwd = cwd,
+        .cli_version = cli_version,
+        .source = source,
+        .thread_source = thread_source,
+        .git_sha = git_sha,
+        .git_branch = git_branch,
+        .git_origin_url = git_origin_url,
+        .title = title,
+    };
 }
 
 fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Transcript, line: std.json.Value) !void {
@@ -243,6 +356,29 @@ fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn transcriptPreview(allocator: std.mem.Allocator, transcript: *const session.Transcript) ![]const u8 {
+    if (transcriptFirstUserMessagePreview(transcript)) |text| return allocator.dupe(u8, text);
+    if (transcriptFirstMessagePreview(transcript)) |text| return allocator.dupe(u8, text);
+    return allocator.dupe(u8, "");
+}
+
+fn transcriptFirstUserMessagePreview(transcript: *const session.Transcript) ?[]const u8 {
+    for (transcript.history.items) |item| {
+        if (item.kind != .message or item.text == null) continue;
+        if (item.role) |role| {
+            if (std.mem.eql(u8, role, "user")) return item.text.?;
+        }
+    }
+    return null;
+}
+
+fn transcriptFirstMessagePreview(transcript: *const session.Transcript) ?[]const u8 {
+    for (transcript.history.items) |item| {
+        if (item.kind == .message and item.text != null) return item.text.?;
+    }
+    return null;
 }
 
 fn applyRolloutEventMsg(transcript: *session.Transcript, payload: std.json.Value) void {
@@ -410,6 +546,33 @@ pub fn freeSessionSummaries(allocator: std.mem.Allocator, summaries: []SessionSu
     allocator.free(summaries);
 }
 
+pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8, archived: bool) ![]RolloutFile {
+    const root_name: []const u8 = if (archived) "archived_sessions" else "sessions";
+    const root = try std.fs.path.join(allocator, &.{ codex_home, root_name });
+    defer allocator.free(root);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return allocator.alloc(RolloutFile, 0),
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var files = std.ArrayList(RolloutFile).empty;
+    errdefer {
+        for (files.items) |file| file.deinit(allocator);
+        files.deinit(allocator);
+    }
+
+    try appendRolloutFilesInDir(allocator, io, root, "", &dir, 0, &files);
+    return files.toOwnedSlice(allocator);
+}
+
+pub fn freeRolloutFiles(allocator: std.mem.Allocator, files: []RolloutFile) void {
+    for (files) |file| file.deinit(allocator);
+    allocator.free(files);
+}
+
 pub fn printSessionList(allocator: std.mem.Allocator, codex_home: []const u8, limit: usize) !void {
     const sessions = try listSessions(allocator, codex_home, limit);
     defer freeSessionSummaries(allocator, sessions);
@@ -556,6 +719,58 @@ fn findRolloutPathByThreadIdInDir(
     }
 
     return null;
+}
+
+fn appendRolloutFilesInDir(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    dir: *std.Io.Dir,
+    depth: usize,
+    files: *std.ArrayList(RolloutFile),
+) !void {
+    if (depth > 8) return;
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+
+        const relative_path = try relativeChildPath(allocator, relative_dir, entry.name);
+        defer allocator.free(relative_path);
+
+        const full_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(full_path);
+
+        const stat = std.Io.Dir.cwd().statFile(io, full_path, .{ .follow_symlinks = true }) catch continue;
+        if (stat.kind == .file and isSessionFilename(entry.name)) {
+            const id = try sessionIdFromFilename(allocator, entry.name);
+            errdefer allocator.free(id);
+            const real_path_z = std.Io.Dir.cwd().realPathFileAlloc(io, full_path, allocator) catch |err| switch (err) {
+                error.FileNotFound => {
+                    allocator.free(id);
+                    continue;
+                },
+                else => return err,
+            };
+            defer allocator.free(real_path_z);
+            const real_path = try allocator.dupe(u8, real_path_z);
+            errdefer allocator.free(real_path);
+            try files.append(allocator, .{
+                .id = id,
+                .path = real_path,
+                .modified_at_seconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+            });
+            continue;
+        }
+
+        if (stat.kind != .directory) continue;
+        {
+            var child_dir = std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true }) catch continue;
+            defer child_dir.close(io);
+            try appendRolloutFilesInDir(allocator, io, root, relative_path, &child_dir, depth + 1, files);
+        }
+    }
 }
 
 fn relativeChildPath(allocator: std.mem.Allocator, relative_dir: []const u8, name: []const u8) ![]const u8 {
