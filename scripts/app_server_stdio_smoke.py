@@ -5720,6 +5720,98 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert (archived_spawn_root / spawn_child_rollout.name).exists()
             assert (archived_spawn_root / spawn_grandchild_rollout.name).exists()
 
+            conflict_parent_thread_id = "99999999-9999-4999-8999-999999999999"
+            conflict_child_thread_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            conflict_grandchild_thread_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            conflict_parent_rollout = (
+                sessions_dir / f"rollout-{conflict_parent_thread_id}.jsonl"
+            )
+            conflict_child_rollout = (
+                sessions_dir / f"rollout-{conflict_child_thread_id}.jsonl"
+            )
+            conflict_grandchild_rollout = (
+                sessions_dir / f"rollout-{conflict_grandchild_thread_id}.jsonl"
+            )
+            for thread_id, path, text in [
+                (conflict_parent_thread_id, conflict_parent_rollout, "conflict parent"),
+                (conflict_child_thread_id, conflict_child_rollout, "conflict child"),
+                (
+                    conflict_grandchild_thread_id,
+                    conflict_grandchild_rollout,
+                    "conflict grandchild",
+                ),
+            ]:
+                path.write_text(
+                    "\n".join(
+                        [
+                            json.dumps(
+                                {"type": "metadata", "id": thread_id},
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content_type": "input_text",
+                                    "text": text,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            seed_feedback_state_db(
+                codex_home,
+                [
+                    (conflict_parent_thread_id, conflict_parent_rollout),
+                    (conflict_child_thread_id, conflict_child_rollout),
+                    (conflict_grandchild_thread_id, conflict_grandchild_rollout),
+                ],
+                [
+                    (conflict_parent_thread_id, conflict_child_thread_id, "closed"),
+                    (conflict_child_thread_id, conflict_grandchild_thread_id, "open"),
+                ],
+            )
+            conflict_child_archived_path = (
+                archived_spawn_root / conflict_child_rollout.name
+            )
+            conflict_child_archived_path.mkdir(parents=True)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-archive-spawn-subtree-conflict",
+                    "method": "thread/archive",
+                    "params": {"threadId": conflict_parent_thread_id},
+                },
+            )
+            archived_conflict_subtree = read_json_line(proc, 5)
+            assert (
+                archived_conflict_subtree["id"]
+                == "thread-archive-spawn-subtree-conflict"
+            )
+            assert archived_conflict_subtree["result"] == {}
+            archived_conflict_notifications = [read_json_line(proc, 5) for _ in range(2)]
+            assert [
+                notification["params"]["threadId"]
+                for notification in archived_conflict_notifications
+            ] == [
+                conflict_parent_thread_id,
+                conflict_grandchild_thread_id,
+            ]
+            for notification in archived_conflict_notifications:
+                assert notification["jsonrpc"] == "2.0"
+                assert notification["method"] == "thread/archived"
+            assert not conflict_parent_rollout.exists()
+            assert conflict_child_rollout.exists()
+            assert not conflict_grandchild_rollout.exists()
+            assert (archived_spawn_root / conflict_parent_rollout.name).exists()
+            assert conflict_child_archived_path.is_dir()
+            assert (archived_spawn_root / conflict_grandchild_rollout.name).exists()
+
             write_json_line(
                 proc,
                 {
