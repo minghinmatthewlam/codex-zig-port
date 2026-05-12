@@ -6,6 +6,7 @@ pub const Statement = opaque {};
 pub const SQLITE_OK = 0;
 pub const SQLITE_ROW = 100;
 pub const SQLITE_DONE = 101;
+pub const SQLITE_NULL = 5;
 pub const SQLITE_OPEN_READONLY = 0x00000001;
 pub const SQLITE_OPEN_READWRITE = 0x00000002;
 
@@ -38,6 +39,7 @@ extern fn sqlite3_changes(db: *Db) c_int;
 extern fn sqlite3_column_int64(stmt: *Statement, column: c_int) i64;
 extern fn sqlite3_column_text(stmt: *Statement, column: c_int) ?[*]const u8;
 extern fn sqlite3_column_bytes(stmt: *Statement, column: c_int) c_int;
+extern fn sqlite3_column_type(stmt: *Statement, column: c_int) c_int;
 
 pub fn openReadOnly(allocator: std.mem.Allocator, path: []const u8) !*Db {
     return openWithFlags(allocator, path, SQLITE_OPEN_READONLY);
@@ -105,6 +107,11 @@ pub fn changes(db: *Db) c_int {
 }
 
 pub fn columnInt64(stmt: *Statement, column: c_int) i64 {
+    return sqlite3_column_int64(stmt, column);
+}
+
+pub fn columnNullableInt64(stmt: *Statement, column: c_int) ?i64 {
+    if (sqlite3_column_type(stmt, column) == SQLITE_NULL) return null;
     return sqlite3_column_int64(stmt, column);
 }
 

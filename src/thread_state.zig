@@ -18,6 +18,15 @@ const LIST_ROLLOUT_PATHS_WITH_METADATA_QUERY =
     \\ORDER BY id ASC
 ;
 
+const LIST_ROLLOUT_PATHS_WITH_LIFECYCLE_METADATA_QUERY =
+    \\SELECT id, rollout_path, title, memory_mode, git_sha, git_branch, git_origin_url,
+    \\       created_at_ms, updated_at_ms, source, thread_source, agent_nickname, agent_role,
+    \\       archived
+    \\FROM threads
+    \\WHERE rollout_path IS NOT NULL AND rollout_path != ''
+    \\ORDER BY id ASC
+;
+
 const ROLLOUT_PATH_QUERY =
     \\SELECT rollout_path
     \\FROM threads
@@ -26,6 +35,13 @@ const ROLLOUT_PATH_QUERY =
 
 const THREAD_METADATA_QUERY =
     \\SELECT title, memory_mode, git_sha, git_branch, git_origin_url
+    \\FROM threads
+    \\WHERE id = ?
+;
+
+const THREAD_LIFECYCLE_METADATA_QUERY =
+    \\SELECT title, memory_mode, git_sha, git_branch, git_origin_url,
+    \\       created_at_ms, updated_at_ms, source, thread_source, agent_nickname, agent_role
     \\FROM threads
     \\WHERE id = ?
 ;
@@ -49,8 +65,15 @@ const UPDATE_GIT_INFO_QUERY =
 ;
 
 pub const ThreadMetadata = struct {
+    lifecycle_loaded: bool = false,
     title: ?[]const u8,
     memory_mode: ?[]const u8,
+    created_at_ms: ?i64 = null,
+    updated_at_ms: ?i64 = null,
+    source: ?[]const u8 = null,
+    thread_source: ?[]const u8 = null,
+    agent_nickname: ?[]const u8 = null,
+    agent_role: ?[]const u8 = null,
     git_sha: ?[]const u8,
     git_branch: ?[]const u8,
     git_origin_url: ?[]const u8,
@@ -58,10 +81,20 @@ pub const ThreadMetadata = struct {
     pub fn deinit(self: ThreadMetadata, allocator: std.mem.Allocator) void {
         if (self.title) |value| allocator.free(value);
         if (self.memory_mode) |value| allocator.free(value);
+        if (self.source) |value| allocator.free(value);
+        if (self.thread_source) |value| allocator.free(value);
+        if (self.agent_nickname) |value| allocator.free(value);
+        if (self.agent_role) |value| allocator.free(value);
         if (self.git_sha) |value| allocator.free(value);
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
     }
+};
+
+const StateListQueryKind = enum {
+    basic,
+    metadata,
+    lifecycle,
 };
 
 pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![]session_store.RolloutFile {
@@ -72,16 +105,22 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
     const db = try sqlite.openReadOnly(allocator, state_path);
     defer sqlite.close(db);
 
-    var has_metadata_columns = true;
-    const statement = sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_WITH_METADATA_QUERY) catch |metadata_err| switch (metadata_err) {
+    var query_kind: StateListQueryKind = .lifecycle;
+    const statement = sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_WITH_LIFECYCLE_METADATA_QUERY) catch |lifecycle_err| switch (lifecycle_err) {
         error.SqlitePrepareFailed => blk: {
-            has_metadata_columns = false;
-            break :blk sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_QUERY) catch |fallback_err| switch (fallback_err) {
-                error.SqlitePrepareFailed => return allocator.alloc(session_store.RolloutFile, 0),
-                else => return fallback_err,
+            query_kind = .metadata;
+            break :blk sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_WITH_METADATA_QUERY) catch |metadata_err| switch (metadata_err) {
+                error.SqlitePrepareFailed => metadata_blk: {
+                    query_kind = .basic;
+                    break :metadata_blk sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_QUERY) catch |fallback_err| switch (fallback_err) {
+                        error.SqlitePrepareFailed => return allocator.alloc(session_store.RolloutFile, 0),
+                        else => return fallback_err,
+                    };
+                },
+                else => return metadata_err,
             };
         },
-        else => return metadata_err,
+        else => return lifecycle_err,
     };
     defer sqlite.finalize(statement);
 
@@ -121,6 +160,8 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
                 defer allocator.free(real_path_z);
                 const real_path = try allocator.dupe(u8, real_path_z);
                 errdefer allocator.free(real_path);
+                const has_metadata_columns = query_kind != .basic;
+                const has_lifecycle_columns = query_kind == .lifecycle;
                 const title = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 2) else null;
                 errdefer if (title) |value| allocator.free(value);
                 const memory_mode = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 3) else null;
@@ -131,14 +172,33 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
                 errdefer if (git_branch) |value| allocator.free(value);
                 const git_origin_url = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 6) else null;
                 errdefer if (git_origin_url) |value| allocator.free(value);
+                const created_at_ms = if (has_lifecycle_columns) sqlite.columnNullableInt64(statement, 7) else null;
+                const updated_at_ms = if (has_lifecycle_columns) sqlite.columnNullableInt64(statement, 8) else null;
+                const source = if (has_lifecycle_columns) try sqlite.columnNullableTextOwned(allocator, statement, 9) else null;
+                errdefer if (source) |value| allocator.free(value);
+                const thread_source = if (has_lifecycle_columns) try sqlite.columnNullableTextOwned(allocator, statement, 10) else null;
+                errdefer if (thread_source) |value| allocator.free(value);
+                const agent_nickname = if (has_lifecycle_columns) try sqlite.columnNullableTextOwned(allocator, statement, 11) else null;
+                errdefer if (agent_nickname) |value| allocator.free(value);
+                const agent_role = if (has_lifecycle_columns) try sqlite.columnNullableTextOwned(allocator, statement, 12) else null;
+                errdefer if (agent_role) |value| allocator.free(value);
+                const archived = has_lifecycle_columns and sqlite.columnInt64(statement, 13) != 0;
 
                 try files.append(allocator, .{
                     .id = id,
                     .path = real_path,
                     .modified_at_seconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+                    .archived = archived,
                     .state_metadata_loaded = has_metadata_columns,
+                    .state_lifecycle_loaded = has_lifecycle_columns,
+                    .created_at_ms = created_at_ms,
+                    .updated_at_ms = updated_at_ms,
                     .title = title,
                     .memory_mode = memory_mode,
+                    .source = source,
+                    .thread_source = thread_source,
+                    .agent_nickname = agent_nickname,
+                    .agent_role = agent_role,
                     .git_sha = git_sha,
                     .git_branch = git_branch,
                     .git_origin_url = git_origin_url,
@@ -186,9 +246,16 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
     const db = try sqlite.openReadOnly(allocator, state_path);
     defer sqlite.close(db);
 
-    const statement = sqlite.prepare(allocator, db, THREAD_METADATA_QUERY) catch |err| switch (err) {
-        error.SqlitePrepareFailed => return null,
-        else => return err,
+    var lifecycle_loaded = true;
+    const statement = sqlite.prepare(allocator, db, THREAD_LIFECYCLE_METADATA_QUERY) catch |lifecycle_err| switch (lifecycle_err) {
+        error.SqlitePrepareFailed => blk: {
+            lifecycle_loaded = false;
+            break :blk sqlite.prepare(allocator, db, THREAD_METADATA_QUERY) catch |metadata_err| switch (metadata_err) {
+                error.SqlitePrepareFailed => return null,
+                else => return metadata_err,
+            };
+        },
+        else => return lifecycle_err,
     };
     defer sqlite.finalize(statement);
     try sqlite.bindText(statement, 1, thread_id);
@@ -205,9 +272,26 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
             errdefer if (git_branch) |value| allocator.free(value);
             const git_origin_url = try sqlite.columnNullableTextOwned(allocator, statement, 4);
             errdefer if (git_origin_url) |value| allocator.free(value);
+            const created_at_ms = if (lifecycle_loaded) sqlite.columnNullableInt64(statement, 5) else null;
+            const updated_at_ms = if (lifecycle_loaded) sqlite.columnNullableInt64(statement, 6) else null;
+            const source = if (lifecycle_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 7) else null;
+            errdefer if (source) |value| allocator.free(value);
+            const thread_source = if (lifecycle_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 8) else null;
+            errdefer if (thread_source) |value| allocator.free(value);
+            const agent_nickname = if (lifecycle_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 9) else null;
+            errdefer if (agent_nickname) |value| allocator.free(value);
+            const agent_role = if (lifecycle_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 10) else null;
+            errdefer if (agent_role) |value| allocator.free(value);
             return ThreadMetadata{
+                .lifecycle_loaded = lifecycle_loaded,
                 .title = title,
                 .memory_mode = memory_mode,
+                .created_at_ms = created_at_ms,
+                .updated_at_ms = updated_at_ms,
+                .source = source,
+                .thread_source = thread_source,
+                .agent_nickname = agent_nickname,
+                .agent_role = agent_role,
                 .git_sha = git_sha,
                 .git_branch = git_branch,
                 .git_origin_url = git_origin_url,

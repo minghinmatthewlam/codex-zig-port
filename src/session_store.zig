@@ -43,9 +43,17 @@ pub const RolloutFile = struct {
     id: []const u8,
     path: []const u8,
     modified_at_seconds: i64,
+    archived: bool = false,
     state_metadata_loaded: bool = false,
+    state_lifecycle_loaded: bool = false,
+    created_at_ms: ?i64 = null,
+    updated_at_ms: ?i64 = null,
     title: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    thread_source: ?[]const u8 = null,
+    agent_nickname: ?[]const u8 = null,
+    agent_role: ?[]const u8 = null,
     git_sha: ?[]const u8 = null,
     git_branch: ?[]const u8 = null,
     git_origin_url: ?[]const u8 = null,
@@ -55,6 +63,10 @@ pub const RolloutFile = struct {
         allocator.free(self.path);
         if (self.title) |value| allocator.free(value);
         if (self.memory_mode) |value| allocator.free(value);
+        if (self.source) |value| allocator.free(value);
+        if (self.thread_source) |value| allocator.free(value);
+        if (self.agent_nickname) |value| allocator.free(value);
+        if (self.agent_role) |value| allocator.free(value);
         if (self.git_sha) |value| allocator.free(value);
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
@@ -812,7 +824,7 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8, ar
         files.deinit(allocator);
     }
 
-    try appendRolloutFilesInDir(allocator, io, root, "", &dir, 0, &files);
+    try appendRolloutFilesInDir(allocator, io, root, archived, "", &dir, 0, &files);
     return files.toOwnedSlice(allocator);
 }
 
@@ -1012,6 +1024,7 @@ fn appendRolloutFilesInDir(
     allocator: std.mem.Allocator,
     io: std.Io,
     root: []const u8,
+    archived: bool,
     relative_dir: []const u8,
     dir: *std.Io.Dir,
     depth: usize,
@@ -1047,6 +1060,7 @@ fn appendRolloutFilesInDir(
                 .id = id,
                 .path = real_path,
                 .modified_at_seconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+                .archived = archived,
             });
             continue;
         }
@@ -1055,7 +1069,7 @@ fn appendRolloutFilesInDir(
         {
             var child_dir = std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true }) catch continue;
             defer child_dir.close(io);
-            try appendRolloutFilesInDir(allocator, io, root, relative_path, &child_dir, depth + 1, files);
+            try appendRolloutFilesInDir(allocator, io, root, archived, relative_path, &child_dir, depth + 1, files);
         }
     }
 }
