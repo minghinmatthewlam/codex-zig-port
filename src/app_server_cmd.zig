@@ -24461,6 +24461,10 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
             importExternalAgentSkills(allocator, codex_home, item.cwd) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import skills", err);
             };
+        } else if (std.mem.eql(u8, item.item_type, "COMMANDS")) {
+            importExternalAgentCommands(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import commands", err);
+            };
         }
     }
 
@@ -24506,6 +24510,17 @@ fn importExternalAgentSkills(allocator: std.mem.Allocator, codex_home: []const u
     return importExternalAgentHomeSkills(allocator, codex_home);
 }
 
+fn importExternalAgentCommands(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectCommands(allocator, repo_root);
+        }
+    }
+    return importExternalAgentHomeCommands(allocator, codex_home);
+}
+
 fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
     return std.mem.eql(u8, value, "AGENTS_MD") or
         std.mem.eql(u8, value, "CONFIG") or
@@ -24521,12 +24536,12 @@ fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
 fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
     const item_type = item.get("itemType") orelse return false;
     if (item_type != .string) return false;
-    if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD") and !std.mem.eql(u8, item_type.string, "SKILLS")) return false;
+    if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD") and !std.mem.eql(u8, item_type.string, "SKILLS") and !std.mem.eql(u8, item_type.string, "COMMANDS")) return false;
     if (item.get("cwd")) |cwd| {
         if (cwd != .null and cwd != .string) return false;
     }
     if (item.get("details")) |details| {
-        if (details != .null) return false;
+        if (details != .null and details != .object) return false;
     }
     return true;
 }
@@ -24550,15 +24565,6 @@ fn renderExternalAgentConfigDetectResponse(
         defer allocator.free(description);
         try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "CONFIG", description, null);
     }
-    if (include_home and try externalAgentHomeAgentsMdNeedsMigration(allocator, codex_home)) {
-        const source_agents_md = try externalAgentHomeAgentsMdPath(allocator);
-        defer allocator.free(source_agents_md);
-        const target_agents_md = try externalAgentTargetAgentsMdPath(allocator, codex_home);
-        defer allocator.free(target_agents_md);
-        const description = try std.fmt.allocPrint(allocator, "Migrate {s} to {s}", .{ source_agents_md, target_agents_md });
-        defer allocator.free(description);
-        try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, null);
-    }
     if (include_home and try externalAgentHomeSkillsNeedsMigration(allocator, codex_home)) {
         const source_skills = try externalAgentHomeSkillsPath(allocator);
         defer allocator.free(source_skills);
@@ -24567,6 +24573,28 @@ fn renderExternalAgentConfigDetectResponse(
         const description = try std.fmt.allocPrint(allocator, "Migrate skills from {s} to {s}", .{ source_skills, target_skills });
         defer allocator.free(description);
         try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "SKILLS", description, null);
+    }
+    if (include_home) {
+        const source_commands = try externalAgentHomeCommandsPath(allocator);
+        defer allocator.free(source_commands);
+        const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
+        defer allocator.free(target_skills);
+        var command_names = try missingExternalAgentCommandNames(allocator, source_commands, target_skills);
+        defer deinitExternalAgentCommandNames(allocator, &command_names);
+        if (command_names.items.len > 0) {
+            const description = try std.fmt.allocPrint(allocator, "Migrate commands from {s} to {s}", .{ source_commands, target_skills });
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItemWithCommandDetails(allocator, &result, &first, "COMMANDS", description, null, command_names.items);
+        }
+    }
+    if (include_home and try externalAgentHomeAgentsMdNeedsMigration(allocator, codex_home)) {
+        const source_agents_md = try externalAgentHomeAgentsMdPath(allocator);
+        defer allocator.free(source_agents_md);
+        const target_agents_md = try externalAgentTargetAgentsMdPath(allocator, codex_home);
+        defer allocator.free(target_agents_md);
+        const description = try std.fmt.allocPrint(allocator, "Migrate {s} to {s}", .{ source_agents_md, target_agents_md });
+        defer allocator.free(description);
+        try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, null);
     }
 
     for (cwds) |cwd| {
@@ -24590,6 +24618,19 @@ fn renderExternalAgentConfigDetectResponse(
             const description = try std.fmt.allocPrint(allocator, "Migrate skills from {s} to {s}", .{ source_skills, target_skills });
             defer allocator.free(description);
             try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "SKILLS", description, repo_root);
+        }
+        {
+            const source_commands = try externalAgentProjectCommandsPath(allocator, repo_root);
+            defer allocator.free(source_commands);
+            const target_skills = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+            defer allocator.free(target_skills);
+            var command_names = try missingExternalAgentCommandNames(allocator, source_commands, target_skills);
+            defer deinitExternalAgentCommandNames(allocator, &command_names);
+            if (command_names.items.len > 0) {
+                const description = try std.fmt.allocPrint(allocator, "Migrate commands from {s} to {s}", .{ source_commands, target_skills });
+                defer allocator.free(description);
+                try appendExternalAgentConfigMigrationItemWithCommandDetails(allocator, &result, &first, "COMMANDS", description, repo_root, command_names.items);
+            }
         }
         if (try externalAgentProjectAgentsMdNeedsMigration(allocator, repo_root)) {
             const source_agents_md = (try externalAgentProjectAgentsMdSourcePath(allocator, repo_root)).?;
@@ -24625,6 +24666,37 @@ fn appendExternalAgentConfigMigrationItem(
         try result.appendSlice(allocator, "null");
     }
     try result.appendSlice(allocator, ",\"details\":null}");
+    first.* = false;
+}
+
+fn appendExternalAgentConfigMigrationItemWithCommandDetails(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    item_type: []const u8,
+    description: []const u8,
+    cwd: ?[]const u8,
+    command_names: []const []const u8,
+) !void {
+    if (!first.*) try result.appendSlice(allocator, ",");
+    try result.appendSlice(allocator, "{\"itemType\":");
+    try appendJsonString(allocator, result, item_type);
+    try result.appendSlice(allocator, ",\"description\":");
+    try appendJsonString(allocator, result, description);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    if (cwd) |cwd_value| {
+        try appendJsonString(allocator, result, cwd_value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"details\":{\"plugins\":[],\"sessions\":[],\"mcpServers\":[],\"hooks\":[],\"subagents\":[],\"commands\":[");
+    for (command_names, 0..) |name, index| {
+        if (index != 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"name\":");
+        try appendJsonString(allocator, result, name);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "]}}");
     first.* = false;
 }
 
@@ -24785,6 +24857,22 @@ fn importExternalAgentProjectSkills(allocator: std.mem.Allocator, repo_root: []c
     return importExternalAgentSkillsAt(allocator, source_skills, target_skills);
 }
 
+fn importExternalAgentHomeCommands(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const source_commands = try externalAgentHomeCommandsPath(allocator);
+    defer allocator.free(source_commands);
+    const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
+    defer allocator.free(target_skills);
+    return importExternalAgentCommandsAt(allocator, source_commands, target_skills);
+}
+
+fn importExternalAgentProjectCommands(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    const source_commands = try externalAgentProjectCommandsPath(allocator, repo_root);
+    defer allocator.free(source_commands);
+    const target_skills = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+    defer allocator.free(target_skills);
+    return importExternalAgentCommandsAt(allocator, source_commands, target_skills);
+}
+
 fn importExternalAgentSkillsAt(allocator: std.mem.Allocator, source_skills: []const u8, target_skills: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var source_dir = std.Io.Dir.openDirAbsolute(io, source_skills, .{ .iterate = true }) catch |err| switch (err) {
@@ -24826,6 +24914,316 @@ fn externalAgentSkillsHaveMissingSubdirectories(allocator: std.mem.Allocator, so
         if (!try dirExists(io, target_path)) return true;
     }
     return false;
+}
+
+const ExternalAgentCommandSource = struct {
+    source_path: []const u8,
+    name: []const u8,
+
+    fn deinit(self: ExternalAgentCommandSource, allocator: std.mem.Allocator) void {
+        allocator.free(self.source_path);
+        allocator.free(self.name);
+    }
+};
+
+fn deinitExternalAgentCommandSources(allocator: std.mem.Allocator, sources: *std.ArrayList(ExternalAgentCommandSource)) void {
+    for (sources.items) |source| source.deinit(allocator);
+    sources.deinit(allocator);
+}
+
+fn deinitExternalAgentCommandNames(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8)) void {
+    for (names.items) |name| allocator.free(name);
+    names.deinit(allocator);
+}
+
+fn missingExternalAgentCommandNames(allocator: std.mem.Allocator, source_commands: []const u8, target_skills: []const u8) !std.ArrayList([]const u8) {
+    var sources = try uniqueSupportedExternalAgentCommandSources(allocator, source_commands);
+    defer deinitExternalAgentCommandSources(allocator, &sources);
+
+    var names = std.ArrayList([]const u8).empty;
+    errdefer deinitExternalAgentCommandNames(allocator, &names);
+    for (sources.items) |source| {
+        const target = try std.fs.path.join(allocator, &.{ target_skills, source.name });
+        defer allocator.free(target);
+        if (try externalAgentPathExists(allocator, target)) continue;
+        try names.append(allocator, try allocator.dupe(u8, source.name));
+    }
+    return names;
+}
+
+fn importExternalAgentCommandsAt(allocator: std.mem.Allocator, source_commands: []const u8, target_skills: []const u8) !void {
+    var sources = try uniqueSupportedExternalAgentCommandSources(allocator, source_commands);
+    defer deinitExternalAgentCommandSources(allocator, &sources);
+    if (sources.items.len == 0) return;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, target_skills);
+    for (sources.items) |source| {
+        const target_dir = try std.fs.path.join(allocator, &.{ target_skills, source.name });
+        defer allocator.free(target_dir);
+        if (try externalAgentPathExists(allocator, target_dir)) continue;
+
+        const bytes = try readTextFile(allocator, source.source_path);
+        defer allocator.free(bytes);
+        const document = parseExternalAgentCommandDocument(bytes);
+        const description = document.description orelse continue;
+        const source_name = try externalAgentCommandSourceName(allocator, source_commands, source.source_path);
+        defer allocator.free(source_name);
+        const rendered = try renderExternalAgentCommandSkill(allocator, document.body, source.name, description, source_name);
+        defer allocator.free(rendered);
+        const target_file = try std.fs.path.join(allocator, &.{ target_dir, "SKILL.md" });
+        defer allocator.free(target_file);
+        try writeTextFile(target_file, rendered);
+    }
+}
+
+fn uniqueSupportedExternalAgentCommandSources(allocator: std.mem.Allocator, source_commands: []const u8) !std.ArrayList(ExternalAgentCommandSource) {
+    var files = std.ArrayList([]const u8).empty;
+    defer {
+        for (files.items) |file| allocator.free(file);
+        files.deinit(allocator);
+    }
+    try collectExternalAgentCommandMarkdownFiles(allocator, source_commands, &files);
+    std.mem.sort([]const u8, files.items, {}, stringLessThan);
+
+    var candidates = std.ArrayList(ExternalAgentCommandSource).empty;
+    errdefer deinitExternalAgentCommandSources(allocator, &candidates);
+    for (files.items) |file| {
+        const name = try externalAgentCommandSkillNameIfSupported(allocator, source_commands, file) orelse continue;
+        errdefer allocator.free(name);
+        const source_path = try allocator.dupe(u8, file);
+        errdefer allocator.free(source_path);
+        try candidates.append(allocator, .{
+            .source_path = source_path,
+            .name = name,
+        });
+    }
+
+    var unique = std.ArrayList(ExternalAgentCommandSource).empty;
+    errdefer deinitExternalAgentCommandSources(allocator, &unique);
+    for (candidates.items, 0..) |candidate, index| {
+        var duplicate = false;
+        for (candidates.items, 0..) |other, other_index| {
+            if (index != other_index and std.mem.eql(u8, candidate.name, other.name)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            const source_path = try allocator.dupe(u8, candidate.source_path);
+            errdefer allocator.free(source_path);
+            const name = try allocator.dupe(u8, candidate.name);
+            errdefer allocator.free(name);
+            try unique.append(allocator, .{
+                .source_path = source_path,
+                .name = name,
+            });
+        }
+    }
+    deinitExternalAgentCommandSources(allocator, &candidates);
+    return unique;
+}
+
+fn collectExternalAgentCommandMarkdownFiles(allocator: std.mem.Allocator, dir_path: []const u8, files: *std.ArrayList([]const u8)) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.NotDir => return,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        if (entry.kind == .directory) {
+            defer allocator.free(path);
+            try collectExternalAgentCommandMarkdownFiles(allocator, path, files);
+        } else if (entry.kind == .file and std.mem.eql(u8, std.fs.path.extension(entry.name), ".md")) {
+            errdefer allocator.free(path);
+            try files.append(allocator, path);
+        } else {
+            allocator.free(path);
+        }
+    }
+}
+
+const ExternalAgentCommandDocument = struct {
+    description: ?[]const u8,
+    body: []const u8,
+};
+
+fn externalAgentCommandSkillNameIfSupported(allocator: std.mem.Allocator, source_commands: []const u8, source_file: []const u8) !?[]const u8 {
+    if (std.mem.eql(u8, std.fs.path.stem(source_file), "README")) return null;
+    const bytes = try readTextFile(allocator, source_file);
+    defer allocator.free(bytes);
+    const document = parseExternalAgentCommandDocument(bytes);
+    const description = document.description orelse return null;
+    if (std.mem.trim(u8, description, " \t\r\n").len == 0) return null;
+    const description_len = std.unicode.utf8CountCodepoints(description) catch description.len;
+    if (description_len > 1024) return null;
+    if (hasUnsupportedExternalAgentCommandTemplateFeatures(document.body)) return null;
+
+    const source_name = try externalAgentCommandSourceName(allocator, source_commands, source_file);
+    defer allocator.free(source_name);
+    const skill_name = try externalAgentCommandSkillName(allocator, source_name);
+    errdefer allocator.free(skill_name);
+    const skill_name_len = std.unicode.utf8CountCodepoints(skill_name) catch skill_name.len;
+    if (skill_name_len > 64) {
+        allocator.free(skill_name);
+        return null;
+    }
+    return skill_name;
+}
+
+fn parseExternalAgentCommandDocument(bytes: []const u8) ExternalAgentCommandDocument {
+    var description: ?[]const u8 = null;
+    var body = bytes;
+    var found_end = false;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const first = lines.next() orelse return .{ .description = null, .body = bytes };
+    if (!std.mem.eql(u8, std.mem.trim(u8, first, " \t\r"), "---")) {
+        return .{ .description = null, .body = bytes };
+    }
+
+    var cursor: usize = first.len;
+    if (cursor < bytes.len and bytes[cursor] == '\n') cursor += 1;
+    while (lines.next()) |raw_line| {
+        cursor += raw_line.len;
+        if (cursor < bytes.len and bytes[cursor] == '\n') cursor += 1;
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (std.mem.eql(u8, line, "---")) {
+            body = bytes[cursor..];
+            found_end = true;
+            break;
+        }
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        if (std.mem.eql(u8, key, "description")) {
+            description = trimExternalAgentFrontmatterValue(line[colon + 1 ..]);
+        }
+    }
+    if (!found_end) return .{ .description = null, .body = bytes };
+    return .{ .description = description, .body = body };
+}
+
+fn trimExternalAgentFrontmatterValue(raw: []const u8) []const u8 {
+    var value = std.mem.trim(u8, raw, " \t\r");
+    if (value.len >= 2 and value[0] == value[value.len - 1] and (value[0] == '"' or value[0] == '\'')) {
+        value = value[1 .. value.len - 1];
+    }
+    return value;
+}
+
+fn externalAgentCommandSourceName(allocator: std.mem.Allocator, source_commands: []const u8, source_file: []const u8) ![]const u8 {
+    var relative = source_file;
+    if (std.mem.startsWith(u8, source_file, source_commands)) {
+        relative = source_file[source_commands.len..];
+        while (relative.len > 0 and (relative[0] == '/' or relative[0] == std.fs.path.sep)) {
+            relative = relative[1..];
+        }
+    }
+    const extension = std.fs.path.extension(relative);
+    const without_extension = if (extension.len > 0) relative[0 .. relative.len - extension.len] else relative;
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    var parts = std.mem.splitScalar(u8, without_extension, std.fs.path.sep);
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        if (result.items.len != 0) try result.append(allocator, '-');
+        try result.appendSlice(allocator, part);
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn externalAgentCommandSkillName(allocator: std.mem.Allocator, source_name: []const u8) ![]const u8 {
+    const raw = try std.fmt.allocPrint(allocator, "source-command-{s}", .{source_name});
+    defer allocator.free(raw);
+    return slugifyExternalAgentName(allocator, raw);
+}
+
+fn slugifyExternalAgentName(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var slug = std.ArrayList(u8).empty;
+    defer slug.deinit(allocator);
+    var last_was_dash = false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) {
+            try slug.append(allocator, std.ascii.toLower(byte));
+            last_was_dash = false;
+        } else if (!last_was_dash) {
+            try slug.append(allocator, '-');
+            last_was_dash = true;
+        }
+    }
+    const trimmed = std.mem.trim(u8, slug.items, "-");
+    if (trimmed.len == 0) return allocator.dupe(u8, "migrated");
+    return allocator.dupe(u8, trimmed);
+}
+
+fn hasUnsupportedExternalAgentCommandTemplateFeatures(template: []const u8) bool {
+    if (std.mem.indexOf(u8, template, "$ARGUMENTS") != null) return true;
+    if (std.mem.indexOf(u8, template, "{{") != null and std.mem.indexOf(u8, template, "}}") != null) return true;
+    if (std.mem.indexOf(u8, template, "!`") != null) return true;
+    if (std.mem.indexOf(u8, template, "! `") != null) return true;
+    if (containsExternalAgentNumberedArgumentPlaceholder(template)) return true;
+
+    var tokens = std.mem.tokenizeAny(u8, template, " \t\r\n");
+    while (tokens.next()) |token| {
+        if (token.len > 1 and token[0] == '@') return true;
+    }
+    return false;
+}
+
+fn containsExternalAgentNumberedArgumentPlaceholder(template: []const u8) bool {
+    if (template.len < 2) return false;
+    var index: usize = 0;
+    while (index + 1 < template.len) : (index += 1) {
+        if (template[index] == '$' and std.ascii.isDigit(template[index + 1])) return true;
+    }
+    return false;
+}
+
+fn renderExternalAgentCommandSkill(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    name: []const u8,
+    description: []const u8,
+    source_name: []const u8,
+) ![]const u8 {
+    const rewritten_description = try rewriteExternalAgentTerms(allocator, description);
+    defer allocator.free(rewritten_description);
+    const body_trimmed = std.mem.trim(u8, body, " \t\r\n");
+    const body_source = if (body_trimmed.len == 0) "No command template body was found." else body_trimmed;
+    const rewritten_body = try rewriteExternalAgentTerms(allocator, body_source);
+    defer allocator.free(rewritten_body);
+    const name_yaml = try externalAgentYamlString(allocator, name);
+    defer allocator.free(name_yaml);
+    const description_yaml = try externalAgentYamlString(allocator, rewritten_description);
+    defer allocator.free(description_yaml);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "---\nname: {s}\ndescription: {s}\n---\n\n# {s}\n\nUse this skill when the user asks to run the migrated source command `{s}`.\n\n## Command Template\n\n{s}\n",
+        .{ name_yaml, description_yaml, name, source_name, rewritten_body },
+    );
+}
+
+fn externalAgentYamlString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try output.appendSlice(allocator, "\\\""),
+            '\\' => try output.appendSlice(allocator, "\\\\"),
+            '\n' => try output.appendSlice(allocator, "\\n"),
+            '\r' => try output.appendSlice(allocator, "\\r"),
+            '\t' => try output.appendSlice(allocator, "\\t"),
+            else => try output.append(allocator, byte),
+        }
+    }
+    try output.append(allocator, '"');
+    return output.toOwnedSlice(allocator);
 }
 
 fn copyExternalAgentSkillDirRecursive(allocator: std.mem.Allocator, source_root: []const u8, target_root: []const u8) !void {
@@ -25045,6 +25443,16 @@ fn externalAgentProjectSkillsPath(allocator: std.mem.Allocator, repo_root: []con
     return std.fs.path.join(allocator, &.{ repo_root, ".claude", "skills" });
 }
 
+fn externalAgentHomeCommandsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    return std.fs.path.join(allocator, &.{ external_home, "commands" });
+}
+
+fn externalAgentProjectCommandsPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".claude", "commands" });
+}
+
 fn externalAgentTargetAgentsMdPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, "AGENTS.md" });
 }
@@ -25134,6 +25542,13 @@ fn isMissingOrEmptyTextFile(allocator: std.mem.Allocator, path: []const u8) !boo
     };
     defer allocator.free(bytes);
     return std.mem.trim(u8, bytes, " \t\r\n").len == 0;
+}
+
+fn externalAgentPathExists(allocator: std.mem.Allocator, path: []const u8) !bool {
+    return (statPathFollow(allocator, path) catch |err| switch (err) {
+        error.NotDir => return false,
+        else => return err,
+    }) != null;
 }
 
 fn readTextFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
