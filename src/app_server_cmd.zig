@@ -17819,7 +17819,11 @@ fn resumePreview(allocator: std.mem.Allocator, transcript: *const session_mod.Tr
 fn transcriptTokenUsageTurnId(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) !?[]const u8 {
     if (transcript.token_usage == null) return null;
     const turn_index = transcript.token_usage_turn_index orelse return null;
-    const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{turn_index});
+    const rendered_turn_index = if (transcriptHasExternalAgentImportedMarker(transcript))
+        groupedTurnIndexForMessageTurnIndex(transcript, turn_index) orelse turn_index
+    else
+        turn_index;
+    const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{rendered_turn_index});
     return turn_id;
 }
 
@@ -17829,6 +17833,7 @@ fn transcriptFromResponseHistory(allocator: std.mem.Allocator, history: []const 
 
 fn renderTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript, include_turns: bool) ![]const u8 {
     if (!include_turns) return allocator.dupe(u8, "[]");
+    if (transcriptHasExternalAgentImportedMarker(transcript)) return renderGroupedTranscriptTurnsJson(allocator, transcript);
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -17846,6 +17851,75 @@ fn renderTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const se
     }
     try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
+}
+
+fn renderGroupedTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+
+    var turn_index: usize = 0;
+    var turn_open = false;
+    var turn_item_count: usize = 0;
+    for (transcript.history.items, 0..) |item, item_index| {
+        if (item.kind != .message) continue;
+        if (turn_open and turn_item_count > 0 and historyItemIsUserMessage(item)) {
+            try out.appendSlice(allocator, "],\"itemsView\":\"full\",\"status\":\"completed\",\"error\":null,\"startedAt\":null,\"completedAt\":null,\"durationMs\":null}");
+            turn_open = false;
+            turn_item_count = 0;
+            turn_index += 1;
+        }
+
+        if (!turn_open) {
+            if (turn_index > 0) try out.append(allocator, ',');
+            try out.appendSlice(allocator, "{\"id\":\"turn-");
+            try appendUsize(allocator, &out, turn_index);
+            try out.appendSlice(allocator, "\",\"items\":[");
+            turn_open = true;
+        } else if (turn_item_count > 0) {
+            try out.append(allocator, ',');
+        }
+
+        try appendHistoryMessageThreadItemJson(allocator, &out, item, item_index);
+        turn_item_count += 1;
+    }
+
+    if (turn_open) {
+        try out.appendSlice(allocator, "],\"itemsView\":\"full\",\"status\":\"completed\",\"error\":null,\"startedAt\":null,\"completedAt\":null,\"durationMs\":null}");
+    }
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
+fn transcriptHasExternalAgentImportedMarker(transcript: *const session_mod.Transcript) bool {
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        if (item.text) |text| {
+            if (std.mem.eql(u8, text, session_store.external_agent_session_imported_marker)) return true;
+        }
+    }
+    return false;
+}
+
+fn historyItemIsUserMessage(item: api.HistoryItem) bool {
+    if (item.role) |role| return std.mem.eql(u8, role, "user");
+    return false;
+}
+
+fn groupedTurnIndexForMessageTurnIndex(transcript: *const session_mod.Transcript, target_message_turn_index: usize) ?usize {
+    var message_turn_index: usize = 0;
+    var grouped_turn_index: usize = 0;
+    var turn_has_items = false;
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        if (turn_has_items and historyItemIsUserMessage(item)) {
+            grouped_turn_index += 1;
+        }
+        if (message_turn_index == target_message_turn_index) return grouped_turn_index;
+        turn_has_items = true;
+        message_turn_index += 1;
+    }
+    return null;
 }
 
 fn appendHistoryMessageThreadItemJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), item: api.HistoryItem, index: usize) !void {
