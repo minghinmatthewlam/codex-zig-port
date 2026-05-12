@@ -15356,6 +15356,61 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         assert detect_after_agents_md["id"] == "external-agent-detect-after-agents-md"
         assert detect_after_agents_md["result"] == {"items": []}
+
+        source_skill = claude_home / "skills" / "skill-a"
+        source_skill.mkdir(parents=True)
+        (source_skill / "SKILL.md").write_text(
+            "Use Claude Code and CLAUDE utilities.",
+            encoding="utf-8",
+        )
+        (source_skill / "notes.txt").write_text(
+            "plain copy",
+            encoding="utf-8",
+        )
+        target_skills = codex_home.parent / ".agents" / "skills"
+        detected_skills = rpc(
+            "external-agent-detect-skills",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_skills["id"] == "external-agent-detect-skills"
+        assert detected_skills["result"]["items"] == [
+            {
+                "itemType": "SKILLS",
+                "description": (
+                    f"Migrate skills from {claude_home / 'skills'} to {target_skills}"
+                ),
+                "cwd": None,
+                "details": None,
+            }
+        ]
+
+        skills_import = rpc(
+            "external-agent-import-skills",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_skills["result"]["items"]},
+        )
+        assert skills_import["id"] == "external-agent-import-skills"
+        assert skills_import["result"] == {}
+        skills_notification = read_json_line(proc, 5)
+        assert skills_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (target_skills / "skill-a" / "SKILL.md").read_text(encoding="utf-8") == (
+            "Use Codex and Codex utilities."
+        )
+        assert (target_skills / "skill-a" / "notes.txt").read_text(encoding="utf-8") == (
+            "plain copy"
+        )
+
+        detect_after_skills = rpc(
+            "external-agent-detect-after-skills",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_skills["id"] == "external-agent-detect-after-skills"
+        assert detect_after_skills["result"] == {"items": []}
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
