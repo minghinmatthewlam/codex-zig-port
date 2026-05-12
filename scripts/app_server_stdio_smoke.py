@@ -5834,6 +5834,61 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert unsubscribe_resumed_thread["id"] == "unsubscribe-resumed-thread"
             assert unsubscribe_resumed_thread["result"] == {"status": "unsubscribed"}
 
+            archived_fork_thread_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+            archived_fork_path = (
+                codex_home
+                / "archived_sessions"
+                / "zig"
+                / f"rollout-{archived_fork_thread_id}.jsonl"
+            )
+            archived_fork_path.parent.mkdir(parents=True, exist_ok=True)
+            archived_fork_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {"type": "metadata", "title": "Archived Fork Smoke"},
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content_type": "input_text",
+                                "text": "archived fork hello",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-fork-archived-zig-by-id",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": archived_fork_thread_id,
+                        "excludeTurns": True,
+                        "ephemeral": True,
+                    },
+                },
+            )
+            archived_zig_fork = read_json_line(proc, 5)
+            assert archived_zig_fork["id"] == "thread-fork-archived-zig-by-id"
+            archived_zig_fork_thread = archived_zig_fork["result"]["thread"]
+            assert archived_zig_fork_thread["forkedFromId"] == archived_fork_thread_id
+            assert archived_zig_fork_thread["preview"] == "archived fork hello"
+            assert archived_zig_fork_thread["ephemeral"] is True
+            assert archived_zig_fork_thread["path"] is None
+            assert archived_zig_fork_thread["source"] == "appServer"
+            assert archived_zig_fork_thread["turns"] == []
+            assert_thread_started_notification(
+                read_json_line(proc, 5), archived_zig_fork_thread
+            )
+
             write_json_line(
                 proc,
                 {
