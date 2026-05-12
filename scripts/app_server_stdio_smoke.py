@@ -5362,6 +5362,12 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             archived_saved_zig = read_json_line(proc, 5)
             assert archived_saved_zig["id"] == "thread-archive-saved-zig-rollout"
             assert archived_saved_zig["result"] == {}
+            archived_notification = read_json_line(proc, 5)
+            assert archived_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/archived",
+                "params": {"threadId": resume_thread_id},
+            }
             archived_rollout_path = (
                 codex_home / "archived_sessions" / "zig" / rollout_path.name
             )
@@ -5443,6 +5449,12 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert unarchived_thread["preview"] == "saved hello"
             assert unarchived_thread["path"] == os.path.realpath(rollout_path)
             assert unarchived_thread["turns"] == []
+            unarchived_notification = read_json_line(proc, 5)
+            assert unarchived_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/unarchived",
+                "params": {"threadId": resume_thread_id},
+            }
             assert rollout_path.exists()
             assert not archived_rollout_path.exists()
 
@@ -16873,6 +16885,26 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_started_notification_schema["title"] == "ThreadStartedNotification"
         assert thread_started_notification_schema["required"] == ["thread"]
+        thread_archived_notification_schema = json.loads(
+            (out_dir / "ThreadArchivedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_archived_notification_schema["title"]
+            == "ThreadArchivedNotification"
+        )
+        assert thread_archived_notification_schema["required"] == ["threadId"]
+        thread_unarchived_notification_schema = json.loads(
+            (out_dir / "ThreadUnarchivedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_unarchived_notification_schema["title"]
+            == "ThreadUnarchivedNotification"
+        )
+        assert thread_unarchived_notification_schema["required"] == ["threadId"]
         thread_name_updated_notification_schema = json.loads(
             (out_dir / "ThreadNameUpdatedNotification.json").read_text(
                 encoding="utf-8"
@@ -18119,6 +18151,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
+        assert "ThreadArchivedNotification" in bundle["$defs"]
+        assert "ThreadUnarchivedNotification" in bundle["$defs"]
         assert "ThreadNameUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalClearedNotification" in bundle["$defs"]
@@ -18533,6 +18567,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";'
             in server_notification
         )
+        assert (
+            'import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";'
+            in server_notification
+        )
+        assert (
+            'import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";'
+            in server_notification
+        )
         assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
         assert (
             "params: FuzzyFileSearchSessionUpdatedNotification;"
@@ -18578,6 +18620,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
+        assert 'method: "thread/archived";' in server_notification
+        assert "params: ThreadArchivedNotification;" in server_notification
+        assert 'method: "thread/unarchived";' in server_notification
+        assert "params: ThreadUnarchivedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
         assert "params: ThreadNameUpdatedNotification;" in server_notification
         assert 'method: "thread/goal/updated";' in server_notification
@@ -19673,6 +19719,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadStartedNotification" in thread_started_notification
         assert "thread: unknown;" in thread_started_notification
+        thread_archived_notification = (
+            out_dir / "v2" / "ThreadArchivedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadArchivedNotification" in thread_archived_notification
+        assert "threadId: string;" in thread_archived_notification
+        thread_unarchived_notification = (
+            out_dir / "v2" / "ThreadUnarchivedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadUnarchivedNotification"
+            in thread_unarchived_notification
+        )
+        assert "threadId: string;" in thread_unarchived_notification
         thread_name_updated_notification = (
             out_dir / "v2" / "ThreadNameUpdatedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -20492,6 +20551,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";'
             in v2_index
         )
         assert (
