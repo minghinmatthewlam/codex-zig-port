@@ -1155,6 +1155,18 @@ def assert_thread_started_notification(notification: dict, expected_thread: dict
     assert notification_thread == expected_notification_thread
 
 
+def assert_thread_status_notification(
+    notification: dict, thread_id: str, status_type: str
+) -> None:
+    assert notification["jsonrpc"] == "2.0"
+    assert notification["method"] == "thread/status/changed"
+    assert notification["params"]["threadId"] == thread_id
+    status = notification["params"]["status"]
+    assert status["type"] == status_type
+    if status_type == "active":
+        assert status["activeFlags"] == []
+
+
 def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
@@ -3879,6 +3891,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert turn["items"] == []
                 assert turn["itemsView"] == "notLoaded"
                 assert turn["startedAt"] is None
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
                 started = read_json_line(proc, 5)
                 assert started["method"] == "turn/started"
                 assert started["params"]["threadId"] == thread_id
@@ -3939,6 +3954,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert completed["params"]["threadId"] == thread_id
                 assert completed["params"]["turn"]["id"] == "turn-0"
                 assert completed["params"]["turn"]["status"] == "completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
 
                 assert server.request_paths == ["/responses"]
                 request = server.request_bodies[0]
@@ -4020,6 +4038,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 standalone_turn_start = read_json_line(proc, 5)
                 assert standalone_turn_start["id"] == "turn-start-standalone-skill"
                 assert standalone_turn_start["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
                 standalone_started = read_json_line(proc, 5)
                 assert standalone_started["method"] == "turn/started"
                 standalone_user_started = read_json_line(proc, 5)
@@ -4042,6 +4063,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert standalone_agent_completed["method"] == "item/completed"
                 standalone_completed = read_json_line(proc, 5)
                 assert standalone_completed["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
 
                 assert server.request_paths == ["/responses", "/responses"]
                 standalone_request = server.request_bodies[1]
@@ -4211,6 +4235,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     after_inject_turn_start["result"]["turn"]["status"]
                     == "inProgress"
                 )
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
                 assert read_json_line(proc, 5)["method"] == "turn/started"
                 assert read_json_line(proc, 5)["method"] == "item/started"
                 assert read_json_line(proc, 5)["method"] == "item/completed"
@@ -4218,6 +4245,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
                 assert read_json_line(proc, 5)["method"] == "item/completed"
                 assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
 
                 assert server.request_paths == ["/responses", "/responses", "/responses"]
                 after_inject_request = server.request_bodies[2]
@@ -19354,6 +19384,20 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert thread_started_notification_schema["title"] == "ThreadStartedNotification"
         assert thread_started_notification_schema["required"] == ["thread"]
+        thread_status_schema = json.loads(
+            (out_dir / "ThreadStatus.json").read_text(encoding="utf-8")
+        )
+        assert thread_status_schema["title"] == "ThreadStatus"
+        thread_status_changed_schema = json.loads(
+            (out_dir / "ThreadStatusChangedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_status_changed_schema["title"]
+            == "ThreadStatusChangedNotification"
+        )
+        assert thread_status_changed_schema["required"] == ["threadId", "status"]
         thread_archived_notification_schema = json.loads(
             (out_dir / "ThreadArchivedNotification.json").read_text(
                 encoding="utf-8"
@@ -20587,6 +20631,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert "ThreadStartParams" in bundle["$defs"]
         assert "ThreadStartResponse" in bundle["$defs"]
+        assert "ThreadStatus" in bundle["$defs"]
+        assert "ThreadStatusChangedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ThreadStatusChangedNotification"]["properties"][
+                "status"
+            ]["$ref"]
+            == "#/$defs/ThreadStatus"
+        )
         assert bundle["$defs"]["ThreadStartParams"]["properties"]["threadSource"]["enum"] == [
             "user",
             "subagent",
@@ -21089,6 +21141,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
         assert "params: ThreadStartedNotification;" in server_notification
+        assert 'method: "thread/status/changed";' in server_notification
+        assert "params: ThreadStatusChangedNotification;" in server_notification
         assert 'method: "thread/archived";' in server_notification
         assert "params: ThreadArchivedNotification;" in server_notification
         assert 'method: "thread/unarchived";' in server_notification
@@ -22188,6 +22242,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadStartedNotification" in thread_started_notification
         assert "thread: unknown;" in thread_started_notification
+        thread_status = (out_dir / "v2" / "ThreadStatus.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'type: "active";' in thread_status
+        assert 'activeFlags: ("waitingOnApproval" | "waitingOnUserInput")[];' in thread_status
+        thread_status_changed_notification = (
+            out_dir / "v2" / "ThreadStatusChangedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadStatusChangedNotification"
+            in thread_status_changed_notification
+        )
+        assert "threadId: string;" in thread_status_changed_notification
+        assert "status: ThreadStatus;" in thread_status_changed_notification
         thread_archived_notification = (
             out_dir / "v2" / "ThreadArchivedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -23020,6 +23088,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
+            in v2_index
+        )
+        assert 'export type { ThreadStatus } from "./ThreadStatus";' in v2_index
+        assert (
+            'export type { ThreadStatusChangedNotification } from "./ThreadStatusChangedNotification";'
             in v2_index
         )
         assert (
