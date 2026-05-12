@@ -5,6 +5,7 @@ const session = @import("session.zig");
 
 const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
 const session_index_file = "session_index.jsonl";
+const fallback_session_meta_timestamp = "1970-01-01T00:00:00Z";
 
 const StoredLine = struct {
     type: []const u8,
@@ -247,7 +248,42 @@ pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, th
 
     const path = try std.fs.path.join(allocator, &.{ codex_home, session_index_file });
     defer allocator.free(path);
+    try appendJsonLineToPath(allocator, path, .{
+        .id = thread_id,
+        .thread_name = name,
+        .updated_at = "unknown",
+    });
+}
 
+pub fn appendThreadMemoryMode(allocator: std.mem.Allocator, path: []const u8, thread_id: []const u8, mode: []const u8) !void {
+    var transcript = try loadTranscript(allocator, path);
+    defer transcript.deinit(allocator);
+    if (transcript.id) |id| {
+        if (!std.mem.eql(u8, id, thread_id)) return error.InvalidSessionLine;
+    }
+
+    try appendJsonLineToPath(allocator, path, .{
+        .timestamp = fallback_session_meta_timestamp,
+        .type = "session_meta",
+        .payload = .{
+            .id = thread_id,
+            .timestamp = fallback_session_meta_timestamp,
+            .cwd = transcript.cwd orelse "/",
+            .originator = "codex",
+            .cli_version = transcript.cli_version orelse "0.0.0",
+            .source = transcript.source orelse "cli",
+            .thread_source = transcript.thread_source orelse "user",
+            .model_provider = transcript.model_provider orelse "openai",
+            .memory_mode = mode,
+        },
+    });
+}
+
+fn appendJsonLineToPath(allocator: std.mem.Allocator, path: []const u8, value: anytype) !void {
+    const line = try std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+    defer allocator.free(line);
+
+    try ensureParentDir(path);
     const previous = std.Io.Dir.cwd().readFileAlloc(
         std.Io.Threaded.global_single_threaded.io(),
         path,
@@ -258,13 +294,6 @@ pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, th
         else => return err,
     };
     defer allocator.free(previous);
-
-    const line = try std.json.Stringify.valueAlloc(allocator, .{
-        .id = thread_id,
-        .thread_name = name,
-        .updated_at = "unknown",
-    }, .{});
-    defer allocator.free(line);
 
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
@@ -1150,6 +1179,38 @@ test "session index names use latest appended entry" {
 
     const missing = try findThreadName(allocator, home, "33333333-3333-4333-8333-333333333333");
     try std.testing.expect(missing == null);
+}
+
+test "thread memory mode appends Rust session metadata" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "rollout-44444444-4444-4444-8444-444444444444.jsonl" });
+    defer allocator.free(path);
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data =
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"44444444-4444-4444-8444-444444444444","timestamp":"2025-01-05T12:00:00Z","cwd":"/repo","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider","git":{"commit_hash":"rollout-sha","branch":"rollout-branch","repository_url":"https://example.test/rollout.git"}}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
+        \\
+        ,
+    });
+
+    try appendThreadMemoryMode(allocator, path, "44444444-4444-4444-8444-444444444444", "disabled");
+
+    var loaded = try loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqualStrings("disabled", loaded.memory_mode.?);
+    try std.testing.expectEqualStrings("rollout-sha", loaded.git_sha.?);
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"type\":\"session_meta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"memory_mode\":\"disabled\"") != null);
 }
 
 test "latest session path picks lexicographically newest rollout" {
