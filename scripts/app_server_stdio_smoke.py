@@ -10368,7 +10368,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
     try:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
-        env["CODEX_ZIG_FEEDBACK_SENTRY_DSN"] = dsn
+        env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = dsn
         extra_log_file = codex_home / "codex-zig-feedback.log"
         extra_log_file.write_text("extra log body\n", encoding="utf-8")
 
@@ -10377,7 +10377,11 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
             "reason": "smoke",
             "threadId": "00000000-0000-4000-8000-000000000123",
             "includeLogs": True,
-            "extraLogFiles": [str(extra_log_file), str(codex_home / "missing.log")],
+            "extraLogFiles": [
+                str(extra_log_file),
+                str(extra_log_file),
+                str(codex_home / "missing.log"),
+            ],
             "tags": {
                 "surface": "app-server",
                 "thread_id": "wrong-thread",
@@ -10418,6 +10422,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"classification":"wrong-classification"' not in envelope
         assert b'"filename":"codex-logs.log"' in envelope
         assert b'"filename":"codex-zig-feedback.log"' in envelope
+        assert envelope.count(b'"filename":"codex-zig-feedback.log"') == 1
         assert b"extra log body\n" in envelope
 
         no_thread = request_stdio_app_server(

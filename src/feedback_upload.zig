@@ -4,7 +4,7 @@ const env = @import("env.zig");
 
 const DEFAULT_SENTRY_DSN =
     "https://ae32ed50620d7a7792c1ce5df38b3e3e@o33249.ingest.us.sentry.io/4510195390611458";
-const TEST_SENTRY_DSN_ENV = "CODEX_ZIG_FEEDBACK_SENTRY_DSN";
+const TEST_SENTRY_DSN_ENV = "CODEX_TEST_FEEDBACK_SENTRY_DSN";
 const USER_AGENT = "codex-zig-port/0.0.1";
 const CLI_VERSION = "0.0.1";
 
@@ -98,7 +98,8 @@ fn buildEnvelope(allocator: std.mem.Allocator, dsn: SentryDsn, request: UploadRe
         try appendAttachment(allocator, &out, "codex-logs.log", request.log_bytes);
     }
 
-    for (request.extra_log_files) |path| {
+    for (request.extra_log_files, 0..) |path, index| {
+        if (stringAppearsBefore(request.extra_log_files, index, path)) continue;
         const bytes = std.Io.Dir.cwd().readFileAlloc(
             std.Io.Threaded.global_single_threaded.io(),
             path,
@@ -110,6 +111,13 @@ fn buildEnvelope(allocator: std.mem.Allocator, dsn: SentryDsn, request: UploadRe
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn stringAppearsBefore(values: []const []const u8, end: usize, needle: []const u8) bool {
+    for (values[0..end]) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 fn appendEventJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), request: UploadRequest) !void {
@@ -282,4 +290,30 @@ test "envelope event preserves reserved tags and attachments" {
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"filename\":\"codex-logs.log\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "ring log") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"thread_id\":\"wrong\"") == null);
+}
+
+test "extra log files are de-duplicated by path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const log_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/feedback.log", .{&tmp.sub_path});
+    defer allocator.free(log_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "feedback.log", .data = "extra" });
+
+    const dsn = try parseSentryDsn("http://public@localhost/42");
+    const request = UploadRequest{
+        .classification = "bug",
+        .reason = null,
+        .thread_id = "00000000-0000-4000-8000-000000000123",
+        .include_logs = false,
+        .extra_log_files = &.{ log_path, log_path },
+    };
+    const envelope = try buildEnvelope(allocator, dsn, request);
+    defer allocator.free(envelope);
+
+    const first = std.mem.indexOf(u8, envelope, "\"filename\":\"feedback.log\"") orelse return error.MissingFeedbackAttachment;
+    const rest = envelope[first + 1 ..];
+    try std.testing.expect(std.mem.indexOf(u8, rest, "\"filename\":\"feedback.log\"") == null);
 }
