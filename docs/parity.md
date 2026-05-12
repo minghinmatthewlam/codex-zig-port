@@ -77,8 +77,12 @@ concrete turn envelope artifacts for `Turn`, `TurnStatus`, `TurnItemsView`,
 `TurnError`, `CodexErrorInfo`, `NonSteerableTurnKind`, and turn
 start/completion payloads with permissive `ThreadItem` contents,
 `ErrorNotification` artifacts and the top-level server-notification `"error"`
-variant, plus `ThreadClosedNotification` artifacts and the top-level
-server-notification `"thread/closed"` variant,
+variant, `ThreadClosedNotification` artifacts and the top-level
+server-notification `"thread/closed"` variant, plus diagnostic
+warning/notice notification artifacts for `WarningNotification`,
+`GuardianWarningNotification`, `DeprecationNoticeNotification`, and
+`ConfigWarningNotification` with `TextPosition` / `TextRange` helpers, plus
+`WindowsWorldWritableWarningNotification`,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -97,6 +101,16 @@ and included in the top-level `ServerNotification` `"error"` union variant.
 Synchronous `turn/start` provider failures now also emit `"error"` notifications
 with `willRetry: false`; retrying stream errors and the full async failed-turn
 notification lifecycle remain planned.
+
+Additional app-server warning-notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include `WarningNotification`,
+`GuardianWarningNotification`, `DeprecationNoticeNotification`,
+`ConfigWarningNotification`, `WindowsWorldWritableWarningNotification`,
+`TextPosition`, and `TextRange`, exported through `v2/index.ts` and included in
+the top-level `ServerNotification` `"warning"`, `"guardianWarning"`,
+`"deprecationNotice"`, `"configWarning"`, and
+`"windows/worldWritableWarning"` union variants. Runtime emission for those
+warning and notice notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
