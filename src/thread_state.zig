@@ -17,6 +17,24 @@ const ROLLOUT_PATH_QUERY =
     \\WHERE id = ?
 ;
 
+const UPDATE_TITLE_QUERY =
+    \\UPDATE threads
+    \\SET title = ?
+    \\WHERE id = ?
+;
+
+const UPDATE_MEMORY_MODE_QUERY =
+    \\UPDATE threads
+    \\SET memory_mode = ?
+    \\WHERE id = ?
+;
+
+const UPDATE_GIT_INFO_QUERY =
+    \\UPDATE threads
+    \\SET git_sha = ?, git_branch = ?, git_origin_url = ?
+    \\WHERE id = ?
+;
+
 pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![]session_store.RolloutFile {
     const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
     defer allocator.free(state_path);
@@ -105,6 +123,76 @@ pub fn findRolloutPathByThreadId(allocator: std.mem.Allocator, codex_home: []con
         },
         sqlite.SQLITE_DONE => return null,
         else => return error.StateDbRolloutPathStepFailed,
+    }
+}
+
+pub fn updateThreadTitle(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, title: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_TITLE_QUERY) orelse return false;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, title);
+    try sqlite.bindText(statement.statement, 2, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+pub fn updateThreadMemoryMode(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, mode: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_MEMORY_MODE_QUERY) orelse return false;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, mode);
+    try sqlite.bindText(statement.statement, 2, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+pub fn updateThreadGitInfo(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    sha: ?[]const u8,
+    branch: ?[]const u8,
+    origin_url: ?[]const u8,
+) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_GIT_INFO_QUERY) orelse return false;
+    errdefer statement.deinit();
+    try sqlite.bindNullableText(statement.statement, 1, sha);
+    try sqlite.bindNullableText(statement.statement, 2, branch);
+    try sqlite.bindNullableText(statement.statement, 3, origin_url);
+    try sqlite.bindText(statement.statement, 4, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+const StateUpdateStatement = struct {
+    db: *sqlite.Db,
+    statement: *sqlite.Statement,
+
+    fn deinit(self: StateUpdateStatement) void {
+        sqlite.finalize(self.statement);
+        sqlite.close(self.db);
+    }
+};
+
+fn prepareStateUpdate(allocator: std.mem.Allocator, codex_home: []const u8, query: []const u8) !?StateUpdateStatement {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
+
+    const db = try sqlite.openReadWrite(allocator, state_path);
+    errdefer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db, query) catch |err| switch (err) {
+        error.SqlitePrepareFailed => {
+            sqlite.close(db);
+            return null;
+        },
+        else => return err,
+    };
+    errdefer sqlite.finalize(statement);
+    return .{ .db = db, .statement = statement };
+}
+
+fn finishStateUpdate(statement: StateUpdateStatement) !bool {
+    defer statement.deinit();
+    switch (sqlite.step(statement.statement)) {
+        sqlite.SQLITE_DONE => return sqlite.changes(statement.db) > 0,
+        else => return error.StateDbThreadUpdateStepFailed,
     }
 }
 
