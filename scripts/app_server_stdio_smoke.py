@@ -19485,6 +19485,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             "success",
             "error",
         ]
+        windows_world_writable_warning = json.loads(
+            (out_dir / "WindowsWorldWritableWarningNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert windows_world_writable_warning["required"] == [
+            "extraCount",
+            "failedScan",
+            "samplePaths",
+        ]
+        assert (
+            windows_world_writable_warning["properties"]["samplePaths"]["items"][
+                "type"
+            ]
+            == "string"
+        )
         command_exec_write_response = json.loads(
             (out_dir / "CommandExecWriteResponse.json").read_text(encoding="utf-8")
         )
@@ -19647,6 +19663,50 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "$ref"
             ]
             == "#/$defs/ThreadTokenUsage"
+        )
+        warning_notification_schema = json.loads(
+            (out_dir / "WarningNotification.json").read_text(encoding="utf-8")
+        )
+        assert warning_notification_schema["required"] == ["message"]
+        assert warning_notification_schema["properties"]["threadId"]["type"] == [
+            "string",
+            "null",
+        ]
+        guardian_warning_notification_schema = json.loads(
+            (out_dir / "GuardianWarningNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert guardian_warning_notification_schema["required"] == [
+            "message",
+            "threadId",
+        ]
+        deprecation_notice_notification_schema = json.loads(
+            (out_dir / "DeprecationNoticeNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert deprecation_notice_notification_schema["required"] == ["summary"]
+        text_position_schema = json.loads(
+            (out_dir / "TextPosition.json").read_text(encoding="utf-8")
+        )
+        assert text_position_schema["required"] == ["column", "line"]
+        text_range_schema = json.loads(
+            (out_dir / "TextRange.json").read_text(encoding="utf-8")
+        )
+        assert text_range_schema["properties"]["start"]["$ref"] == "TextPosition.json"
+        assert text_range_schema["properties"]["end"]["$ref"] == "TextPosition.json"
+        config_warning_notification_schema = json.loads(
+            (out_dir / "ConfigWarningNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_warning_notification_schema["required"] == ["summary"]
+        assert (
+            config_warning_notification_schema["properties"]["range"]["anyOf"][0][
+                "$ref"
+            ]
+            == "TextRange.json"
         )
         turn_start_params_schema = json.loads(
             (out_dir / "TurnStartParams.json").read_text(encoding="utf-8")
@@ -20831,6 +20891,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["ProcessSpawnResponse"]["additionalProperties"]
             is False
         )
+        assert "WindowsWorldWritableWarningNotification" in bundle["$defs"]
+        assert bundle["$defs"]["WindowsWorldWritableWarningNotification"][
+            "required"
+        ] == ["extraCount", "failedScan", "samplePaths"]
         assert "ThreadStartParams" in bundle["$defs"]
         assert "ThreadStartResponse" in bundle["$defs"]
         assert "ThreadStatus" in bundle["$defs"]
@@ -20914,6 +20978,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadTokenUsageBreakdown" in bundle["$defs"]
         assert "ThreadTokenUsage" in bundle["$defs"]
         assert "ThreadTokenUsageUpdatedNotification" in bundle["$defs"]
+        assert "WarningNotification" in bundle["$defs"]
+        assert "GuardianWarningNotification" in bundle["$defs"]
+        assert "DeprecationNoticeNotification" in bundle["$defs"]
+        assert "TextPosition" in bundle["$defs"]
+        assert "TextRange" in bundle["$defs"]
+        assert "ConfigWarningNotification" in bundle["$defs"]
         assert (
             bundle["$defs"]["ThreadGoalUpdatedNotification"]["properties"]["goal"][
                 "$ref"
@@ -20929,6 +20999,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ThreadTokenUsage"]["properties"][
             "modelContextWindow"
         ]["type"] == ["integer", "null"]
+        assert (
+            bundle["$defs"]["ConfigWarningNotification"]["properties"]["range"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/TextRange"
+        )
         assert "ThreadResumeParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadResumeParams"]["properties"]["history"]["type"] == [
             "array",
@@ -21334,6 +21410,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";'
             in server_notification
         )
+        assert (
+            'import type { WindowsWorldWritableWarningNotification } from "./v2/WindowsWorldWritableWarningNotification";'
+            in server_notification
+        )
+        for warning_import in [
+            "ConfigWarningNotification",
+            "DeprecationNoticeNotification",
+            "GuardianWarningNotification",
+            "WarningNotification",
+        ]:
+            assert (
+                f'import type {{ {warning_import} }} from "./v2/{warning_import}";'
+                in server_notification
+            )
         assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
         assert (
             "params: FuzzyFileSearchSessionUpdatedNotification;"
@@ -21375,6 +21465,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params: WindowsSandboxSetupCompletedNotification;"
             in server_notification
         )
+        assert 'method: "windows/worldWritableWarning";' in server_notification
+        assert (
+            "params: WindowsWorldWritableWarningNotification;"
+            in server_notification
+        )
         assert 'method: "fs/changed";' in server_notification
         assert "params: FsChangedNotification;" in server_notification
         assert 'method: "thread/started";' in server_notification
@@ -21395,6 +21490,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadGoalClearedNotification;" in server_notification
         assert 'method: "thread/tokenUsage/updated";' in server_notification
         assert "params: ThreadTokenUsageUpdatedNotification;" in server_notification
+        for method, params_type in [
+            ("warning", "WarningNotification"),
+            ("guardianWarning", "GuardianWarningNotification"),
+            ("deprecationNotice", "DeprecationNoticeNotification"),
+            ("configWarning", "ConfigWarningNotification"),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
         assert (
             'import type { ErrorNotification } from "./v2/ErrorNotification";'
             in server_notification
@@ -22460,6 +22563,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "mode: WindowsSandboxSetupMode;" in windows_sandbox_setup_completed
         assert "success: boolean;" in windows_sandbox_setup_completed
         assert "error: string | null;" in windows_sandbox_setup_completed
+        windows_world_writable_warning = (
+            out_dir / "v2" / "WindowsWorldWritableWarningNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface WindowsWorldWritableWarningNotification"
+            in windows_world_writable_warning
+        )
+        assert "samplePaths: string[];" in windows_world_writable_warning
+        assert "extraCount: number;" in windows_world_writable_warning
+        assert "failedScan: boolean;" in windows_world_writable_warning
         assert (
             out_dir / "v2" / "CommandExecWriteResponse.ts"
         ).read_text(encoding="utf-8").startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
@@ -22573,6 +22686,58 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "turnId: string;" in thread_token_usage_updated_notification
         assert "tokenUsage: ThreadTokenUsage;" in thread_token_usage_updated_notification
+        warning_notification = (
+            out_dir / "v2" / "WarningNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface WarningNotification" in warning_notification
+        assert "threadId: string | null;" in warning_notification
+        assert "message: string;" in warning_notification
+        guardian_warning_notification = (
+            out_dir / "v2" / "GuardianWarningNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface GuardianWarningNotification"
+            in guardian_warning_notification
+        )
+        assert "threadId: string;" in guardian_warning_notification
+        assert "message: string;" in guardian_warning_notification
+        deprecation_notice_notification = (
+            out_dir / "v2" / "DeprecationNoticeNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface DeprecationNoticeNotification"
+            in deprecation_notice_notification
+        )
+        assert "summary: string;" in deprecation_notice_notification
+        assert "details: string | null;" in deprecation_notice_notification
+        text_position = (out_dir / "v2" / "TextPosition.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export interface TextPosition" in text_position
+        assert "line: number;" in text_position
+        assert "column: number;" in text_position
+        text_range = (out_dir / "v2" / "TextRange.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { TextPosition } from "./TextPosition";' in text_range
+        assert "export interface TextRange" in text_range
+        assert "start: TextPosition;" in text_range
+        assert "end: TextPosition;" in text_range
+        config_warning_notification = (
+            out_dir / "v2" / "ConfigWarningNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { TextRange } from "./TextRange";'
+            in config_warning_notification
+        )
+        assert (
+            "export interface ConfigWarningNotification"
+            in config_warning_notification
+        )
+        assert "summary: string;" in config_warning_notification
+        assert "details: string | null;" in config_warning_notification
+        assert "path?: string;" in config_warning_notification
+        assert "range?: TextRange;" in config_warning_notification
         turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
             encoding="utf-8"
         )
@@ -23378,6 +23543,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
+            'export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";'
+            in v2_index
+        )
+        assert (
             'export type { ThreadStartedNotification } from "./ThreadStartedNotification";'
             in v2_index
         )
@@ -23422,6 +23591,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";'
             in v2_index
         )
+        for warning_export in [
+            "ConfigWarningNotification",
+            "DeprecationNoticeNotification",
+            "GuardianWarningNotification",
+            "TextPosition",
+            "TextRange",
+            "WarningNotification",
+        ]:
+            assert (
+                f'export type {{ {warning_export} }} from "./{warning_export}";'
+                in v2_index
+            )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
         assert 'export type { CodexErrorInfo } from "./CodexErrorInfo";' in v2_index
