@@ -382,6 +382,17 @@ fn appendThreadSessionMetaFromTranscript(
     });
 }
 
+pub fn appendThreadRollback(allocator: std.mem.Allocator, path: []const u8, num_turns: u32) !void {
+    try appendJsonLineToPath(allocator, path, .{
+        .timestamp = fallback_session_meta_timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "thread_rolled_back",
+            .num_turns = num_turns,
+        },
+    });
+}
+
 fn appendJsonLineToPath(allocator: std.mem.Allocator, path: []const u8, value: anytype) !void {
     const line = try std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
     defer allocator.free(line);
@@ -537,7 +548,7 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
 
     if (std.mem.eql(u8, line_type, "event_msg")) {
         const payload = object.get("payload") orelse return;
-        applyRolloutEventMsg(transcript, payload);
+        try applyRolloutEventMsg(allocator, transcript, payload);
         return;
     }
 }
@@ -653,10 +664,17 @@ fn transcriptFirstMessagePreview(transcript: *const session.Transcript) ?[]const
     return null;
 }
 
-fn applyRolloutEventMsg(transcript: *session.Transcript, payload: std.json.Value) void {
+fn applyRolloutEventMsg(allocator: std.mem.Allocator, transcript: *session.Transcript, payload: std.json.Value) !void {
     if (payload != .object) return;
     const object = payload.object;
     const event_type = jsonStringField(object, "type") orelse return;
+    if (std.mem.eql(u8, event_type, "thread_rolled_back")) {
+        const num_turns_value = object.get("num_turns") orelse return;
+        const num_turns_int = jsonValueAsInt(num_turns_value) orelse return;
+        if (num_turns_int <= 0) return;
+        rollbackTranscript(allocator, transcript, @intCast(num_turns_int));
+        return;
+    }
     if (!std.mem.eql(u8, event_type, "token_count")) return;
 
     const info_value = object.get("info") orelse return;
@@ -664,6 +682,35 @@ fn applyRolloutEventMsg(transcript: *session.Transcript, payload: std.json.Value
     const info = parseTokenUsageInfo(info_value.object) orelse return;
     transcript.token_usage = info;
     transcript.token_usage_turn_index = lastMessageTurnIndex(transcript);
+}
+
+fn rollbackTranscript(allocator: std.mem.Allocator, transcript: *session.Transcript, num_turns: usize) void {
+    const cut_index = rollbackCutIndex(transcript, num_turns) orelse return;
+    for (transcript.history.items[cut_index..]) |item| item.deinit(allocator);
+    transcript.history.shrinkRetainingCapacity(cut_index);
+    transcript.token_usage = null;
+    transcript.token_usage_turn_index = null;
+}
+
+fn rollbackCutIndex(transcript: *const session.Transcript, num_turns: usize) ?usize {
+    var earliest_user_index: ?usize = null;
+    var remaining = num_turns;
+    var index = transcript.history.items.len;
+    while (index > 0) {
+        index -= 1;
+        const item = transcript.history.items[index];
+        if (item.kind == .message and isUserMessage(item)) {
+            earliest_user_index = index;
+            if (remaining == 1) return index;
+            remaining -= 1;
+        }
+    }
+    return earliest_user_index;
+}
+
+fn isUserMessage(item: api.HistoryItem) bool {
+    const role = item.role orelse return false;
+    return std.mem.eql(u8, role, "user");
 }
 
 fn parseTokenUsageInfo(object: std.json.ObjectMap) ?session.TokenUsageInfo {

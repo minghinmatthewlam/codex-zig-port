@@ -15710,7 +15710,7 @@ fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num
     const cut_index = rollbackCutIndex(&thread.transcript, num_turns) orelse return;
     trimTranscriptHistoryFrom(allocator, &thread.transcript, cut_index);
     try refreshLoadedThreadAfterRollback(allocator, thread);
-    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+    if (thread.path) |path| try session_store.appendThreadRollback(allocator, path, num_turns);
 }
 
 fn rollbackCutIndex(transcript: *const session_mod.Transcript, num_turns: u32) ?usize {
