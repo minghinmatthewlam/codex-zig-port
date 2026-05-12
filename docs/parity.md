@@ -246,14 +246,14 @@ configuration error. Enabled feedback requests now build and send a
 Sentry-compatible envelope with event classification, level, reason, reserved
 tag protection, optional generated `no-active-thread-<uuid>` thread IDs,
 cached-auth `account_id` and `chatgpt_user_id` metadata when available,
-`codex-logs.log` when `includeLogs` is true, the root thread rollout JSONL
-when a provided `threadId` resolves to a loaded or saved session, and readable
+`codex-logs.log` when `includeLogs` is true, loaded root and descendant thread
+rollout JSONL attachments, root saved-session rollout fallback, and readable
 de-duplicated `extraLogFiles` attachments.
 The smoke suite proves the upload path against a local Sentry DSN override
 (`CODEX_TEST_FEEDBACK_SENTRY_DSN`) rather than sending test reports to the
 production DSN. Full Rust feedback ring-buffer capture, SQLite feedback log
-queries, agent-subtree rollout discovery, and guardian rollout attachment
-collection remain planned.
+queries, persisted agent-subtree rollout discovery, and guardian rollout
+attachment collection remain planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |

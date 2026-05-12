@@ -10453,6 +10453,90 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert envelope.count(b'"filename":"codex-zig-feedback.log"') == 1
         assert b"extra log body\n" in envelope
 
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "feedback-thread-start",
+                    "method": "thread/start",
+                    "params": {"model": "gpt-feedback-parent"},
+                },
+            )
+            parent_started = read_json_line(proc, 5)
+            assert parent_started["id"] == "feedback-thread-start"
+            parent_thread = parent_started["result"]["thread"]
+            parent_thread_id = parent_thread["id"]
+            Path(parent_thread["path"]).write_text(
+                "loaded parent rollout body\n",
+                encoding="utf-8",
+            )
+            assert_thread_started_notification(read_json_line(proc, 5), parent_thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "feedback-thread-fork",
+                    "method": "thread/fork",
+                    "params": {"threadId": parent_thread_id},
+                },
+            )
+            forked = read_json_line(proc, 5)
+            assert forked["id"] == "feedback-thread-fork"
+            child_thread = forked["result"]["thread"]
+            Path(child_thread["path"]).write_text(
+                "loaded child rollout body\n",
+                encoding="utf-8",
+            )
+            assert_thread_started_notification(read_json_line(proc, 5), child_thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "feedback-loaded-subtree",
+                    "method": "feedback/upload",
+                    "params": {
+                        "classification": "bug",
+                        "threadId": parent_thread_id,
+                        "includeLogs": True,
+                    },
+                },
+            )
+            loaded_subtree = read_json_line(proc, 5)
+            assert loaded_subtree["id"] == "feedback-loaded-subtree"
+            assert loaded_subtree["result"] == {"threadId": parent_thread_id}
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+        loaded_subtree_envelope = server.request_bodies[1]
+        assert b"loaded parent rollout body\n" in loaded_subtree_envelope
+        assert b"loaded child rollout body\n" in loaded_subtree_envelope
+        assert (
+            f'"filename":"rollout-{parent_thread_id}.jsonl"'.encode()
+            in loaded_subtree_envelope
+        )
+        assert (
+            f'"filename":"rollout-{child_thread["id"]}.jsonl"'.encode()
+            in loaded_subtree_envelope
+        )
+
         no_thread = request_stdio_app_server(
             binary,
             {
@@ -10471,9 +10555,9 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         generated_thread_id = no_thread["result"]["threadId"]
         assert generated_thread_id.startswith("no-active-thread-")
         assert len(generated_thread_id) == len("no-active-thread-") + 36
-        assert len(server.request_bodies) == 2
-        assert b'"level":"info"' in server.request_bodies[1]
-        assert b'"filename":"codex-logs.log"' not in server.request_bodies[1]
+        assert len(server.request_bodies) == 3
+        assert b'"level":"info"' in server.request_bodies[2]
+        assert b'"filename":"codex-logs.log"' not in server.request_bodies[2]
 
         invalid_thread = request_stdio_app_server(
             binary,
@@ -10531,7 +10615,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert disabled["id"] == "feedback-disabled"
         assert disabled["error"]["code"] == -32600
         assert disabled["error"]["message"] == "sending feedback is disabled by configuration"
-        assert len(server.request_bodies) == 2
+        assert len(server.request_bodies) == 3
     finally:
         server.shutdown()
         server.server_close()

@@ -22162,7 +22162,7 @@ fn handleFeedbackUpload(
         owned_upload_log_files.deinit(allocator);
     }
     if (include_logs.bool) {
-        try appendFeedbackThreadRolloutPath(allocator, state, thread_id.?, &upload_log_files, &owned_upload_log_files);
+        try appendFeedbackThreadRolloutPaths(allocator, state, thread_id.?, &upload_log_files, &owned_upload_log_files);
     }
     for (extra_log_files.items) |path| try upload_log_files.append(allocator, path);
 
@@ -22181,7 +22181,7 @@ fn handleFeedbackUpload(
     return renderFeedbackUploadResponse(allocator, id_value, thread_id.?);
 }
 
-fn appendFeedbackThreadRolloutPath(
+fn appendFeedbackThreadRolloutPaths(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
     thread_id: []const u8,
@@ -22189,12 +22189,16 @@ fn appendFeedbackThreadRolloutPath(
     owned_upload_log_files: *std.ArrayList([]const u8),
 ) !void {
     if (std.mem.startsWith(u8, thread_id, "no-active-thread-")) return;
-    if (findLoadedThread(state, thread_id)) |thread| {
+
+    var appended_root_rollout_path = false;
+    for (state.loaded_threads.items) |*thread| {
+        if (!loadedThreadInFeedbackSubtree(state, thread, thread_id)) continue;
         if (thread.path) |path| {
             try upload_log_files.append(allocator, path);
-            return;
+            if (std.mem.eql(u8, thread.id, thread_id)) appended_root_rollout_path = true;
         }
     }
+    if (appended_root_rollout_path) return;
 
     const codex_home = resolveCodexHome(allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -22211,6 +22215,19 @@ fn appendFeedbackThreadRolloutPath(
         return err;
     };
     try upload_log_files.append(allocator, path);
+}
+
+fn loadedThreadInFeedbackSubtree(state: *const AppServerState, thread: *const LoadedThread, root_thread_id: []const u8) bool {
+    if (std.mem.eql(u8, thread.id, root_thread_id)) return true;
+
+    var current_parent = thread.forked_from_id orelse return false;
+    var depth: usize = 0;
+    while (depth < state.loaded_threads.items.len) : (depth += 1) {
+        if (std.mem.eql(u8, current_parent, root_thread_id)) return true;
+        const parent = findLoadedThread(state, current_parent) orelse return false;
+        current_parent = parent.forked_from_id orelse return false;
+    }
+    return false;
 }
 
 fn renderFeedbackUploadResponse(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
