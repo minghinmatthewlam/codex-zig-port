@@ -4386,6 +4386,26 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ],
             [],
         )
+        with sqlite3.connect(state_db_path) as db:
+            db.execute(
+                """
+                UPDATE threads
+                SET title = ?,
+                    memory_mode = ?,
+                    git_sha = ?,
+                    git_branch = ?,
+                    git_origin_url = ?
+                WHERE id = ?
+                """,
+                (
+                    "State DB Column Name",
+                    "disabled",
+                    "state-db-column-sha",
+                    "state-db-column-branch",
+                    "https://example.test/state-column.git",
+                    state_db_thread_id,
+                ),
+            )
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
@@ -4462,6 +4482,32 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-column-metadata",
+                    "method": "thread/list",
+                    "params": {
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "State DB Column Name",
+                        "useStateDbOnly": True,
+                    },
+                },
+            )
+            state_db_metadata_list = read_json_line(proc, 5)
+            assert state_db_metadata_list["id"] == "thread-list-state-db-column-metadata"
+            state_db_metadata_threads = state_db_metadata_list["result"]["data"]
+            assert [thread["id"] for thread in state_db_metadata_threads] == [
+                state_db_thread_id
+            ]
+            assert state_db_metadata_threads[0]["name"] == "State DB Column Name"
+            assert state_db_metadata_threads[0]["gitInfo"] == {
+                "sha": "state-db-column-sha",
+                "branch": "state-db-column-branch",
+                "originUrl": "https://example.test/state-column.git",
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-read-state-db-only-rollout-with-turns",
                     "method": "thread/read",
                     "params": {"threadId": state_db_thread_id, "includeTurns": True},
@@ -4480,6 +4526,12 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert read_state_db_only_thread["cwd"] == "/"
             assert read_state_db_only_thread["cliVersion"] == "0.0.0"
             assert read_state_db_only_thread["source"] == "cli"
+            assert read_state_db_only_thread["name"] == "State DB Column Name"
+            assert read_state_db_only_thread["gitInfo"] == {
+                "sha": "state-db-column-sha",
+                "branch": "state-db-column-branch",
+                "originUrl": "https://example.test/state-column.git",
+            }
             state_db_read_turns = read_state_db_only_thread["turns"]
             assert state_db_read_turns[0]["items"][0]["type"] == "userMessage"
             assert (
