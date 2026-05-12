@@ -243,6 +243,8 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
 }
 
 pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, name: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), codex_home);
+
     const path = try std.fs.path.join(allocator, &.{ codex_home, session_index_file });
     defer allocator.free(path);
 
@@ -1135,16 +1137,18 @@ test "session index names use latest appended entry" {
 
     const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(root);
+    const home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(home);
 
-    try appendThreadName(allocator, root, "11111111-1111-4111-8111-111111111111", "first name");
-    try appendThreadName(allocator, root, "22222222-2222-4222-8222-222222222222", "other name");
-    try appendThreadName(allocator, root, "11111111-1111-4111-8111-111111111111", "latest name");
+    try appendThreadName(allocator, home, "11111111-1111-4111-8111-111111111111", "first name");
+    try appendThreadName(allocator, home, "22222222-2222-4222-8222-222222222222", "other name");
+    try appendThreadName(allocator, home, "11111111-1111-4111-8111-111111111111", "latest name");
 
-    const found = (try findThreadName(allocator, root, "11111111-1111-4111-8111-111111111111")).?;
+    const found = (try findThreadName(allocator, home, "11111111-1111-4111-8111-111111111111")).?;
     defer allocator.free(found);
     try std.testing.expectEqualStrings("latest name", found);
 
-    const missing = try findThreadName(allocator, root, "33333333-3333-4333-8333-333333333333");
+    const missing = try findThreadName(allocator, home, "33333333-3333-4333-8333-333333333333");
     try std.testing.expect(missing == null);
 }
 
