@@ -1428,6 +1428,22 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-rollback-ephemeral",
+                "method": "thread/rollback",
+                "params": {"threadId": thread_id, "numTurns": 1},
+            }
+        )
+        thread_rollback_ephemeral = read_line()
+        assert thread_rollback_ephemeral["id"] == "thread-rollback-ephemeral"
+        assert thread_rollback_ephemeral["error"]["code"] == -32600
+        assert (
+            "thread rollback requires persisted thread history"
+            in thread_rollback_ephemeral["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork",
                 "method": "thread/fork",
                 "params": {
