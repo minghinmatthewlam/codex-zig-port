@@ -21,11 +21,11 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   returned no open alerts.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS. Checked push run
-  `25714032619` passed for
-  `87796afa9a8add39391aeb18d5adfc0449d27f79`.
-- Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
-  tokens, Slack tokens, AWS access keys, private-key blocks, JWT-shaped blobs,
-  unignored local auth/env files, or unignored local artifacts. Broad
+  `25717457553` passed for
+  `21ad42ac457c2286a932dc53ef045e3e3816aba0`.
+- Source hygiene: current tracked-file scans found no provider-shaped tokens,
+  GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
+  JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
   keyword/path scans only found test fixtures, docs, ignored local build output,
   and temporary-path examples. Git-history regex scans found no provider-shaped
   secrets, private-key blocks, or JWT-shaped blobs, and only an old dummy
