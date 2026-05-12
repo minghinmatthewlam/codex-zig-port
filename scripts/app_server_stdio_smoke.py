@@ -546,7 +546,26 @@ def seed_feedback_state_db(
             CREATE TABLE threads (
                 id TEXT PRIMARY KEY,
                 rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                source TEXT NOT NULL DEFAULT 'cli',
+                thread_source TEXT,
+                agent_nickname TEXT,
+                agent_role TEXT,
+                agent_path TEXT,
+                model_provider TEXT NOT NULL DEFAULT 'openai',
+                model TEXT,
+                reasoning_effort TEXT,
+                cwd TEXT NOT NULL DEFAULT '/',
                 title TEXT NOT NULL DEFAULT '',
+                sandbox_policy TEXT NOT NULL DEFAULT 'danger-full-access',
+                approval_mode TEXT NOT NULL DEFAULT 'never',
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                first_user_message TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
                 memory_mode TEXT NOT NULL DEFAULT 'enabled',
                 git_sha TEXT,
                 git_branch TEXT,
@@ -4378,11 +4397,57 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        archived_state_db_thread_id = "55555555-5555-4555-8555-555555555555"
+        archived_state_db_rollout_path = (
+            state_db_rollouts_dir / f"rollout-{archived_state_db_thread_id}.jsonl"
+        )
+        archived_state_db_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T13:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": archived_state_db_thread_id,
+                                "timestamp": "2025-01-05T13:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T13:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "archived state db hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         state_db_path = seed_feedback_state_db(
             codex_home,
             [
                 (appserver_thread_id, appserver_rollout_path),
                 (state_db_thread_id, state_db_rollout_path),
+                (archived_state_db_thread_id, archived_state_db_rollout_path),
             ],
             [],
         )
@@ -4390,8 +4455,44 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             db.execute(
                 """
                 UPDATE threads
+                SET source = ?,
+                    model_provider = ?,
+                    cwd = ?,
+                    first_user_message = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    created_at_ms = ?,
+                    updated_at_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    "appServer",
+                    "mock_provider",
+                    "/",
+                    "appserver saved hello",
+                    1736077800,
+                    1736077805,
+                    1736077800000,
+                    1736077805000,
+                    appserver_thread_id,
+                ),
+            )
+            db.execute(
+                """
+                UPDATE threads
                 SET title = ?,
                     memory_mode = ?,
+                    source = ?,
+                    thread_source = ?,
+                    agent_nickname = ?,
+                    agent_role = ?,
+                    model_provider = ?,
+                    cwd = ?,
+                    first_user_message = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    created_at_ms = ?,
+                    updated_at_ms = ?,
                     git_sha = ?,
                     git_branch = ?,
                     git_origin_url = ?
@@ -4400,10 +4501,52 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 (
                     "State DB Column Name",
                     "polluted",
+                    "cli",
+                    "subagent",
+                    "Navigator",
+                    "explorer",
+                    "mock_provider",
+                    "/",
+                    "state db only hello",
+                    1736078400,
+                    1736078700,
+                    1736078400000,
+                    1736078700000,
                     "state-db-column-sha",
                     "state-db-column-branch",
                     "https://example.test/state-column.git",
                     state_db_thread_id,
+                ),
+            )
+            db.execute(
+                """
+                UPDATE threads
+                SET title = ?,
+                    source = ?,
+                    model_provider = ?,
+                    cwd = ?,
+                    first_user_message = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    created_at_ms = ?,
+                    updated_at_ms = ?,
+                    archived = ?,
+                    archived_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "Archived State DB Column Name",
+                    "cli",
+                    "mock_provider",
+                    "/",
+                    "archived state db hello",
+                    1736082000,
+                    1736082300,
+                    1736082000000,
+                    1736082300000,
+                    1,
+                    1736082300,
+                    archived_state_db_thread_id,
                 ),
             )
 
@@ -4498,11 +4641,44 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 state_db_thread_id
             ]
             assert state_db_metadata_threads[0]["name"] == "State DB Column Name"
+            assert state_db_metadata_threads[0]["createdAt"] == 1736078400
+            assert state_db_metadata_threads[0]["updatedAt"] == 1736078700
+            assert state_db_metadata_threads[0]["source"] == "cli"
+            assert state_db_metadata_threads[0]["threadSource"] == "subagent"
+            assert state_db_metadata_threads[0]["agentNickname"] == "Navigator"
+            assert state_db_metadata_threads[0]["agentRole"] == "explorer"
             assert state_db_metadata_threads[0]["gitInfo"] == {
                 "sha": "state-db-column-sha",
                 "branch": "state-db-column-branch",
                 "originUrl": "https://example.test/state-column.git",
             }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-archived-metadata",
+                    "method": "thread/list",
+                    "params": {
+                        "archived": True,
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "Archived State DB Column Name",
+                        "useStateDbOnly": True,
+                    },
+                },
+            )
+            archived_state_db_list = read_json_line(proc, 5)
+            assert archived_state_db_list["id"] == "thread-list-state-db-archived-metadata"
+            archived_state_db_threads = archived_state_db_list["result"]["data"]
+            assert [thread["id"] for thread in archived_state_db_threads] == [
+                archived_state_db_thread_id
+            ]
+            assert archived_state_db_threads[0]["name"] == "Archived State DB Column Name"
+            assert archived_state_db_threads[0]["createdAt"] == 1736082000
+            assert archived_state_db_threads[0]["updatedAt"] == 1736082300
+            assert archived_state_db_threads[0]["path"] == os.path.realpath(
+                archived_state_db_rollout_path
+            )
 
             write_json_line(
                 proc,
@@ -4526,6 +4702,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert read_state_db_only_thread["cwd"] == "/"
             assert read_state_db_only_thread["cliVersion"] == "0.0.0"
             assert read_state_db_only_thread["source"] == "cli"
+            assert read_state_db_only_thread["threadSource"] == "subagent"
+            assert read_state_db_only_thread["agentNickname"] == "Navigator"
+            assert read_state_db_only_thread["agentRole"] == "explorer"
+            assert read_state_db_only_thread["createdAt"] == 1736078400
+            assert read_state_db_only_thread["updatedAt"] == 1736078700
             assert read_state_db_only_thread["name"] == "State DB Column Name"
             assert read_state_db_only_thread["gitInfo"] == {
                 "sha": "state-db-column-sha",
