@@ -15902,7 +15902,15 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         source_skill = claude_home / "skills" / "skill-a"
         source_skill.mkdir(parents=True)
         (source_skill / "SKILL.md").write_text(
-            "Use Claude Code and CLAUDE utilities.",
+            "\n".join(
+                [
+                    "---",
+                    "name: skill-a",
+                    "description: External skill",
+                    "---",
+                    "Use Claude Code and CLAUDE utilities.",
+                ]
+            ),
             encoding="utf-8",
         )
         (source_skill / "notes.txt").write_text(
@@ -15910,6 +15918,18 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         target_skills = codex_home.parent / ".agents" / "skills"
+        cached_skills_before_import = rpc(
+            "external-agent-skills-cache-before-import",
+            "skills/list",
+            {"cwds": [str(root)], "forceReload": True},
+        )
+        assert cached_skills_before_import["id"] == "external-agent-skills-cache-before-import"
+        cached_skill_names = {
+            skill["name"]
+            for skill in cached_skills_before_import["result"]["data"][0]["skills"]
+        }
+        assert "skill-a" not in cached_skill_names
+
         detected_skills = rpc(
             "external-agent-detect-skills",
             "externalAgentConfig/detect",
@@ -15940,11 +15960,26 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "params": {},
         }
         assert (target_skills / "skill-a" / "SKILL.md").read_text(encoding="utf-8") == (
+            "---\n"
+            "name: skill-a\n"
+            "description: External skill\n"
+            "---\n"
             "Use Codex and Codex utilities."
         )
         assert (target_skills / "skill-a" / "notes.txt").read_text(encoding="utf-8") == (
             "plain copy"
         )
+        cached_skills_after_import = rpc(
+            "external-agent-skills-cache-after-import",
+            "skills/list",
+            {"cwds": [str(root)], "forceReload": False},
+        )
+        assert cached_skills_after_import["id"] == "external-agent-skills-cache-after-import"
+        refreshed_skill_names = {
+            skill["name"]
+            for skill in cached_skills_after_import["result"]["data"][0]["skills"]
+        }
+        assert "skill-a" in refreshed_skill_names
 
         detect_after_skills = rpc(
             "external-agent-detect-after-skills",
