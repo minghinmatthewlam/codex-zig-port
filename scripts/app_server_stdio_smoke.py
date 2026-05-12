@@ -4297,9 +4297,76 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        state_db_thread_id = "44444444-4444-4444-8444-444444444444"
+        state_db_rollouts_dir = codex_home / "state-rollouts"
+        state_db_rollouts_dir.mkdir()
+        state_db_rollout_path = (
+            state_db_rollouts_dir / f"rollout-{state_db_thread_id}.jsonl"
+        )
+        state_db_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": state_db_thread_id,
+                                "timestamp": "2025-01-05T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "state db only hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "state db only hi",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         seed_feedback_state_db(
             codex_home,
-            [(appserver_thread_id, appserver_rollout_path)],
+            [
+                (appserver_thread_id, appserver_rollout_path),
+                (state_db_thread_id, state_db_rollout_path),
+            ],
             [],
         )
 
@@ -4373,6 +4440,57 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             )
             assert state_db_appserver_thread["source"] == "appServer"
             assert state_db_appserver_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-state-db-only-rollout-with-turns",
+                    "method": "thread/read",
+                    "params": {"threadId": state_db_thread_id, "includeTurns": True},
+                },
+            )
+            read_state_db_only = read_json_line(proc, 5)
+            assert read_state_db_only["id"] == "thread-read-state-db-only-rollout-with-turns"
+            read_state_db_only_thread = read_state_db_only["result"]["thread"]
+            assert read_state_db_only_thread["id"] == state_db_thread_id
+            assert read_state_db_only_thread["sessionId"] == state_db_thread_id
+            assert read_state_db_only_thread["preview"] == "state db only hello"
+            assert read_state_db_only_thread["modelProvider"] == "mock_provider"
+            assert read_state_db_only_thread["path"] == os.path.realpath(
+                state_db_rollout_path
+            )
+            assert read_state_db_only_thread["cwd"] == "/"
+            assert read_state_db_only_thread["cliVersion"] == "0.0.0"
+            assert read_state_db_only_thread["source"] == "cli"
+            state_db_read_turns = read_state_db_only_thread["turns"]
+            assert state_db_read_turns[0]["items"][0]["type"] == "userMessage"
+            assert (
+                state_db_read_turns[0]["items"][0]["content"][0]["text"]
+                == "state db only hello"
+            )
+            assert state_db_read_turns[1]["items"][0]["type"] == "agentMessage"
+            assert state_db_read_turns[1]["items"][0]["text"] == "state db only hi"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-state-db-only-rollout",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": state_db_thread_id, "limit": 2},
+                },
+            )
+            state_db_only_turns = read_json_line(proc, 5)
+            assert state_db_only_turns["id"] == "thread-turns-list-state-db-only-rollout"
+            state_db_turn_page = state_db_only_turns["result"]["data"]
+            assert [turn["id"] for turn in state_db_turn_page] == ["turn-1", "turn-0"]
+            assert state_db_turn_page[0]["items"][0]["text"] == "state db only hi"
+            assert (
+                state_db_turn_page[1]["items"][0]["content"][0]["text"]
+                == "state db only hello"
+            )
+            assert state_db_only_turns["result"]["nextCursor"] is None
 
             write_json_line(
                 proc,

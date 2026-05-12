@@ -11,6 +11,12 @@ const LIST_ROLLOUT_PATHS_QUERY =
     \\ORDER BY id ASC
 ;
 
+const ROLLOUT_PATH_QUERY =
+    \\SELECT rollout_path
+    \\FROM threads
+    \\WHERE id = ?
+;
+
 pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![]session_store.RolloutFile {
     const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
     defer allocator.free(state_path);
@@ -74,6 +80,32 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
     }
 
     return files.toOwnedSlice(allocator);
+}
+
+pub fn findRolloutPathByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?[]const u8 {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
+
+    const db = try sqlite.openReadOnly(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db, ROLLOUT_PATH_QUERY) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return null,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+    try sqlite.bindText(statement, 1, thread_id);
+
+    switch (sqlite.step(statement)) {
+        sqlite.SQLITE_ROW => {
+            const raw_path = try sqlite.columnTextOwned(allocator, statement, 0);
+            defer allocator.free(raw_path);
+            return try stateRolloutPath(allocator, codex_home, raw_path);
+        },
+        sqlite.SQLITE_DONE => return null,
+        else => return error.StateDbRolloutPathStepFailed,
+    }
 }
 
 fn stateRolloutPath(allocator: std.mem.Allocator, codex_home: []const u8, path: []const u8) ![]const u8 {

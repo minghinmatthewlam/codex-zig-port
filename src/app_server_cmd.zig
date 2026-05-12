@@ -16858,7 +16858,18 @@ fn createStoredThreadFromParamsIncludingArchived(
     params: std.json.ObjectMap,
 ) !LoadedThread {
     return createStoredThreadFromParams(allocator, cfg, params) catch |err| switch (err) {
-        error.FileNotFound => createArchivedStoredThreadFromParams(allocator, cfg, params),
+        error.FileNotFound => createArchivedOrStateDbStoredThreadFromParams(allocator, cfg, params),
+        else => err,
+    };
+}
+
+fn createArchivedOrStateDbStoredThreadFromParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    return createArchivedStoredThreadFromParams(allocator, cfg, params) catch |err| switch (err) {
+        error.FileNotFound => createStateDbStoredThreadFromParams(allocator, cfg, params),
         else => err,
     };
 }
@@ -16872,6 +16883,17 @@ fn createArchivedStoredThreadFromParams(
     const archived_path = try session_store.resolveArchivedRolloutPath(allocator, cfg.codex_home, thread_id);
     defer allocator.free(archived_path);
     return createStoredThreadFromPath(allocator, cfg, params, archived_path);
+}
+
+fn createStateDbStoredThreadFromParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
+    const state_path = (try thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, thread_id)) orelse return error.FileNotFound;
+    defer allocator.free(state_path);
+    return createStoredThreadFromPath(allocator, cfg, params, state_path);
 }
 
 fn createStoredThreadFromPath(
