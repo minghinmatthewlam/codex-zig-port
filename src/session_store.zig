@@ -296,25 +296,17 @@ pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, th
 pub fn appendThreadMemoryMode(allocator: std.mem.Allocator, path: []const u8, thread_id: []const u8, mode: []const u8) !void {
     var transcript = try loadTranscript(allocator, path);
     defer transcript.deinit(allocator);
-    if (transcript.id) |id| {
-        if (!std.mem.eql(u8, id, thread_id)) return error.InvalidSessionLine;
-    }
+    try appendThreadMemoryModeFromTranscript(allocator, path, thread_id, &transcript, mode);
+}
 
-    try appendJsonLineToPath(allocator, path, .{
-        .timestamp = fallback_session_meta_timestamp,
-        .type = "session_meta",
-        .payload = .{
-            .id = thread_id,
-            .timestamp = fallback_session_meta_timestamp,
-            .cwd = transcript.cwd orelse "/",
-            .originator = "codex",
-            .cli_version = transcript.cli_version orelse "0.0.0",
-            .source = transcript.source orelse "cli",
-            .thread_source = transcript.thread_source orelse "user",
-            .model_provider = transcript.model_provider orelse "openai",
-            .memory_mode = mode,
-        },
-    });
+pub fn appendThreadMemoryModeFromTranscript(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    thread_id: []const u8,
+    transcript: *const session.Transcript,
+    mode: []const u8,
+) !void {
+    try appendThreadSessionMetaFromTranscript(allocator, path, thread_id, transcript, mode, null);
 }
 
 pub fn appendThreadGitInfo(
@@ -339,6 +331,34 @@ pub fn appendThreadGitInfoWithMemoryMode(
 ) !void {
     var transcript = try loadTranscript(allocator, path);
     defer transcript.deinit(allocator);
+    try appendThreadGitInfoFromTranscript(allocator, path, thread_id, &transcript, sha, branch, origin_url, memory_mode);
+}
+
+pub fn appendThreadGitInfoFromTranscript(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    thread_id: []const u8,
+    transcript: *const session.Transcript,
+    sha: ?[]const u8,
+    branch: ?[]const u8,
+    origin_url: ?[]const u8,
+    memory_mode: ?[]const u8,
+) !void {
+    try appendThreadSessionMetaFromTranscript(allocator, path, thread_id, transcript, memory_mode, .{
+        .commit_hash = sha,
+        .branch = branch,
+        .repository_url = origin_url,
+    });
+}
+
+fn appendThreadSessionMetaFromTranscript(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    thread_id: []const u8,
+    transcript: *const session.Transcript,
+    memory_mode: ?[]const u8,
+    git: ?StoredGitInfo,
+) !void {
     if (transcript.id) |id| {
         if (!std.mem.eql(u8, id, thread_id)) return error.InvalidSessionLine;
     }
@@ -357,11 +377,7 @@ pub fn appendThreadGitInfoWithMemoryMode(
             .thread_source = transcript.thread_source orelse "user",
             .model_provider = transcript.model_provider orelse "openai",
             .memory_mode = effective_memory_mode,
-            .git = StoredGitInfo{
-                .commit_hash = sha,
-                .branch = branch,
-                .repository_url = origin_url,
-            },
+            .git = git,
         },
     });
 }

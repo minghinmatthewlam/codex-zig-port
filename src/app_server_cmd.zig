@@ -16512,7 +16512,7 @@ fn handleThreadMethod(
         };
         defer stored_thread.deinit(allocator);
         const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
-        session_store.appendThreadMemoryMode(allocator, stored_path, thread_id, mode) catch |err| {
+        session_store.appendThreadMemoryModeFromTranscript(allocator, stored_path, thread_id, &stored_thread.transcript, mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
         };
         _ = thread_state.updateThreadMemoryMode(allocator, cfg.codex_home, thread_id, mode) catch |err| {
@@ -16572,7 +16572,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
         };
         const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
-        session_store.appendThreadGitInfoWithMemoryMode(allocator, stored_path, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url, stored_thread.transcript.memory_mode) catch |err| {
+        session_store.appendThreadGitInfoFromTranscript(allocator, stored_path, thread_id, &stored_thread.transcript, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url, stored_thread.transcript.memory_mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
         _ = thread_state.updateThreadGitInfo(allocator, cfg.codex_home, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
@@ -17009,11 +17009,26 @@ fn applyIndexedThreadName(allocator: std.mem.Allocator, codex_home: []const u8, 
 }
 
 fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread, metadata: thread_state.ThreadMetadata) !void {
+    if (stateThreadString(metadata.first_user_message)) |preview| {
+        try replaceOwnedString(allocator, &thread.preview, preview);
+    }
     if (stateThreadTitle(metadata.title, thread.preview)) |title| {
         try replaceOptionalOwnedString(allocator, &thread.name, title);
     }
     if (metadata.memory_mode) |memory_mode| {
         try thread.transcript.setMemoryMode(allocator, memory_mode);
+    }
+    if (stateThreadString(metadata.model_provider)) |model_provider| {
+        try replaceOwnedString(allocator, &thread.model_provider, model_provider);
+        try thread.transcript.setModelProvider(allocator, model_provider);
+    }
+    if (stateThreadString(metadata.cwd)) |cwd| {
+        try replaceOwnedString(allocator, &thread.cwd, cwd);
+        try thread.transcript.setCwd(allocator, cwd);
+    }
+    if (stateThreadString(metadata.cli_version)) |cli_version| {
+        try replaceOwnedString(allocator, &thread.cli_version, cli_version);
+        try thread.transcript.setCliVersion(allocator, cli_version);
     }
     if (metadata.lifecycle_loaded) {
         if (metadata.created_at_ms) |value| thread.created_at = @divFloor(value, 1000);
@@ -17800,15 +17815,17 @@ const SavedThreadListItem = struct {
         errdefer allocator.free(session_id);
         const forked_from_id = if (summary.forked_from_id) |value| try allocator.dupe(u8, value) else null;
         errdefer if (forked_from_id) |value| allocator.free(value);
-        const preview = try allocator.dupe(u8, summary.preview);
+        const preview_value = stateThreadStringOrFallback(file.first_user_message, summary.preview);
+        const preview = try allocator.dupe(u8, preview_value);
         errdefer allocator.free(preview);
-        const model_provider = try allocator.dupe(u8, summary.model_provider orelse fallback_model_provider);
+        const model_provider_value = stateThreadStringOrFallback(file.model_provider, summary.model_provider orelse fallback_model_provider);
+        const model_provider = try allocator.dupe(u8, model_provider_value);
         errdefer allocator.free(model_provider);
         const path = try allocator.dupe(u8, file.path);
         errdefer allocator.free(path);
-        const cwd = try allocator.dupe(u8, summary.cwd orelse "");
+        const cwd = try allocator.dupe(u8, stateThreadStringOrFallback(file.cwd, summary.cwd orelse ""));
         errdefer allocator.free(cwd);
-        const cli_version = try allocator.dupe(u8, summary.cli_version orelse "0.0.1");
+        const cli_version = try allocator.dupe(u8, stateThreadStringOrFallback(file.cli_version, summary.cli_version orelse "0.0.1"));
         errdefer allocator.free(cli_version);
         const source_value = if (file.state_lifecycle_loaded) file.source orelse summary.source orelse "cli" else summary.source orelse "cli";
         const source = try allocator.dupe(u8, source_value);
@@ -17832,7 +17849,7 @@ const SavedThreadListItem = struct {
         const git_origin_url = if (git_origin_url_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_origin_url) |value| allocator.free(value);
         const indexed_name = session_store.threadNameFromIndex(thread_names, summary.id);
-        const state_name = if (file.state_metadata_loaded) stateThreadTitle(file.title, summary.preview) else null;
+        const state_name = if (file.state_metadata_loaded) stateThreadTitle(file.title, preview_value) else null;
         const name_value: ?[]const u8 = if (state_name) |value|
             value
         else if (indexed_name) |value|
@@ -17897,6 +17914,16 @@ fn stateThreadTitle(title: ?[]const u8, preview: []const u8) ?[]const u8 {
     if (trimmed.len == 0) return null;
     if (std.mem.eql(u8, trimmed, std.mem.trim(u8, preview, " \t\r\n"))) return null;
     return trimmed;
+}
+
+fn stateThreadString(value: ?[]const u8) ?[]const u8 {
+    const text = value orelse return null;
+    if (text.len == 0) return null;
+    return text;
+}
+
+fn stateThreadStringOrFallback(value: ?[]const u8, fallback: []const u8) []const u8 {
+    return stateThreadString(value) orelse fallback;
 }
 
 const ThreadListItem = union(enum) {
