@@ -90,6 +90,13 @@ status responses, login/cancel/logout envelopes, ChatGPT auth-token refresh
 payloads, rate-limit snapshots, add-credits nudge request/status payloads, and
 account notification payloads.
 
+Additional account login validation coverage: app-server `account/login/start`
+now loads `forced_login_method` and `forced_chatgpt_workspace_id` from the
+effective config, rejects disabled API-key, ChatGPT, and external
+ChatGPT-token login attempts with Rust-shaped invalid-request errors, and
+rejects external ChatGPT auth tokens that target the wrong forced workspace.
+Browser and device-code active ChatGPT login flows remain planned.
+
 Additional app-server filesystem generation coverage: `fs/readFile`,
 `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,
 `fs/remove`, `fs/copy`, `fs/watch`, `fs/unwatch`, and `fs/changed` now have
