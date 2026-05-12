@@ -15310,6 +15310,52 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         assert detect_after_import["id"] == "external-agent-detect-after-config"
         assert detect_after_import["result"] == {"items": []}
+
+        (claude_home / "CLAUDE.md").write_text(
+            "Use Claude Code, CLAUDE.md, claude_code, and xclaude.",
+            encoding="utf-8",
+        )
+        detected_agents_md = rpc(
+            "external-agent-detect-agents-md",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_agents_md["id"] == "external-agent-detect-agents-md"
+        assert detected_agents_md["result"]["items"] == [
+            {
+                "itemType": "AGENTS_MD",
+                "description": (
+                    f"Migrate {claude_home / 'CLAUDE.md'} to "
+                    f"{codex_home / 'AGENTS.md'}"
+                ),
+                "cwd": None,
+                "details": None,
+            }
+        ]
+
+        agents_md_import = rpc(
+            "external-agent-import-agents-md",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_agents_md["result"]["items"]},
+        )
+        assert agents_md_import["id"] == "external-agent-import-agents-md"
+        assert agents_md_import["result"] == {}
+        agents_md_notification = read_json_line(proc, 5)
+        assert agents_md_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (codex_home / "AGENTS.md").read_text(encoding="utf-8") == (
+            "Use Codex, AGENTS.md, Codex, and xclaude."
+        )
+
+        detect_after_agents_md = rpc(
+            "external-agent-detect-after-agents-md",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_agents_md["id"] == "external-agent-detect-after-agents-md"
+        assert detect_after_agents_md["result"] == {"items": []}
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
