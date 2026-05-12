@@ -17032,7 +17032,7 @@ fn handleThreadFork(
         return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source);
     }
 
-    var stored_source = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+    var stored_source = createStoredThreadFromParamsIncludingArchived(allocator, cfg, object) catch |err| switch (err) {
         error.FileNotFound => return renderThreadNotFound(allocator, id_value, source_thread_id),
         error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/fork"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
