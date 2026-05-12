@@ -24401,6 +24401,7 @@ fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.j
 const ExternalAgentConfigImportItem = struct {
     item_type: []const u8,
     cwd: ?[]const u8,
+    details: ?std.json.Value = null,
 };
 
 fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -24433,7 +24434,11 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
                 if (cwd_value == .string) cwd_value.string else null
             else
                 null;
-            try import_items.append(allocator, .{ .item_type = item_type.string, .cwd = cwd });
+            const details = if (item.object.get("details")) |details_value|
+                if (details_value == .object) details_value else null
+            else
+                null;
+            try import_items.append(allocator, .{ .item_type = item_type.string, .cwd = cwd, .details = details });
         }
     }
     if (migration_items.array.items.len == 0) {
@@ -24464,6 +24469,10 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
         } else if (std.mem.eql(u8, item.item_type, "AGENTS_MD")) {
             importExternalAgentAgentsMd(allocator, codex_home, item.cwd) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import AGENTS.md", err);
+            };
+        } else if (std.mem.eql(u8, item.item_type, "PLUGINS")) {
+            importExternalAgentPlugins(allocator, codex_home, item.cwd, item.details) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import plugins", err);
             };
         } else if (std.mem.eql(u8, item.item_type, "SKILLS")) {
             importExternalAgentSkills(allocator, codex_home, item.cwd) catch |err| {
@@ -24520,6 +24529,17 @@ fn importExternalAgentHooks(allocator: std.mem.Allocator, codex_home: []const u8
         }
     }
     return importExternalAgentHomeHooks(allocator, codex_home);
+}
+
+fn importExternalAgentPlugins(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8, details: ?std.json.Value) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectPlugins(allocator, codex_home, repo_root, details);
+        }
+    }
+    return importExternalAgentHomePlugins(allocator, codex_home, details);
 }
 
 fn importExternalAgentAgentsMd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
@@ -24585,6 +24605,7 @@ fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
         !std.mem.eql(u8, item_type.string, "MCP_SERVER_CONFIG") and
         !std.mem.eql(u8, item_type.string, "HOOKS") and
         !std.mem.eql(u8, item_type.string, "AGENTS_MD") and
+        !std.mem.eql(u8, item_type.string, "PLUGINS") and
         !std.mem.eql(u8, item_type.string, "SKILLS") and
         !std.mem.eql(u8, item_type.string, "COMMANDS") and
         !std.mem.eql(u8, item_type.string, "SUBAGENTS")) return false;
@@ -24692,6 +24713,19 @@ fn renderExternalAgentConfigDetectResponse(
         defer allocator.free(description);
         try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, null);
     }
+    if (include_home) {
+        const source_settings = try externalAgentHomeSettingsPath(allocator);
+        defer allocator.free(source_settings);
+        const source_root = try externalAgentHomePath(allocator);
+        defer allocator.free(source_root);
+        var plugin_details = try externalAgentPluginMigrationDetails(allocator, source_settings, source_root, codex_home);
+        defer plugin_details.deinit(allocator);
+        if (!plugin_details.isEmpty()) {
+            const description = try std.fmt.allocPrint(allocator, "Migrate enabled plugins from {s}", .{source_settings});
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItemWithPluginDetails(allocator, &result, &first, description, null, plugin_details);
+        }
+    }
 
     for (cwds) |cwd| {
         const repo_root = (try findExternalAgentRepoRoot(allocator, cwd.string)) orelse continue;
@@ -24780,6 +24814,17 @@ fn renderExternalAgentConfigDetectResponse(
             defer allocator.free(description);
             try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, repo_root);
         }
+        {
+            const source_settings = try externalAgentProjectSettingsPath(allocator, repo_root);
+            defer allocator.free(source_settings);
+            var plugin_details = try externalAgentPluginMigrationDetails(allocator, source_settings, repo_root, codex_home);
+            defer plugin_details.deinit(allocator);
+            if (!plugin_details.isEmpty()) {
+                const description = try std.fmt.allocPrint(allocator, "Migrate enabled plugins from {s}", .{source_settings});
+                defer allocator.free(description);
+                try appendExternalAgentConfigMigrationItemWithPluginDetails(allocator, &result, &first, description, repo_root, plugin_details);
+            }
+        }
     }
     try result.appendSlice(allocator, "]}");
     return result.toOwnedSlice(allocator);
@@ -24854,6 +24899,36 @@ fn appendExternalAgentConfigMigrationItemWithNamedDetails(
         try result.appendSlice(allocator, "[]");
     }
     try result.appendSlice(allocator, "}}");
+    first.* = false;
+}
+
+fn appendExternalAgentConfigMigrationItemWithPluginDetails(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    description: []const u8,
+    cwd: ?[]const u8,
+    details: ExternalAgentPluginMigrationDetails,
+) !void {
+    if (!first.*) try result.appendSlice(allocator, ",");
+    try result.appendSlice(allocator, "{\"itemType\":\"PLUGINS\",\"description\":");
+    try appendJsonString(allocator, result, description);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    if (cwd) |cwd_value| {
+        try appendJsonString(allocator, result, cwd_value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"details\":{\"plugins\":[");
+    for (details.groups.items, 0..) |group, group_index| {
+        if (group_index != 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"marketplaceName\":");
+        try appendJsonString(allocator, result, group.marketplace_name);
+        try result.appendSlice(allocator, ",\"pluginNames\":");
+        try appendJsonStringArray(allocator, result, group.plugin_names.items);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "],\"sessions\":[],\"mcpServers\":[],\"hooks\":[],\"subagents\":[],\"commands\":[]}}");
     first.* = false;
 }
 
@@ -24942,6 +25017,383 @@ fn importExternalAgentConfigAt(allocator: std.mem.Allocator, settings_path: []co
 
     if (!changed) return;
     try config.writeConfigTomlFile(config_path, updated);
+}
+
+const ExternalAgentPluginMigrationGroup = struct {
+    marketplace_name: []const u8,
+    plugin_names: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *ExternalAgentPluginMigrationGroup, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        deinitExternalAgentNamedItems(allocator, &self.plugin_names);
+    }
+};
+
+const ExternalAgentPluginMigrationDetails = struct {
+    groups: std.ArrayList(ExternalAgentPluginMigrationGroup) = .empty,
+
+    fn deinit(self: *ExternalAgentPluginMigrationDetails, allocator: std.mem.Allocator) void {
+        for (self.groups.items) |*group| group.deinit(allocator);
+        self.groups.deinit(allocator);
+    }
+
+    fn isEmpty(self: ExternalAgentPluginMigrationDetails) bool {
+        return self.groups.items.len == 0;
+    }
+};
+
+const ExternalAgentMarketplaceImportSource = struct {
+    marketplace_name: []const u8,
+    source: []const u8,
+    ref_name: ?[]const u8 = null,
+
+    fn deinit(self: ExternalAgentMarketplaceImportSource, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        allocator.free(self.source);
+        if (self.ref_name) |value| allocator.free(value);
+    }
+};
+
+fn deinitExternalAgentMarketplaceImportSources(allocator: std.mem.Allocator, sources: *std.ArrayList(ExternalAgentMarketplaceImportSource)) void {
+    for (sources.items) |source| source.deinit(allocator);
+    sources.deinit(allocator);
+}
+
+fn importExternalAgentHomePlugins(allocator: std.mem.Allocator, codex_home: []const u8, details_value: ?std.json.Value) !void {
+    const source_settings = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(source_settings);
+    const source_root = try externalAgentHomePath(allocator);
+    defer allocator.free(source_root);
+    return importExternalAgentPluginsAt(allocator, codex_home, source_settings, source_root, details_value);
+}
+
+fn importExternalAgentProjectPlugins(allocator: std.mem.Allocator, codex_home: []const u8, repo_root: []const u8, details_value: ?std.json.Value) !void {
+    const source_settings = try externalAgentProjectSettingsPath(allocator, repo_root);
+    defer allocator.free(source_settings);
+    return importExternalAgentPluginsAt(allocator, codex_home, source_settings, repo_root, details_value);
+}
+
+fn importExternalAgentPluginsAt(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    source_settings: []const u8,
+    source_root: []const u8,
+    details_value: ?std.json.Value,
+) !void {
+    var details = try parseExternalAgentPluginMigrationDetails(allocator, details_value);
+    defer details.deinit(allocator);
+    if (details.isEmpty()) return;
+
+    var sources = try loadExternalAgentMarketplaceImportSources(allocator, source_settings, source_root);
+    defer deinitExternalAgentMarketplaceImportSources(allocator, &sources);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    var current: []const u8 = try allocator.dupe(u8, config_bytes orelse "");
+    defer allocator.free(current);
+
+    const empty_sparse_paths: []const []const u8 = &.{};
+    for (details.groups.items) |group| {
+        const import_source = externalAgentMarketplaceImportSourceForName(sources.items, group.marketplace_name) orelse continue;
+        if (!externalAgentMarketplaceSourceIsLocal(import_source.source)) continue;
+
+        var add = marketplace_config.addLocalMarketplace(allocator, current, import_source.source, import_source.ref_name, empty_sparse_paths) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer add.deinit(allocator);
+        try config.writeConfigTomlFile(config_path, add.updated_config);
+        allocator.free(current);
+        current = try allocator.dupe(u8, add.updated_config);
+
+        const marketplace_path = (try externalAgentMarketplaceManifestPath(allocator, add.installed_root)) orelse continue;
+        defer allocator.free(marketplace_path);
+        for (group.plugin_names.items) |plugin_name| {
+            var install = plugin_list.installLocalPlugin(allocator, codex_home, current, marketplace_path, plugin_name) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => continue,
+            };
+            defer install.deinit(allocator);
+            try config.writeConfigTomlFile(config_path, install.updated_config);
+            allocator.free(current);
+            current = try allocator.dupe(u8, install.updated_config);
+        }
+    }
+}
+
+fn externalAgentPluginMigrationDetails(
+    allocator: std.mem.Allocator,
+    source_settings: []const u8,
+    source_root: []const u8,
+    codex_home: []const u8,
+) !ExternalAgentPluginMigrationDetails {
+    var enabled_plugins = try loadExternalAgentEnabledPlugins(allocator, source_settings);
+    defer deinitExternalAgentNamedItems(allocator, &enabled_plugins);
+    var sources = try loadExternalAgentMarketplaceImportSources(allocator, source_settings, source_root);
+    defer deinitExternalAgentMarketplaceImportSources(allocator, &sources);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const configured_plugins = try plugin_config.enabledPluginIds(allocator, config_bytes orelse "");
+    defer plugin_config.freeStringList(allocator, configured_plugins);
+
+    var details = ExternalAgentPluginMigrationDetails{};
+    errdefer details.deinit(allocator);
+    for (enabled_plugins.items) |plugin_id| {
+        if (externalAgentStringListContains(configured_plugins, plugin_id)) continue;
+        const parts = plugin_config.splitPluginId(plugin_id) orelse continue;
+        const import_source = externalAgentMarketplaceImportSourceForName(sources.items, parts.marketplace) orelse continue;
+        if (!externalAgentMarketplaceSourceIsLocal(import_source.source)) continue;
+        if (!try externalAgentMarketplaceContainsPlugin(allocator, import_source.source, parts.name)) continue;
+        try putExternalAgentPluginMigration(allocator, &details, parts.marketplace, parts.name);
+    }
+    std.mem.sort(ExternalAgentPluginMigrationGroup, details.groups.items, {}, externalAgentPluginMigrationGroupLessThan);
+    return details;
+}
+
+fn parseExternalAgentPluginMigrationDetails(allocator: std.mem.Allocator, details_value: ?std.json.Value) !ExternalAgentPluginMigrationDetails {
+    const details_object = details_value orelse return error.InvalidExternalAgentPluginDetails;
+    if (details_object != .object) return error.InvalidExternalAgentPluginDetails;
+    const plugins = details_object.object.get("plugins") orelse return error.InvalidExternalAgentPluginDetails;
+    if (plugins != .array) return error.InvalidExternalAgentPluginDetails;
+
+    var details = ExternalAgentPluginMigrationDetails{};
+    errdefer details.deinit(allocator);
+    for (plugins.array.items) |group_value| {
+        if (group_value != .object) return error.InvalidExternalAgentPluginDetails;
+        const marketplace_name = group_value.object.get("marketplaceName") orelse return error.InvalidExternalAgentPluginDetails;
+        const plugin_names = group_value.object.get("pluginNames") orelse return error.InvalidExternalAgentPluginDetails;
+        if (marketplace_name != .string or plugin_names != .array) return error.InvalidExternalAgentPluginDetails;
+        if (!plugin_config.isValidPluginSegment(marketplace_name.string)) continue;
+        for (plugin_names.array.items) |plugin_name| {
+            if (plugin_name != .string or !plugin_config.isValidPluginSegment(plugin_name.string)) continue;
+            try putExternalAgentPluginMigration(allocator, &details, marketplace_name.string, plugin_name.string);
+        }
+    }
+    return details;
+}
+
+fn loadExternalAgentEnabledPlugins(allocator: std.mem.Allocator, settings_path: []const u8) !std.ArrayList([]const u8) {
+    const settings_dir = std.fs.path.dirname(settings_path) orelse return .empty;
+    const local_settings_path = try std.fs.path.join(allocator, &.{ settings_dir, "settings.local.json" });
+    defer allocator.free(local_settings_path);
+
+    var settings = try readExternalAgentSettings(allocator, settings_path, false);
+    defer if (settings) |*parsed| parsed.deinit();
+    var local_settings = try readExternalAgentSettings(allocator, local_settings_path, true);
+    defer if (local_settings) |*parsed| parsed.deinit();
+
+    var enabled = std.ArrayList([]const u8).empty;
+    errdefer deinitExternalAgentNamedItems(allocator, &enabled);
+    try applyExternalAgentEnabledPluginsValue(allocator, &enabled, if (settings) |parsed| parsed.value else null);
+    try applyExternalAgentEnabledPluginsValue(allocator, &enabled, if (local_settings) |parsed| parsed.value else null);
+    std.mem.sort([]const u8, enabled.items, {}, stringLessThan);
+    return enabled;
+}
+
+fn applyExternalAgentEnabledPluginsValue(allocator: std.mem.Allocator, enabled: *std.ArrayList([]const u8), value: ?std.json.Value) !void {
+    const object = value orelse return;
+    if (object != .object) return;
+    const enabled_plugins = object.object.get("enabledPlugins") orelse return;
+    if (enabled_plugins != .object) return;
+    var iterator = enabled_plugins.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!plugin_config.isValidPluginId(entry.key_ptr.*)) continue;
+        if (entry.value_ptr.* == .bool and entry.value_ptr.*.bool) {
+            try putExternalAgentNamedItem(allocator, enabled, entry.key_ptr.*);
+        } else {
+            removeExternalAgentNamedItem(allocator, enabled, entry.key_ptr.*);
+        }
+    }
+}
+
+fn loadExternalAgentMarketplaceImportSources(allocator: std.mem.Allocator, settings_path: []const u8, source_root: []const u8) !std.ArrayList(ExternalAgentMarketplaceImportSource) {
+    const settings_dir = std.fs.path.dirname(settings_path) orelse return .empty;
+    const local_settings_path = try std.fs.path.join(allocator, &.{ settings_dir, "settings.local.json" });
+    defer allocator.free(local_settings_path);
+
+    var settings = try readExternalAgentSettings(allocator, settings_path, false);
+    defer if (settings) |*parsed| parsed.deinit();
+    var local_settings = try readExternalAgentSettings(allocator, local_settings_path, true);
+    defer if (local_settings) |*parsed| parsed.deinit();
+
+    var sources = std.ArrayList(ExternalAgentMarketplaceImportSource).empty;
+    errdefer deinitExternalAgentMarketplaceImportSources(allocator, &sources);
+    try applyExternalAgentMarketplaceSourcesValue(allocator, &sources, if (settings) |parsed| parsed.value else null, source_root);
+    try applyExternalAgentMarketplaceSourcesValue(allocator, &sources, if (local_settings) |parsed| parsed.value else null, source_root);
+    std.mem.sort(ExternalAgentMarketplaceImportSource, sources.items, {}, externalAgentMarketplaceImportSourceLessThan);
+    return sources;
+}
+
+fn applyExternalAgentMarketplaceSourcesValue(
+    allocator: std.mem.Allocator,
+    sources: *std.ArrayList(ExternalAgentMarketplaceImportSource),
+    value: ?std.json.Value,
+    source_root: []const u8,
+) !void {
+    const object = value orelse return;
+    if (object != .object) return;
+    const marketplaces = object.object.get("extraKnownMarketplaces") orelse return;
+    if (marketplaces != .object) return;
+    var iterator = marketplaces.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!plugin_config.isValidPluginSegment(entry.key_ptr.*)) continue;
+        var source = try externalAgentMarketplaceImportSourceFromJson(allocator, entry.key_ptr.*, entry.value_ptr.*, source_root) orelse continue;
+        errdefer source.deinit(allocator);
+        try putExternalAgentMarketplaceImportSource(allocator, sources, source);
+    }
+}
+
+fn externalAgentMarketplaceImportSourceFromJson(allocator: std.mem.Allocator, marketplace_name: []const u8, value: std.json.Value, source_root: []const u8) !?ExternalAgentMarketplaceImportSource {
+    if (value != .object) return null;
+    const source_fields = if (value.object.get("source")) |source_value|
+        if (source_value == .object) source_value.object else value.object
+    else
+        value.object;
+
+    const raw_source = externalAgentMarketplaceSourceString(source_fields, value.object) orelse return null;
+    const trimmed_source = std.mem.trim(u8, raw_source, " \t\r\n");
+    if (trimmed_source.len == 0) return null;
+    const resolved_source = try resolveExternalAgentMarketplaceSource(allocator, trimmed_source, source_root);
+    errdefer allocator.free(resolved_source);
+
+    var ref_name: ?[]const u8 = null;
+    errdefer if (ref_name) |value_ref| allocator.free(value_ref);
+    const raw_ref = if (source_fields.get("ref")) |ref_value|
+        if (ref_value == .string) ref_value.string else null
+    else if (value.object.get("ref")) |ref_value|
+        if (ref_value == .string) ref_value.string else null
+    else
+        null;
+    if (raw_ref) |ref_value| {
+        const trimmed_ref = std.mem.trim(u8, ref_value, " \t\r\n");
+        if (trimmed_ref.len > 0) ref_name = try allocator.dupe(u8, trimmed_ref);
+    }
+
+    return .{
+        .marketplace_name = try allocator.dupe(u8, marketplace_name),
+        .source = resolved_source,
+        .ref_name = ref_name,
+    };
+}
+
+fn externalAgentMarketplaceSourceString(source_fields: std.json.ObjectMap, value_object: std.json.ObjectMap) ?[]const u8 {
+    const source_value = source_fields.get("repo") orelse
+        source_fields.get("url") orelse
+        source_fields.get("path") orelse
+        value_object.get("source") orelse
+        return null;
+    if (source_value != .string) return null;
+    return source_value.string;
+}
+
+fn resolveExternalAgentMarketplaceSource(allocator: std.mem.Allocator, source: []const u8, source_root: []const u8) ![]const u8 {
+    if (!looksLikeExternalAgentRelativeLocalPath(source)) return allocator.dupe(u8, source);
+    return std.fs.path.join(allocator, &.{ source_root, source });
+}
+
+fn looksLikeExternalAgentRelativeLocalPath(source: []const u8) bool {
+    return std.mem.startsWith(u8, source, "./") or
+        std.mem.startsWith(u8, source, "../") or
+        std.mem.eql(u8, source, ".") or
+        std.mem.eql(u8, source, "..");
+}
+
+fn externalAgentMarketplaceSourceIsLocal(source: []const u8) bool {
+    return std.fs.path.isAbsolute(source);
+}
+
+fn externalAgentMarketplaceContainsPlugin(allocator: std.mem.Allocator, source: []const u8, plugin_name: []const u8) !bool {
+    const marketplace_path = (try externalAgentMarketplaceManifestPath(allocator, source)) orelse return false;
+    defer allocator.free(marketplace_path);
+    const bytes = readTextFile(allocator, marketplace_path) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const plugins = parsed.value.object.get("plugins") orelse return false;
+    if (plugins != .array) return false;
+    for (plugins.array.items) |plugin| {
+        if (plugin != .object) continue;
+        const name = plugin.object.get("name") orelse continue;
+        if (name == .string and std.mem.eql(u8, name.string, plugin_name)) return true;
+    }
+    return false;
+}
+
+fn externalAgentMarketplaceManifestPath(allocator: std.mem.Allocator, root: []const u8) !?[]const u8 {
+    const agents_path = try std.fs.path.join(allocator, &.{ root, ".agents", "plugins", "marketplace.json" });
+    errdefer allocator.free(agents_path);
+    if (try externalAgentPathExists(allocator, agents_path)) return agents_path;
+    allocator.free(agents_path);
+
+    const external_path = try std.fs.path.join(allocator, &.{ root, ".claude-plugin", "marketplace.json" });
+    errdefer allocator.free(external_path);
+    if (try externalAgentPathExists(allocator, external_path)) return external_path;
+    allocator.free(external_path);
+    return null;
+}
+
+fn putExternalAgentPluginMigration(allocator: std.mem.Allocator, details: *ExternalAgentPluginMigrationDetails, marketplace_name: []const u8, plugin_name: []const u8) !void {
+    for (details.groups.items) |*group| {
+        if (!std.mem.eql(u8, group.marketplace_name, marketplace_name)) continue;
+        try putExternalAgentNamedItem(allocator, &group.plugin_names, plugin_name);
+        std.mem.sort([]const u8, group.plugin_names.items, {}, stringLessThan);
+        return;
+    }
+
+    var group = ExternalAgentPluginMigrationGroup{ .marketplace_name = try allocator.dupe(u8, marketplace_name) };
+    errdefer group.deinit(allocator);
+    try putExternalAgentNamedItem(allocator, &group.plugin_names, plugin_name);
+    try details.groups.append(allocator, group);
+}
+
+fn putExternalAgentNamedItem(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8), name: []const u8) !void {
+    for (names.items) |existing| {
+        if (std.mem.eql(u8, existing, name)) return;
+    }
+    try names.append(allocator, try allocator.dupe(u8, name));
+}
+
+fn removeExternalAgentNamedItem(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8), name: []const u8) void {
+    for (names.items, 0..) |existing, index| {
+        if (!std.mem.eql(u8, existing, name)) continue;
+        allocator.free(existing);
+        _ = names.swapRemove(index);
+        return;
+    }
+}
+
+fn externalAgentPluginMigrationGroupLessThan(_: void, lhs: ExternalAgentPluginMigrationGroup, rhs: ExternalAgentPluginMigrationGroup) bool {
+    return std.mem.lessThan(u8, lhs.marketplace_name, rhs.marketplace_name);
+}
+
+fn externalAgentMarketplaceImportSourceForName(sources: []const ExternalAgentMarketplaceImportSource, marketplace_name: []const u8) ?ExternalAgentMarketplaceImportSource {
+    for (sources) |source| {
+        if (std.mem.eql(u8, source.marketplace_name, marketplace_name)) return source;
+    }
+    return null;
+}
+
+fn externalAgentMarketplaceImportSourceLessThan(_: void, lhs: ExternalAgentMarketplaceImportSource, rhs: ExternalAgentMarketplaceImportSource) bool {
+    return std.mem.lessThan(u8, lhs.marketplace_name, rhs.marketplace_name);
+}
+
+fn putExternalAgentMarketplaceImportSource(allocator: std.mem.Allocator, sources: *std.ArrayList(ExternalAgentMarketplaceImportSource), source: ExternalAgentMarketplaceImportSource) !void {
+    for (sources.items, 0..) |*existing, index| {
+        if (!std.mem.eql(u8, existing.marketplace_name, source.marketplace_name)) continue;
+        existing.deinit(allocator);
+        _ = sources.swapRemove(index);
+        break;
+    }
+    try sources.append(allocator, source);
 }
 
 const ExternalAgentKeyValue = struct {
