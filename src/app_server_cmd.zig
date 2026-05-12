@@ -16507,7 +16507,32 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        return renderThreadNotLoaded(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const resume_path_raw = threadResumePath(allocator, cfg.codex_home, object) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to resolve thread", err);
+        };
+        defer allocator.free(resume_path_raw);
+        var transcript = session_store.loadTranscript(allocator, resume_path_raw) catch |err| switch (err) {
+            error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load transcript", err),
+        };
+        defer transcript.deinit(allocator);
+        const resume_path = std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), resume_path_raw, allocator) catch |err| switch (err) {
+            error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to resolve rollout path", err),
+        };
+        defer allocator.free(resume_path);
+        var stored_thread = createLoadedThreadFromResumeParams(allocator, cfg, object, resume_path, &transcript) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to create thread", err);
+        };
+        defer stored_thread.deinit(allocator);
+        const include_turns = threadReadIncludeTurnsParam(object);
+        const result = try renderThreadReadResponse(allocator, &stored_thread, include_turns);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/turns/list")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {

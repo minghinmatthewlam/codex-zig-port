@@ -4328,6 +4328,58 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-read-saved-rust-rollout",
+                    "method": "thread/read",
+                    "params": {"threadId": rust_thread_id},
+                },
+            )
+            read_saved_rust = read_json_line(proc, 5)
+            assert read_saved_rust["id"] == "thread-read-saved-rust-rollout"
+            read_saved_rust_thread = read_saved_rust["result"]["thread"]
+            assert read_saved_rust_thread["id"] == rust_thread_id
+            assert read_saved_rust_thread["sessionId"] == rust_thread_id
+            assert read_saved_rust_thread["preview"] == "rust rollout hello"
+            assert read_saved_rust_thread["modelProvider"] == "mock_provider"
+            assert read_saved_rust_thread["path"] == os.path.realpath(rust_rollout_path)
+            assert read_saved_rust_thread["cwd"] == "/"
+            assert read_saved_rust_thread["cliVersion"] == "0.0.0"
+            assert read_saved_rust_thread["source"] == "cli"
+            assert read_saved_rust_thread["threadSource"] == "user"
+            assert read_saved_rust_thread["gitInfo"] == {
+                "sha": "rollout-sha",
+                "branch": "rollout-branch",
+                "originUrl": "https://example.test/rollout.git",
+            }
+            assert read_saved_rust_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-saved-zig-rollout-with-turns",
+                    "method": "thread/read",
+                    "params": {"threadId": resume_thread_id, "includeTurns": True},
+                },
+            )
+            read_saved_zig = read_json_line(proc, 5)
+            assert read_saved_zig["id"] == "thread-read-saved-zig-rollout-with-turns"
+            read_saved_zig_thread = read_saved_zig["result"]["thread"]
+            assert read_saved_zig_thread["id"] == resume_thread_id
+            assert read_saved_zig_thread["name"] == "Resume Smoke"
+            assert read_saved_zig_thread["preview"] == "saved hello"
+            assert read_saved_zig_thread["path"] == os.path.realpath(rollout_path)
+            assert read_saved_zig_thread["turns"][0]["items"][0]["type"] == "userMessage"
+            assert (
+                read_saved_zig_thread["turns"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert read_saved_zig_thread["turns"][1]["items"][0]["type"] == "agentMessage"
+            assert read_saved_zig_thread["turns"][1]["items"][0]["text"] == "saved hi"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume",
                     "method": "thread/resume",
                     "params": {
