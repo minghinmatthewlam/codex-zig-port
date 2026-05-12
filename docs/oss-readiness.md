@@ -22,8 +22,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   analysis.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS. Checked push run
-  `25725319531` passed for
-  `6b6fec04cb9b16a933513f1a65c598b6d72a21ad`.
+  `25755297016` passed for
+  `d6088563bbfc3df869a45a78bf071538b9855c31`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
