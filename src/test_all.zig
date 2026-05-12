@@ -15,6 +15,7 @@ const modules = .{
     @import("exec.zig"),
     @import("execpolicy_cmd.zig"),
     @import("features_cmd.zig"),
+    @import("feedback_upload.zig"),
     @import("fuzzy_file_search.zig"),
     @import("git_diff.zig"),
     @import("git_remote_diff.zig"),
