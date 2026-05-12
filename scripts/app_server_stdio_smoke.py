@@ -3890,8 +3890,41 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 stored_after_rollback = rollout_path.read_text(encoding="utf-8")
                 assert "hello from app-server turn" in stored_after_rollback
                 assert "app turn reply" in stored_after_rollback
-                assert "Standalone Skill" not in stored_after_rollback
-                assert "Use this body without a text item." not in stored_after_rollback
+                assert "Standalone Skill" in stored_after_rollback
+                assert "Use this body without a text item." in stored_after_rollback
+                assert '"type":"thread_rolled_back"' in stored_after_rollback
+                assert '"num_turns":1' in stored_after_rollback
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-rollback-path",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": "not-a-valid-thread-id",
+                            "path": str(rollout_path),
+                            "ephemeral": True,
+                        },
+                    },
+                )
+                rollback_fork = read_json_line(proc, 5)
+                assert rollback_fork["id"] == "thread-fork-rollback-path"
+                rollback_fork_thread = rollback_fork["result"]["thread"]
+                assert rollback_fork_thread["forkedFromId"] == thread_id
+                assert rollback_fork_thread["preview"] == model_prompt
+                assert len(rollback_fork_thread["turns"]) == 2
+                assert (
+                    rollback_fork_thread["turns"][0]["items"][0]["content"][0]["text"]
+                    == model_prompt
+                )
+                assert (
+                    rollback_fork_thread["turns"][1]["items"][0]["text"]
+                    == "app turn reply"
+                )
+                assert_thread_started_notification(
+                    read_json_line(proc, 5), rollback_fork_thread
+                )
 
                 write_json_line(
                     proc,
