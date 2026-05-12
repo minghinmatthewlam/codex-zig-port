@@ -12457,7 +12457,10 @@ def run_process_rpc_smoke(binary: Path) -> None:
         )
         assert negative_timeout["id"] == "process-spawn-negative-timeout"
         assert negative_timeout["error"]["code"] == -32602
-        assert "timeoutMs must be a non-negative integer or null" in negative_timeout["error"]["message"]
+        assert (
+            negative_timeout["error"]["message"]
+            == "process/spawn timeoutMs must be non-negative, got -1"
+        )
 
         missing_write_payload = request_stdio_app_server(
             binary,
