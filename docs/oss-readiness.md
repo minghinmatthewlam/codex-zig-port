@@ -18,8 +18,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
-  tests, and product-surface smoke tests on macOS. Push run `25705857478`
-  passed for `0d8c60e972ecc1af4141a8d50a97e5b8d1c767b8`.
+  tests, and product-surface smoke tests on macOS. Latest checked push run
+  `25708107227` passed for
+  `95a6e037568691f09484475befa69684b578dbf3`.
 - Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
   tokens, Slack tokens, AWS access keys, private-key blocks, JWT-shaped blobs,
   unignored local auth/env files, or unignored local artifacts. Broad
@@ -42,7 +43,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 
 ## Known Follow-Ups
 
-- Branch protection is not enabled on `main` yet.
+- Branch protection and repository rulesets are not enabled on `main` yet.
 - GitHub wiki/projects are enabled; disable them if the project does not plan
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
