@@ -5590,6 +5590,127 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert unarchive_metadata_row[3] > 1700000100
             assert unarchive_metadata_row[4] > 1700000100000
 
+            loaded_unarchive_thread_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            loaded_unarchive_archived_path = (
+                codex_home
+                / "archived_sessions"
+                / "zig"
+                / f"rollout-{loaded_unarchive_thread_id}.jsonl"
+            )
+            loaded_unarchive_archived_path.parent.mkdir(parents=True, exist_ok=True)
+            loaded_unarchive_archived_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {"type": "metadata", "title": "Loaded Unarchive Smoke"},
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content_type": "input_text",
+                                "text": "loaded archived hello",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-archived-path-before-unarchive",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": loaded_unarchive_thread_id,
+                        "path": str(loaded_unarchive_archived_path),
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            loaded_archived_resume = read_json_line(proc, 5)
+            assert loaded_archived_resume["id"] == "thread-resume-archived-path-before-unarchive"
+            loaded_archived_thread = loaded_archived_resume["result"]["thread"]
+            assert loaded_archived_thread["id"] == loaded_unarchive_thread_id
+            assert loaded_archived_thread["path"] == os.path.realpath(
+                loaded_unarchive_archived_path
+            )
+            assert loaded_archived_thread["status"] == {"type": "idle"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-unarchive-loaded-thread",
+                    "method": "thread/unarchive",
+                    "params": {"threadId": loaded_unarchive_thread_id},
+                },
+            )
+            loaded_unarchive_response = read_json_line(proc, 5)
+            assert loaded_unarchive_response["id"] == "thread-unarchive-loaded-thread"
+            loaded_unarchive_thread = loaded_unarchive_response["result"]["thread"]
+            loaded_unarchive_path = (
+                sessions_dir / f"rollout-{loaded_unarchive_thread_id}.jsonl"
+            )
+            assert loaded_unarchive_thread["id"] == loaded_unarchive_thread_id
+            assert loaded_unarchive_thread["path"] == os.path.realpath(
+                loaded_unarchive_path
+            )
+            assert loaded_unarchive_thread["status"] == {"type": "idle"}
+            loaded_unarchive_notification = read_json_line(proc, 5)
+            assert loaded_unarchive_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/unarchived",
+                "params": {"threadId": loaded_unarchive_thread_id},
+            }
+            assert loaded_unarchive_path.exists()
+            assert not loaded_unarchive_archived_path.exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-loaded-after-unarchive",
+                    "method": "thread/read",
+                    "params": {"threadId": loaded_unarchive_thread_id},
+                },
+            )
+            read_loaded_after_unarchive = read_json_line(proc, 5)
+            assert read_loaded_after_unarchive["id"] == "thread-read-loaded-after-unarchive"
+            read_loaded_unarchived_thread = read_loaded_after_unarchive["result"]["thread"]
+            assert read_loaded_unarchived_thread["path"] == os.path.realpath(
+                loaded_unarchive_path
+            )
+            assert read_loaded_unarchived_thread["status"] == {"type": "idle"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-archive-loaded-unarchive-smoke",
+                    "method": "thread/archive",
+                    "params": {"threadId": loaded_unarchive_thread_id},
+                },
+            )
+            archive_loaded_unarchive_smoke = read_json_line(proc, 5)
+            assert (
+                archive_loaded_unarchive_smoke["id"]
+                == "thread-archive-loaded-unarchive-smoke"
+            )
+            assert archive_loaded_unarchive_smoke["result"] == {}
+            archive_loaded_unarchive_notification = read_json_line(proc, 5)
+            assert archive_loaded_unarchive_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/archived",
+                "params": {"threadId": loaded_unarchive_thread_id},
+            }
+            assert not loaded_unarchive_path.exists()
+            assert loaded_unarchive_archived_path.exists()
+
             write_json_line(
                 proc,
                 {
