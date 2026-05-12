@@ -9385,13 +9385,13 @@ const TURN_ERROR_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "TurnError",
     \\  "type": "object",
-    \\  "required": ["message", "codexErrorInfo", "additionalDetails"],
+    \\  "required": ["message"],
     \\  "properties": {
     \\    "message": { "type": "string" },
     \\    "codexErrorInfo": { "anyOf": [{ "$ref": "CodexErrorInfo.json" }, { "type": "null" }] },
     \\    "additionalDetails": { "type": ["string", "null"] }
     \\  },
-    \\  "additionalProperties": false
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -9419,7 +9419,7 @@ const TURN_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "Turn",
     \\  "type": "object",
-    \\  "required": ["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"],
+    \\  "required": ["id", "items", "status"],
     \\  "properties": {
     \\    "id": { "type": "string" },
     \\    "items": { "type": "array", "items": true },
@@ -9430,7 +9430,7 @@ const TURN_JSON_SCHEMA =
     \\    "completedAt": { "type": ["number", "null"] },
     \\    "durationMs": { "type": ["number", "null"] }
     \\  },
-    \\  "additionalProperties": false
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -9700,7 +9700,7 @@ const TURN_START_RESPONSE_JSON_SCHEMA =
     \\  "properties": {
     \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": false
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -9846,7 +9846,7 @@ const TURN_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\    "threadId": { "type": "string" },
     \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": false
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -9861,7 +9861,7 @@ const TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\    "threadId": { "type": "string" },
     \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": false
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -13587,13 +13587,13 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "TurnError": {
     \\      "type": "object",
-    \\      "required": ["message", "codexErrorInfo", "additionalDetails"],
+    \\      "required": ["message"],
     \\      "properties": {
     \\        "message": { "type": "string" },
     \\        "codexErrorInfo": { "anyOf": [{ "$ref": "#/$defs/CodexErrorInfo" }, { "type": "null" }] },
     \\        "additionalDetails": { "type": ["string", "null"] }
     \\      },
-    \\      "additionalProperties": false
+    \\      "additionalProperties": true
     \\    },
     \\    "TurnItemsView": {
     \\      "enum": ["notLoaded", "summary", "full"]
@@ -13603,7 +13603,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "Turn": {
     \\      "type": "object",
-    \\      "required": ["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"],
+    \\      "required": ["id", "items", "status"],
     \\      "properties": {
     \\        "id": { "type": "string" },
     \\        "items": { "type": "array", "items": true },
@@ -13614,7 +13614,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "completedAt": { "type": ["number", "null"] },
     \\        "durationMs": { "type": ["number", "null"] }
     \\      },
-    \\      "additionalProperties": false
+    \\      "additionalProperties": true
     \\    },
     \\    "TurnStartResponse": {
     \\      "type": "object",
@@ -13622,7 +13622,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "properties": {
     \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": false
+    \\      "additionalProperties": true
     \\    },
     \\    "TurnSteerParams": {
     \\      "type": "object",
@@ -13666,7 +13666,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "threadId": { "type": "string" },
     \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": false
+    \\      "additionalProperties": true
     \\    },
     \\    "TurnCompletedNotification": {
     \\      "type": "object",
@@ -13675,7 +13675,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "threadId": { "type": "string" },
     \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": false
+    \\      "additionalProperties": true
     \\    },
     \\    "ItemStartedNotification": {
     \\      "type": "object",

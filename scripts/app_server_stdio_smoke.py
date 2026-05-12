@@ -19642,16 +19642,7 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "Turn.json"
         )
         turn_schema = json.loads((out_dir / "Turn.json").read_text(encoding="utf-8"))
-        assert turn_schema["required"] == [
-            "id",
-            "items",
-            "itemsView",
-            "status",
-            "error",
-            "startedAt",
-            "completedAt",
-            "durationMs",
-        ]
+        assert turn_schema["required"] == ["id", "items", "status"]
         assert turn_schema["properties"]["itemsView"]["$ref"] == "TurnItemsView.json"
         assert turn_schema["properties"]["status"]["$ref"] == "TurnStatus.json"
         turn_status_schema = json.loads(
@@ -19670,11 +19661,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         turn_error_schema = json.loads(
             (out_dir / "TurnError.json").read_text(encoding="utf-8")
         )
-        assert turn_error_schema["required"] == [
-            "message",
-            "codexErrorInfo",
-            "additionalDetails",
-        ]
+        assert turn_error_schema["required"] == ["message"]
         codex_error_info_schema = json.loads(
             (out_dir / "CodexErrorInfo.json").read_text(encoding="utf-8")
         )
