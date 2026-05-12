@@ -12153,6 +12153,8 @@ def run_process_rpc_smoke(binary: Path) -> None:
         cwd.mkdir()
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["PROCESS_EXEC_BASELINE"] = "server"
+        env["PROCESS_EXEC_REMOVED"] = "server"
 
         proc = subprocess.Popen(
             [str(binary), "app-server"],
@@ -12191,6 +12193,42 @@ def run_process_rpc_smoke(binary: Path) -> None:
                 "stdout": "out",
                 "stdoutCapReached": False,
                 "stderr": "err",
+                "stderrCapReached": False,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-env-merge",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import os, sys; sys.stdout.write('|'.join([os.environ.get('PROCESS_EXEC_BASELINE', ''), os.environ.get('PROCESS_EXEC_EXTRA', ''), os.environ.get('PROCESS_EXEC_REMOVED', 'unset'), os.environ.get('CODEX_HOME', '')]))",
+                        ],
+                        "processHandle": "proc-env",
+                        "cwd": str(cwd),
+                        "env": {
+                            "PROCESS_EXEC_BASELINE": "request",
+                            "PROCESS_EXEC_EXTRA": "added",
+                            "PROCESS_EXEC_REMOVED": None,
+                        },
+                    },
+                },
+            )
+            env_response = read_json_line(proc, 5)
+            env_exited = read_json_line(proc, 5)
+            assert env_response["id"] == "process-spawn-env-merge"
+            assert env_response["result"] == {}
+            assert env_exited["method"] == "process/exited"
+            assert env_exited["params"] == {
+                "processHandle": "proc-env",
+                "exitCode": 0,
+                "stdout": f"request|added|unset|{codex_home}",
+                "stdoutCapReached": False,
+                "stderr": "",
                 "stderrCapReached": False,
             }
 
