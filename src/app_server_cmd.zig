@@ -24486,6 +24486,10 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
             importExternalAgentSubagents(allocator, codex_home, item.cwd) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import subagents", err);
             };
+        } else if (std.mem.eql(u8, item.item_type, "SESSIONS")) {
+            importExternalAgentSessions(allocator, codex_home, item.details) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import sessions", err);
+            };
         }
     }
 
@@ -24586,6 +24590,56 @@ fn importExternalAgentSubagents(allocator: std.mem.Allocator, codex_home: []cons
     return importExternalAgentHomeSubagents(allocator, codex_home);
 }
 
+fn importExternalAgentSessions(allocator: std.mem.Allocator, codex_home: []const u8, details_value: ?std.json.Value) !void {
+    var requested = try parseExternalAgentSessionMigrationDetails(allocator, details_value);
+    defer requested.deinit(allocator);
+    if (requested.isEmpty()) return;
+
+    var detected = try externalAgentSessionMigrationDetails(allocator, codex_home);
+    defer detected.deinit(allocator);
+
+    var ledger = try loadExternalAgentSessionImportLedger(allocator, codex_home);
+    defer ledger.deinit(allocator);
+
+    for (requested.sessions.items) |requested_session| {
+        const source_path = try externalAgentSessionSourcePath(allocator, requested_session.path);
+        defer allocator.free(source_path);
+
+        if (try ledger.containsCurrentSource(allocator, source_path)) continue;
+        if (!externalAgentSessionDetailsContainsPath(detected, source_path)) return error.ExternalAgentSessionNotDetected;
+
+        var import_data = (try loadExternalAgentSessionForImport(allocator, source_path)) orelse continue;
+        defer import_data.deinit(allocator);
+        if (!try externalAgentPathExists(allocator, import_data.cwd)) continue;
+
+        const thread_id = try generateUuidString(allocator);
+        defer allocator.free(thread_id);
+        const rollout_path = try session_store.createSessionPathForId(allocator, codex_home, thread_id);
+        defer allocator.free(rollout_path);
+
+        var transcript = session_mod.Transcript{};
+        defer transcript.deinit(allocator);
+        try transcript.setId(allocator, thread_id);
+        try transcript.setCwd(allocator, import_data.cwd);
+        try transcript.setSource(allocator, "cli");
+        try transcript.setThreadSource(allocator, "user");
+        try transcript.setModelProvider(allocator, "openai");
+        try transcript.setCliVersion(allocator, "external-agent");
+        if (import_data.title) |title| try transcript.setTitle(allocator, title);
+
+        for (import_data.messages.items) |message| {
+            switch (message.role) {
+                .user => try transcript.appendUserMessage(allocator, message.text),
+                .assistant => try transcript.appendAssistantMessage(allocator, message.text),
+            }
+        }
+
+        try session_store.saveTranscript(allocator, rollout_path, &transcript);
+        try session_store.appendThreadGitInfoFromTranscript(allocator, rollout_path, thread_id, &transcript, null, null, null, null);
+        try ledger.recordImportedSession(allocator, codex_home, source_path, thread_id);
+    }
+}
+
 fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
     return std.mem.eql(u8, value, "AGENTS_MD") or
         std.mem.eql(u8, value, "CONFIG") or
@@ -24608,7 +24662,8 @@ fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
         !std.mem.eql(u8, item_type.string, "PLUGINS") and
         !std.mem.eql(u8, item_type.string, "SKILLS") and
         !std.mem.eql(u8, item_type.string, "COMMANDS") and
-        !std.mem.eql(u8, item_type.string, "SUBAGENTS")) return false;
+        !std.mem.eql(u8, item_type.string, "SUBAGENTS") and
+        !std.mem.eql(u8, item_type.string, "SESSIONS")) return false;
     if (item.get("cwd")) |cwd| {
         if (cwd != .null and cwd != .string) return false;
     }
@@ -24724,6 +24779,19 @@ fn renderExternalAgentConfigDetectResponse(
             const description = try std.fmt.allocPrint(allocator, "Migrate enabled plugins from {s}", .{source_settings});
             defer allocator.free(description);
             try appendExternalAgentConfigMigrationItemWithPluginDetails(allocator, &result, &first, description, null, plugin_details);
+        }
+    }
+    if (include_home) {
+        var session_details = try externalAgentSessionMigrationDetails(allocator, codex_home);
+        defer session_details.deinit(allocator);
+        if (!session_details.isEmpty()) {
+            const external_home = try externalAgentHomePath(allocator);
+            defer allocator.free(external_home);
+            const projects_dir = try std.fs.path.join(allocator, &.{ external_home, "projects" });
+            defer allocator.free(projects_dir);
+            const description = try std.fmt.allocPrint(allocator, "Migrate recent sessions from {s}", .{projects_dir});
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItemWithSessionDetails(allocator, &result, &first, description, session_details);
         }
     }
 
@@ -24932,6 +25000,31 @@ fn appendExternalAgentConfigMigrationItemWithPluginDetails(
     first.* = false;
 }
 
+fn appendExternalAgentConfigMigrationItemWithSessionDetails(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    description: []const u8,
+    details: ExternalAgentSessionMigrationDetails,
+) !void {
+    if (!first.*) try result.appendSlice(allocator, ",");
+    try result.appendSlice(allocator, "{\"itemType\":\"SESSIONS\",\"description\":");
+    try appendJsonString(allocator, result, description);
+    try result.appendSlice(allocator, ",\"cwd\":null,\"details\":{\"plugins\":[],\"sessions\":[");
+    for (details.sessions.items, 0..) |session, index| {
+        if (index != 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"path\":");
+        try appendJsonString(allocator, result, session.path);
+        try result.appendSlice(allocator, ",\"cwd\":");
+        try appendJsonString(allocator, result, session.cwd);
+        try result.appendSlice(allocator, ",\"title\":");
+        try appendOptionalJsonString(allocator, result, session.title);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "],\"mcpServers\":[],\"hooks\":[],\"subagents\":[],\"commands\":[]}}");
+    first.* = false;
+}
+
 fn appendExternalAgentNamedDetailsArray(allocator: std.mem.Allocator, result: *std.ArrayList(u8), names: []const []const u8) !void {
     try result.appendSlice(allocator, "[");
     for (names, 0..) |name, index| {
@@ -25039,6 +25132,151 @@ const ExternalAgentPluginMigrationDetails = struct {
 
     fn isEmpty(self: ExternalAgentPluginMigrationDetails) bool {
         return self.groups.items.len == 0;
+    }
+};
+
+const EXTERNAL_AGENT_SESSION_IMPORT_LEDGER_FILE = "external_agent_session_imports.json";
+const EXTERNAL_AGENT_SESSION_IMPORT_MAX_COUNT: usize = 50;
+const EXTERNAL_AGENT_SESSION_IMPORT_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
+const EXTERNAL_AGENT_TOOL_CALL_TAG = "external_agent_tool_call";
+const EXTERNAL_AGENT_TOOL_RESULT_TAG = "external_agent_tool_result";
+const EXTERNAL_AGENT_NOTE_MAX_LEN: usize = 2000;
+const EXTERNAL_AGENT_TOOL_RESULT_MAX_LEN: usize = 4000;
+
+const ExternalAgentSessionRole = enum {
+    user,
+    assistant,
+};
+
+const ExternalAgentSessionMigration = struct {
+    path: []const u8,
+    cwd: []const u8,
+    title: ?[]const u8 = null,
+    latest_timestamp_seconds: i64 = 0,
+
+    fn deinit(self: *ExternalAgentSessionMigration, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.cwd);
+        if (self.title) |title| allocator.free(title);
+    }
+};
+
+const ExternalAgentSessionMigrationDetails = struct {
+    sessions: std.ArrayList(ExternalAgentSessionMigration) = .empty,
+
+    fn deinit(self: *ExternalAgentSessionMigrationDetails, allocator: std.mem.Allocator) void {
+        for (self.sessions.items) |*session| session.deinit(allocator);
+        self.sessions.deinit(allocator);
+    }
+
+    fn isEmpty(self: ExternalAgentSessionMigrationDetails) bool {
+        return self.sessions.items.len == 0;
+    }
+};
+
+const ExternalAgentSessionMessage = struct {
+    role: ExternalAgentSessionRole,
+    text: []const u8,
+    timestamp_seconds: ?i64 = null,
+
+    fn deinit(self: *ExternalAgentSessionMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
+const ExternalAgentSessionImportData = struct {
+    cwd: []const u8,
+    title: ?[]const u8 = null,
+    latest_timestamp_seconds: i64,
+    messages: std.ArrayList(ExternalAgentSessionMessage) = .empty,
+
+    fn deinit(self: *ExternalAgentSessionImportData, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwd);
+        if (self.title) |title| allocator.free(title);
+        for (self.messages.items) |*message| message.deinit(allocator);
+        self.messages.deinit(allocator);
+    }
+};
+
+const ExternalAgentExtractedMessage = struct {
+    text: []const u8,
+    only_tool_result: bool = false,
+
+    fn deinit(self: *ExternalAgentExtractedMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
+const ExternalAgentSessionImportLedgerRecord = struct {
+    source_path: []const u8,
+    content_sha256: []const u8,
+    imported_thread_id: []const u8,
+    imported_at: i64,
+
+    fn deinit(self: *ExternalAgentSessionImportLedgerRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.source_path);
+        allocator.free(self.content_sha256);
+        allocator.free(self.imported_thread_id);
+    }
+};
+
+const ExternalAgentSessionImportLedger = struct {
+    records: std.ArrayList(ExternalAgentSessionImportLedgerRecord) = .empty,
+
+    fn deinit(self: *ExternalAgentSessionImportLedger, allocator: std.mem.Allocator) void {
+        for (self.records.items) |*record| record.deinit(allocator);
+        self.records.deinit(allocator);
+    }
+
+    fn containsCurrentSource(self: *ExternalAgentSessionImportLedger, allocator: std.mem.Allocator, source_path: []const u8) !bool {
+        const canonical = try realPathFileAllocPlain(allocator, source_path);
+        defer allocator.free(canonical);
+        const content_sha256 = try externalAgentSessionContentSha256(allocator, canonical);
+        defer allocator.free(content_sha256);
+        return self.containsCanonicalSource(canonical, content_sha256);
+    }
+
+    fn containsCanonicalSource(self: ExternalAgentSessionImportLedger, source_path: []const u8, content_sha256: []const u8) bool {
+        for (self.records.items) |record| {
+            if (std.mem.eql(u8, record.source_path, source_path) and std.mem.eql(u8, record.content_sha256, content_sha256)) return true;
+        }
+        return false;
+    }
+
+    fn recordImportedSession(
+        self: *ExternalAgentSessionImportLedger,
+        allocator: std.mem.Allocator,
+        codex_home: []const u8,
+        source_path: []const u8,
+        imported_thread_id: []const u8,
+    ) !void {
+        const canonical = try realPathFileAllocPlain(allocator, source_path);
+        defer allocator.free(canonical);
+        const content_sha256 = try externalAgentSessionContentSha256(allocator, canonical);
+        defer allocator.free(content_sha256);
+        if (self.containsCanonicalSource(canonical, content_sha256)) return;
+
+        const record_source_path = try allocator.dupe(u8, canonical);
+        const record_content_sha256 = allocator.dupe(u8, content_sha256) catch |err| {
+            allocator.free(record_source_path);
+            return err;
+        };
+        const record_thread_id = allocator.dupe(u8, imported_thread_id) catch |err| {
+            allocator.free(record_source_path);
+            allocator.free(record_content_sha256);
+            return err;
+        };
+        var record = ExternalAgentSessionImportLedgerRecord{
+            .source_path = record_source_path,
+            .content_sha256 = record_content_sha256,
+            .imported_thread_id = record_thread_id,
+            .imported_at = currentUnixSeconds(),
+        };
+        self.records.append(allocator, record) catch |err| {
+            record.deinit(allocator);
+            return err;
+        };
+        try saveExternalAgentSessionImportLedger(allocator, codex_home, self.*);
     }
 };
 
@@ -25175,6 +25413,552 @@ fn parseExternalAgentPluginMigrationDetails(allocator: std.mem.Allocator, detail
         }
     }
     return details;
+}
+
+fn externalAgentSessionMigrationDetails(allocator: std.mem.Allocator, codex_home: []const u8) !ExternalAgentSessionMigrationDetails {
+    var ledger = try loadExternalAgentSessionImportLedger(allocator, codex_home);
+    defer ledger.deinit(allocator);
+
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    const projects_dir = try std.fs.path.join(allocator, &.{ external_home, "projects" });
+    defer allocator.free(projects_dir);
+
+    var details = ExternalAgentSessionMigrationDetails{};
+    errdefer details.deinit(allocator);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var projects = std.Io.Dir.openDirAbsolute(io, projects_dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return details,
+        error.NotDir => return details,
+        else => return err,
+    };
+    defer projects.close(io);
+
+    var project_iter = projects.iterate();
+    while (try project_iter.next(io)) |project_entry| {
+        if (project_entry.kind != .directory) continue;
+        const project_dir = try std.fs.path.join(allocator, &.{ projects_dir, project_entry.name });
+        defer allocator.free(project_dir);
+        try appendExternalAgentSessionMigrationsInProjectDir(allocator, &details, &ledger, project_dir);
+    }
+
+    std.mem.sort(ExternalAgentSessionMigration, details.sessions.items, {}, externalAgentSessionMigrationLessThan);
+    while (details.sessions.items.len > EXTERNAL_AGENT_SESSION_IMPORT_MAX_COUNT) {
+        details.sessions.items[details.sessions.items.len - 1].deinit(allocator);
+        details.sessions.shrinkRetainingCapacity(details.sessions.items.len - 1);
+    }
+    return details;
+}
+
+fn appendExternalAgentSessionMigrationsInProjectDir(
+    allocator: std.mem.Allocator,
+    details: *ExternalAgentSessionMigrationDetails,
+    ledger: *ExternalAgentSessionImportLedger,
+    project_dir: []const u8,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, project_dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.NotDir => return,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+
+        const raw_path = try std.fs.path.join(allocator, &.{ project_dir, entry.name });
+        defer allocator.free(raw_path);
+        const source_path = externalAgentSessionSourcePath(allocator, raw_path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer allocator.free(source_path);
+
+        if (ledger.containsCurrentSource(allocator, source_path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        }) continue;
+
+        var import_data = (loadExternalAgentSessionForImport(allocator, source_path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        }) orelse continue;
+        defer import_data.deinit(allocator);
+
+        if (!externalAgentSessionIsRecent(import_data.latest_timestamp_seconds)) continue;
+        const cwd_exists = externalAgentPathExists(allocator, import_data.cwd) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => false,
+        };
+        if (!cwd_exists) continue;
+
+        var migration = ExternalAgentSessionMigration{
+            .path = try allocator.dupe(u8, source_path),
+            .cwd = try allocator.dupe(u8, import_data.cwd),
+            .title = if (import_data.title) |title| try allocator.dupe(u8, title) else null,
+            .latest_timestamp_seconds = import_data.latest_timestamp_seconds,
+        };
+        errdefer migration.deinit(allocator);
+        try details.sessions.append(allocator, migration);
+    }
+}
+
+fn parseExternalAgentSessionMigrationDetails(allocator: std.mem.Allocator, details_value: ?std.json.Value) !ExternalAgentSessionMigrationDetails {
+    const details_object = details_value orelse return error.InvalidExternalAgentSessionDetails;
+    if (details_object != .object) return error.InvalidExternalAgentSessionDetails;
+    const sessions = details_object.object.get("sessions") orelse return error.InvalidExternalAgentSessionDetails;
+    if (sessions != .array) return error.InvalidExternalAgentSessionDetails;
+
+    var details = ExternalAgentSessionMigrationDetails{};
+    errdefer details.deinit(allocator);
+    for (sessions.array.items) |session_value| {
+        if (session_value != .object) return error.InvalidExternalAgentSessionDetails;
+        const path = externalAgentJsonString(session_value.object, "path") orelse return error.InvalidExternalAgentSessionDetails;
+        const cwd = externalAgentJsonString(session_value.object, "cwd") orelse return error.InvalidExternalAgentSessionDetails;
+        const title = externalAgentJsonString(session_value.object, "title");
+        var migration = ExternalAgentSessionMigration{
+            .path = try allocator.dupe(u8, path),
+            .cwd = try allocator.dupe(u8, cwd),
+            .title = if (title) |value| try allocator.dupe(u8, value) else null,
+        };
+        errdefer migration.deinit(allocator);
+        try details.sessions.append(allocator, migration);
+    }
+    return details;
+}
+
+fn externalAgentSessionDetailsContainsPath(details: ExternalAgentSessionMigrationDetails, path: []const u8) bool {
+    for (details.sessions.items) |session_migration| {
+        if (std.mem.eql(u8, session_migration.path, path)) return true;
+    }
+    return false;
+}
+
+fn loadExternalAgentSessionForImport(allocator: std.mem.Allocator, source_path: []const u8) !?ExternalAgentSessionImportData {
+    const bytes = try readExternalAgentSessionFile(allocator, source_path);
+    defer allocator.free(bytes);
+
+    var cwd: ?[]const u8 = null;
+    errdefer if (cwd) |value| allocator.free(value);
+    var custom_title: ?[]const u8 = null;
+    errdefer if (custom_title) |value| allocator.free(value);
+    var ai_title: ?[]const u8 = null;
+    errdefer if (ai_title) |value| allocator.free(value);
+    var fallback_title: ?[]const u8 = null;
+    errdefer if (fallback_title) |value| allocator.free(value);
+    var latest_timestamp: ?i64 = null;
+    var messages = std.ArrayList(ExternalAgentSessionMessage).empty;
+    errdefer {
+        for (messages.items) |*message| message.deinit(allocator);
+        messages.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+
+        if (cwd == null) {
+            if (externalAgentJsonString(parsed.value.object, "cwd")) |value| {
+                cwd = try allocator.dupe(u8, value);
+            }
+        }
+        if (externalAgentTitleFromRecord(parsed.value.object, "custom-title", "customTitle")) |title| {
+            if (custom_title) |previous| allocator.free(previous);
+            custom_title = try allocator.dupe(u8, title);
+        }
+        if (externalAgentTitleFromRecord(parsed.value.object, "ai-title", "aiTitle")) |title| {
+            if (ai_title) |previous| allocator.free(previous);
+            ai_title = try allocator.dupe(u8, title);
+        }
+
+        var message = (try externalAgentConversationMessageFromRecord(allocator, parsed.value.object)) orelse continue;
+        errdefer message.deinit(allocator);
+        if (fallback_title == null and message.role == .user) {
+            fallback_title = try summarizeExternalAgentSessionTitle(allocator, message.text);
+        }
+        if (message.timestamp_seconds) |timestamp| {
+            latest_timestamp = if (latest_timestamp) |current| @max(current, timestamp) else timestamp;
+        }
+        try messages.append(allocator, message);
+    }
+
+    if (cwd == null or messages.items.len == 0 or latest_timestamp == null) return null;
+    var title: ?[]const u8 = null;
+    if (custom_title) |value| {
+        title = value;
+        custom_title = null;
+    } else if (ai_title) |value| {
+        title = value;
+        ai_title = null;
+    } else if (fallback_title) |value| {
+        title = value;
+        fallback_title = null;
+    }
+
+    const owned_cwd = cwd.?;
+    cwd = null;
+    return ExternalAgentSessionImportData{
+        .cwd = owned_cwd,
+        .title = title,
+        .latest_timestamp_seconds = latest_timestamp.?,
+        .messages = messages,
+    };
+}
+
+fn externalAgentConversationMessageFromRecord(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !?ExternalAgentSessionMessage {
+    const record_type = externalAgentJsonString(object, "type") orelse return null;
+    const is_user = std.mem.eql(u8, record_type, "user");
+    const is_assistant = std.mem.eql(u8, record_type, "assistant");
+    if (!is_user and !is_assistant) return null;
+    if (externalAgentJsonBoolIsTrue(object, "isMeta") or externalAgentJsonBoolIsTrue(object, "isSidechain")) return null;
+    const message = object.get("message") orelse return null;
+    if (message != .object) return null;
+    const content = message.object.get("content") orelse return null;
+
+    var extracted = (try extractExternalAgentMessageText(allocator, content)) orelse return null;
+    defer extracted.deinit(allocator);
+
+    const timestamp_seconds = if (externalAgentJsonString(object, "timestamp")) |timestamp|
+        if (parseThreadListRfc3339Milliseconds(timestamp)) |timestamp_ms| @divFloor(timestamp_ms, 1000) else null
+    else
+        null;
+
+    const role: ExternalAgentSessionRole = if (is_assistant or extracted.only_tool_result) .assistant else .user;
+    return ExternalAgentSessionMessage{
+        .role = role,
+        .text = try allocator.dupe(u8, extracted.text),
+        .timestamp_seconds = timestamp_seconds,
+    };
+}
+
+fn extractExternalAgentMessageText(allocator: std.mem.Allocator, content: std.json.Value) !?ExternalAgentExtractedMessage {
+    if (content == .string) {
+        if (std.mem.trim(u8, content.string, " \t\r\n").len == 0) return null;
+        return .{ .text = try allocator.dupe(u8, content.string), .only_tool_result = false };
+    }
+    if (content != .array) return null;
+
+    var parts = std.ArrayList([]const u8).empty;
+    defer deinitExternalAgentNamedItems(allocator, &parts);
+    var only_tool_result = content.array.items.len > 0;
+
+    for (content.array.items) |block| {
+        if (block != .object) continue;
+        const block_type = externalAgentJsonString(block.object, "type") orelse continue;
+        if (std.mem.eql(u8, block_type, "text")) {
+            const text = externalAgentJsonString(block.object, "text") orelse continue;
+            if (std.mem.trim(u8, text, " \t\r\n").len == 0) continue;
+            try parts.append(allocator, try allocator.dupe(u8, text));
+            only_tool_result = false;
+        } else if (std.mem.eql(u8, block_type, "tool_use")) {
+            try parts.append(allocator, try externalAgentToolCallNote(allocator, block.object));
+            only_tool_result = false;
+        } else if (std.mem.eql(u8, block_type, "tool_result")) {
+            try parts.append(allocator, try externalAgentToolResultNote(allocator, block.object));
+        } else if (std.mem.eql(u8, block_type, "thinking")) {
+            continue;
+        } else {
+            const note = try std.fmt.allocPrint(allocator, "[external unsupported block: {s}]", .{block_type});
+            try parts.append(allocator, note);
+            only_tool_result = false;
+        }
+    }
+
+    const text = try joinExternalAgentMessageParts(allocator, parts.items);
+    if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
+        allocator.free(text);
+        return null;
+    }
+    return .{ .text = text, .only_tool_result = only_tool_result };
+}
+
+fn externalAgentToolCallNote(allocator: std.mem.Allocator, block: std.json.ObjectMap) ![]const u8 {
+    const name = externalAgentJsonString(block, "name") orelse "unknown";
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "[");
+    try out.appendSlice(allocator, EXTERNAL_AGENT_TOOL_CALL_TAG);
+    try out.appendSlice(allocator, ": ");
+    try out.appendSlice(allocator, name);
+    try out.appendSlice(allocator, "]");
+
+    if (block.get("input")) |input| {
+        if (input == .object) {
+            var added_field = false;
+            if (externalAgentJsonString(input.object, "description")) |description| {
+                try out.appendSlice(allocator, "\ndescription: ");
+                try out.appendSlice(allocator, description);
+                added_field = true;
+            }
+            if (externalAgentJsonString(input.object, "command")) |command| {
+                try out.appendSlice(allocator, "\ncommand: ");
+                try out.appendSlice(allocator, command);
+                added_field = true;
+            }
+            const file = externalAgentJsonString(input.object, "file_path") orelse externalAgentJsonString(input.object, "file");
+            if (file) |file_value| {
+                try out.appendSlice(allocator, "\nfile: ");
+                try out.appendSlice(allocator, file_value);
+                added_field = true;
+            }
+            if (!added_field) try appendExternalAgentJsonNote(allocator, &out, "input", input, EXTERNAL_AGENT_NOTE_MAX_LEN);
+        } else {
+            try appendExternalAgentJsonNote(allocator, &out, "input", input, EXTERNAL_AGENT_NOTE_MAX_LEN);
+        }
+    }
+
+    try out.appendSlice(allocator, "\n[/");
+    try out.appendSlice(allocator, EXTERNAL_AGENT_TOOL_CALL_TAG);
+    try out.appendSlice(allocator, "]");
+    return out.toOwnedSlice(allocator);
+}
+
+fn externalAgentToolResultNote(allocator: std.mem.Allocator, block: std.json.ObjectMap) ![]const u8 {
+    const text = try externalAgentToolResultText(allocator, block.get("content"));
+    defer allocator.free(text);
+    const truncated = try externalAgentTruncate(allocator, text, EXTERNAL_AGENT_TOOL_RESULT_MAX_LEN);
+    defer allocator.free(truncated);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    if (externalAgentJsonBoolIsTrue(block, "is_error")) {
+        try out.appendSlice(allocator, "[");
+        try out.appendSlice(allocator, EXTERNAL_AGENT_TOOL_RESULT_TAG);
+        try out.appendSlice(allocator, ": error]");
+    } else {
+        try out.appendSlice(allocator, "[");
+        try out.appendSlice(allocator, EXTERNAL_AGENT_TOOL_RESULT_TAG);
+        try out.appendSlice(allocator, "]");
+    }
+    if (truncated.len > 0) {
+        try out.append(allocator, '\n');
+        try out.appendSlice(allocator, truncated);
+    }
+    try out.appendSlice(allocator, "\n[/");
+    try out.appendSlice(allocator, EXTERNAL_AGENT_TOOL_RESULT_TAG);
+    try out.appendSlice(allocator, "]");
+    return out.toOwnedSlice(allocator);
+}
+
+fn externalAgentToolResultText(allocator: std.mem.Allocator, content_value: ?std.json.Value) ![]const u8 {
+    const content = content_value orelse return allocator.dupe(u8, "");
+    if (content == .string) return allocator.dupe(u8, content.string);
+    if (content != .array) return allocator.dupe(u8, "");
+
+    var parts = std.ArrayList([]const u8).empty;
+    defer deinitExternalAgentNamedItems(allocator, &parts);
+    for (content.array.items) |item| {
+        if (item != .object) continue;
+        const text = externalAgentJsonString(item.object, "text") orelse continue;
+        if (text.len == 0) continue;
+        try parts.append(allocator, try allocator.dupe(u8, text));
+    }
+    return joinExternalAgentTextParts(allocator, parts.items, "\n");
+}
+
+fn appendExternalAgentJsonNote(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    label: []const u8,
+    value: std.json.Value,
+    max_len: usize,
+) !void {
+    const raw = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(raw);
+    const truncated = try externalAgentTruncate(allocator, raw, max_len);
+    defer allocator.free(truncated);
+    try out.append(allocator, '\n');
+    try out.appendSlice(allocator, label);
+    try out.appendSlice(allocator, ": ");
+    try out.appendSlice(allocator, truncated);
+}
+
+fn joinExternalAgentMessageParts(allocator: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
+    return joinExternalAgentTextParts(allocator, parts, "\n\n");
+}
+
+fn joinExternalAgentTextParts(allocator: std.mem.Allocator, parts: []const []const u8, separator: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var first = true;
+    for (parts) |part| {
+        if (std.mem.trim(u8, part, " \t\r\n").len == 0) continue;
+        if (!first) try out.appendSlice(allocator, separator);
+        try out.appendSlice(allocator, part);
+        first = false;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn externalAgentTruncate(allocator: std.mem.Allocator, text: []const u8, max_len: usize) ![]const u8 {
+    if (text.len <= max_len) return allocator.dupe(u8, text);
+    var out = try allocator.alloc(u8, max_len + 3);
+    @memcpy(out[0..max_len], text[0..max_len]);
+    @memcpy(out[max_len..], "...");
+    return out;
+}
+
+fn summarizeExternalAgentSessionTitle(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    const first_line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    const first_line = std.mem.trim(u8, text[0..first_line_end], " \t\r\n");
+    if (first_line.len <= 120) return allocator.dupe(u8, first_line);
+    return externalAgentTruncate(allocator, first_line, 120);
+}
+
+fn externalAgentTitleFromRecord(object: std.json.ObjectMap, record_type: []const u8, field: []const u8) ?[]const u8 {
+    const actual_type = externalAgentJsonString(object, "type") orelse return null;
+    if (!std.mem.eql(u8, actual_type, record_type)) return null;
+    const title = externalAgentJsonString(object, field) orelse return null;
+    const trimmed = std.mem.trim(u8, title, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
+fn externalAgentSessionIsRecent(latest_timestamp_seconds: i64) bool {
+    return latest_timestamp_seconds >= currentUnixSeconds() - EXTERNAL_AGENT_SESSION_IMPORT_MAX_AGE_SECONDS;
+}
+
+fn externalAgentSessionMigrationLessThan(_: void, lhs: ExternalAgentSessionMigration, rhs: ExternalAgentSessionMigration) bool {
+    if (lhs.latest_timestamp_seconds != rhs.latest_timestamp_seconds) return lhs.latest_timestamp_seconds > rhs.latest_timestamp_seconds;
+    return std.mem.lessThan(u8, lhs.path, rhs.path);
+}
+
+fn externalAgentSessionSourcePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const source_path = try realPathFileAllocPlain(allocator, path);
+    errdefer allocator.free(source_path);
+
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    const projects_path = try std.fs.path.join(allocator, &.{ external_home, "projects" });
+    defer allocator.free(projects_path);
+    const projects_real = try realPathFileAllocPlain(allocator, projects_path);
+    defer allocator.free(projects_real);
+
+    if (!externalAgentPathIsUnderDirectory(source_path, projects_real)) return error.ExternalAgentSessionPathOutsideProjects;
+    return source_path;
+}
+
+fn externalAgentPathIsUnderDirectory(path: []const u8, directory: []const u8) bool {
+    if (path.len <= directory.len) return false;
+    if (!std.mem.eql(u8, path[0..directory.len], directory)) return false;
+    return path[directory.len] == std.fs.path.sep;
+}
+
+fn readExternalAgentSessionFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        path,
+        allocator,
+        .limited(1024 * 1024 * 16),
+    );
+}
+
+fn externalAgentSessionContentSha256(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const bytes = try readExternalAgentSessionFile(allocator, path);
+    defer allocator.free(bytes);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    var out = try allocator.alloc(u8, digest.len * 2);
+    const hex = "0123456789abcdef";
+    for (digest, 0..) |byte, index| {
+        out[index * 2] = hex[byte >> 4];
+        out[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return out;
+}
+
+fn loadExternalAgentSessionImportLedger(allocator: std.mem.Allocator, codex_home: []const u8) !ExternalAgentSessionImportLedger {
+    const ledger_path = try externalAgentSessionImportLedgerPath(allocator, codex_home);
+    defer allocator.free(ledger_path);
+    const bytes = readTextFile(allocator, ledger_path) catch |err| switch (err) {
+        error.FileNotFound => return .{},
+        error.NotDir => return .{},
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidExternalAgentSessionImportLedger;
+    const records = parsed.value.object.get("records") orelse return error.InvalidExternalAgentSessionImportLedger;
+    if (records != .array) return error.InvalidExternalAgentSessionImportLedger;
+
+    var ledger = ExternalAgentSessionImportLedger{};
+    errdefer ledger.deinit(allocator);
+    for (records.array.items) |record_value| {
+        if (record_value != .object) return error.InvalidExternalAgentSessionImportLedger;
+        const source_path = externalAgentJsonString(record_value.object, "source_path") orelse return error.InvalidExternalAgentSessionImportLedger;
+        const content_sha256 = externalAgentJsonString(record_value.object, "content_sha256") orelse return error.InvalidExternalAgentSessionImportLedger;
+        const imported_thread_id = externalAgentJsonString(record_value.object, "imported_thread_id") orelse return error.InvalidExternalAgentSessionImportLedger;
+        const imported_at_value = record_value.object.get("imported_at") orelse return error.InvalidExternalAgentSessionImportLedger;
+        if (imported_at_value != .integer) return error.InvalidExternalAgentSessionImportLedger;
+        var record = ExternalAgentSessionImportLedgerRecord{
+            .source_path = try allocator.dupe(u8, source_path),
+            .content_sha256 = try allocator.dupe(u8, content_sha256),
+            .imported_thread_id = try allocator.dupe(u8, imported_thread_id),
+            .imported_at = imported_at_value.integer,
+        };
+        errdefer record.deinit(allocator);
+        try ledger.records.append(allocator, record);
+    }
+    return ledger;
+}
+
+fn saveExternalAgentSessionImportLedger(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    ledger: ExternalAgentSessionImportLedger,
+) !void {
+    const ledger_path = try externalAgentSessionImportLedgerPath(allocator, codex_home);
+    defer allocator.free(ledger_path);
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"records\":[");
+    for (ledger.records.items, 0..) |record, index| {
+        if (index != 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, "{\"source_path\":");
+        try appendJsonString(allocator, &out, record.source_path);
+        try out.appendSlice(allocator, ",\"content_sha256\":");
+        try appendJsonString(allocator, &out, record.content_sha256);
+        try out.appendSlice(allocator, ",\"imported_thread_id\":");
+        try appendJsonString(allocator, &out, record.imported_thread_id);
+        try out.appendSlice(allocator, ",\"imported_at\":");
+        try appendInt(allocator, &out, record.imported_at);
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]}\n");
+    try writeTextFile(ledger_path, out.items);
+}
+
+fn externalAgentSessionImportLedgerPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, EXTERNAL_AGENT_SESSION_IMPORT_LEDGER_FILE });
+}
+
+fn externalAgentJsonString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn externalAgentJsonBoolIsTrue(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .bool and value.bool;
 }
 
 fn loadExternalAgentEnabledPlugins(allocator: std.mem.Allocator, settings_path: []const u8) !std.ArrayList([]const u8) {
