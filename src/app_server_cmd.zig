@@ -22792,8 +22792,14 @@ fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_v
     const effective_output_cap = processOptionalOutputBytesCap(object, "outputBytesCap", COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP) catch |err| {
         return commandExecNumberError(allocator, id_value, err, "outputBytesCap must be a non-negative integer or null");
     };
-    const effective_timeout_ms = processOptionalTimeoutMs(object, "timeoutMs", COMMAND_EXEC_DEFAULT_TIMEOUT_MS) catch |err| {
-        return commandExecNumberError(allocator, id_value, err, "timeoutMs must be a non-negative integer or null");
+    const effective_timeout_ms = switch (processOptionalTimeoutMs(object, "timeoutMs", COMMAND_EXEC_DEFAULT_TIMEOUT_MS)) {
+        .value => |value| value,
+        .negative => |value| {
+            const message = try std.fmt.allocPrint(allocator, "process/spawn timeoutMs must be non-negative, got {d}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        },
+        .invalid => return renderJsonRpcError(allocator, id_value, -32602, "timeoutMs must be a non-negative integer or null"),
     };
 
     var child_env: ?std.process.Environ.Map = null;
@@ -23831,16 +23837,10 @@ fn processOptionalOutputBytesCap(object: std.json.ObjectMap, field: []const u8, 
     return parsed;
 }
 
-fn processOptionalTimeoutMs(object: std.json.ObjectMap, field: []const u8, default: i64) !?i64 {
-    const value = object.get(field) orelse return default;
-    if (value == .null) return null;
-    const integer = switch (value) {
-        .integer => |raw| raw,
-        .number_string => |raw| std.fmt.parseInt(i64, raw, 10) catch return error.InvalidCommandExecNumber,
-        else => return error.InvalidCommandExecNumber,
-    };
-    if (integer < 0) return error.InvalidCommandExecNumber;
-    return integer;
+fn processOptionalTimeoutMs(object: std.json.ObjectMap, field: []const u8, default: i64) CommandExecTimeoutMsParse {
+    const value = object.get(field) orelse return .{ .value = default };
+    if (value == .null) return .{ .value = null };
+    return parseCommandExecTimeoutMsValue(value);
 }
 
 fn commandExecOptionalBool(object: std.json.ObjectMap, field: []const u8, default: bool) !bool {
@@ -23881,6 +23881,10 @@ const CommandExecTimeoutMsParse = union(enum) {
 fn commandExecOptionalTimeoutMs(object: std.json.ObjectMap, field: []const u8) CommandExecTimeoutMsParse {
     const value = object.get(field) orelse return .{ .value = null };
     if (value == .null) return .{ .value = null };
+    return parseCommandExecTimeoutMsValue(value);
+}
+
+fn parseCommandExecTimeoutMsValue(value: std.json.Value) CommandExecTimeoutMsParse {
     const integer = switch (value) {
         .integer => |raw| raw,
         .number_string => |raw| std.fmt.parseInt(i64, raw, 10) catch return .invalid,
