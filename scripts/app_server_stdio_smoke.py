@@ -11822,6 +11822,26 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "timeout-err",
         }
 
+        negative_timeout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-negative-timeout",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "timeoutMs": -1,
+                },
+            },
+            env,
+        )
+        assert negative_timeout["id"] == "command-exec-negative-timeout"
+        assert negative_timeout["error"]["code"] == -32602
+        assert (
+            negative_timeout["error"]["message"]
+            == "command/exec timeoutMs must be non-negative, got -1"
+        )
+
         empty_command = request_stdio_app_server(
             binary,
             {
