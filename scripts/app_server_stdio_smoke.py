@@ -15413,6 +15413,140 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         assert detect_after_skills["id"] == "external-agent-detect-after-skills"
         assert detect_after_skills["result"] == {"items": []}
+
+        project_root = root / "project"
+        nested_cwd = project_root / "nested" / "child"
+        project_claude = project_root / ".claude"
+        (project_root / ".git").mkdir(parents=True)
+        nested_cwd.mkdir(parents=True)
+        project_claude.mkdir()
+        (project_claude / "settings.json").write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "PROJECT_BAR": "project",
+                        "PROJECT_OVERRIDE": "base",
+                        "PROJECT_SUPPRESSED": "base",
+                    },
+                    "sandbox": {"enabled": False},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (project_claude / "settings.local.json").write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "PROJECT_BOOL": True,
+                        "PROJECT_OVERRIDE": "local",
+                        "PROJECT_SUPPRESSED": None,
+                    },
+                    "sandbox": {"enabled": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (project_root / "CLAUDE.md").write_text(
+            "Project Claude Code uses CLAUDE.md.",
+            encoding="utf-8",
+        )
+        project_skill = project_claude / "skills" / "project-skill"
+        project_skill.mkdir(parents=True)
+        (project_skill / "SKILL.md").write_text(
+            "Project Claude skill.",
+            encoding="utf-8",
+        )
+        (project_skill / "asset.txt").write_text(
+            "asset",
+            encoding="utf-8",
+        )
+
+        detected_project = rpc(
+            "external-agent-detect-project",
+            "externalAgentConfig/detect",
+            {"cwds": [str(nested_cwd)]},
+        )
+        assert detected_project["id"] == "external-agent-detect-project"
+        assert detected_project["result"]["items"] == [
+            {
+                "itemType": "CONFIG",
+                "description": (
+                    f"Migrate {project_claude / 'settings.json'} into "
+                    f"{project_root / '.codex' / 'config.toml'}"
+                ),
+                "cwd": str(project_root),
+                "details": None,
+            },
+            {
+                "itemType": "SKILLS",
+                "description": (
+                    f"Migrate skills from {project_claude / 'skills'} to "
+                    f"{project_root / '.agents' / 'skills'}"
+                ),
+                "cwd": str(project_root),
+                "details": None,
+            },
+            {
+                "itemType": "AGENTS_MD",
+                "description": (
+                    f"Migrate {project_root / 'CLAUDE.md'} to "
+                    f"{project_root / 'AGENTS.md'}"
+                ),
+                "cwd": str(project_root),
+                "details": None,
+            },
+        ]
+
+        project_import = rpc(
+            "external-agent-import-project",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_project["result"]["items"]},
+        )
+        assert project_import["id"] == "external-agent-import-project"
+        assert project_import["result"] == {}
+        project_notification = read_json_line(proc, 5)
+        assert project_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (project_root / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        ) == (
+            'sandbox_mode = "workspace-write"\n'
+            "\n"
+            "[shell_environment_policy]\n"
+            'inherit = "core"\n'
+            "\n"
+            "[shell_environment_policy.set]\n"
+            'PROJECT_BAR = "project"\n'
+            'PROJECT_BOOL = "true"\n'
+            'PROJECT_OVERRIDE = "local"\n'
+        )
+        assert (project_root / "AGENTS.md").read_text(encoding="utf-8") == (
+            "Project Codex uses AGENTS.md."
+        )
+        assert (
+            project_root
+            / ".agents"
+            / "skills"
+            / "project-skill"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8") == "Project Codex skill."
+        assert (
+            project_root
+            / ".agents"
+            / "skills"
+            / "project-skill"
+            / "asset.txt"
+        ).read_text(encoding="utf-8") == "asset"
+
+        detect_after_project = rpc(
+            "external-agent-detect-after-project",
+            "externalAgentConfig/detect",
+            {"cwds": [str(nested_cwd)]},
+        )
+        assert detect_after_project["id"] == "external-agent-detect-after-project"
+        assert detect_after_project["result"] == {"items": []}
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
