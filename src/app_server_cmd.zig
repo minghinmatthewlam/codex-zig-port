@@ -15707,10 +15707,12 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
 }
 
 fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !void {
-    const cut_index = rollbackCutIndex(&thread.transcript, num_turns) orelse return;
-    trimTranscriptHistoryFrom(allocator, &thread.transcript, cut_index);
+    const path = thread.path orelse return error.RollbackRequiresPersistedHistory;
+    if (rollbackCutIndex(&thread.transcript, num_turns)) |cut_index| {
+        trimTranscriptHistoryFrom(allocator, &thread.transcript, cut_index);
+    }
     try refreshLoadedThreadAfterRollback(allocator, thread);
-    if (thread.path) |path| try session_store.appendThreadRollback(allocator, path, num_turns);
+    try session_store.appendThreadRollback(allocator, path, num_turns);
 }
 
 fn rollbackCutIndex(transcript: *const session_mod.Transcript, num_turns: u32) ?usize {
@@ -16438,7 +16440,10 @@ fn handleThreadMethod(
         };
         const thread = &state.loaded_threads.items[thread_index];
         rollbackLoadedThread(allocator, thread, num_turns) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed", err);
+            return switch (err) {
+                error.RollbackRequiresPersistedHistory => renderJsonRpcError(allocator, id_value, -32600, "thread rollback requires persisted thread history"),
+                else => renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed", err),
+            };
         };
         const result = try renderThreadReadResponse(allocator, thread, true);
         defer allocator.free(result);
