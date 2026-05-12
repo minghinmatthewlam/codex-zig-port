@@ -15482,18 +15482,34 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert imported_thread["preview"] == "first imported question"
         assert imported_thread["cwd"] == str(session_project_root)
         assert imported_thread["path"] == os.path.realpath(rollout_files[0])
-        assert imported_thread["turns"][0]["items"][0]["type"] == "userMessage"
+        assert len(imported_thread["turns"]) == 1
+        imported_turn_items = imported_thread["turns"][0]["items"]
+        assert [item["type"] for item in imported_turn_items] == [
+            "userMessage",
+            "agentMessage",
+            "agentMessage",
+        ]
         assert (
-            imported_thread["turns"][0]["items"][0]["content"][0]["text"]
+            imported_turn_items[0]["content"][0]["text"]
             == "first imported question"
         )
-        assert imported_thread["turns"][1]["items"][0]["type"] == "agentMessage"
-        assert "first imported answer" in imported_thread["turns"][1]["items"][0]["text"]
-        assert imported_thread["turns"][2]["items"][0]["type"] == "agentMessage"
-        assert (
-            imported_thread["turns"][2]["items"][0]["text"]
-            == "<EXTERNAL SESSION IMPORTED>"
+        assert "first imported answer" in imported_turn_items[1]["text"]
+        assert imported_turn_items[2]["text"] == "<EXTERNAL SESSION IMPORTED>"
+
+        imported_thread_turns = rpc(
+            "external-agent-turns-list-imported-session",
+            "thread/turns/list",
+            {"threadId": imported_thread_id},
         )
+        assert imported_thread_turns["id"] == "external-agent-turns-list-imported-session"
+        imported_turn_page = imported_thread_turns["result"]["data"]
+        assert len(imported_turn_page) == 1
+        assert [item["type"] for item in imported_turn_page[0]["items"]] == [
+            "userMessage",
+            "agentMessage",
+            "agentMessage",
+        ]
+        assert imported_thread_turns["result"]["nextCursor"] is None
 
         detect_after_session_import = rpc(
             "external-agent-detect-after-session-import",
