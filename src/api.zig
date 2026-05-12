@@ -708,6 +708,8 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
             if (object.get("delta")) |delta| {
                 if (delta == .string) try text.appendSlice(allocator, delta.string);
             }
+        } else if (std.mem.eql(u8, event_type.string, "response.failed")) {
+            return error.ApiResponseFailed;
         } else if (std.mem.eql(u8, event_type.string, "response.output_item.done")) {
             const item_value = object.get("item") orelse continue;
             if (item_value != .object) continue;
@@ -774,6 +776,14 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("hi", parsed.text);
     try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
+}
+
+test "parses SSE failed response as API failure" {
+    const allocator = std.testing.allocator;
+    const body =
+        "event: response.failed\n" ++
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-1\",\"error\":{\"code\":\"server_error\",\"message\":\"simulated failure\"}}}\n\n";
+    try std.testing.expectError(error.ApiResponseFailed, parseSseResponse(allocator, body));
 }
 
 const TestStreamContext = struct {
