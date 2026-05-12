@@ -5458,6 +5458,138 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert rollout_path.exists()
             assert not archived_rollout_path.exists()
 
+            archive_metadata_thread_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            archive_metadata_rollout_path = (
+                sessions_dir / f"rollout-{archive_metadata_thread_id}.jsonl"
+            )
+            archive_metadata_rollout_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {"type": "metadata", "title": "Archive Metadata Smoke"},
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content_type": "input_text",
+                                "text": "archive metadata hello",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with sqlite3.connect(state_db_path) as db:
+                db.execute(
+                    """
+                    INSERT INTO threads (
+                        id,
+                        rollout_path,
+                        title,
+                        first_user_message,
+                        created_at,
+                        updated_at,
+                        created_at_ms,
+                        updated_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        archive_metadata_thread_id,
+                        str(archive_metadata_rollout_path),
+                        "Archive Metadata Smoke",
+                        "archive metadata hello",
+                        1700000100,
+                        1700000100,
+                        1700000100000,
+                        1700000100000,
+                    ),
+                )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-archive-state-db-metadata",
+                    "method": "thread/archive",
+                    "params": {"threadId": archive_metadata_thread_id},
+                },
+            )
+            archive_metadata_response = read_json_line(proc, 5)
+            assert archive_metadata_response["id"] == "thread-archive-state-db-metadata"
+            assert archive_metadata_response["result"] == {}
+            archive_metadata_notification = read_json_line(proc, 5)
+            assert archive_metadata_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/archived",
+                "params": {"threadId": archive_metadata_thread_id},
+            }
+            archive_metadata_archived_path = (
+                codex_home
+                / "archived_sessions"
+                / "zig"
+                / archive_metadata_rollout_path.name
+            )
+            assert not archive_metadata_rollout_path.exists()
+            assert archive_metadata_archived_path.exists()
+            archive_metadata_row = sqlite_row(
+                state_db_path,
+                """
+                SELECT rollout_path, archived, archived_at, updated_at, updated_at_ms
+                FROM threads
+                WHERE id = ?
+                """,
+                (archive_metadata_thread_id,),
+            )
+            assert archive_metadata_row[0] == str(archive_metadata_archived_path)
+            assert archive_metadata_row[1] == 1
+            assert isinstance(archive_metadata_row[2], int)
+            assert archive_metadata_row[2] > 0
+            assert archive_metadata_row[3] > 1700000100
+            assert archive_metadata_row[4] > 1700000100000
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-unarchive-state-db-metadata",
+                    "method": "thread/unarchive",
+                    "params": {"threadId": archive_metadata_thread_id},
+                },
+            )
+            unarchive_metadata_response = read_json_line(proc, 5)
+            assert unarchive_metadata_response["id"] == "thread-unarchive-state-db-metadata"
+            unarchive_metadata_thread = unarchive_metadata_response["result"]["thread"]
+            assert unarchive_metadata_thread["id"] == archive_metadata_thread_id
+            assert unarchive_metadata_thread["path"] == os.path.realpath(
+                archive_metadata_rollout_path
+            )
+            unarchive_metadata_notification = read_json_line(proc, 5)
+            assert unarchive_metadata_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/unarchived",
+                "params": {"threadId": archive_metadata_thread_id},
+            }
+            assert archive_metadata_rollout_path.exists()
+            assert not archive_metadata_archived_path.exists()
+            unarchive_metadata_row = sqlite_row(
+                state_db_path,
+                """
+                SELECT rollout_path, archived, archived_at, updated_at, updated_at_ms
+                FROM threads
+                WHERE id = ?
+                """,
+                (archive_metadata_thread_id,),
+            )
+            assert unarchive_metadata_row[0] == str(archive_metadata_rollout_path)
+            assert unarchive_metadata_row[1] == 0
+            assert unarchive_metadata_row[2] is None
+            assert unarchive_metadata_row[3] > 1700000100
+            assert unarchive_metadata_row[4] > 1700000100000
+
             write_json_line(
                 proc,
                 {
