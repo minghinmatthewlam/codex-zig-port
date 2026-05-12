@@ -388,6 +388,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = if (source.syntax_theme) |value| try allocator.dupe(u8, value) else null;
     errdefer if (syntax_theme) |value| allocator.free(value);
+    const forced_chatgpt_workspace_id = if (source.forced_chatgpt_workspace_id) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
     var tui_status_line = if (source.tui_status_line) |value| try value.clone(allocator) else null;
     errdefer if (tui_status_line) |*value| value.deinit(allocator);
     var tui_terminal_title = if (source.tui_terminal_title) |value| try value.clone(allocator) else null;
@@ -415,6 +417,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = source.personality,
+        .forced_login_method = source.forced_login_method,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = source.tui_alternate_screen,

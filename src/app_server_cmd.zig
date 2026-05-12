@@ -28724,6 +28724,15 @@ fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Valu
     if (std.mem.eql(u8, login_type, "chatgptAuthTokens")) {
         return handleAccountLoginStartChatGptAuthTokens(allocator, id_value, object);
     }
+    if (std.mem.eql(u8, login_type, "chatgpt") or std.mem.eql(u8, login_type, "chatgptDeviceCode")) {
+        var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        if (cfg.forced_login_method == .api) {
+            return renderJsonRpcError(allocator, id_value, -32600, "ChatGPT login is disabled. Use API key login instead.");
+        }
+    }
 
     const message = try std.fmt.allocPrint(
         allocator,
@@ -28744,6 +28753,9 @@ fn handleAccountLoginStartApiKey(allocator: std.mem.Allocator, id_value: std.jso
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    if (cfg.forced_login_method == .chatgpt) {
+        return renderJsonRpcError(allocator, id_value, -32600, "API key login is disabled. Use ChatGPT login instead.");
+    }
 
     auth_mod.saveApiKeyAuthJson(allocator, cfg.codex_home, api_key_value.string) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save API key", err);
@@ -28776,6 +28788,20 @@ fn handleAccountLoginStartChatGptAuthTokens(allocator: std.mem.Allocator, id_val
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    if (cfg.forced_login_method == .api) {
+        return renderJsonRpcError(allocator, id_value, -32600, "External ChatGPT auth is disabled. Use API key login instead.");
+    }
+    if (cfg.forced_chatgpt_workspace_id) |expected_workspace| {
+        if (!std.mem.eql(u8, account_id_value.string, expected_workspace)) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "External auth must use workspace {s}, but received \"{s}\".",
+                .{ expected_workspace, account_id_value.string },
+            );
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    }
 
     auth_mod.saveChatGptAuthTokensJson(allocator, cfg.codex_home, access_token_value.string, account_id_value.string) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save ChatGPT auth tokens", err);

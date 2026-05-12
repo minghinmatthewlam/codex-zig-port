@@ -24,6 +24,8 @@ pub const Config = struct {
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
+    forced_login_method: ?ForcedLoginMethod = null,
+    forced_chatgpt_workspace_id: ?[]const u8 = null,
     tui_status_line: ?StringList,
     tui_terminal_title: ?StringList,
     tui_alternate_screen: AltScreenMode,
@@ -44,6 +46,7 @@ pub const Config = struct {
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
         if (self.syntax_theme) |value| allocator.free(value);
+        if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         if (self.tui_status_line) |*value| value.deinit(allocator);
         if (self.tui_terminal_title) |*value| value.deinit(allocator);
     }
@@ -500,6 +503,24 @@ pub const Personality = enum {
     }
 };
 
+pub const ForcedLoginMethod = enum {
+    chatgpt,
+    api,
+
+    pub fn parse(value: []const u8) !ForcedLoginMethod {
+        if (std.mem.eql(u8, value, "chatgpt")) return .chatgpt;
+        if (std.mem.eql(u8, value, "api")) return .api;
+        return error.InvalidForcedLoginMethod;
+    }
+
+    pub fn label(self: ForcedLoginMethod) []const u8 {
+        return switch (self) {
+            .chatgpt => "chatgpt",
+            .api => "api",
+        };
+    }
+};
+
 pub const OssProvider = enum {
     lmstudio,
     ollama,
@@ -642,6 +663,9 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
     errdefer if (syntax_theme) |value| allocator.free(value);
     const personality = try resolvePersonality(allocator, config_view, active_profile);
+    const forced_login_method = try resolveForcedLoginMethod(allocator, config_view, active_profile);
+    const forced_chatgpt_workspace_id = try resolveForcedChatGptWorkspaceId(allocator, config_view, active_profile);
+    errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
     var tui_status_line = try resolveTuiStringArray(allocator, config_view, "status_line");
     errdefer if (tui_status_line) |*value| value.deinit(allocator);
     var tui_terminal_title = try resolveTuiStringArray(allocator, config_view, "terminal_title");
@@ -670,6 +694,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
+        .forced_login_method = forced_login_method,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = tui_alternate_screen,
@@ -938,6 +964,19 @@ fn resolvePersonality(allocator: std.mem.Allocator, config_view: ConfigView, act
     }
 
     return .pragmatic;
+}
+
+fn resolveForcedLoginMethod(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?ForcedLoginMethod {
+    if (try config_view.getScopedString(allocator, active_profile, "forced_login_method")) |value| {
+        defer allocator.free(value);
+        return try ForcedLoginMethod.parse(value);
+    }
+
+    return null;
+}
+
+fn resolveForcedChatGptWorkspaceId(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    return config_view.getScopedString(allocator, active_profile, "forced_chatgpt_workspace_id");
 }
 
 fn resolveTuiStringArray(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?StringList {
@@ -2388,6 +2427,8 @@ test "profile values override top-level config values" {
         \\service_tier = "flex"
         \\syntax_theme = "github"
         \\personality = "friendly"
+        \\forced_login_method = "api"
+        \\forced_chatgpt_workspace_id = "base-workspace"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
@@ -2400,6 +2441,8 @@ test "profile values override top-level config values" {
         \\service_tier = "fast"
         \\syntax_theme = "dracula"
         \\personality = "pragmatic"
+        \\forced_login_method = "chatgpt"
+        \\forced_chatgpt_workspace_id = "profile-workspace"
         \\chatgpt_base_url = "https://profile.example/codex"
         \\
         ,
@@ -2434,6 +2477,10 @@ test "profile values override top-level config values" {
     defer allocator.free(syntax_theme.?);
     try std.testing.expectEqualStrings("dracula", syntax_theme.?);
     try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, active_profile.?)).?);
+    try std.testing.expectEqual(ForcedLoginMethod.chatgpt, (try resolveForcedLoginMethod(allocator, view, active_profile.?)).?);
+    const forced_workspace = try resolveForcedChatGptWorkspaceId(allocator, view, active_profile.?);
+    defer allocator.free(forced_workspace.?);
+    try std.testing.expectEqualStrings("profile-workspace", forced_workspace.?);
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
