@@ -4399,7 +4399,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 """,
                 (
                     "State DB Column Name",
-                    "disabled",
+                    "polluted",
                     "state-db-column-sha",
                     "state-db-column-branch",
                     "https://example.test/state-column.git",
@@ -4565,6 +4565,47 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-metadata-update-state-db-only-rollout",
+                    "method": "thread/metadata/update",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "gitInfo": {
+                            "sha": "state-db-sha",
+                            "branch": "state-db-branch",
+                            "originUrl": "https://example.test/state.git",
+                        },
+                    },
+                },
+            )
+            state_db_metadata_update = read_json_line(proc, 5)
+            assert state_db_metadata_update["id"] == "thread-metadata-update-state-db-only-rollout"
+            assert state_db_metadata_update["result"]["thread"]["gitInfo"] == {
+                "sha": "state-db-sha",
+                "branch": "state-db-branch",
+                "originUrl": "https://example.test/state.git",
+            }
+            state_db_rollout_entries = [
+                json.loads(line)
+                for line in state_db_rollout_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert state_db_rollout_entries[-1]["type"] == "session_meta"
+            assert state_db_rollout_entries[-1]["payload"]["id"] == state_db_thread_id
+            assert state_db_rollout_entries[-1]["payload"]["memory_mode"] == "polluted"
+            assert sqlite_row(
+                state_db_path,
+                "SELECT git_sha, git_branch, git_origin_url FROM threads WHERE id = ?",
+                (state_db_thread_id,),
+            ) == (
+                "state-db-sha",
+                "state-db-branch",
+                "https://example.test/state.git",
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-name-set-state-db-only-rollout",
                     "method": "thread/name/set",
                     "params": {
@@ -4667,39 +4708,6 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "SELECT memory_mode FROM threads WHERE id = ?",
                 (state_db_thread_id,),
             ) == ("disabled",)
-
-            write_json_line(
-                proc,
-                {
-                    "jsonrpc": "2.0",
-                    "id": "thread-metadata-update-state-db-only-rollout",
-                    "method": "thread/metadata/update",
-                    "params": {
-                        "threadId": state_db_thread_id,
-                        "gitInfo": {
-                            "sha": "state-db-sha",
-                            "branch": "state-db-branch",
-                            "originUrl": "https://example.test/state.git",
-                        },
-                    },
-                },
-            )
-            state_db_metadata_update = read_json_line(proc, 5)
-            assert state_db_metadata_update["id"] == "thread-metadata-update-state-db-only-rollout"
-            assert state_db_metadata_update["result"]["thread"]["gitInfo"] == {
-                "sha": "state-db-sha",
-                "branch": "state-db-branch",
-                "originUrl": "https://example.test/state.git",
-            }
-            assert sqlite_row(
-                state_db_path,
-                "SELECT git_sha, git_branch, git_origin_url FROM threads WHERE id = ?",
-                (state_db_thread_id,),
-            ) == (
-                "state-db-sha",
-                "state-db-branch",
-                "https://example.test/state.git",
-            )
 
             write_json_line(
                 proc,
