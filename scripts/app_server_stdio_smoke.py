@@ -13389,6 +13389,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'web_search = "cached"',
                 'model_reasoning_effort = "high"',
                 'service_tier = "fast"',
+                'forced_chatgpt_workspace_id = "acct-project"',
+                'forced_login_method = "api"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-project-root"]',
@@ -13507,6 +13509,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'web_search = "cached"',
                 'model_reasoning_effort = "medium"',
                 'service_tier = "fast"',
+                'forced_chatgpt_workspace_id = "acct-system"',
+                'forced_login_method = "api"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-system-root"]',
@@ -13744,6 +13748,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "cached",
             "model_reasoning_effort": "medium",
             "service_tier": "priority",
+            "forced_chatgpt_workspace_id": "acct-system",
+            "forced_login_method": "api",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-system-root"],
                 "network_access": False,
@@ -13811,8 +13817,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
         assert project_config_body["service_tier"] == "priority"
-        assert project_config_body["forced_chatgpt_workspace_id"] == "acct-user"
-        assert project_config_body["forced_login_method"] == "chatgpt"
+        assert project_config_body["forced_chatgpt_workspace_id"] == "acct-project"
+        assert project_config_body["forced_login_method"] == "api"
         assert project_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -13895,6 +13901,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search",
             "model_reasoning_effort",
             "service_tier",
+            "forced_chatgpt_workspace_id",
+            "forced_login_method",
             "tools.web_search.context_size",
             "tools.web_search.location.region",
             "tools.view_image",
@@ -13948,6 +13956,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "cached",
             "model_reasoning_effort": "high",
             "service_tier": "priority",
+            "forced_chatgpt_workspace_id": "acct-project",
+            "forced_login_method": "api",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-project-root"],
                 "network_access": False,
@@ -14013,8 +14023,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
         assert nested_config_body["service_tier"] == "flex"
-        assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-user"
-        assert nested_config_body["forced_login_method"] == "chatgpt"
+        assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-project"
+        assert nested_config_body["forced_login_method"] == "api"
         assert nested_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -14050,6 +14060,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["tools.web_search.allowed_domains.0"]["name"] == child_project_source
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
         assert nested_origins["service_tier"]["name"] == child_project_source
+        assert nested_origins["forced_chatgpt_workspace_id"]["name"] == project_source
+        assert nested_origins["forced_login_method"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.network_access"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == child_project_source
@@ -14089,6 +14101,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "cached",
             "model_reasoning_effort": "high",
             "service_tier": "priority",
+            "forced_chatgpt_workspace_id": "acct-project",
+            "forced_login_method": "api",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-project-root"],
                 "network_access": False,
@@ -14149,6 +14163,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'web_search = "disabled"',
                     'model_reasoning_effort = "low"',
                     'service_tier = "priority"',
+                    'forced_chatgpt_workspace_id = "acct-managed"',
+                    'forced_login_method = "api"',
                     "",
                     "[sandbox_workspace_write]",
                     'writable_roots = ["/tmp/codex-zig-managed-root"]',
@@ -14195,8 +14211,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["web_search"] == "disabled"
         assert managed_config_body["model_reasoning_effort"] == "low"
         assert managed_config_body["service_tier"] == "priority"
-        assert managed_config_body["forced_chatgpt_workspace_id"] == "acct-user"
-        assert managed_config_body["forced_login_method"] == "chatgpt"
+        assert managed_config_body["forced_chatgpt_workspace_id"] == "acct-managed"
+        assert managed_config_body["forced_login_method"] == "api"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
             "network_access": False,
@@ -14277,6 +14293,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search",
             "model_reasoning_effort",
             "service_tier",
+            "forced_chatgpt_workspace_id",
+            "forced_login_method",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
             "sandbox_workspace_write.exclude_tmpdir_env_var",
@@ -14328,6 +14346,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "web_search": "disabled",
             "model_reasoning_effort": "low",
             "service_tier": "priority",
+            "forced_chatgpt_workspace_id": "acct-managed",
+            "forced_login_method": "api",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-managed-root"],
                 "network_access": False,
