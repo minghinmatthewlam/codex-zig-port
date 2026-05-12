@@ -58,7 +58,7 @@ const THREAD_LIFECYCLE_METADATA_QUERY =
 const THREAD_SUMMARY_METADATA_QUERY =
     \\SELECT title, memory_mode, git_sha, git_branch, git_origin_url,
     \\       created_at_ms, updated_at_ms, source, thread_source, agent_nickname, agent_role,
-    \\       model_provider, cwd, cli_version, first_user_message
+    \\       model_provider, model, reasoning_effort, cwd, cli_version, first_user_message
     \\FROM threads
     \\WHERE id = ?
 ;
@@ -92,6 +92,8 @@ pub const ThreadMetadata = struct {
     agent_nickname: ?[]const u8 = null,
     agent_role: ?[]const u8 = null,
     model_provider: ?[]const u8 = null,
+    model: ?[]const u8 = null,
+    reasoning_effort: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     cli_version: ?[]const u8 = null,
     first_user_message: ?[]const u8 = null,
@@ -107,6 +109,8 @@ pub const ThreadMetadata = struct {
         if (self.agent_nickname) |value| allocator.free(value);
         if (self.agent_role) |value| allocator.free(value);
         if (self.model_provider) |value| allocator.free(value);
+        if (self.model) |value| allocator.free(value);
+        if (self.reasoning_effort) |value| allocator.free(value);
         if (self.cwd) |value| allocator.free(value);
         if (self.cli_version) |value| allocator.free(value);
         if (self.first_user_message) |value| allocator.free(value);
@@ -344,11 +348,15 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
             errdefer if (agent_role) |value| allocator.free(value);
             const model_provider = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 11) else null;
             errdefer if (model_provider) |value| allocator.free(value);
-            const cwd = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 12) else null;
+            const model = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 12) else null;
+            errdefer if (model) |value| allocator.free(value);
+            const reasoning_effort = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 13) else null;
+            errdefer if (reasoning_effort) |value| allocator.free(value);
+            const cwd = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 14) else null;
             errdefer if (cwd) |value| allocator.free(value);
-            const cli_version = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 13) else null;
+            const cli_version = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 15) else null;
             errdefer if (cli_version) |value| allocator.free(value);
-            const first_user_message = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 14) else null;
+            const first_user_message = if (summary_loaded) try sqlite.columnNullableTextOwned(allocator, statement, 16) else null;
             errdefer if (first_user_message) |value| allocator.free(value);
             return ThreadMetadata{
                 .lifecycle_loaded = lifecycle_loaded,
@@ -361,6 +369,8 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
                 .agent_nickname = agent_nickname,
                 .agent_role = agent_role,
                 .model_provider = model_provider,
+                .model = model,
+                .reasoning_effort = reasoning_effort,
                 .cwd = cwd,
                 .cli_version = cli_version,
                 .first_user_message = first_user_message,
