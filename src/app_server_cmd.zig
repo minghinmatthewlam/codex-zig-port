@@ -22601,6 +22601,15 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     };
     if (object.get("size")) |size| {
         if (size != .null and !tty) return renderJsonRpcError(allocator, id_value, -32602, "command/exec size requires tty: true");
+        if (size != .null) {
+            if (size != .object) return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
+            _ = commandExecRequiredPositiveU16(size.object, "rows") catch |err| switch (err) {
+                error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+            };
+            _ = commandExecRequiredPositiveU16(size.object, "cols") catch |err| switch (err) {
+                error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+            };
+        }
     }
     if ((tty or stream_stdin or stream_stdout_stderr) and process_id == null) {
         return renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
