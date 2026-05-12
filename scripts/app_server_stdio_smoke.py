@@ -1393,6 +1393,41 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-read-ephemeral-include-turns",
+                "method": "thread/read",
+                "params": {"threadId": thread_id, "includeTurns": True},
+            }
+        )
+        thread_read_ephemeral_include_turns = read_line()
+        assert (
+            thread_read_ephemeral_include_turns["id"]
+            == "thread-read-ephemeral-include-turns"
+        )
+        assert thread_read_ephemeral_include_turns["error"]["code"] == -32600
+        assert (
+            "ephemeral threads do not support includeTurns"
+            in thread_read_ephemeral_include_turns["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-turns-list-ephemeral",
+                "method": "thread/turns/list",
+                "params": {"threadId": thread_id},
+            }
+        )
+        thread_turns_list_ephemeral = read_line()
+        assert thread_turns_list_ephemeral["id"] == "thread-turns-list-ephemeral"
+        assert thread_turns_list_ephemeral["error"]["code"] == -32600
+        assert (
+            "ephemeral threads do not support thread/turns/list"
+            in thread_turns_list_ephemeral["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork",
                 "method": "thread/fork",
                 "params": {
@@ -3348,6 +3383,104 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_unmaterialized_thread_history_smoke(binary: Path) -> None:
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-thread-history-", dir="/tmp"))
+    codex_home = Path(
+        tempfile.mkdtemp(prefix="codex-zig-thread-history-home-", dir="/tmp")
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        cwd = root / "cwd"
+        cwd.mkdir()
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-unmaterialized",
+                "method": "thread/start",
+                "params": {"cwd": str(cwd)},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-unmaterialized"
+        thread = started["result"]["thread"]
+        thread_id = thread["id"]
+        assert thread["ephemeral"] is False
+        assert thread["path"] is not None
+        assert not Path(thread["path"]).exists()
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-read-unmaterialized-include-turns",
+                "method": "thread/read",
+                "params": {"threadId": thread_id, "includeTurns": True},
+            },
+        )
+        read_error = read_json_line(proc, 5)
+        assert read_error["id"] == "thread-read-unmaterialized-include-turns"
+        assert read_error["error"]["code"] == -32600
+        assert (
+            f"thread {thread_id} is not materialized yet; includeTurns is unavailable before first user message"
+            in read_error["error"]["message"]
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-turns-list-unmaterialized",
+                "method": "thread/turns/list",
+                "params": {"threadId": thread_id},
+            },
+        )
+        turns_error = read_json_line(proc, 5)
+        assert turns_error["id"] == "thread-turns-list-unmaterialized"
+        assert turns_error["error"]["code"] == -32600
+        assert (
+            f"thread {thread_id} is not materialized yet; thread/turns/list is unavailable before first user message"
+            in turns_error["error"]["message"]
+        )
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_turn_start_rpc_smoke(binary: Path) -> None:
@@ -6392,7 +6525,6 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "params": {
                         "threadId": resume_thread_id,
                         "excludeTurns": True,
-                        "ephemeral": True,
                     },
                 },
             )
@@ -21512,6 +21644,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_unmaterialized_thread_history_smoke(binary)
+    print("app-server-unmaterialized-thread-history-e2e: ok")
     run_turn_start_rpc_smoke(binary)
     print("app-server-turn-start-rpc-e2e: ok")
     run_turn_control_rpc_smoke(binary)
