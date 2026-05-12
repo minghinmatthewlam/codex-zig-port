@@ -191,12 +191,13 @@ streamable HTTP server notification streams and true thread-owned MCP runtime
 reuse remain planned.
 
 Current app-server `command/exec` coverage includes buffered command execution,
-capture-time independent stdout/stderr output-cap truncation, timeout exit-code
-responses with captured pre-timeout output, `streamStdoutStderr` output-delta
+capture-time independent stdout/stderr output-cap truncation, disabled output
+caps, timeout exit-code responses with captured pre-timeout output,
+`streamStdoutStderr` output-delta
 notifications for commands that run to completion, plus Rust-shaped validation
 for request environment merge/override/null-unset behavior, negative
-`timeoutMs` values, streaming `processId` requirements, terminal size rows and
-columns, and
+`timeoutMs` values, output-cap/timeout disable conflicts, streaming `processId`
+requirements, terminal size rows and columns, and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
 accepts supported Rust-shaped `permissionProfile` payloads using
 `fileSystem`, `network.enabled`, and `globScanMaxDepth` for disabled,
