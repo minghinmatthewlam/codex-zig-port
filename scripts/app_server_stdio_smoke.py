@@ -15399,6 +15399,26 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             and line.get("payload", {}).get("cwd") == str(session_project_root)
             for line in rollout_lines
         )
+        imported_thread_id = ledger["records"][0]["imported_thread_id"]
+        imported_thread_read = rpc(
+            "external-agent-read-imported-session",
+            "thread/read",
+            {"threadId": imported_thread_id, "includeTurns": True},
+        )
+        assert imported_thread_read["id"] == "external-agent-read-imported-session"
+        imported_thread = imported_thread_read["result"]["thread"]
+        assert imported_thread["id"] == imported_thread_id
+        assert imported_thread["name"] == "Imported session title"
+        assert imported_thread["preview"] == "first imported question"
+        assert imported_thread["cwd"] == str(session_project_root)
+        assert imported_thread["path"] == os.path.realpath(rollout_files[0])
+        assert imported_thread["turns"][0]["items"][0]["type"] == "userMessage"
+        assert (
+            imported_thread["turns"][0]["items"][0]["content"][0]["text"]
+            == "first imported question"
+        )
+        assert imported_thread["turns"][1]["items"][0]["type"] == "agentMessage"
+        assert "first imported answer" in imported_thread["turns"][1]["items"][0]["text"]
 
         detect_after_session_import = rpc(
             "external-agent-detect-after-session-import",
