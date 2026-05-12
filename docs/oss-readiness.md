@@ -20,10 +20,12 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   validity checks as disabled. Dependabot and secret-scanning alert APIs
   returned no open alerts; the code-scanning alerts API still reports no
   analysis.
+- Repository rules: the branch-protection API reports `main` is unprotected and
+  the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS. Checked push run
-  `25755297016` passed for
-  `d6088563bbfc3df869a45a78bf071538b9855c31`.
+  `25761726727` passed for
+  `6f20ca74b4885487e9614383744812c718c3a75f`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
