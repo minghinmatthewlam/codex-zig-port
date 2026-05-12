@@ -5635,6 +5635,91 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             )
             assert explicit_state_db_resume_result["reasoningEffort"] is None
 
+            spawn_parent_thread_id = "66666666-6666-4666-8666-666666666666"
+            spawn_child_thread_id = "77777777-7777-4777-8777-777777777777"
+            spawn_grandchild_thread_id = "88888888-8888-4888-8888-888888888888"
+            spawn_parent_rollout = (
+                sessions_dir / f"rollout-{spawn_parent_thread_id}.jsonl"
+            )
+            spawn_child_rollout = sessions_dir / f"rollout-{spawn_child_thread_id}.jsonl"
+            spawn_grandchild_rollout = (
+                sessions_dir / f"rollout-{spawn_grandchild_thread_id}.jsonl"
+            )
+            for thread_id, path, text in [
+                (spawn_parent_thread_id, spawn_parent_rollout, "spawn parent"),
+                (spawn_child_thread_id, spawn_child_rollout, "spawn child"),
+                (
+                    spawn_grandchild_thread_id,
+                    spawn_grandchild_rollout,
+                    "spawn grandchild",
+                ),
+            ]:
+                path.write_text(
+                    "\n".join(
+                        [
+                            json.dumps(
+                                {"type": "metadata", "id": thread_id},
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content_type": "input_text",
+                                    "text": text,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            seed_feedback_state_db(
+                codex_home,
+                [
+                    (spawn_parent_thread_id, spawn_parent_rollout),
+                    (spawn_child_thread_id, spawn_child_rollout),
+                    (spawn_grandchild_thread_id, spawn_grandchild_rollout),
+                ],
+                [
+                    (spawn_parent_thread_id, spawn_child_thread_id, "closed"),
+                    (spawn_child_thread_id, spawn_grandchild_thread_id, "open"),
+                ],
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-archive-spawn-subtree",
+                    "method": "thread/archive",
+                    "params": {"threadId": spawn_parent_thread_id},
+                },
+            )
+            archived_spawn_subtree = read_json_line(proc, 5)
+            assert archived_spawn_subtree["id"] == "thread-archive-spawn-subtree"
+            assert archived_spawn_subtree["result"] == {}
+            archived_spawn_notifications = [read_json_line(proc, 5) for _ in range(3)]
+            assert [
+                notification["params"]["threadId"]
+                for notification in archived_spawn_notifications
+            ] == [
+                spawn_parent_thread_id,
+                spawn_grandchild_thread_id,
+                spawn_child_thread_id,
+            ]
+            for notification in archived_spawn_notifications:
+                assert notification["jsonrpc"] == "2.0"
+                assert notification["method"] == "thread/archived"
+            assert not spawn_parent_rollout.exists()
+            assert not spawn_child_rollout.exists()
+            assert not spawn_grandchild_rollout.exists()
+            archived_spawn_root = codex_home / "archived_sessions" / "zig"
+            assert (archived_spawn_root / spawn_parent_rollout.name).exists()
+            assert (archived_spawn_root / spawn_child_rollout.name).exists()
+            assert (archived_spawn_root / spawn_grandchild_rollout.name).exists()
+
             write_json_line(
                 proc,
                 {
