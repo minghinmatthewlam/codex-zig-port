@@ -4488,6 +4488,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     agent_nickname = ?,
                     agent_role = ?,
                     model_provider = ?,
+                    model = ?,
+                    reasoning_effort = ?,
                     cwd = ?,
                     cli_version = ?,
                     first_user_message = ?,
@@ -4508,6 +4510,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "Navigator",
                     "explorer",
                     "state_provider",
+                    "gpt-state-db",
+                    "high",
                     "/state-db-cwd",
                     "state-db-cli",
                     "state db metadata preview",
@@ -5377,6 +5381,60 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             loaded = read_json_line(proc, 5)
             assert loaded["id"] == "loaded-threads-after-resume"
             assert loaded["result"] == {"data": [resume_thread_id], "nextCursor": None}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-state-db-metadata",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            state_db_resumed = read_json_line(proc, 5)
+            assert state_db_resumed["id"] == "thread-resume-state-db-metadata"
+            state_db_resume_result = state_db_resumed["result"]
+            assert state_db_resume_result["model"] == "gpt-state-db"
+            assert state_db_resume_result["modelProvider"] == "state_provider"
+            assert state_db_resume_result["cwd"] == "/state-db-cwd"
+            assert state_db_resume_result["reasoningEffort"] == "high"
+            state_db_resumed_thread = state_db_resume_result["thread"]
+            assert state_db_resumed_thread["id"] == state_db_thread_id
+            assert state_db_resumed_thread["preview"] == "state db metadata preview"
+            assert state_db_resumed_thread["modelProvider"] == "state_provider"
+            assert state_db_resumed_thread["cwd"] == "/state-db-cwd"
+            assert state_db_resumed_thread["cliVersion"] == "state-db-cli"
+            assert state_db_resumed_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-state-db-explicit-model",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "model": "gpt-explicit",
+                        "modelProvider": "explicit_provider",
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            explicit_state_db_resumed = read_json_line(proc, 5)
+            assert (
+                explicit_state_db_resumed["id"]
+                == "thread-resume-state-db-explicit-model"
+            )
+            explicit_state_db_resume_result = explicit_state_db_resumed["result"]
+            assert explicit_state_db_resume_result["model"] == "gpt-explicit"
+            assert (
+                explicit_state_db_resume_result["modelProvider"]
+                == "explicit_provider"
+            )
+            assert explicit_state_db_resume_result["reasoningEffort"] is None
 
             write_json_line(
                 proc,
