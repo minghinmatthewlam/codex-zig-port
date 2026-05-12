@@ -7,6 +7,7 @@ pub const SQLITE_OK = 0;
 pub const SQLITE_ROW = 100;
 pub const SQLITE_DONE = 101;
 pub const SQLITE_OPEN_READONLY = 0x00000001;
+pub const SQLITE_OPEN_READWRITE = 0x00000002;
 
 extern fn sqlite3_open_v2(
     filename: [*:0]const u8,
@@ -30,18 +31,28 @@ extern fn sqlite3_bind_text(
     bytes: c_int,
     destructor: ?*const anyopaque,
 ) c_int;
+extern fn sqlite3_bind_null(stmt: *Statement, index: c_int) c_int;
 extern fn sqlite3_bind_int64(stmt: *Statement, index: c_int, value: i64) c_int;
 extern fn sqlite3_step(stmt: *Statement) c_int;
+extern fn sqlite3_changes(db: *Db) c_int;
 extern fn sqlite3_column_int64(stmt: *Statement, column: c_int) i64;
 extern fn sqlite3_column_text(stmt: *Statement, column: c_int) ?[*]const u8;
 extern fn sqlite3_column_bytes(stmt: *Statement, column: c_int) c_int;
 
 pub fn openReadOnly(allocator: std.mem.Allocator, path: []const u8) !*Db {
+    return openWithFlags(allocator, path, SQLITE_OPEN_READONLY);
+}
+
+pub fn openReadWrite(allocator: std.mem.Allocator, path: []const u8) !*Db {
+    return openWithFlags(allocator, path, SQLITE_OPEN_READWRITE);
+}
+
+fn openWithFlags(allocator: std.mem.Allocator, path: []const u8, flags: c_int) !*Db {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
     var db: ?*Db = null;
-    if (sqlite3_open_v2(path_z.ptr, &db, SQLITE_OPEN_READONLY, null) != SQLITE_OK) {
+    if (sqlite3_open_v2(path_z.ptr, &db, flags, null) != SQLITE_OK) {
         if (db) |handle| close(handle);
         return error.SqliteOpenFailed;
     }
@@ -74,6 +85,11 @@ pub fn bindText(stmt: *Statement, index: c_int, value: []const u8) !void {
     }
 }
 
+pub fn bindNullableText(stmt: *Statement, index: c_int, value: ?[]const u8) !void {
+    if (value) |text| return bindText(stmt, index, text);
+    if (sqlite3_bind_null(stmt, index) != SQLITE_OK) return error.SqliteBindFailed;
+}
+
 pub fn bindInt64(stmt: *Statement, index: c_int, value: i64) !void {
     if (sqlite3_bind_int64(stmt, index, value) != SQLITE_OK) {
         return error.SqliteBindFailed;
@@ -82,6 +98,10 @@ pub fn bindInt64(stmt: *Statement, index: c_int, value: i64) !void {
 
 pub fn step(stmt: *Statement) c_int {
     return sqlite3_step(stmt);
+}
+
+pub fn changes(db: *Db) c_int {
+    return sqlite3_changes(db);
 }
 
 pub fn columnInt64(stmt: *Statement, column: c_int) i64 {
