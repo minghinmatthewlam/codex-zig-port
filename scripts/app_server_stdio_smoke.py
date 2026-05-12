@@ -11890,6 +11890,47 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert streaming_missing_process_id["error"]["code"] == -32600
         assert "requires a client-supplied processId" in streaming_missing_process_id["error"]["message"]
 
+        tty_bad_size = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-tty-bad-size",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processId": "proc-tty-bad-size",
+                    "tty": True,
+                    "size": {"rows": 0, "cols": 80},
+                },
+            },
+            env,
+        )
+        assert tty_bad_size["id"] == "command-exec-tty-bad-size"
+        assert tty_bad_size["error"]["code"] == -32602
+        assert (
+            tty_bad_size["error"]["message"]
+            == "command/exec size rows and cols must be greater than 0"
+        )
+
+        tty_unsupported = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-tty-unsupported",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "processId": "proc-tty-unsupported",
+                    "tty": True,
+                    "size": {"rows": 24, "cols": 80},
+                },
+            },
+            env,
+        )
+        assert tty_unsupported["id"] == "command-exec-tty-unsupported"
+        assert tty_unsupported["error"]["code"] == -32603
+        assert "not implemented yet" in tty_unsupported["error"]["message"]
+
         streaming_proc = subprocess.Popen(
             [str(binary), "app-server"],
             stdin=subprocess.PIPE,
