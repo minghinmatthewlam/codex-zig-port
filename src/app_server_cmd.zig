@@ -16501,7 +16501,9 @@ fn handleThreadMethod(
         };
         defer allocator.free(archived_path);
         _ = thread_state.markThreadArchived(allocator, cfg.codex_home, thread_id, archived_path) catch {};
-        _ = removeLoadedThread(allocator, state, thread_id);
+        if (removeLoadedThread(allocator, state, thread_id)) {
+            try queueThreadStatusChangedNotification(allocator, state, thread_id, .not_loaded);
+        }
         _ = removeThreadSubscription(allocator, state, thread_id);
         try queueThreadIdNotification(allocator, state, "thread/archived", thread_id);
         var descendant_index = archive_thread_ids.items.len;
@@ -16511,7 +16513,9 @@ fn handleThreadMethod(
             const descendant_archived_path = session_store.archiveRollout(allocator, cfg.codex_home, descendant_id) catch continue;
             _ = thread_state.markThreadArchived(allocator, cfg.codex_home, descendant_id, descendant_archived_path) catch {};
             allocator.free(descendant_archived_path);
-            _ = removeLoadedThread(allocator, state, descendant_id);
+            if (removeLoadedThread(allocator, state, descendant_id)) {
+                try queueThreadStatusChangedNotification(allocator, state, descendant_id, .not_loaded);
+            }
             _ = removeThreadSubscription(allocator, state, descendant_id);
             try queueThreadIdNotification(allocator, state, "thread/archived", descendant_id);
         }
