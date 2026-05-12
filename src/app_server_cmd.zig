@@ -24366,6 +24366,7 @@ fn handleConfigMethod(
 
 fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     var include_home = false;
+    var cwds: []const std.json.Value = &.{};
     if (params_value) |params| {
         if (params != .null and params != .object) {
             return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/detect params must be an object, null, or omitted");
@@ -24381,6 +24382,7 @@ fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.j
                     for (value.array.items) |cwd| {
                         if (cwd != .string) return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null");
                     }
+                    cwds = value.array.items;
                 }
             }
         }
@@ -24391,10 +24393,15 @@ fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.j
     };
     defer allocator.free(codex_home);
 
-    const result = try renderExternalAgentConfigDetectResponse(allocator, codex_home, include_home);
+    const result = try renderExternalAgentConfigDetectResponse(allocator, codex_home, include_home, cwds);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
+
+const ExternalAgentConfigImportItem = struct {
+    item_type: []const u8,
+    cwd: ?[]const u8,
+};
 
 fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/import params must be an object");
@@ -24403,9 +24410,8 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
     const migration_items = params.object.get("migrationItems") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
     if (migration_items != .array) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
     var all_items_supported = true;
-    var import_home_config = false;
-    var import_home_agents_md = false;
-    var import_home_skills = false;
+    var import_items = std.ArrayList(ExternalAgentConfigImportItem).empty;
+    defer import_items.deinit(allocator);
     for (migration_items.array.items) |item| {
         if (item != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must be objects");
         const item_type = item.object.get("itemType") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include itemType");
@@ -24420,10 +24426,15 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
         if (item.object.get("details")) |details| {
             if (details != .null and details != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems details must be an object or null");
         }
-        if (!isSupportedExternalAgentConfigImportItem(item.object)) all_items_supported = false;
-        if (std.mem.eql(u8, item_type.string, "CONFIG")) import_home_config = true;
-        if (std.mem.eql(u8, item_type.string, "AGENTS_MD")) import_home_agents_md = true;
-        if (std.mem.eql(u8, item_type.string, "SKILLS")) import_home_skills = true;
+        if (!isSupportedExternalAgentConfigImportItem(item.object)) {
+            all_items_supported = false;
+        } else {
+            const cwd = if (item.object.get("cwd")) |cwd_value|
+                if (cwd_value == .string) cwd_value.string else null
+            else
+                null;
+            try import_items.append(allocator, .{ .item_type = item_type.string, .cwd = cwd });
+        }
     }
     if (migration_items.array.items.len == 0) {
         return renderJsonRpcResult(allocator, id_value, "{}");
@@ -24437,25 +24448,62 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
     };
     defer allocator.free(codex_home);
 
-    if (import_home_config) {
-        importExternalAgentHomeConfig(allocator, codex_home) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import config", err);
-        };
-    }
-    if (import_home_agents_md) {
-        importExternalAgentHomeAgentsMd(allocator, codex_home) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import AGENTS.md", err);
-        };
-    }
-    if (import_home_skills) {
-        importExternalAgentHomeSkills(allocator, codex_home) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import skills", err);
-        };
+    for (import_items.items) |item| {
+        if (std.mem.eql(u8, item.item_type, "CONFIG")) {
+            importExternalAgentConfig(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import config", err);
+            };
+        } else if (std.mem.eql(u8, item.item_type, "AGENTS_MD")) {
+            importExternalAgentAgentsMd(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import AGENTS.md", err);
+            };
+        } else if (std.mem.eql(u8, item.item_type, "SKILLS")) {
+            importExternalAgentSkills(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import skills", err);
+            };
+        }
     }
 
     const response = try renderJsonRpcResult(allocator, id_value, "{}");
     defer allocator.free(response);
     return renderResultWithExternalAgentConfigImportCompletedNotification(allocator, response);
+}
+
+fn importExternalAgentConfig(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            const settings_path = try externalAgentProjectSettingsPath(allocator, repo_root);
+            defer allocator.free(settings_path);
+            const target_config = try externalAgentProjectConfigPath(allocator, repo_root);
+            defer allocator.free(target_config);
+            return importExternalAgentConfigAt(allocator, settings_path, target_config);
+        }
+    }
+    return importExternalAgentHomeConfig(allocator, codex_home);
+}
+
+fn importExternalAgentAgentsMd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectAgentsMd(allocator, repo_root);
+        }
+    }
+    return importExternalAgentHomeAgentsMd(allocator, codex_home);
+}
+
+fn importExternalAgentSkills(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectSkills(allocator, repo_root);
+        }
+    }
+    return importExternalAgentHomeSkills(allocator, codex_home);
 }
 
 fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
@@ -24475,7 +24523,7 @@ fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
     if (item_type != .string) return false;
     if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD") and !std.mem.eql(u8, item_type.string, "SKILLS")) return false;
     if (item.get("cwd")) |cwd| {
-        if (cwd != .null) return false;
+        if (cwd != .null and cwd != .string) return false;
     }
     if (item.get("details")) |details| {
         if (details != .null) return false;
@@ -24487,6 +24535,7 @@ fn renderExternalAgentConfigDetectResponse(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     include_home: bool,
+    cwds: []const std.json.Value,
 ) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -24499,62 +24548,125 @@ fn renderExternalAgentConfigDetectResponse(
         defer allocator.free(target_config);
         const description = try std.fmt.allocPrint(allocator, "Migrate {s} into {s}", .{ external_settings, target_config });
         defer allocator.free(description);
-
-        try result.appendSlice(allocator, "{\"itemType\":\"CONFIG\",\"description\":");
-        try appendJsonString(allocator, &result, description);
-        try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
-        first = false;
+        try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "CONFIG", description, null);
     }
     if (include_home and try externalAgentHomeAgentsMdNeedsMigration(allocator, codex_home)) {
-        if (!first) try result.appendSlice(allocator, ",");
         const source_agents_md = try externalAgentHomeAgentsMdPath(allocator);
         defer allocator.free(source_agents_md);
         const target_agents_md = try externalAgentTargetAgentsMdPath(allocator, codex_home);
         defer allocator.free(target_agents_md);
         const description = try std.fmt.allocPrint(allocator, "Migrate {s} to {s}", .{ source_agents_md, target_agents_md });
         defer allocator.free(description);
-
-        try result.appendSlice(allocator, "{\"itemType\":\"AGENTS_MD\",\"description\":");
-        try appendJsonString(allocator, &result, description);
-        try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
-        first = false;
+        try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, null);
     }
     if (include_home and try externalAgentHomeSkillsNeedsMigration(allocator, codex_home)) {
-        if (!first) try result.appendSlice(allocator, ",");
         const source_skills = try externalAgentHomeSkillsPath(allocator);
         defer allocator.free(source_skills);
         const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
         defer allocator.free(target_skills);
         const description = try std.fmt.allocPrint(allocator, "Migrate skills from {s} to {s}", .{ source_skills, target_skills });
         defer allocator.free(description);
+        try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "SKILLS", description, null);
+    }
 
-        try result.appendSlice(allocator, "{\"itemType\":\"SKILLS\",\"description\":");
-        try appendJsonString(allocator, &result, description);
-        try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
+    for (cwds) |cwd| {
+        const repo_root = (try findExternalAgentRepoRoot(allocator, cwd.string)) orelse continue;
+        defer allocator.free(repo_root);
+
+        if (try externalAgentProjectConfigNeedsMigration(allocator, repo_root)) {
+            const source_settings = try externalAgentProjectSettingsPath(allocator, repo_root);
+            defer allocator.free(source_settings);
+            const target_config = try externalAgentProjectConfigPath(allocator, repo_root);
+            defer allocator.free(target_config);
+            const description = try std.fmt.allocPrint(allocator, "Migrate {s} into {s}", .{ source_settings, target_config });
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "CONFIG", description, repo_root);
+        }
+        if (try externalAgentProjectSkillsNeedsMigration(allocator, repo_root)) {
+            const source_skills = try externalAgentProjectSkillsPath(allocator, repo_root);
+            defer allocator.free(source_skills);
+            const target_skills = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+            defer allocator.free(target_skills);
+            const description = try std.fmt.allocPrint(allocator, "Migrate skills from {s} to {s}", .{ source_skills, target_skills });
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "SKILLS", description, repo_root);
+        }
+        if (try externalAgentProjectAgentsMdNeedsMigration(allocator, repo_root)) {
+            const source_agents_md = (try externalAgentProjectAgentsMdSourcePath(allocator, repo_root)).?;
+            defer allocator.free(source_agents_md);
+            const target_agents_md = try externalAgentProjectTargetAgentsMdPath(allocator, repo_root);
+            defer allocator.free(target_agents_md);
+            const description = try std.fmt.allocPrint(allocator, "Migrate {s} to {s}", .{ source_agents_md, target_agents_md });
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "AGENTS_MD", description, repo_root);
+        }
     }
     try result.appendSlice(allocator, "]}");
     return result.toOwnedSlice(allocator);
 }
 
+fn appendExternalAgentConfigMigrationItem(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    item_type: []const u8,
+    description: []const u8,
+    cwd: ?[]const u8,
+) !void {
+    if (!first.*) try result.appendSlice(allocator, ",");
+    try result.appendSlice(allocator, "{\"itemType\":");
+    try appendJsonString(allocator, result, item_type);
+    try result.appendSlice(allocator, ",\"description\":");
+    try appendJsonString(allocator, result, description);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    if (cwd) |cwd_value| {
+        try appendJsonString(allocator, result, cwd_value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"details\":null}");
+    first.* = false;
+}
+
 fn externalAgentHomeConfigNeedsMigration(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
-    var plan = try loadExternalAgentHomeConfigPlan(allocator);
+    const settings_path = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(settings_path);
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    return externalAgentConfigNeedsMigrationAt(allocator, settings_path, config_path);
+}
+
+fn externalAgentProjectConfigNeedsMigration(allocator: std.mem.Allocator, repo_root: []const u8) !bool {
+    const settings_path = try externalAgentProjectSettingsPath(allocator, repo_root);
+    defer allocator.free(settings_path);
+    const config_path = try externalAgentProjectConfigPath(allocator, repo_root);
+    defer allocator.free(config_path);
+    return externalAgentConfigNeedsMigrationAt(allocator, settings_path, config_path);
+}
+
+fn externalAgentConfigNeedsMigrationAt(allocator: std.mem.Allocator, settings_path: []const u8, config_path: []const u8) !bool {
+    var plan = try loadExternalAgentConfigPlan(allocator, settings_path);
     defer plan.deinit(allocator);
     if (plan.isEmpty()) return false;
 
-    const config_path = try config.configTomlPath(allocator, codex_home);
-    defer allocator.free(config_path);
     const config_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (config_bytes) |bytes| allocator.free(bytes);
     return externalAgentConfigPlanHasMissingValues(config_bytes orelse "", plan);
 }
 
 fn importExternalAgentHomeConfig(allocator: std.mem.Allocator, codex_home: []const u8) !void {
-    var plan = try loadExternalAgentHomeConfigPlan(allocator);
+    const settings_path = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(settings_path);
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    return importExternalAgentConfigAt(allocator, settings_path, config_path);
+}
+
+fn importExternalAgentConfigAt(allocator: std.mem.Allocator, settings_path: []const u8, config_path: []const u8) !void {
+    var plan = try loadExternalAgentConfigPlan(allocator, settings_path);
     defer plan.deinit(allocator);
     if (plan.isEmpty()) return;
 
-    const config_path = try config.configTomlPath(allocator, codex_home);
-    defer allocator.free(config_path);
     const current_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (current_bytes) |bytes| allocator.free(bytes);
 
@@ -24605,6 +24717,28 @@ fn externalAgentHomeAgentsMdNeedsMigration(allocator: std.mem.Allocator, codex_h
 fn importExternalAgentHomeAgentsMd(allocator: std.mem.Allocator, codex_home: []const u8) !void {
     const source_path = try externalAgentHomeAgentsMdPath(allocator);
     defer allocator.free(source_path);
+    const target_path = try externalAgentTargetAgentsMdPath(allocator, codex_home);
+    defer allocator.free(target_path);
+    return importExternalAgentAgentsMdAt(allocator, source_path, target_path);
+}
+
+fn externalAgentProjectAgentsMdNeedsMigration(allocator: std.mem.Allocator, repo_root: []const u8) !bool {
+    const source_path = (try externalAgentProjectAgentsMdSourcePath(allocator, repo_root)) orelse return false;
+    defer allocator.free(source_path);
+    const target_path = try externalAgentProjectTargetAgentsMdPath(allocator, repo_root);
+    defer allocator.free(target_path);
+    return isMissingOrEmptyTextFile(allocator, target_path);
+}
+
+fn importExternalAgentProjectAgentsMd(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    const source_path = (try externalAgentProjectAgentsMdSourcePath(allocator, repo_root)) orelse return;
+    defer allocator.free(source_path);
+    const target_path = try externalAgentProjectTargetAgentsMdPath(allocator, repo_root);
+    defer allocator.free(target_path);
+    return importExternalAgentAgentsMdAt(allocator, source_path, target_path);
+}
+
+fn importExternalAgentAgentsMdAt(allocator: std.mem.Allocator, source_path: []const u8, target_path: []const u8) !void {
     const source_contents = readTextFile(allocator, source_path) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
@@ -24612,8 +24746,6 @@ fn importExternalAgentHomeAgentsMd(allocator: std.mem.Allocator, codex_home: []c
     defer allocator.free(source_contents);
     if (std.mem.trim(u8, source_contents, " \t\r\n").len == 0) return;
 
-    const target_path = try externalAgentTargetAgentsMdPath(allocator, codex_home);
-    defer allocator.free(target_path);
     if (!try isMissingOrEmptyTextFile(allocator, target_path)) return;
 
     const rewritten = try rewriteExternalAgentTerms(allocator, source_contents);
@@ -24634,7 +24766,26 @@ fn importExternalAgentHomeSkills(allocator: std.mem.Allocator, codex_home: []con
     defer allocator.free(source_skills);
     const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
     defer allocator.free(target_skills);
+    return importExternalAgentSkillsAt(allocator, source_skills, target_skills);
+}
 
+fn externalAgentProjectSkillsNeedsMigration(allocator: std.mem.Allocator, repo_root: []const u8) !bool {
+    const source_skills = try externalAgentProjectSkillsPath(allocator, repo_root);
+    defer allocator.free(source_skills);
+    const target_skills = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+    defer allocator.free(target_skills);
+    return externalAgentSkillsHaveMissingSubdirectories(allocator, source_skills, target_skills);
+}
+
+fn importExternalAgentProjectSkills(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    const source_skills = try externalAgentProjectSkillsPath(allocator, repo_root);
+    defer allocator.free(source_skills);
+    const target_skills = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+    defer allocator.free(target_skills);
+    return importExternalAgentSkillsAt(allocator, source_skills, target_skills);
+}
+
+fn importExternalAgentSkillsAt(allocator: std.mem.Allocator, source_skills: []const u8, target_skills: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     var source_dir = std.Io.Dir.openDirAbsolute(io, source_skills, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return,
@@ -24743,10 +24894,9 @@ const ExternalAgentHomeConfigPlan = struct {
     }
 };
 
-fn loadExternalAgentHomeConfigPlan(allocator: std.mem.Allocator) !ExternalAgentHomeConfigPlan {
-    const settings_path = try externalAgentHomeSettingsPath(allocator);
-    defer allocator.free(settings_path);
-    const local_settings_path = try externalAgentHomeLocalSettingsPath(allocator);
+fn loadExternalAgentConfigPlan(allocator: std.mem.Allocator, settings_path: []const u8) !ExternalAgentHomeConfigPlan {
+    const settings_dir = std.fs.path.dirname(settings_path) orelse return ExternalAgentHomeConfigPlan{};
+    const local_settings_path = try std.fs.path.join(allocator, &.{ settings_dir, "settings.local.json" });
     defer allocator.free(local_settings_path);
 
     var settings = try readExternalAgentSettings(allocator, settings_path, false);
@@ -24858,10 +25008,12 @@ fn externalAgentHomeSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ external_home, "settings.json" });
 }
 
-fn externalAgentHomeLocalSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
-    const external_home = try externalAgentHomePath(allocator);
-    defer allocator.free(external_home);
-    return std.fs.path.join(allocator, &.{ external_home, "settings.local.json" });
+fn externalAgentProjectSettingsPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".claude", "settings.json" });
+}
+
+fn externalAgentProjectConfigPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".codex", "config.toml" });
 }
 
 fn externalAgentHomeAgentsMdPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -24870,14 +25022,35 @@ fn externalAgentHomeAgentsMdPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ external_home, "CLAUDE.md" });
 }
 
+fn externalAgentProjectAgentsMdSourcePath(allocator: std.mem.Allocator, repo_root: []const u8) !?[]const u8 {
+    const root_source = try std.fs.path.join(allocator, &.{ repo_root, "CLAUDE.md" });
+    errdefer allocator.free(root_source);
+    if (try isNonEmptyTextFile(allocator, root_source)) return root_source;
+    allocator.free(root_source);
+
+    const dot_source = try std.fs.path.join(allocator, &.{ repo_root, ".claude", "CLAUDE.md" });
+    errdefer allocator.free(dot_source);
+    if (try isNonEmptyTextFile(allocator, dot_source)) return dot_source;
+    allocator.free(dot_source);
+    return null;
+}
+
 fn externalAgentHomeSkillsPath(allocator: std.mem.Allocator) ![]const u8 {
     const external_home = try externalAgentHomePath(allocator);
     defer allocator.free(external_home);
     return std.fs.path.join(allocator, &.{ external_home, "skills" });
 }
 
+fn externalAgentProjectSkillsPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".claude", "skills" });
+}
+
 fn externalAgentTargetAgentsMdPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, "AGENTS.md" });
+}
+
+fn externalAgentProjectTargetAgentsMdPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, "AGENTS.md" });
 }
 
 fn externalAgentTargetSkillsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -24888,15 +25061,65 @@ fn externalAgentTargetSkillsPath(allocator: std.mem.Allocator, codex_home: []con
     return std.fs.path.join(allocator, &.{ parent, ".agents", "skills" });
 }
 
+fn externalAgentProjectTargetSkillsPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".agents", "skills" });
+}
+
 fn externalAgentHomePath(allocator: std.mem.Allocator) ![]const u8 {
     const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".claude" });
 }
 
+fn findExternalAgentRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
+    if (cwd.len == 0) return null;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var current = if (std.fs.path.isAbsolute(cwd))
+        try allocator.dupe(u8, cwd)
+    else blk: {
+        const process_cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(process_cwd);
+        break :blk try std.fs.path.join(allocator, &.{ process_cwd, cwd });
+    };
+    errdefer allocator.free(current);
+
+    const current_stat = statPathFollow(allocator, current) catch |err| switch (err) {
+        error.NotDir => return null,
+        else => return err,
+    } orelse return null;
+    if (std.c.S.ISREG(@intCast(current_stat.mode))) {
+        const parent = std.fs.path.dirname(current) orelse return null;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    const fallback = try allocator.dupe(u8, current);
+    defer allocator.free(fallback);
+    while (true) {
+        const git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
+        defer allocator.free(git_path);
+        const git_stat = statPathFollow(allocator, git_path) catch |err| switch (err) {
+            error.NotDir => null,
+            else => return err,
+        };
+        if (git_stat != null) return current;
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    const owned_fallback = try allocator.dupe(u8, fallback);
+    return owned_fallback;
+}
+
 fn isNonEmptyTextFile(allocator: std.mem.Allocator, path: []const u8) !bool {
     const bytes = readTextFile(allocator, path) catch |err| switch (err) {
         error.FileNotFound => return false,
+        error.NotDir => return false,
         else => return err,
     };
     defer allocator.free(bytes);
@@ -24906,6 +25129,7 @@ fn isNonEmptyTextFile(allocator: std.mem.Allocator, path: []const u8) !bool {
 fn isMissingOrEmptyTextFile(allocator: std.mem.Allocator, path: []const u8) !bool {
     const bytes = readTextFile(allocator, path) catch |err| switch (err) {
         error.FileNotFound => return true,
+        error.NotDir => return false,
         else => return err,
     };
     defer allocator.free(bytes);
