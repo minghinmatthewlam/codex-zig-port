@@ -532,6 +532,42 @@ def seed_feedback_logs_db(
     return db_path
 
 
+def seed_feedback_state_db(
+    codex_home: Path,
+    threads: list[tuple[str, Path]],
+    edges: list[tuple[str, str, str]],
+) -> Path:
+    db_path = codex_home / "state_5.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript(
+            """
+            DROP TABLE IF EXISTS threads;
+            DROP TABLE IF EXISTS thread_spawn_edges;
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT NOT NULL,
+                child_thread_id TEXT NOT NULL PRIMARY KEY,
+                status TEXT NOT NULL
+            );
+            """
+        )
+        db.executemany(
+            "INSERT INTO threads (id, rollout_path) VALUES (?, ?)",
+            [(thread_id, str(path)) for thread_id, path in threads],
+        )
+        db.executemany(
+            """
+            INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+            VALUES (?, ?, ?)
+            """,
+            edges,
+        )
+    return db_path
+
+
 def sqlite_count(db_path: Path, query: str) -> int:
     with sqlite3.connect(db_path) as db:
         row = db.execute(query).fetchone()
@@ -10444,6 +10480,36 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         rollout_file = codex_home / "sessions" / "zig" / f"rollout-{feedback_thread_id}.jsonl"
         rollout_file.parent.mkdir(parents=True, exist_ok=True)
         rollout_file.write_text("rollout log body\n", encoding="utf-8")
+        persisted_child_thread_id = "00000000-0000-4000-8000-000000000124"
+        persisted_grandchild_thread_id = "00000000-0000-4000-8000-000000000125"
+        persisted_child_rollout = (
+            codex_home / "sessions" / "zig" / f"rollout-{persisted_child_thread_id}.jsonl"
+        )
+        persisted_child_rollout.write_text(
+            "persisted child rollout body\n",
+            encoding="utf-8",
+        )
+        persisted_grandchild_rollout = (
+            codex_home
+            / "sessions"
+            / "zig"
+            / f"rollout-{persisted_grandchild_thread_id}.jsonl"
+        )
+        persisted_grandchild_rollout.write_text(
+            "persisted grandchild rollout body\n",
+            encoding="utf-8",
+        )
+        seed_feedback_state_db(
+            codex_home,
+            [
+                (persisted_child_thread_id, persisted_child_rollout),
+                (persisted_grandchild_thread_id, persisted_grandchild_rollout),
+            ],
+            [
+                (feedback_thread_id, persisted_child_thread_id, "open"),
+                (persisted_child_thread_id, persisted_grandchild_thread_id, "closed"),
+            ],
+        )
         seed_feedback_logs_db(
             codex_home,
             [
@@ -10462,6 +10528,22 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
                     "feedback scoped row",
                     feedback_thread_id,
                     "proc-feedback",
+                ),
+                (
+                    1_700_000_001,
+                    500_000_000,
+                    "INFO",
+                    "persisted child scoped row",
+                    persisted_child_thread_id,
+                    "proc-persisted-child",
+                ),
+                (
+                    1_700_000_001,
+                    750_000_000,
+                    "INFO",
+                    "persisted grandchild scoped row",
+                    persisted_grandchild_thread_id,
+                    "proc-persisted-grandchild",
                 ),
                 (
                     1_700_000_002,
@@ -10535,10 +10617,16 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"filename":"codex-logs.log"' in envelope
         assert b"feedback threadless before\n" in envelope
         assert b"feedback scoped row\n" in envelope
+        assert b"persisted child scoped row\n" in envelope
+        assert b"persisted grandchild scoped row\n" in envelope
         assert b"feedback threadless after\n" in envelope
         assert b"other process threadless" not in envelope
         assert f'"filename":"rollout-{feedback_thread_id}.jsonl"'.encode() in envelope
         assert b"rollout log body\n" in envelope
+        assert f'"filename":"rollout-{persisted_child_thread_id}.jsonl"'.encode() in envelope
+        assert b"persisted child rollout body\n" in envelope
+        assert f'"filename":"rollout-{persisted_grandchild_thread_id}.jsonl"'.encode() in envelope
+        assert b"persisted grandchild rollout body\n" in envelope
         assert b'"filename":"codex-zig-feedback.log"' in envelope
         assert envelope.count(b'"filename":"codex-zig-feedback.log"') == 1
         assert b"extra log body\n" in envelope

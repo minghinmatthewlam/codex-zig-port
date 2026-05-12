@@ -1,43 +1,9 @@
 const std = @import("std");
 
 const memory_reset = @import("memory_reset.zig");
+const sqlite = @import("sqlite.zig");
 
-const sqlite3 = opaque {};
-const sqlite3_stmt = opaque {};
-
-const SQLITE_OK = 0;
-const SQLITE_ROW = 100;
-const SQLITE_DONE = 101;
-const SQLITE_OPEN_READONLY = 0x00000001;
 const LOG_PARTITION_SIZE_LIMIT_BYTES: usize = 10 * 1024 * 1024;
-
-extern fn sqlite3_open_v2(
-    filename: [*:0]const u8,
-    pp_db: *?*sqlite3,
-    flags: c_int,
-    z_vfs: ?[*:0]const u8,
-) c_int;
-extern fn sqlite3_close(db: *sqlite3) c_int;
-extern fn sqlite3_prepare_v2(
-    db: *sqlite3,
-    z_sql: [*:0]const u8,
-    n_byte: c_int,
-    pp_stmt: *?*sqlite3_stmt,
-    pz_tail: ?*[*:0]const u8,
-) c_int;
-extern fn sqlite3_finalize(stmt: *sqlite3_stmt) c_int;
-extern fn sqlite3_bind_text(
-    stmt: *sqlite3_stmt,
-    index: c_int,
-    value: [*]const u8,
-    bytes: c_int,
-    destructor: ?*const anyopaque,
-) c_int;
-extern fn sqlite3_bind_int64(stmt: *sqlite3_stmt, index: c_int, value: i64) c_int;
-extern fn sqlite3_step(stmt: *sqlite3_stmt) c_int;
-extern fn sqlite3_column_int64(stmt: *sqlite3_stmt, column: c_int) i64;
-extern fn sqlite3_column_text(stmt: *sqlite3_stmt, column: c_int) ?[*]const u8;
-extern fn sqlite3_column_bytes(stmt: *sqlite3_stmt, column: c_int) c_int;
 
 pub fn queryFeedbackLogsForThreads(
     allocator: std.mem.Allocator,
@@ -50,43 +16,21 @@ pub fn queryFeedbackLogsForThreads(
     defer allocator.free(logs_path);
     if (!try memory_reset.stateDbExists(allocator, logs_path)) return allocator.dupe(u8, "");
 
-    const logs_path_z = try allocator.dupeZ(u8, logs_path);
-    defer allocator.free(logs_path_z);
-
-    var db: ?*sqlite3 = null;
-    if (sqlite3_open_v2(logs_path_z.ptr, &db, SQLITE_OPEN_READONLY, null) != SQLITE_OK) {
-        if (db) |handle| _ = sqlite3_close(handle);
-        return error.FeedbackLogsOpenFailed;
-    }
-    defer if (db) |handle| {
-        _ = sqlite3_close(handle);
-    };
+    const db = try sqlite.openReadOnly(allocator, logs_path);
+    defer sqlite.close(db);
 
     const query = try buildFeedbackLogsQuery(allocator, thread_ids.len);
     defer allocator.free(query);
-    const query_z = try allocator.dupeZ(u8, query);
-    defer allocator.free(query_z);
 
-    var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db.?, query_z.ptr, -1, &stmt, null) != SQLITE_OK) {
-        return error.FeedbackLogsPrepareFailed;
-    }
-    defer if (stmt) |statement| {
-        _ = sqlite3_finalize(statement);
-    };
+    const statement = try sqlite.prepare(allocator, db, query);
+    defer sqlite.finalize(statement);
 
-    const statement = stmt.?;
     for (thread_ids, 0..) |thread_id, index| {
         const bind_index: c_int = @intCast(index + 1);
-        const bind_len: c_int = @intCast(thread_id.len);
-        if (sqlite3_bind_text(statement, bind_index, thread_id.ptr, bind_len, null) != SQLITE_OK) {
-            return error.FeedbackLogsBindFailed;
-        }
+        try sqlite.bindText(statement, bind_index, thread_id);
     }
     const limit_index: c_int = @intCast(thread_ids.len + 1);
-    if (sqlite3_bind_int64(statement, limit_index, @intCast(LOG_PARTITION_SIZE_LIMIT_BYTES)) != SQLITE_OK) {
-        return error.FeedbackLogsBindFailed;
-    }
+    try sqlite.bindInt64(statement, limit_index, @intCast(LOG_PARTITION_SIZE_LIMIT_BYTES));
 
     var newest_first = std.ArrayList([]const u8).empty;
     defer {
@@ -96,13 +40,13 @@ pub fn queryFeedbackLogsForThreads(
     var total_bytes: usize = 0;
 
     while (true) {
-        switch (sqlite3_step(statement)) {
-            SQLITE_ROW => {
-                const ts = sqlite3_column_int64(statement, 0);
-                const ts_nanos = sqlite3_column_int64(statement, 1);
-                const level = try columnTextOwned(allocator, statement, 2);
+        switch (sqlite.step(statement)) {
+            sqlite.SQLITE_ROW => {
+                const ts = sqlite.columnInt64(statement, 0);
+                const ts_nanos = sqlite.columnInt64(statement, 1);
+                const level = try sqlite.columnTextOwned(allocator, statement, 2);
                 defer allocator.free(level);
-                const body = try columnTextOwned(allocator, statement, 3);
+                const body = try sqlite.columnTextOwned(allocator, statement, 3);
                 defer allocator.free(body);
 
                 const line = try formatFeedbackLogLine(allocator, ts, ts_nanos, level, body);
@@ -114,7 +58,7 @@ pub fn queryFeedbackLogsForThreads(
                 total_bytes += line.len;
                 try newest_first.append(allocator, line);
             },
-            SQLITE_DONE => break,
+            sqlite.SQLITE_DONE => break,
             else => return error.FeedbackLogsStepFailed,
         }
     }
@@ -188,13 +132,6 @@ fn buildFeedbackLogsQuery(allocator: std.mem.Allocator, thread_count: usize) ![]
         \\
     );
     return query.toOwnedSlice(allocator);
-}
-
-fn columnTextOwned(allocator: std.mem.Allocator, stmt: *sqlite3_stmt, column: c_int) ![]const u8 {
-    const text = sqlite3_column_text(stmt, column) orelse return allocator.dupe(u8, "");
-    const len = sqlite3_column_bytes(stmt, column);
-    if (len < 0) return error.FeedbackLogsColumnFailed;
-    return allocator.dupe(u8, text[0..@intCast(len)]);
 }
 
 fn formatFeedbackLogLine(

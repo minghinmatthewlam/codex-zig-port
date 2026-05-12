@@ -247,16 +247,17 @@ Sentry-compatible envelope with event classification, level, reason, reserved
 tag protection, optional generated `no-active-thread-<uuid>` thread IDs,
 cached-auth `account_id` and `chatgpt_user_id` metadata when available,
 SQLite-backed `codex-logs.log` content from the root and currently loaded
-descendant thread IDs when `includeLogs` is true, loaded root and descendant
-thread rollout JSONL attachments, root saved-session rollout fallback, and
-readable de-duplicated `extraLogFiles` attachments.
+descendant thread IDs when `includeLogs` is true, state-DB open/closed spawned
+descendant thread discovery for feedback logs, loaded and state-DB-resolved
+root/descendant thread rollout JSONL attachments, root saved-session rollout
+fallback, and readable de-duplicated `extraLogFiles` attachments.
 The smoke suite proves the upload path against a local Sentry DSN override
 (`CODEX_TEST_FEEDBACK_SENTRY_DSN`) rather than sending test reports to the
 production DSN, and seeds Rust-shaped `logs_2.sqlite` rows to verify scoped and
-latest-process threadless feedback logs are attached. Full Rust feedback
-ring-buffer capture, persisted agent-subtree SQLite log discovery beyond
-currently loaded descendants, persisted agent-subtree rollout discovery, and
-guardian rollout attachment collection remain planned.
+latest-process threadless feedback logs are attached. It also seeds
+`state_5.sqlite` `thread_spawn_edges` and `threads.rollout_path` rows to verify
+persisted open and closed descendants are included. Full Rust feedback
+ring-buffer capture and guardian rollout attachment collection remain planned.
 
 | Rust surface | Zig status | Notes |
 | --- | --- | --- |

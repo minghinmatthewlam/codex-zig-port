@@ -10,6 +10,7 @@ const config = @import("config.zig");
 const config_requirements_hooks = @import("config_requirements_hooks.zig");
 const env = @import("env.zig");
 const feedback_logs = @import("feedback_logs.zig");
+const feedback_state = @import("feedback_state.zig");
 const feedback_upload = @import("feedback_upload.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
@@ -22157,15 +22158,40 @@ fn handleFeedbackUpload(
 
     var feedback_thread_ids = std.ArrayList([]const u8).empty;
     defer feedback_thread_ids.deinit(allocator);
+    var owned_feedback_thread_ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_feedback_thread_ids.items) |owned| allocator.free(owned);
+        owned_feedback_thread_ids.deinit(allocator);
+    }
+    var feedback_codex_home: ?[]const u8 = null;
+    defer if (feedback_codex_home) |codex_home| allocator.free(codex_home);
     if (include_logs.bool) {
         try appendFeedbackThreadIds(allocator, state, thread_id.?, &feedback_thread_ids);
+
+        feedback_codex_home = resolveCodexHome(allocator) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => null,
+        };
+        if (feedback_codex_home) |codex_home| {
+            if (!std.mem.startsWith(u8, thread_id.?, "no-active-thread-")) {
+                feedback_state.appendSpawnDescendantThreadIds(
+                    allocator,
+                    codex_home,
+                    thread_id.?,
+                    &feedback_thread_ids,
+                    &owned_feedback_thread_ids,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {},
+                };
+            }
+        }
     }
 
     var sqlite_log_bytes: ?[]const u8 = null;
     defer if (sqlite_log_bytes) |bytes| allocator.free(bytes);
     if (include_logs.bool and feedback_thread_ids.items.len > 0) {
-        if (resolveCodexHome(allocator)) |codex_home| {
-            defer allocator.free(codex_home);
+        if (feedback_codex_home) |codex_home| {
             sqlite_log_bytes = feedback_logs.queryFeedbackLogsForThreads(allocator, codex_home, feedback_thread_ids.items) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => null,
@@ -22176,9 +22202,6 @@ fn handleFeedbackUpload(
                     sqlite_log_bytes = null;
                 }
             }
-        } else |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => {},
         }
     }
 
@@ -22190,7 +22213,15 @@ fn handleFeedbackUpload(
         owned_upload_log_files.deinit(allocator);
     }
     if (include_logs.bool) {
-        try appendFeedbackThreadRolloutPaths(allocator, state, thread_id.?, &upload_log_files, &owned_upload_log_files);
+        try appendFeedbackThreadRolloutPaths(
+            allocator,
+            state,
+            thread_id.?,
+            feedback_thread_ids.items,
+            feedback_codex_home,
+            &upload_log_files,
+            &owned_upload_log_files,
+        );
     }
     for (extra_log_files.items) |path| try upload_log_files.append(allocator, path);
 
@@ -22237,37 +22268,79 @@ fn containsString(values: []const []const u8, needle: []const u8) bool {
 fn appendFeedbackThreadRolloutPaths(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
-    thread_id: []const u8,
+    root_thread_id: []const u8,
+    thread_ids: []const []const u8,
+    codex_home: ?[]const u8,
     upload_log_files: *std.ArrayList([]const u8),
     owned_upload_log_files: *std.ArrayList([]const u8),
 ) !void {
-    if (std.mem.startsWith(u8, thread_id, "no-active-thread-")) return;
+    if (std.mem.startsWith(u8, root_thread_id, "no-active-thread-")) return;
 
-    var appended_root_rollout_path = false;
-    for (state.loaded_threads.items) |*thread| {
-        if (!loadedThreadInFeedbackSubtree(state, thread, thread_id)) continue;
-        if (thread.path) |path| {
-            try upload_log_files.append(allocator, path);
-            if (std.mem.eql(u8, thread.id, thread_id)) appended_root_rollout_path = true;
+    for (thread_ids) |thread_id| {
+        if (findLoadedThread(state, thread_id)) |thread| {
+            if (thread.path) |path| {
+                try upload_log_files.append(allocator, path);
+                continue;
+            }
+        }
+
+        if (codex_home) |home| {
+            const path = feedback_state.findRolloutPathByThreadId(allocator, home, thread_id) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
+            if (path) |owned_path| {
+                owned_upload_log_files.append(allocator, owned_path) catch |err| {
+                    allocator.free(owned_path);
+                    return err;
+                };
+                try upload_log_files.append(allocator, owned_path);
+                continue;
+            }
+        }
+
+        if (std.mem.eql(u8, thread_id, root_thread_id)) {
+            _ = try appendSavedRootRolloutPath(allocator, root_thread_id, codex_home, upload_log_files, owned_upload_log_files);
         }
     }
-    if (appended_root_rollout_path) return;
+}
 
-    const codex_home = resolveCodexHome(allocator) catch |err| switch (err) {
+fn appendSavedRootRolloutPath(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    codex_home: ?[]const u8,
+    upload_log_files: *std.ArrayList([]const u8),
+    owned_upload_log_files: *std.ArrayList([]const u8),
+) !bool {
+    if (codex_home) |home| {
+        const path = session_store.resolveResumePath(allocator, home, thread_id) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return false,
+        };
+        owned_upload_log_files.append(allocator, path) catch |err| {
+            allocator.free(path);
+            return err;
+        };
+        try upload_log_files.append(allocator, path);
+        return true;
+    }
+
+    const home = resolveCodexHome(allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return,
+        else => return false,
     };
-    defer allocator.free(codex_home);
+    defer allocator.free(home);
 
-    const path = session_store.resolveResumePath(allocator, codex_home, thread_id) catch |err| switch (err) {
+    const path = session_store.resolveResumePath(allocator, home, thread_id) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return,
+        else => return false,
     };
     owned_upload_log_files.append(allocator, path) catch |err| {
         allocator.free(path);
         return err;
     };
     try upload_log_files.append(allocator, path);
+    return true;
 }
 
 fn loadedThreadInFeedbackSubtree(state: *const AppServerState, thread: *const LoadedThread, root_thread_id: []const u8) bool {
