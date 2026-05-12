@@ -2020,6 +2020,21 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-guardian-approval-loaded",
+            "method": "thread/approveGuardianDeniedAction",
+            "params": {
+                "threadId": thread_id,
+                "event": guardian_event,
+            },
+        }
+    )
+    thread_guardian_approval_loaded = read_line()
+    assert thread_guardian_approval_loaded["id"] == "thread-guardian-approval-loaded"
+    assert thread_guardian_approval_loaded["result"] == {}
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-guardian-approval-missing",
             "method": "thread/approveGuardianDeniedAction",
             "params": {
