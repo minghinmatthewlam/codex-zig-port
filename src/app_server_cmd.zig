@@ -29,6 +29,7 @@ const sandbox_mod = @import("sandbox.zig");
 const session_mod = @import("session.zig");
 const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
+const thread_state = @import("thread_state.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
@@ -17711,7 +17712,13 @@ fn renderThreadListResult(
 
     const state_db_only = optionalBoolParam(params, "useStateDbOnly") orelse false;
     const archived = optionalBoolParam(params, "archived") orelse false;
-    if (!state_db_only) {
+    if (state_db_only) {
+        const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+        defer if (fallback_model_provider) |value| allocator.free(value);
+        const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home);
+        defer session_store.freeRolloutFiles(allocator, rollout_files);
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", false, state);
+    } else {
         if (!archived) {
             for (state.loaded_threads.items) |*thread| {
                 const item = ThreadListItem{ .loaded = thread };
@@ -17725,22 +17732,7 @@ fn renderThreadListResult(
         defer if (fallback_model_provider) |value| allocator.free(value);
         const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        for (rollout_files) |file| {
-            if (!archived and findLoadedThreadForRolloutFile(state, file) != null) continue;
-            var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider orelse "openai") catch |err| switch (err) {
-                error.OutOfMemory => return err,
-                else => continue,
-            };
-            var saved_moved = false;
-            errdefer if (!saved_moved) saved.deinit(allocator);
-            const item = ThreadListItem{ .saved = saved };
-            if (threadListItemMatchesParams(item, params)) {
-                try threads.append(allocator, item);
-                saved_moved = true;
-            } else {
-                saved.deinit(allocator);
-            }
-        }
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", !archived, state);
     }
 
     std.mem.sort(ThreadListItem, threads.items, threadListSortContext(params), threadListLessThan);
@@ -17784,7 +17776,6 @@ fn renderThreadListResult(
 }
 
 fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap) bool {
-    if (optionalBoolParam(params, "useStateDbOnly") orelse false) return false;
     if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), threadListItemModelProvider(thread))) return false;
     if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), threadListItemSource(thread))) return false;
     if (!threadListCwdMatches(params.get("cwd"), threadListItemCwd(thread))) return false;
@@ -17792,6 +17783,33 @@ fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMa
         if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
     }
     return true;
+}
+
+fn appendSavedThreadListItems(
+    allocator: std.mem.Allocator,
+    threads: *std.ArrayList(ThreadListItem),
+    params: std.json.ObjectMap,
+    rollout_files: []session_store.RolloutFile,
+    fallback_model_provider: []const u8,
+    dedupe_loaded: bool,
+    state: *const AppServerState,
+) !void {
+    for (rollout_files) |file| {
+        if (dedupe_loaded and findLoadedThreadForRolloutFile(state, file) != null) continue;
+        var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        var saved_moved = false;
+        errdefer if (!saved_moved) saved.deinit(allocator);
+        const item = ThreadListItem{ .saved = saved };
+        if (threadListItemMatchesParams(item, params)) {
+            try threads.append(allocator, item);
+            saved_moved = true;
+        } else {
+            saved.deinit(allocator);
+        }
+    }
 }
 
 fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {

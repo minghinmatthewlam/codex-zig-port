@@ -4297,6 +4297,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        seed_feedback_state_db(
+            codex_home,
+            [(appserver_thread_id, appserver_rollout_path)],
+            [],
+        )
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
@@ -4340,6 +4345,34 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert saved_appserver_thread["cliVersion"] == "0.0.0"
             assert saved_appserver_thread["source"] == "appServer"
             assert saved_appserver_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-appserver-rollout",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["appServer"],
+                        "cwd": "/",
+                        "searchTerm": "appserver saved",
+                        "useStateDbOnly": True,
+                    },
+                },
+            )
+            state_db_appserver_list = read_json_line(proc, 5)
+            assert state_db_appserver_list["id"] == "thread-list-state-db-appserver-rollout"
+            state_db_appserver_threads = state_db_appserver_list["result"]["data"]
+            assert len(state_db_appserver_threads) == 1
+            state_db_appserver_thread = state_db_appserver_threads[0]
+            assert state_db_appserver_thread["id"] == appserver_thread_id
+            assert state_db_appserver_thread["preview"] == "appserver saved hello"
+            assert state_db_appserver_thread["path"] == os.path.realpath(
+                appserver_rollout_path
+            )
+            assert state_db_appserver_thread["source"] == "appServer"
+            assert state_db_appserver_thread["turns"] == []
 
             write_json_line(
                 proc,
