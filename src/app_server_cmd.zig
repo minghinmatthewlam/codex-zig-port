@@ -2923,6 +2923,78 @@ const THREAD_STATUS_CHANGED_NOTIFICATION_TS =
     \\
     ;
 
+const NON_STEERABLE_TURN_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NonSteerableTurnKind = "review" | "compact";
+    \\
+    ;
+
+const CODEX_ERROR_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
+    \\
+    \\export type CodexErrorInfo =
+    \\  | "contextWindowExceeded"
+    \\  | "usageLimitExceeded"
+    \\  | "serverOverloaded"
+    \\  | "cyberPolicy"
+    \\  | { httpConnectionFailed: { httpStatusCode: number | null } }
+    \\  | { responseStreamConnectionFailed: { httpStatusCode: number | null } }
+    \\  | "internalServerError"
+    \\  | "unauthorized"
+    \\  | "badRequest"
+    \\  | "threadRollbackFailed"
+    \\  | "sandboxError"
+    \\  | { responseStreamDisconnected: { httpStatusCode: number | null } }
+    \\  | { responseTooManyFailedAttempts: { httpStatusCode: number | null } }
+    \\  | { activeTurnNotSteerable: { turnKind: NonSteerableTurnKind } }
+    \\  | "other";
+    \\
+    ;
+
+const TURN_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CodexErrorInfo } from "./CodexErrorInfo";
+    \\
+    \\export interface TurnError {
+    \\  message: string;
+    \\  codexErrorInfo: CodexErrorInfo | null;
+    \\  additionalDetails: string | null;
+    \\}
+    \\
+    ;
+
+const TURN_ITEMS_VIEW_TS =
+    GENERATED_TS_HEADER ++
+    \\export type TurnItemsView = "notLoaded" | "summary" | "full";
+    \\
+    ;
+
+const TURN_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type TurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
+    \\
+    ;
+
+const TURN_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TurnError } from "./TurnError";
+    \\import type { TurnItemsView } from "./TurnItemsView";
+    \\import type { TurnStatus } from "./TurnStatus";
+    \\
+    \\export interface Turn {
+    \\  id: string;
+    \\  items: unknown[];
+    \\  itemsView: TurnItemsView;
+    \\  status: TurnStatus;
+    \\  error: TurnError | null;
+    \\  startedAt: number | null;
+    \\  completedAt: number | null;
+    \\  durationMs: number | null;
+    \\}
+    \\
+    ;
+
 const THREAD_ARCHIVED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadArchivedNotification {
@@ -3075,8 +3147,10 @@ const TURN_START_PARAMS_TS =
 
 const TURN_START_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Turn } from "./Turn";
+    \\
     \\export interface TurnStartResponse {
-    \\  turn: unknown;
+    \\  turn: Turn;
     \\}
     \\
     ;
@@ -3119,18 +3193,22 @@ const TURN_INTERRUPT_RESPONSE_TS =
 
 const TURN_STARTED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Turn } from "./Turn";
+    \\
     \\export interface TurnStartedNotification {
     \\  threadId: string;
-    \\  turn: unknown;
+    \\  turn: Turn;
     \\}
     \\
     ;
 
 const TURN_COMPLETED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Turn } from "./Turn";
+    \\
     \\export interface TurnCompletedNotification {
     \\  threadId: string;
-    \\  turn: unknown;
+    \\  turn: Turn;
     \\}
     \\
     ;
@@ -5183,12 +5261,18 @@ const V2_INDEX_TS =
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
+    \\export type { CodexErrorInfo } from "./CodexErrorInfo";
+    \\export type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
+    \\export type { Turn } from "./Turn";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
+    \\export type { TurnError } from "./TurnError";
     \\export type { TurnInterruptParams } from "./TurnInterruptParams";
     \\export type { TurnInterruptResponse } from "./TurnInterruptResponse";
+    \\export type { TurnItemsView } from "./TurnItemsView";
     \\export type { TurnStartedNotification } from "./TurnStartedNotification";
     \\export type { TurnStartParams } from "./TurnStartParams";
     \\export type { TurnStartResponse } from "./TurnStartResponse";
+    \\export type { TurnStatus } from "./TurnStatus";
     \\export type { TurnSteerParams } from "./TurnSteerParams";
     \\export type { TurnSteerResponse } from "./TurnSteerResponse";
     \\export type { UserInput } from "./UserInput";
@@ -9211,6 +9295,146 @@ const THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const NON_STEERABLE_TURN_KIND_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "NonSteerableTurnKind",
+    \\  "enum": ["review", "compact"]
+    \\}
+    \\
+;
+
+const CODEX_ERROR_INFO_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CodexErrorInfo",
+    \\  "oneOf": [
+    \\    { "enum": ["contextWindowExceeded", "usageLimitExceeded", "serverOverloaded", "cyberPolicy", "internalServerError", "unauthorized", "badRequest", "threadRollbackFailed", "sandboxError", "other"] },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["httpConnectionFailed"],
+    \\      "properties": {
+    \\        "httpConnectionFailed": {
+    \\          "type": "object",
+    \\          "required": ["httpStatusCode"],
+    \\          "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["responseStreamConnectionFailed"],
+    \\      "properties": {
+    \\        "responseStreamConnectionFailed": {
+    \\          "type": "object",
+    \\          "required": ["httpStatusCode"],
+    \\          "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["responseStreamDisconnected"],
+    \\      "properties": {
+    \\        "responseStreamDisconnected": {
+    \\          "type": "object",
+    \\          "required": ["httpStatusCode"],
+    \\          "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["responseTooManyFailedAttempts"],
+    \\      "properties": {
+    \\        "responseTooManyFailedAttempts": {
+    \\          "type": "object",
+    \\          "required": ["httpStatusCode"],
+    \\          "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["activeTurnNotSteerable"],
+    \\      "properties": {
+    \\        "activeTurnNotSteerable": {
+    \\          "type": "object",
+    \\          "required": ["turnKind"],
+    \\          "properties": { "turnKind": { "$ref": "NonSteerableTurnKind.json" } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const TURN_ERROR_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnError",
+    \\  "type": "object",
+    \\  "required": ["message", "codexErrorInfo", "additionalDetails"],
+    \\  "properties": {
+    \\    "message": { "type": "string" },
+    \\    "codexErrorInfo": { "anyOf": [{ "$ref": "CodexErrorInfo.json" }, { "type": "null" }] },
+    \\    "additionalDetails": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const TURN_ITEMS_VIEW_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnItemsView",
+    \\  "enum": ["notLoaded", "summary", "full"]
+    \\}
+    \\
+;
+
+const TURN_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnStatus",
+    \\  "enum": ["completed", "interrupted", "failed", "inProgress"]
+    \\}
+    \\
+;
+
+const TURN_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "Turn",
+    \\  "type": "object",
+    \\  "required": ["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"],
+    \\  "properties": {
+    \\    "id": { "type": "string" },
+    \\    "items": { "type": "array", "items": true },
+    \\    "itemsView": { "$ref": "TurnItemsView.json" },
+    \\    "status": { "$ref": "TurnStatus.json" },
+    \\    "error": { "anyOf": [{ "$ref": "TurnError.json" }, { "type": "null" }] },
+    \\    "startedAt": { "type": ["number", "null"] },
+    \\    "completedAt": { "type": ["number", "null"] },
+    \\    "durationMs": { "type": ["number", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9474,9 +9698,9 @@ const TURN_START_RESPONSE_JSON_SCHEMA =
     \\  "type": "object",
     \\  "required": ["turn"],
     \\  "properties": {
-    \\    "turn": true
+    \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": true
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -9620,9 +9844,9 @@ const TURN_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["threadId", "turn"],
     \\  "properties": {
     \\    "threadId": { "type": "string" },
-    \\    "turn": true
+    \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": true
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -9635,9 +9859,9 @@ const TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\  "required": ["threadId", "turn"],
     \\  "properties": {
     \\    "threadId": { "type": "string" },
-    \\    "turn": true
+    \\    "turn": { "$ref": "Turn.json" }
     \\  },
-    \\  "additionalProperties": true
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -13288,13 +13512,117 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "NonSteerableTurnKind": {
+    \\      "enum": ["review", "compact"]
+    \\    },
+    \\    "CodexErrorInfo": {
+    \\      "oneOf": [
+    \\        { "enum": ["contextWindowExceeded", "usageLimitExceeded", "serverOverloaded", "cyberPolicy", "internalServerError", "unauthorized", "badRequest", "threadRollbackFailed", "sandboxError", "other"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["httpConnectionFailed"],
+    \\          "properties": {
+    \\            "httpConnectionFailed": {
+    \\              "type": "object",
+    \\              "required": ["httpStatusCode"],
+    \\              "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["responseStreamConnectionFailed"],
+    \\          "properties": {
+    \\            "responseStreamConnectionFailed": {
+    \\              "type": "object",
+    \\              "required": ["httpStatusCode"],
+    \\              "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["responseStreamDisconnected"],
+    \\          "properties": {
+    \\            "responseStreamDisconnected": {
+    \\              "type": "object",
+    \\              "required": ["httpStatusCode"],
+    \\              "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["responseTooManyFailedAttempts"],
+    \\          "properties": {
+    \\            "responseTooManyFailedAttempts": {
+    \\              "type": "object",
+    \\              "required": ["httpStatusCode"],
+    \\              "properties": { "httpStatusCode": { "type": ["integer", "null"] } },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["activeTurnNotSteerable"],
+    \\          "properties": {
+    \\            "activeTurnNotSteerable": {
+    \\              "type": "object",
+    \\              "required": ["turnKind"],
+    \\              "properties": { "turnKind": { "$ref": "#/$defs/NonSteerableTurnKind" } },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "TurnError": {
+    \\      "type": "object",
+    \\      "required": ["message", "codexErrorInfo", "additionalDetails"],
+    \\      "properties": {
+    \\        "message": { "type": "string" },
+    \\        "codexErrorInfo": { "anyOf": [{ "$ref": "#/$defs/CodexErrorInfo" }, { "type": "null" }] },
+    \\        "additionalDetails": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "TurnItemsView": {
+    \\      "enum": ["notLoaded", "summary", "full"]
+    \\    },
+    \\    "TurnStatus": {
+    \\      "enum": ["completed", "interrupted", "failed", "inProgress"]
+    \\    },
+    \\    "Turn": {
+    \\      "type": "object",
+    \\      "required": ["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "items": { "type": "array", "items": true },
+    \\        "itemsView": { "$ref": "#/$defs/TurnItemsView" },
+    \\        "status": { "$ref": "#/$defs/TurnStatus" },
+    \\        "error": { "anyOf": [{ "$ref": "#/$defs/TurnError" }, { "type": "null" }] },
+    \\        "startedAt": { "type": ["number", "null"] },
+    \\        "completedAt": { "type": ["number", "null"] },
+    \\        "durationMs": { "type": ["number", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "TurnStartResponse": {
     \\      "type": "object",
     \\      "required": ["turn"],
     \\      "properties": {
-    \\        "turn": true
+    \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": true
+    \\      "additionalProperties": false
     \\    },
     \\    "TurnSteerParams": {
     \\      "type": "object",
@@ -13336,18 +13664,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "required": ["threadId", "turn"],
     \\      "properties": {
     \\        "threadId": { "type": "string" },
-    \\        "turn": true
+    \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": true
+    \\      "additionalProperties": false
     \\    },
     \\    "TurnCompletedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId", "turn"],
     \\      "properties": {
     \\        "threadId": { "type": "string" },
-    \\        "turn": true
+    \\        "turn": { "$ref": "#/$defs/Turn" }
     \\      },
-    \\      "additionalProperties": true
+    \\      "additionalProperties": false
     \\    },
     \\    "ItemStartedNotification": {
     \\      "type": "object",
@@ -14238,6 +14566,12 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
     .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
+    .{ .name = "NonSteerableTurnKind.json", .contents = NON_STEERABLE_TURN_KIND_JSON_SCHEMA },
+    .{ .name = "CodexErrorInfo.json", .contents = CODEX_ERROR_INFO_JSON_SCHEMA },
+    .{ .name = "TurnError.json", .contents = TURN_ERROR_JSON_SCHEMA },
+    .{ .name = "TurnItemsView.json", .contents = TURN_ITEMS_VIEW_JSON_SCHEMA },
+    .{ .name = "TurnStatus.json", .contents = TURN_STATUS_JSON_SCHEMA },
+    .{ .name = "Turn.json", .contents = TURN_JSON_SCHEMA },
     .{ .name = "TurnStartParams.json", .contents = TURN_START_PARAMS_JSON_SCHEMA },
     .{ .name = "TurnStartResponse.json", .contents = TURN_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "TurnSteerParams.json", .contents = TURN_STEER_PARAMS_JSON_SCHEMA },
@@ -14576,6 +14910,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
     .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
+    .{ .name = "v2/NonSteerableTurnKind.ts", .contents = NON_STEERABLE_TURN_KIND_TS },
+    .{ .name = "v2/CodexErrorInfo.ts", .contents = CODEX_ERROR_INFO_TS },
+    .{ .name = "v2/TurnError.ts", .contents = TURN_ERROR_TS },
+    .{ .name = "v2/TurnItemsView.ts", .contents = TURN_ITEMS_VIEW_TS },
+    .{ .name = "v2/TurnStatus.ts", .contents = TURN_STATUS_TS },
+    .{ .name = "v2/Turn.ts", .contents = TURN_TS },
     .{ .name = "v2/TurnStartParams.ts", .contents = TURN_START_PARAMS_TS },
     .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
     .{ .name = "v2/TurnSteerParams.ts", .contents = TURN_STEER_PARAMS_TS },
