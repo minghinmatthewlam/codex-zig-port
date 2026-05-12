@@ -220,9 +220,9 @@ TypeScript and JSON Schema artifacts for `process/spawn`,
 `process/writeStdin`, `process/kill`, `process/resizePty`,
 `process/outputDelta`, and `process/exited`. Runtime coverage supports
 synchronous non-PTY `process/spawn` execution with required absolute `cwd`,
-environment overrides, default/null/explicit output caps, default/null/explicit
-timeouts, Rust-shaped negative timeout validation, post-response
-`process/outputDelta` notifications for `streamStdoutStderr`, and
+environment merge/override/null-unset behavior, default/null/explicit output
+caps, default/null/explicit timeouts, Rust-shaped negative timeout validation,
+post-response `process/outputDelta` notifications for `streamStdoutStderr`, and
 post-response `process/exited` notifications.
 Follow-up methods validate params and base64 payloads, then return
 Rust-shaped inactive-process errors until true async process lifecycle, PTY,
