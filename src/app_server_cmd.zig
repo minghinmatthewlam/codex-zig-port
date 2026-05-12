@@ -3024,6 +3024,14 @@ const THREAD_UNARCHIVED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_CLOSED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadClosedNotification {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
 const THREAD_NAME_UPDATED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export type ThreadNameUpdatedNotification = {
@@ -4826,6 +4834,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
     \\import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
+    \\import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
@@ -4913,6 +4922,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/unarchived";
     \\      params: ThreadUnarchivedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/closed";
+    \\      params: ThreadClosedNotification;
     \\    }
     \\  | {
     \\      method: "thread/name/updated";
@@ -5241,6 +5254,7 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
     \\export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
+    \\export type { ThreadClosedNotification } from "./ThreadClosedNotification";
     \\export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
@@ -9514,6 +9528,20 @@ const THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_CLOSED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadClosedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const TURN_START_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -13403,6 +13431,14 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadClosedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadNameUpdatedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -14604,6 +14640,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStatusChangedNotification.json", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadArchivedNotification.json", .contents = THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadUnarchivedNotification.json", .contents = THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadClosedNotification.json", .contents = THREAD_CLOSED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalUpdatedNotification.json", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalClearedNotification.json", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA },
@@ -14949,6 +14986,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStatusChangedNotification.ts", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadArchivedNotification.ts", .contents = THREAD_ARCHIVED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadUnarchivedNotification.ts", .contents = THREAD_UNARCHIVED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadClosedNotification.ts", .contents = THREAD_CLOSED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalUpdatedNotification.ts", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalClearedNotification.ts", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_TS },
