@@ -15,6 +15,7 @@ const modules = .{
     @import("exec.zig"),
     @import("execpolicy_cmd.zig"),
     @import("features_cmd.zig"),
+    @import("feedback_diagnostics.zig"),
     @import("feedback_logs.zig"),
     @import("feedback_state.zig"),
     @import("feedback_upload.zig"),

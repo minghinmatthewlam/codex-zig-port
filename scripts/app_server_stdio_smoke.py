@@ -10454,6 +10454,16 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = dsn
+        for proxy_env_key in (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            env.pop(proxy_env_key, None)
+        env["HTTPS_PROXY"] = "https://proxy.example.test:443/path?value=raw"
         id_token = encode_unsigned_jwt(
             {
                 "https://api.openai.com/auth": {
@@ -10621,6 +10631,11 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b"persisted grandchild scoped row\n" in envelope
         assert b"feedback threadless after\n" in envelope
         assert b"other process threadless" not in envelope
+        assert b'"filename":"codex-connectivity-diagnostics.txt"' in envelope
+        assert b"Connectivity diagnostics" in envelope
+        assert (
+            b"HTTPS_PROXY = https://proxy.example.test:443/path?value=raw" in envelope
+        )
         assert f'"filename":"rollout-{feedback_thread_id}.jsonl"'.encode() in envelope
         assert b"rollout log body\n" in envelope
         assert f'"filename":"rollout-{persisted_child_thread_id}.jsonl"'.encode() in envelope
@@ -10768,6 +10783,10 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert len(server.request_bodies) == 3
         assert b'"level":"info"' in server.request_bodies[2]
         assert b'"filename":"codex-logs.log"' not in server.request_bodies[2]
+        assert (
+            b'"filename":"codex-connectivity-diagnostics.txt"'
+            not in server.request_bodies[2]
+        )
 
         invalid_thread = request_stdio_app_server(
             binary,

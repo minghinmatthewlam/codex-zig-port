@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const env = @import("env.zig");
+const feedback_diagnostics = @import("feedback_diagnostics.zig");
 
 const DEFAULT_SENTRY_DSN =
     "https://ae32ed50620d7a7792c1ce5df38b3e3e@o33249.ingest.us.sentry.io/4510195390611458";
@@ -102,6 +103,10 @@ fn buildEnvelope(allocator: std.mem.Allocator, dsn: SentryDsn, request: UploadRe
 
     if (request.include_logs) {
         try appendAttachment(allocator, &out, "codex-logs.log", request.log_bytes);
+        if (try feedback_diagnostics.attachmentTextFromEnv(allocator)) |diagnostics_text| {
+            defer allocator.free(diagnostics_text);
+            try appendAttachment(allocator, &out, feedback_diagnostics.attachment_filename, diagnostics_text);
+        }
     }
 
     for (request.extra_log_files, 0..) |path, index| {
