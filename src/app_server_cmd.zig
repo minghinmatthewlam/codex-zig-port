@@ -24365,6 +24365,7 @@ fn handleConfigMethod(
 }
 
 fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    var include_home = false;
     if (params_value) |params| {
         if (params != .null and params != .object) {
             return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/detect params must be an object, null, or omitted");
@@ -24372,6 +24373,7 @@ fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.j
         if (params == .object) {
             if (params.object.get("includeHome")) |value| {
                 if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeHome must be a boolean");
+                include_home = value.bool;
             }
             if (params.object.get("cwds")) |value| {
                 if (value != .null and value != .array) return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null");
@@ -24383,7 +24385,15 @@ fn handleExternalAgentConfigDetect(allocator: std.mem.Allocator, id_value: std.j
             }
         }
     }
-    return renderJsonRpcResult(allocator, id_value, "{\"items\":[]}");
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/detect failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    const result = try renderExternalAgentConfigDetectResponse(allocator, codex_home, include_home);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -24392,6 +24402,7 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
 
     const migration_items = params.object.get("migrationItems") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
     if (migration_items != .array) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems must be an array");
+    var all_items_supported = true;
     for (migration_items.array.items) |item| {
         if (item != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must be objects");
         const item_type = item.object.get("itemType") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include itemType");
@@ -24406,11 +24417,27 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
         if (item.object.get("details")) |details| {
             if (details != .null and details != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems details must be an object or null");
         }
+        if (!isSupportedExternalAgentConfigImportItem(item.object)) all_items_supported = false;
     }
     if (migration_items.array.items.len == 0) {
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
-    return renderJsonRpcError(allocator, id_value, -32603, "externalAgentConfig/import migration items are parsed but not implemented yet");
+    if (!all_items_supported) {
+        return renderJsonRpcError(allocator, id_value, -32603, "externalAgentConfig/import migration items are parsed but not implemented yet");
+    }
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+
+    importExternalAgentHomeConfig(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import config", err);
+    };
+
+    const response = try renderJsonRpcResult(allocator, id_value, "{}");
+    defer allocator.free(response);
+    return renderResultWithExternalAgentConfigImportCompletedNotification(allocator, response);
 }
 
 fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
@@ -24423,6 +24450,296 @@ fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
         std.mem.eql(u8, value, "HOOKS") or
         std.mem.eql(u8, value, "COMMANDS") or
         std.mem.eql(u8, value, "SESSIONS");
+}
+
+fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
+    const item_type = item.get("itemType") orelse return false;
+    if (item_type != .string or !std.mem.eql(u8, item_type.string, "CONFIG")) return false;
+    if (item.get("cwd")) |cwd| {
+        if (cwd != .null) return false;
+    }
+    if (item.get("details")) |details| {
+        if (details != .null) return false;
+    }
+    return true;
+}
+
+fn renderExternalAgentConfigDetectResponse(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    include_home: bool,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"items\":[");
+    if (include_home and try externalAgentHomeConfigNeedsMigration(allocator, codex_home)) {
+        const external_settings = try externalAgentHomeSettingsPath(allocator);
+        defer allocator.free(external_settings);
+        const target_config = try config.configTomlPath(allocator, codex_home);
+        defer allocator.free(target_config);
+        const description = try std.fmt.allocPrint(allocator, "Migrate {s} into {s}", .{ external_settings, target_config });
+        defer allocator.free(description);
+
+        try result.appendSlice(allocator, "{\"itemType\":\"CONFIG\",\"description\":");
+        try appendJsonString(allocator, &result, description);
+        try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
+    }
+    try result.appendSlice(allocator, "]}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn externalAgentHomeConfigNeedsMigration(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    var plan = try loadExternalAgentHomeConfigPlan(allocator);
+    defer plan.deinit(allocator);
+    if (plan.isEmpty()) return false;
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    return externalAgentConfigPlanHasMissingValues(config_bytes orelse "", plan);
+}
+
+fn importExternalAgentHomeConfig(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    var plan = try loadExternalAgentHomeConfigPlan(allocator);
+    defer plan.deinit(allocator);
+    if (plan.isEmpty()) return;
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const current_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (current_bytes) |bytes| allocator.free(bytes);
+
+    var updated: []const u8 = try allocator.dupe(u8, current_bytes orelse "");
+    defer allocator.free(updated);
+    var changed = false;
+
+    if (plan.sandbox_workspace_write and !tomlKeyPathHasAssignment(updated, "sandbox_mode")) {
+        const next = try config.updateTomlRawValueForKeyPath(allocator, updated, "sandbox_mode", "\"workspace-write\"");
+        allocator.free(updated);
+        updated = next;
+        changed = true;
+    }
+
+    if (plan.env.items.len > 0 and !tomlKeyPathHasAssignment(updated, "shell_environment_policy.inherit")) {
+        const next = try config.updateTomlRawValueForKeyPath(allocator, updated, "shell_environment_policy.inherit", "\"core\"");
+        allocator.free(updated);
+        updated = next;
+        changed = true;
+    }
+
+    for (plan.env.items) |entry| {
+        const key_path = try std.fmt.allocPrint(allocator, "shell_environment_policy.set.{s}", .{entry.key});
+        defer allocator.free(key_path);
+        if (tomlKeyPathHasAssignment(updated, key_path)) continue;
+        const raw_value = try renderTomlString(allocator, entry.value);
+        defer allocator.free(raw_value);
+        const next = try config.updateTomlRawValueForKeyPath(allocator, updated, key_path, raw_value);
+        allocator.free(updated);
+        updated = next;
+        changed = true;
+    }
+
+    if (!changed) return;
+    try config.writeConfigTomlFile(config_path, updated);
+}
+
+fn externalAgentConfigPlanHasMissingValues(bytes: []const u8, plan: ExternalAgentHomeConfigPlan) bool {
+    if (plan.sandbox_workspace_write and !tomlKeyPathHasAssignment(bytes, "sandbox_mode")) return true;
+    if (plan.env.items.len > 0 and !tomlKeyPathHasAssignment(bytes, "shell_environment_policy.inherit")) return true;
+    for (plan.env.items) |entry| {
+        var key_path_buffer: [256]u8 = undefined;
+        const key_path = std.fmt.bufPrint(&key_path_buffer, "shell_environment_policy.set.{s}", .{entry.key}) catch return true;
+        if (!tomlKeyPathHasAssignment(bytes, key_path)) return true;
+    }
+    return false;
+}
+
+const ExternalAgentEnvEntry = struct {
+    key: []const u8,
+    value: []const u8,
+
+    fn deinit(self: ExternalAgentEnvEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.value);
+    }
+};
+
+const ExternalAgentHomeConfigPlan = struct {
+    sandbox_workspace_write: bool = false,
+    env: std.ArrayList(ExternalAgentEnvEntry) = .empty,
+
+    fn deinit(self: *ExternalAgentHomeConfigPlan, allocator: std.mem.Allocator) void {
+        for (self.env.items) |entry| entry.deinit(allocator);
+        self.env.deinit(allocator);
+    }
+
+    fn isEmpty(self: ExternalAgentHomeConfigPlan) bool {
+        return !self.sandbox_workspace_write and self.env.items.len == 0;
+    }
+};
+
+fn loadExternalAgentHomeConfigPlan(allocator: std.mem.Allocator) !ExternalAgentHomeConfigPlan {
+    const settings_path = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(settings_path);
+    const local_settings_path = try externalAgentHomeLocalSettingsPath(allocator);
+    defer allocator.free(local_settings_path);
+
+    var settings = try readExternalAgentSettings(allocator, settings_path, false);
+    defer if (settings) |*parsed| parsed.deinit();
+    var local_settings = try readExternalAgentSettings(allocator, local_settings_path, true);
+    defer if (local_settings) |*parsed| parsed.deinit();
+
+    var plan = ExternalAgentHomeConfigPlan{};
+    errdefer plan.deinit(allocator);
+    try addExternalAgentSettingsToPlan(allocator, &plan, if (settings) |parsed| parsed.value else null);
+    try addExternalAgentSettingsToPlan(allocator, &plan, if (local_settings) |parsed| parsed.value else null);
+    std.mem.sort(ExternalAgentEnvEntry, plan.env.items, {}, externalAgentEnvEntryLessThan);
+    return plan;
+}
+
+fn addExternalAgentSettingsToPlan(
+    allocator: std.mem.Allocator,
+    plan: *ExternalAgentHomeConfigPlan,
+    settings_value: ?std.json.Value,
+) !void {
+    const settings = settings_value orelse return;
+    if (settings != .object) return error.InvalidExternalAgentSettings;
+
+    if (settings.object.get("sandbox")) |sandbox| {
+        if (sandbox == .object) {
+            if (sandbox.object.get("enabled")) |enabled| {
+                if (enabled == .bool) plan.sandbox_workspace_write = enabled.bool;
+            }
+        }
+    }
+
+    if (settings.object.get("env")) |env_value| {
+        if (env_value == .object) {
+            var iterator = env_value.object.iterator();
+            while (iterator.next()) |entry| {
+                if (!isBareTomlKeySegment(entry.key_ptr.*)) continue;
+                const env_string = try externalAgentEnvValueToString(allocator, entry.value_ptr.*) orelse {
+                    removeExternalAgentEnvEntry(allocator, plan, entry.key_ptr.*);
+                    continue;
+                };
+                errdefer allocator.free(env_string);
+                try putExternalAgentEnvEntry(allocator, plan, entry.key_ptr.*, env_string);
+            }
+        }
+    }
+}
+
+fn putExternalAgentEnvEntry(
+    allocator: std.mem.Allocator,
+    plan: *ExternalAgentHomeConfigPlan,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    for (plan.env.items) |*entry| {
+        if (std.mem.eql(u8, entry.key, key)) {
+            allocator.free(entry.value);
+            entry.value = value;
+            return;
+        }
+    }
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    try plan.env.append(allocator, .{ .key = owned_key, .value = value });
+}
+
+fn removeExternalAgentEnvEntry(allocator: std.mem.Allocator, plan: *ExternalAgentHomeConfigPlan, key: []const u8) void {
+    for (plan.env.items, 0..) |entry, index| {
+        if (!std.mem.eql(u8, entry.key, key)) continue;
+        entry.deinit(allocator);
+        _ = plan.env.swapRemove(index);
+        return;
+    }
+}
+
+fn externalAgentEnvValueToString(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+    return switch (value) {
+        .string => |string| try allocator.dupe(u8, string),
+        .bool => |boolean| try allocator.dupe(u8, if (boolean) "true" else "false"),
+        .integer => |integer| try std.fmt.allocPrint(allocator, "{}", .{integer}),
+        .float => |float| try std.fmt.allocPrint(allocator, "{d}", .{float}),
+        .number_string => |number| try allocator.dupe(u8, number),
+        .null, .array, .object => null,
+    };
+}
+
+fn externalAgentEnvEntryLessThan(_: void, lhs: ExternalAgentEnvEntry, rhs: ExternalAgentEnvEntry) bool {
+    return std.mem.lessThan(u8, lhs.key, rhs.key);
+}
+
+fn readExternalAgentSettings(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    ignore_invalid: bool,
+) !?std.json.Parsed(std.json.Value) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch |err| {
+        if (ignore_invalid) return null;
+        return err;
+    };
+}
+
+fn externalAgentHomeSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    return std.fs.path.join(allocator, &.{ external_home, "settings.json" });
+}
+
+fn externalAgentHomeLocalSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    return std.fs.path.join(allocator, &.{ external_home, "settings.local.json" });
+}
+
+fn externalAgentHomePath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".claude" });
+}
+
+fn tomlKeyPathHasAssignment(bytes: []const u8, key_path: []const u8) bool {
+    const section, const key = splitTomlKeyPath(key_path);
+    var in_target = section == null;
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (trimmed[0] == '[') {
+            in_target = if (section) |section_name| isExactTomlSection(trimmed, section_name) else false;
+            continue;
+        }
+        if (in_target and tomlValueForKey(trimmed, key) != null) return true;
+    }
+    return false;
+}
+
+fn splitTomlKeyPath(key_path: []const u8) struct { ?[]const u8, []const u8 } {
+    if (std.mem.lastIndexOfScalar(u8, key_path, '.')) |index| {
+        return .{ key_path[0..index], key_path[index + 1 ..] };
+    }
+    return .{ null, key_path };
+}
+
+fn renderResultWithExternalAgentConfigImportCompletedNotification(allocator: std.mem.Allocator, response: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n{{\"method\":\"externalAgentConfig/import/completed\",\"params\":{{}}}}",
+        .{response},
+    );
 }
 
 fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
