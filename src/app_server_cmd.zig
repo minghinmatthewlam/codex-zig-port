@@ -2964,6 +2964,19 @@ const TURN_ERROR_TS =
     \\
     ;
 
+const ERROR_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TurnError } from "./TurnError";
+    \\
+    \\export interface ErrorNotification {
+    \\  error: TurnError;
+    \\  willRetry: boolean;
+    \\  threadId: string;
+    \\  turnId: string;
+    \\}
+    \\
+    ;
+
 const TURN_ITEMS_VIEW_TS =
     GENERATED_TS_HEADER ++
     \\export type TurnItemsView = "notLoaded" | "summary" | "full";
@@ -4801,6 +4814,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
@@ -4824,6 +4838,10 @@ const SERVER_NOTIFICATION_TS =
     \\import type { WindowsSandboxSetupCompletedNotification } from "./v2/WindowsSandboxSetupCompletedNotification";
     \\
     \\export type ServerNotification =
+    \\  | {
+    \\      method: "error";
+    \\      params: ErrorNotification;
+    \\    }
     \\  | {
     \\      method: "account/login/completed";
     \\      params: AccountLoginCompletedNotification;
@@ -5262,6 +5280,7 @@ const V2_INDEX_TS =
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
     \\export type { CodexErrorInfo } from "./CodexErrorInfo";
+    \\export type { ErrorNotification } from "./ErrorNotification";
     \\export type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
     \\export type { Turn } from "./Turn";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
@@ -9390,6 +9409,23 @@ const TURN_ERROR_JSON_SCHEMA =
     \\    "message": { "type": "string" },
     \\    "codexErrorInfo": { "anyOf": [{ "$ref": "CodexErrorInfo.json" }, { "type": "null" }] },
     \\    "additionalDetails": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ERROR_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ErrorNotification",
+    \\  "type": "object",
+    \\  "required": ["error", "threadId", "turnId", "willRetry"],
+    \\  "properties": {
+    \\    "error": { "$ref": "TurnError.json" },
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "willRetry": { "type": "boolean" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -13595,6 +13631,17 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ErrorNotification": {
+    \\      "type": "object",
+    \\      "required": ["error", "threadId", "turnId", "willRetry"],
+    \\      "properties": {
+    \\        "error": { "$ref": "#/$defs/TurnError" },
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "willRetry": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "TurnItemsView": {
     \\      "enum": ["notLoaded", "summary", "full"]
     \\    },
@@ -14569,6 +14616,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "NonSteerableTurnKind.json", .contents = NON_STEERABLE_TURN_KIND_JSON_SCHEMA },
     .{ .name = "CodexErrorInfo.json", .contents = CODEX_ERROR_INFO_JSON_SCHEMA },
     .{ .name = "TurnError.json", .contents = TURN_ERROR_JSON_SCHEMA },
+    .{ .name = "ErrorNotification.json", .contents = ERROR_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "TurnItemsView.json", .contents = TURN_ITEMS_VIEW_JSON_SCHEMA },
     .{ .name = "TurnStatus.json", .contents = TURN_STATUS_JSON_SCHEMA },
     .{ .name = "Turn.json", .contents = TURN_JSON_SCHEMA },
@@ -14913,6 +14961,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/NonSteerableTurnKind.ts", .contents = NON_STEERABLE_TURN_KIND_TS },
     .{ .name = "v2/CodexErrorInfo.ts", .contents = CODEX_ERROR_INFO_TS },
     .{ .name = "v2/TurnError.ts", .contents = TURN_ERROR_TS },
+    .{ .name = "v2/ErrorNotification.ts", .contents = ERROR_NOTIFICATION_TS },
     .{ .name = "v2/TurnItemsView.ts", .contents = TURN_ITEMS_VIEW_TS },
     .{ .name = "v2/TurnStatus.ts", .contents = TURN_STATUS_TS },
     .{ .name = "v2/Turn.ts", .contents = TURN_TS },
