@@ -15481,6 +15481,76 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert detect_after_commands["id"] == "external-agent-detect-after-commands"
         assert detect_after_commands["result"] == {"items": []}
 
+        source_agent = claude_home / "agents" / "researcher.md"
+        source_agent.parent.mkdir(parents=True)
+        source_agent.write_text(
+            (
+                "---\n"
+                "name: researcher\n"
+                "description: Research with Claude\n"
+                "permissionMode: acceptEdits\n"
+                "effort: max\n"
+                "---\n"
+                "Research with Claude Code carefully.\n"
+            ),
+            encoding="utf-8",
+        )
+        detected_subagents = rpc(
+            "external-agent-detect-subagents",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_subagents["id"] == "external-agent-detect-subagents"
+        assert detected_subagents["result"]["items"] == [
+            {
+                "itemType": "SUBAGENTS",
+                "description": (
+                    f"Migrate subagents from {claude_home / 'agents'} to "
+                    f"{codex_home / 'agents'}"
+                ),
+                "cwd": None,
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [{"name": "researcher"}],
+                    "commands": [],
+                },
+            }
+        ]
+
+        subagents_import = rpc(
+            "external-agent-import-subagents",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_subagents["result"]["items"]},
+        )
+        assert subagents_import["id"] == "external-agent-import-subagents"
+        assert subagents_import["result"] == {}
+        subagents_notification = read_json_line(proc, 5)
+        assert subagents_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (codex_home / "agents" / "researcher.toml").read_text(
+            encoding="utf-8"
+        ) == (
+            'name = "researcher"\n'
+            'description = "Research with Codex"\n'
+            'model_reasoning_effort = "xhigh"\n'
+            'sandbox_mode = "workspace-write"\n'
+            'developer_instructions = """\n'
+            'Research with Codex carefully."""\n'
+        )
+
+        detect_after_subagents = rpc(
+            "external-agent-detect-after-subagents",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_subagents["id"] == "external-agent-detect-after-subagents"
+        assert detect_after_subagents["result"] == {"items": []}
+
         project_root = root / "project"
         nested_cwd = project_root / "nested" / "child"
         project_claude = project_root / ".claude"
@@ -15533,6 +15603,20 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "---\ndescription: Review project PR\n---\nReview the Claude PR.\n",
             encoding="utf-8",
         )
+        project_agent = project_claude / "agents" / "planner.md"
+        project_agent.parent.mkdir(parents=True)
+        project_agent.write_text(
+            (
+                "---\n"
+                "name: planner\n"
+                "description: Plan Claude work\n"
+                "permissionMode: readOnly\n"
+                "effort: high\n"
+                "---\n"
+                "Plan Claude Code work.\n"
+            ),
+            encoding="utf-8",
+        )
 
         detected_project = rpc(
             "external-agent-detect-project",
@@ -15573,6 +15657,22 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                     "hooks": [],
                     "subagents": [],
                     "commands": [{"name": "source-command-pr-review"}],
+                },
+            },
+            {
+                "itemType": "SUBAGENTS",
+                "description": (
+                    f"Migrate subagents from {project_claude / 'agents'} to "
+                    f"{project_root / '.codex' / 'agents'}"
+                ),
+                "cwd": str(project_root),
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [{"name": "planner"}],
+                    "commands": [],
                 },
             },
             {
@@ -15647,6 +15747,16 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             '## Command Template\n'
             '\n'
             'Review the Codex PR.\n'
+        )
+        assert (
+            project_root / ".codex" / "agents" / "planner.toml"
+        ).read_text(encoding="utf-8") == (
+            'name = "planner"\n'
+            'description = "Plan Codex work"\n'
+            'model_reasoning_effort = "high"\n'
+            'sandbox_mode = "read-only"\n'
+            'developer_instructions = """\n'
+            'Plan Codex work."""\n'
         )
 
         detect_after_project = rpc(
