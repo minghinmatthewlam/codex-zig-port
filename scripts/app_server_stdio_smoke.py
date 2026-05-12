@@ -3155,12 +3155,16 @@ def run_stdio_smoke(binary: Path) -> None:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
 
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-stdio-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     try:
         exercise_json_rpc(
@@ -3177,6 +3181,7 @@ def run_stdio_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_thread_started_opt_out_smoke(binary: Path) -> None:
