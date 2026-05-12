@@ -181,6 +181,7 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
 
     var buffer: [64 * 1024]u8 = undefined;
     var reader = file.reader(io, &buffer);
+    var found_preview = false;
     while (true) {
         const line_raw = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => break,
@@ -188,6 +189,7 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
         } orelse break;
         const line = std.mem.trim(u8, line_raw, " \t\r");
         if (line.len == 0) continue;
+        if (found_preview and !threadListSummaryLineMayAffectMetadata(line)) continue;
 
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
             error.OutOfMemory => return err,
@@ -199,7 +201,7 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
             error.OutOfMemory => return err,
             else => continue,
         };
-        if (transcriptFirstMessagePreview(&transcript) != null) break;
+        if (!found_preview and transcriptFirstMessagePreview(&transcript) != null) found_preview = true;
     }
 
     const id = if (transcript.id) |value| try allocator.dupe(u8, value) else try allocator.dupe(u8, fallback_id);
@@ -243,6 +245,11 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
     };
 }
 
+fn threadListSummaryLineMayAffectMetadata(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "metadata") != null or
+        std.mem.indexOf(u8, line, "session_meta") != null;
+}
+
 pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, name: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), codex_home);
 
@@ -275,6 +282,42 @@ pub fn appendThreadMemoryMode(allocator: std.mem.Allocator, path: []const u8, th
             .thread_source = transcript.thread_source orelse "user",
             .model_provider = transcript.model_provider orelse "openai",
             .memory_mode = mode,
+        },
+    });
+}
+
+pub fn appendThreadGitInfo(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    thread_id: []const u8,
+    sha: ?[]const u8,
+    branch: ?[]const u8,
+    origin_url: ?[]const u8,
+) !void {
+    var transcript = try loadTranscript(allocator, path);
+    defer transcript.deinit(allocator);
+    if (transcript.id) |id| {
+        if (!std.mem.eql(u8, id, thread_id)) return error.InvalidSessionLine;
+    }
+
+    try appendJsonLineToPath(allocator, path, .{
+        .timestamp = fallback_session_meta_timestamp,
+        .type = "session_meta",
+        .payload = .{
+            .id = thread_id,
+            .timestamp = fallback_session_meta_timestamp,
+            .cwd = transcript.cwd orelse "/",
+            .originator = "codex",
+            .cli_version = transcript.cli_version orelse "0.0.0",
+            .source = transcript.source orelse "cli",
+            .thread_source = transcript.thread_source orelse "user",
+            .model_provider = transcript.model_provider orelse "openai",
+            .memory_mode = transcript.memory_mode,
+            .git = StoredGitInfo{
+                .commit_hash = sha,
+                .branch = branch,
+                .repository_url = origin_url,
+            },
         },
     });
 }
@@ -507,9 +550,18 @@ fn applyGitInfo(
 ) !void {
     const git = value orelse return;
     if (git != .object) return;
-    if (jsonStringField(git.object, "commit_hash")) |field| try transcript.setGitSha(allocator, field);
-    if (jsonStringField(git.object, "branch")) |field| try transcript.setGitBranch(allocator, field);
-    if (jsonStringField(git.object, "repository_url")) |field| try transcript.setGitOriginUrl(allocator, field);
+    if (jsonStringField(git.object, "commit_hash")) |field|
+        try transcript.setGitSha(allocator, field)
+    else
+        transcript.clearGitSha(allocator);
+    if (jsonStringField(git.object, "branch")) |field|
+        try transcript.setGitBranch(allocator, field)
+    else
+        transcript.clearGitBranch(allocator);
+    if (jsonStringField(git.object, "repository_url")) |field|
+        try transcript.setGitOriginUrl(allocator, field)
+    else
+        transcript.clearGitOriginUrl(allocator);
 }
 
 fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -1211,6 +1263,39 @@ test "thread memory mode appends Rust session metadata" {
     defer allocator.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"type\":\"session_meta\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"memory_mode\":\"disabled\"") != null);
+}
+
+test "thread git info appends Rust session metadata and clears missing git fields" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "rollout-55555555-5555-4555-8555-555555555555.jsonl" });
+    defer allocator.free(path);
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data =
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"session_meta","payload":{"id":"55555555-5555-4555-8555-555555555555","timestamp":"2025-01-05T12:00:00Z","cwd":"/repo","originator":"codex","cli_version":"0.0.0","source":"cli","thread_source":"user","model_provider":"mock_provider","memory_mode":"disabled","git":{"commit_hash":"old-sha","branch":"old-branch","repository_url":"https://example.test/old.git"}}}
+        \\
+        ,
+    });
+
+    try appendThreadGitInfo(allocator, path, "55555555-5555-4555-8555-555555555555", "new-sha", null, "https://example.test/new.git");
+
+    var loaded = try loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqualStrings("disabled", loaded.memory_mode.?);
+    try std.testing.expectEqualStrings("new-sha", loaded.git_sha.?);
+    try std.testing.expect(loaded.git_branch == null);
+    try std.testing.expectEqualStrings("https://example.test/new.git", loaded.git_origin_url.?);
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"commit_hash\":\"new-sha\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"repository_url\":\"https://example.test/new.git\"") != null);
 }
 
 test "latest session path picks lexicographically newest rollout" {
