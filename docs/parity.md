@@ -411,10 +411,13 @@ Additional app-server thread status coverage: `turn/start` now emits
 Rust-shaped `thread/status/changed` notifications for the active state before
 the turn lifecycle notifications and the idle state after turn completion,
 and `thread/archive` emits `notLoaded` when archiving removes an already-loaded
-thread, honoring `optOutNotificationMethods`. `ThreadStatus` and
+thread. Provider `response.failed` events from `turn/start` now mark the loaded
+thread `systemError`, expose that status through loaded thread reads/lists, and
+successful follow-up turns restore `idle`, honoring `optOutNotificationMethods`.
+`ThreadStatus` and
 `ThreadStatusChangedNotification` are included in generated TypeScript and JSON
-schemas. System-error states, idle-timeout `thread/closed` unload transitions,
-and true async active-turn status tracking remain planned.
+schemas. Idle-timeout `thread/closed` unload transitions, richer error payload
+serialization, and true async active-turn status tracking remain planned.
 
 Additional app-server thread-resume coverage: `thread/resume` now loads Zig-native session JSONL files by thread id or explicit path, loads basic Rust rollout JSONL files by UUID or explicit path, resolves readable local `state_5.sqlite` `threads.rollout_path` rows by thread id, or starts from non-empty in-memory `history` with Rust's history-over-path/threadId precedence. It creates or replaces the process-local loaded thread, returns a Rust-shaped `ThreadResumeResponse`, restores preview/title/path/source/thread-source/model-provider/cwd/CLI-version fields available in the loaded transcript, applies state-DB model, model-provider, reasoning-effort, and Git metadata for resumed threads unless an explicit resume model/provider/reasoning override is present, replays persisted Rust `token_count` usage through `thread/tokenUsage/updated` when turns are included, can include simple transcript-derived turns or honor `excludeTurns` while retaining turns for `thread/turns/list`, feeds the loaded ID into `thread/loaded/list`, and is included in TypeScript and JSON schema generation along with the token-usage notification shape. Full state-db runtime metadata, live reattachment, interrupted-turn usage attribution, and full persisted thread schema parity remain planned.
 
