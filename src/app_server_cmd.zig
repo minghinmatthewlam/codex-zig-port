@@ -16353,14 +16353,27 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-            return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed to load config", err);
         };
-        const thread = &state.loaded_threads.items[thread_index];
-        setLoadedThreadName(allocator, thread, thread_name) catch |err| {
+        defer cfg.deinit(allocator);
+        if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+            const thread = &state.loaded_threads.items[thread_index];
+            setLoadedThreadName(allocator, thread, thread_name) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
+            };
+        } else {
+            var stored_thread = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+                error.FileNotFound => return renderThreadNotFound(allocator, id_value, thread_id),
+                error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err),
+            };
+            defer stored_thread.deinit(allocator);
+        }
+        session_store.appendThreadName(allocator, cfg.codex_home, thread_id, thread_name) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
         };
-        try queueThreadNameUpdatedNotification(allocator, state, thread.id, thread_name);
+        try queueThreadNameUpdatedNotification(allocator, state, thread_id, thread_name);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/goal/set")) {
@@ -16852,6 +16865,17 @@ fn createStoredThreadFromParams(
     return createStoredThreadFromPath(allocator, cfg, params, resume_path_raw);
 }
 
+fn createStoredThreadFromParamsIncludingStateDb(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    return createStoredThreadFromParams(allocator, cfg, params) catch |err| switch (err) {
+        error.FileNotFound => createStateDbStoredThreadFromParams(allocator, cfg, params),
+        else => err,
+    };
+}
+
 fn createStoredThreadFromParamsIncludingArchived(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -16908,7 +16932,19 @@ fn createStoredThreadFromPath(
     const resume_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path_raw, allocator);
     defer allocator.free(resume_path);
 
-    return createLoadedThreadFromResumeParams(allocator, cfg, params, resume_path, &transcript);
+    var thread = try createLoadedThreadFromResumeParams(allocator, cfg, params, resume_path, &transcript);
+    errdefer thread.deinit(allocator);
+    try applyIndexedThreadName(allocator, cfg.codex_home, &thread);
+    return thread;
+}
+
+fn applyIndexedThreadName(allocator: std.mem.Allocator, codex_home: []const u8, thread: *LoadedThread) !void {
+    const indexed_name = try session_store.findThreadName(allocator, codex_home, thread.id);
+    defer if (indexed_name) |value| allocator.free(value);
+    const name = indexed_name orelse return;
+    const name_copy = try allocator.dupe(u8, name);
+    if (thread.name) |value| allocator.free(value);
+    thread.name = name_copy;
 }
 
 fn createLoadedThreadFromStartParams(
@@ -17636,6 +17672,7 @@ const SavedThreadListItem = struct {
         allocator: std.mem.Allocator,
         file: session_store.RolloutFile,
         fallback_model_provider: []const u8,
+        thread_names: []const session_store.ThreadNameEntry,
     ) !SavedThreadListItem {
         var summary = try session_store.loadThreadListSummary(allocator, file.path, file.id);
         defer summary.deinit(allocator);
@@ -17666,7 +17703,9 @@ const SavedThreadListItem = struct {
         errdefer if (git_branch) |value| allocator.free(value);
         const git_origin_url = if (summary.git_origin_url) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_origin_url) |value| allocator.free(value);
-        const name = if (summary.title) |value| try allocator.dupe(u8, value) else null;
+        const indexed_name = session_store.threadNameFromIndex(thread_names, summary.id);
+        const name_value: ?[]const u8 = if (indexed_name) |value| value else summary.title;
+        const name = if (name_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (name) |value| allocator.free(value);
 
         return .{
@@ -17734,12 +17773,14 @@ fn renderThreadListResult(
 
     const state_db_only = optionalBoolParam(params, "useStateDbOnly") orelse false;
     const archived = optionalBoolParam(params, "archived") orelse false;
+    const thread_names = try session_store.loadThreadNameIndex(allocator, cfg.codex_home);
+    defer session_store.freeThreadNameIndex(allocator, thread_names);
     if (state_db_only) {
         const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
         defer if (fallback_model_provider) |value| allocator.free(value);
         const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", false, state);
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", false, state, thread_names);
     } else {
         if (!archived) {
             for (state.loaded_threads.items) |*thread| {
@@ -17754,7 +17795,7 @@ fn renderThreadListResult(
         defer if (fallback_model_provider) |value| allocator.free(value);
         const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", !archived, state);
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", !archived, state, thread_names);
     }
 
     std.mem.sort(ThreadListItem, threads.items, threadListSortContext(params), threadListLessThan);
@@ -17815,10 +17856,11 @@ fn appendSavedThreadListItems(
     fallback_model_provider: []const u8,
     dedupe_loaded: bool,
     state: *const AppServerState,
+    thread_names: []const session_store.ThreadNameEntry,
 ) !void {
     for (rollout_files) |file| {
         if (dedupe_loaded and findLoadedThreadForRolloutFile(state, file) != null) continue;
-        var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider) catch |err| switch (err) {
+        var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider, thread_names) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => continue,
         };
