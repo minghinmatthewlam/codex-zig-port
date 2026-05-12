@@ -5838,6 +5838,44 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-fork-state-db-by-id",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "excludeTurns": True,
+                        "ephemeral": True,
+                    },
+                },
+            )
+            state_db_forked = read_json_line(proc, 5)
+            assert state_db_forked["id"] == "thread-fork-state-db-by-id"
+            state_db_forked_result = state_db_forked["result"]
+            assert state_db_forked_result["model"] == "gpt-state-db"
+            assert state_db_forked_result["modelProvider"] == "state_provider"
+            assert state_db_forked_result["cwd"] == "/state-db-cwd"
+            assert state_db_forked_result["reasoningEffort"] == "high"
+            state_db_forked_thread = state_db_forked_result["thread"]
+            assert state_db_forked_thread["forkedFromId"] == state_db_thread_id
+            assert state_db_forked_thread["preview"] == "state db metadata preview"
+            assert state_db_forked_thread["ephemeral"] is True
+            assert state_db_forked_thread["path"] is None
+            assert state_db_forked_thread["source"] == "appServer"
+            assert state_db_forked_thread["modelProvider"] == "state_provider"
+            assert state_db_forked_thread["cwd"] == "/state-db-cwd"
+            assert state_db_forked_thread["gitInfo"] == {
+                "sha": "state-db-sha",
+                "branch": "state-db-branch",
+                "originUrl": "https://example.test/state.git",
+            }
+            assert state_db_forked_thread["turns"] == []
+            assert_thread_started_notification(
+                read_json_line(proc, 5), state_db_forked_thread
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume-state-db-metadata",
                     "method": "thread/resume",
                     "params": {
