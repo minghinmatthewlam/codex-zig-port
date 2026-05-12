@@ -15216,10 +15216,10 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             {
                 "migrationItems": [
                     {
-                        "itemType": "CONFIG",
-                        "description": "Import config",
+                        "itemType": "PLUGINS",
+                        "description": "Import plugins",
                         "cwd": None,
-                        "details": None,
+                        "details": {"plugins": []},
                     }
                 ]
             },
@@ -15230,6 +15230,86 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "migration items are parsed but not implemented yet"
             in nonempty_import["error"]["message"]
         )
+
+        claude_home = external_home / ".claude"
+        claude_home.mkdir()
+        (claude_home / "settings.json").write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "FOO": "project",
+                        "PROJECT_ONLY": "yes",
+                        "SUPPRESSED": "base",
+                        "CI": False,
+                        "IGNORED": None,
+                        "LIST": ["a", "b"],
+                        "MAP": {"x": 1},
+                    },
+                    "sandbox": {"enabled": False},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (claude_home / "settings.local.json").write_text(
+            json.dumps(
+                {
+                    "env": {"FOO": "local", "LOCAL_ONLY": True, "SUPPRESSED": None},
+                    "sandbox": {"enabled": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detected_config = rpc(
+            "external-agent-detect-home-config",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_config["id"] == "external-agent-detect-home-config"
+        assert detected_config["result"]["items"] == [
+            {
+                "itemType": "CONFIG",
+                "description": (
+                    f"Migrate {claude_home / 'settings.json'} into "
+                    f"{codex_home / 'config.toml'}"
+                ),
+                "cwd": None,
+                "details": None,
+            }
+        ]
+
+        config_import = rpc(
+            "external-agent-import-config",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_config["result"]["items"]},
+        )
+        assert config_import["id"] == "external-agent-import-config"
+        assert config_import["result"] == {}
+        import_notification = read_json_line(proc, 5)
+        assert import_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            'sandbox_mode = "workspace-write"\n'
+            "\n"
+            "[shell_environment_policy]\n"
+            'inherit = "core"\n'
+            "\n"
+            "[shell_environment_policy.set]\n"
+            'CI = "false"\n'
+            'FOO = "local"\n'
+            'LOCAL_ONLY = "true"\n'
+            'PROJECT_ONLY = "yes"\n'
+        )
+
+        detect_after_import = rpc(
+            "external-agent-detect-after-config",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_import["id"] == "external-agent-detect-after-config"
+        assert detect_after_import["result"] == {"items": []}
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
