@@ -16568,7 +16568,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
         };
         const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
-        session_store.appendThreadGitInfo(allocator, stored_path, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
+        session_store.appendThreadGitInfoWithMemoryMode(allocator, stored_path, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url, stored_thread.transcript.memory_mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
         _ = thread_state.updateThreadGitInfo(allocator, cfg.codex_home, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
@@ -16969,7 +16969,12 @@ fn createStateDbStoredThreadFromParams(
     const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
     const state_path = (try thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, thread_id)) orelse return error.FileNotFound;
     defer allocator.free(state_path);
-    return createStoredThreadFromPath(allocator, cfg, params, state_path);
+    var thread = try createStoredThreadFromPath(allocator, cfg, params, state_path);
+    errdefer thread.deinit(allocator);
+    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, thread_id);
+    defer if (metadata) |value| value.deinit(allocator);
+    if (metadata) |value| try applyStateThreadMetadata(allocator, &thread, value);
+    return thread;
 }
 
 fn createStoredThreadFromPath(
@@ -16997,6 +17002,27 @@ fn applyIndexedThreadName(allocator: std.mem.Allocator, codex_home: []const u8, 
     const name_copy = try allocator.dupe(u8, name);
     if (thread.name) |value| allocator.free(value);
     thread.name = name_copy;
+}
+
+fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread, metadata: thread_state.ThreadMetadata) !void {
+    if (stateThreadTitle(metadata.title, thread.preview)) |title| {
+        try replaceOptionalOwnedString(allocator, &thread.name, title);
+    }
+    if (metadata.memory_mode) |memory_mode| {
+        try thread.transcript.setMemoryMode(allocator, memory_mode);
+    }
+    try replaceStateMetadataGitInfo(allocator, &thread.git_sha, metadata.git_sha);
+    try replaceStateMetadataGitInfo(allocator, &thread.git_branch, metadata.git_branch);
+    try replaceStateMetadataGitInfo(allocator, &thread.git_origin_url, metadata.git_origin_url);
+    try syncLoadedThreadGitInfoToTranscript(allocator, thread);
+}
+
+fn replaceStateMetadataGitInfo(allocator: std.mem.Allocator, slot: *?[]const u8, value: ?[]const u8) !void {
+    if (value) |text| {
+        try replaceOptionalOwnedString(allocator, slot, text);
+    } else {
+        clearOptionalOwnedString(allocator, slot);
+    }
 }
 
 fn createLoadedThreadFromStartParams(
@@ -17749,14 +17775,23 @@ const SavedThreadListItem = struct {
         errdefer allocator.free(source);
         const thread_source = if (summary.thread_source) |value| try allocator.dupe(u8, value) else null;
         errdefer if (thread_source) |value| allocator.free(value);
-        const git_sha = if (summary.git_sha) |value| try allocator.dupe(u8, value) else null;
+        const git_sha_value = if (file.state_metadata_loaded) file.git_sha else summary.git_sha;
+        const git_sha = if (git_sha_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_sha) |value| allocator.free(value);
-        const git_branch = if (summary.git_branch) |value| try allocator.dupe(u8, value) else null;
+        const git_branch_value = if (file.state_metadata_loaded) file.git_branch else summary.git_branch;
+        const git_branch = if (git_branch_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_branch) |value| allocator.free(value);
-        const git_origin_url = if (summary.git_origin_url) |value| try allocator.dupe(u8, value) else null;
+        const git_origin_url_value = if (file.state_metadata_loaded) file.git_origin_url else summary.git_origin_url;
+        const git_origin_url = if (git_origin_url_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_origin_url) |value| allocator.free(value);
         const indexed_name = session_store.threadNameFromIndex(thread_names, summary.id);
-        const name_value: ?[]const u8 = if (indexed_name) |value| value else summary.title;
+        const state_name = if (file.state_metadata_loaded) stateThreadTitle(file.title, summary.preview) else null;
+        const name_value: ?[]const u8 = if (state_name) |value|
+            value
+        else if (indexed_name) |value|
+            value
+        else
+            summary.title;
         const name = if (name_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (name) |value| allocator.free(value);
 
@@ -17797,6 +17832,14 @@ const SavedThreadListItem = struct {
         if (self.name) |value| allocator.free(value);
     }
 };
+
+fn stateThreadTitle(title: ?[]const u8, preview: []const u8) ?[]const u8 {
+    const raw = title orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (std.mem.eql(u8, trimmed, std.mem.trim(u8, preview, " \t\r\n"))) return null;
+    return trimmed;
+}
 
 const ThreadListItem = union(enum) {
     loaded: *const LoadedThread,
