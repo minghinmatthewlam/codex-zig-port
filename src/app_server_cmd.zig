@@ -18055,27 +18055,26 @@ fn renderThreadListResult(
     const archived = optionalBoolParam(params, "archived") orelse false;
     const thread_names = try session_store.loadThreadNameIndex(allocator, cfg.codex_home);
     defer session_store.freeThreadNameIndex(allocator, thread_names);
+    const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+    defer if (fallback_model_provider) |value| allocator.free(value);
+    const default_model_provider = fallback_model_provider orelse "openai";
     if (state_db_only) {
-        const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-        defer if (fallback_model_provider) |value| allocator.free(value);
         const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", false, state, thread_names);
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, default_model_provider, false, state, thread_names);
     } else {
         if (!archived) {
             for (state.loaded_threads.items) |*thread| {
                 const item = ThreadListItem{ .loaded = thread };
-                if (threadListItemMatchesParams(item, params)) {
+                if (threadListItemMatchesParams(item, params, default_model_provider)) {
                     try threads.append(allocator, item);
                 }
             }
         }
 
-        const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-        defer if (fallback_model_provider) |value| allocator.free(value);
         const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", !archived, state, thread_names);
+        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, default_model_provider, !archived, state, thread_names);
     }
 
     const sort_context = threadListSortContext(params);
@@ -18132,10 +18131,10 @@ fn renderThreadListResult(
     return result.toOwnedSlice(allocator);
 }
 
-fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap) bool {
+fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap, default_model_provider: []const u8) bool {
     const archived = optionalBoolParam(params, "archived") orelse false;
     if (threadListItemArchived(thread) != archived) return false;
-    if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), threadListItemModelProvider(thread))) return false;
+    if (!threadListModelProviderMatches(params.get("modelProviders"), threadListItemModelProvider(thread), default_model_provider)) return false;
     if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), threadListItemSource(thread))) return false;
     if (!threadListCwdMatches(params.get("cwd"), threadListItemCwd(thread))) return false;
     if (optionalStringParam(params, "searchTerm")) |search| {
@@ -18165,13 +18164,23 @@ fn appendSavedThreadListItems(
         var saved_moved = false;
         errdefer if (!saved_moved) saved.deinit(allocator);
         const item = ThreadListItem{ .saved = saved };
-        if (threadListItemMatchesParams(item, params)) {
+        if (threadListItemMatchesParams(item, params, fallback_model_provider)) {
             try threads.append(allocator, item);
             saved_moved = true;
         } else {
             saved.deinit(allocator);
         }
     }
+}
+
+fn threadListModelProviderMatches(value: ?std.json.Value, candidate: []const u8, default_model_provider: []const u8) bool {
+    const actual = value orelse return std.mem.eql(u8, candidate, default_model_provider);
+    if (actual == .null) return std.mem.eql(u8, candidate, default_model_provider);
+    if (actual.array.items.len == 0) return true;
+    for (actual.array.items) |item| {
+        if (std.mem.eql(u8, item.string, candidate)) return true;
+    }
+    return false;
 }
 
 fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {
