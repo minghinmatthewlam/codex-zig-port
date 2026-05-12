@@ -19637,6 +19637,52 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
         assert turn_start_response_schema["required"] == ["turn"]
+        assert (
+            turn_start_response_schema["properties"]["turn"]["$ref"]
+            == "Turn.json"
+        )
+        turn_schema = json.loads((out_dir / "Turn.json").read_text(encoding="utf-8"))
+        assert turn_schema["required"] == [
+            "id",
+            "items",
+            "itemsView",
+            "status",
+            "error",
+            "startedAt",
+            "completedAt",
+            "durationMs",
+        ]
+        assert turn_schema["properties"]["itemsView"]["$ref"] == "TurnItemsView.json"
+        assert turn_schema["properties"]["status"]["$ref"] == "TurnStatus.json"
+        turn_status_schema = json.loads(
+            (out_dir / "TurnStatus.json").read_text(encoding="utf-8")
+        )
+        assert turn_status_schema["enum"] == [
+            "completed",
+            "interrupted",
+            "failed",
+            "inProgress",
+        ]
+        turn_items_view_schema = json.loads(
+            (out_dir / "TurnItemsView.json").read_text(encoding="utf-8")
+        )
+        assert turn_items_view_schema["enum"] == ["notLoaded", "summary", "full"]
+        turn_error_schema = json.loads(
+            (out_dir / "TurnError.json").read_text(encoding="utf-8")
+        )
+        assert turn_error_schema["required"] == [
+            "message",
+            "codexErrorInfo",
+            "additionalDetails",
+        ]
+        codex_error_info_schema = json.loads(
+            (out_dir / "CodexErrorInfo.json").read_text(encoding="utf-8")
+        )
+        assert codex_error_info_schema["title"] == "CodexErrorInfo"
+        non_steerable_schema = json.loads(
+            (out_dir / "NonSteerableTurnKind.json").read_text(encoding="utf-8")
+        )
+        assert non_steerable_schema["enum"] == ["review", "compact"]
         turn_steer_params_schema = json.loads(
             (out_dir / "TurnSteerParams.json").read_text(encoding="utf-8")
         )
@@ -19668,10 +19714,18 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "TurnStartedNotification.json").read_text(encoding="utf-8")
         )
         assert turn_started_notification_schema["required"] == ["threadId", "turn"]
+        assert (
+            turn_started_notification_schema["properties"]["turn"]["$ref"]
+            == "Turn.json"
+        )
         turn_completed_notification_schema = json.loads(
             (out_dir / "TurnCompletedNotification.json").read_text(encoding="utf-8")
         )
         assert turn_completed_notification_schema["required"] == ["threadId", "turn"]
+        assert (
+            turn_completed_notification_schema["properties"]["turn"]["$ref"]
+            == "Turn.json"
+        )
         item_started_notification_schema = json.loads(
             (out_dir / "ItemStartedNotification.json").read_text(encoding="utf-8")
         )
@@ -20778,7 +20832,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert bundle["$defs"]["UserInput"]["oneOf"][0]["properties"]["type"]["const"] == "text"
         assert bundle["$defs"]["UserInput"]["oneOf"][4]["properties"]["type"]["const"] == "mention"
+        assert "NonSteerableTurnKind" in bundle["$defs"]
+        assert "CodexErrorInfo" in bundle["$defs"]
+        assert "TurnError" in bundle["$defs"]
+        assert "TurnItemsView" in bundle["$defs"]
+        assert "TurnStatus" in bundle["$defs"]
+        assert "Turn" in bundle["$defs"]
+        assert bundle["$defs"]["Turn"]["properties"]["itemsView"]["$ref"] == "#/$defs/TurnItemsView"
+        assert bundle["$defs"]["Turn"]["properties"]["status"]["$ref"] == "#/$defs/TurnStatus"
         assert "TurnStartResponse" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["TurnStartResponse"]["properties"]["turn"]["$ref"]
+            == "#/$defs/Turn"
+        )
         assert "TurnSteerParams" in bundle["$defs"]
         assert (
             bundle["$defs"]["TurnSteerParams"]["properties"]["input"]["items"]["$ref"]
@@ -20793,7 +20859,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         ]
         assert "TurnInterruptResponse" in bundle["$defs"]
         assert "TurnStartedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["TurnStartedNotification"]["properties"]["turn"]["$ref"]
+            == "#/$defs/Turn"
+        )
         assert "TurnCompletedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["TurnCompletedNotification"]["properties"]["turn"]["$ref"]
+            == "#/$defs/Turn"
+        )
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
@@ -22453,7 +22527,33 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
-        assert "turn: unknown;" in turn_start_response
+        assert 'import type { Turn } from "./Turn";' in turn_start_response
+        assert "turn: Turn;" in turn_start_response
+        turn_ts = (out_dir / "v2" / "Turn.ts").read_text(encoding="utf-8")
+        assert 'import type { TurnError } from "./TurnError";' in turn_ts
+        assert 'import type { TurnItemsView } from "./TurnItemsView";' in turn_ts
+        assert 'import type { TurnStatus } from "./TurnStatus";' in turn_ts
+        assert "items: unknown[];" in turn_ts
+        assert "itemsView: TurnItemsView;" in turn_ts
+        assert "status: TurnStatus;" in turn_ts
+        assert "error: TurnError | null;" in turn_ts
+        turn_status_ts = (out_dir / "v2" / "TurnStatus.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"inProgress"' in turn_status_ts
+        turn_error_ts = (out_dir / "v2" / "TurnError.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { CodexErrorInfo } from "./CodexErrorInfo";' in turn_error_ts
+        assert "codexErrorInfo: CodexErrorInfo | null;" in turn_error_ts
+        codex_error_info_ts = (
+            out_dir / "v2" / "CodexErrorInfo.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { NonSteerableTurnKind } from "./NonSteerableTurnKind";'
+            in codex_error_info_ts
+        )
+        assert "activeTurnNotSteerable" in codex_error_info_ts
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
         )
@@ -22479,12 +22579,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "TurnStartedNotification.ts"
         ).read_text(encoding="utf-8")
         assert "threadId: string;" in turn_started_notification
-        assert "turn: unknown;" in turn_started_notification
+        assert 'import type { Turn } from "./Turn";' in turn_started_notification
+        assert "turn: Turn;" in turn_started_notification
         turn_completed_notification = (
             out_dir / "v2" / "TurnCompletedNotification.ts"
         ).read_text(encoding="utf-8")
         assert "threadId: string;" in turn_completed_notification
-        assert "turn: unknown;" in turn_completed_notification
+        assert 'import type { Turn } from "./Turn";' in turn_completed_notification
+        assert "turn: Turn;" in turn_completed_notification
         item_started_notification = (
             out_dir / "v2" / "ItemStartedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -23254,8 +23356,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'export type { ThreadStartParams } from "./ThreadStartParams";' in v2_index
         assert 'export type { ThreadStartResponse } from "./ThreadStartResponse";' in v2_index
+        assert 'export type { CodexErrorInfo } from "./CodexErrorInfo";' in v2_index
+        assert (
+            'export type { NonSteerableTurnKind } from "./NonSteerableTurnKind";'
+            in v2_index
+        )
+        assert 'export type { Turn } from "./Turn";' in v2_index
         assert 'export type { TurnStartParams } from "./TurnStartParams";' in v2_index
         assert 'export type { TurnStartResponse } from "./TurnStartResponse";' in v2_index
+        assert 'export type { TurnStatus } from "./TurnStatus";' in v2_index
+        assert 'export type { TurnError } from "./TurnError";' in v2_index
+        assert 'export type { TurnItemsView } from "./TurnItemsView";' in v2_index
         assert 'export type { TurnSteerParams } from "./TurnSteerParams";' in v2_index
         assert 'export type { TurnSteerResponse } from "./TurnSteerResponse";' in v2_index
         assert (
