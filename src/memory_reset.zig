@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const env = @import("env.zig");
 
 pub const state_db_filename = "state_5.sqlite";
+pub const logs_db_filename = "logs_2.sqlite";
 
 const sqlite3 = opaque {};
 const SqliteCallback = *const fn (?*anyopaque, c_int, [*c][*c]u8, [*c][*c]u8) callconv(.c) c_int;
@@ -31,6 +32,12 @@ pub fn resolveStateDbPath(allocator: std.mem.Allocator, codex_home: []const u8) 
     const sqlite_home = try resolveSqliteHome(allocator, codex_home);
     defer allocator.free(sqlite_home);
     return std.fs.path.join(allocator, &.{ sqlite_home, state_db_filename });
+}
+
+pub fn resolveLogsDbPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const sqlite_home = try resolveSqliteHome(allocator, codex_home);
+    defer allocator.free(sqlite_home);
+    return std.fs.path.join(allocator, &.{ sqlite_home, logs_db_filename });
 }
 
 pub fn stateDbExists(allocator: std.mem.Allocator, state_path: []const u8) !bool {

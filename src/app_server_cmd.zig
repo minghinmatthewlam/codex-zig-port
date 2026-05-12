@@ -9,6 +9,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const config_requirements_hooks = @import("config_requirements_hooks.zig");
 const env = @import("env.zig");
+const feedback_logs = @import("feedback_logs.zig");
 const feedback_upload = @import("feedback_upload.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
@@ -22154,6 +22155,33 @@ fn handleFeedbackUpload(
         thread_id = owned_thread_id.?;
     }
 
+    var feedback_thread_ids = std.ArrayList([]const u8).empty;
+    defer feedback_thread_ids.deinit(allocator);
+    if (include_logs.bool) {
+        try appendFeedbackThreadIds(allocator, state, thread_id.?, &feedback_thread_ids);
+    }
+
+    var sqlite_log_bytes: ?[]const u8 = null;
+    defer if (sqlite_log_bytes) |bytes| allocator.free(bytes);
+    if (include_logs.bool and feedback_thread_ids.items.len > 0) {
+        if (resolveCodexHome(allocator)) |codex_home| {
+            defer allocator.free(codex_home);
+            sqlite_log_bytes = feedback_logs.queryFeedbackLogsForThreads(allocator, codex_home, feedback_thread_ids.items) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
+            if (sqlite_log_bytes) |bytes| {
+                if (bytes.len == 0) {
+                    allocator.free(bytes);
+                    sqlite_log_bytes = null;
+                }
+            }
+        } else |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        }
+    }
+
     var upload_log_files = std.ArrayList([]const u8).empty;
     defer upload_log_files.deinit(allocator);
     var owned_upload_log_files = std.ArrayList([]const u8).empty;
@@ -22171,6 +22199,7 @@ fn handleFeedbackUpload(
         .reason = reason,
         .thread_id = thread_id.?,
         .include_logs = include_logs.bool,
+        .log_bytes = sqlite_log_bytes orelse "",
         .extra_log_files = upload_log_files.items,
         .tags = if (tags_object) |*tags| tags else null,
         .metadata_tags = metadata_tags.items,
@@ -22179,6 +22208,30 @@ fn handleFeedbackUpload(
     };
 
     return renderFeedbackUploadResponse(allocator, id_value, thread_id.?);
+}
+
+fn appendFeedbackThreadIds(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    thread_id: []const u8,
+    thread_ids: *std.ArrayList([]const u8),
+) !void {
+    if (std.mem.startsWith(u8, thread_id, "no-active-thread-")) return;
+
+    try thread_ids.append(allocator, thread_id);
+    for (state.loaded_threads.items) |*thread| {
+        if (std.mem.eql(u8, thread.id, thread_id)) continue;
+        if (!loadedThreadInFeedbackSubtree(state, thread, thread_id)) continue;
+        if (containsString(thread_ids.items, thread.id)) continue;
+        try thread_ids.append(allocator, thread.id);
+    }
+}
+
+fn containsString(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 fn appendFeedbackThreadRolloutPaths(

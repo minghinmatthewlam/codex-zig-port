@@ -483,6 +483,55 @@ def seed_memory_state_db(codex_home: Path) -> Path:
     return db_path
 
 
+def seed_feedback_logs_db(
+    codex_home: Path,
+    rows: list[tuple[int, int, str, str, str | None, str | None]],
+) -> Path:
+    db_path = codex_home / "logs_2.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript(
+            """
+            DROP TABLE IF EXISTS logs;
+            CREATE TABLE logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                ts_nanos INTEGER NOT NULL,
+                level TEXT NOT NULL,
+                target TEXT NOT NULL,
+                feedback_log_body TEXT,
+                module_path TEXT,
+                file TEXT,
+                line INTEGER,
+                thread_id TEXT,
+                process_uuid TEXT,
+                estimated_bytes INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        db.executemany(
+            """
+            INSERT INTO logs (
+                ts, ts_nanos, level, target, feedback_log_body,
+                thread_id, process_uuid, estimated_bytes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    ts,
+                    ts_nanos,
+                    level,
+                    "cli",
+                    body,
+                    thread_id,
+                    process_uuid,
+                    len(body or "") + len(level) + len("cli"),
+                )
+                for ts, ts_nanos, level, body, thread_id, process_uuid in rows
+            ],
+        )
+    return db_path
+
+
 def sqlite_count(db_path: Path, query: str) -> int:
     with sqlite3.connect(db_path) as db:
         row = db.execute(query).fetchone()
@@ -10395,6 +10444,43 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         rollout_file = codex_home / "sessions" / "zig" / f"rollout-{feedback_thread_id}.jsonl"
         rollout_file.parent.mkdir(parents=True, exist_ok=True)
         rollout_file.write_text("rollout log body\n", encoding="utf-8")
+        seed_feedback_logs_db(
+            codex_home,
+            [
+                (
+                    1_700_000_000,
+                    0,
+                    "INFO",
+                    "feedback threadless before",
+                    None,
+                    "proc-feedback",
+                ),
+                (
+                    1_700_000_001,
+                    123_456_000,
+                    "WARN",
+                    "feedback scoped row",
+                    feedback_thread_id,
+                    "proc-feedback",
+                ),
+                (
+                    1_700_000_002,
+                    0,
+                    "INFO",
+                    "feedback threadless after",
+                    None,
+                    "proc-feedback",
+                ),
+                (
+                    1_700_000_003,
+                    0,
+                    "INFO",
+                    "other process threadless",
+                    None,
+                    "proc-other",
+                ),
+            ],
+        )
 
         valid_params = {
             "classification": "bug",
@@ -10447,6 +10533,10 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"thread_id":"wrong-thread"' not in envelope
         assert b'"classification":"wrong-classification"' not in envelope
         assert b'"filename":"codex-logs.log"' in envelope
+        assert b"feedback threadless before\n" in envelope
+        assert b"feedback scoped row\n" in envelope
+        assert b"feedback threadless after\n" in envelope
+        assert b"other process threadless" not in envelope
         assert f'"filename":"rollout-{feedback_thread_id}.jsonl"'.encode() in envelope
         assert b"rollout log body\n" in envelope
         assert b'"filename":"codex-zig-feedback.log"' in envelope
@@ -10498,6 +10588,35 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
                 encoding="utf-8",
             )
             assert_thread_started_notification(read_json_line(proc, 5), child_thread)
+            seed_feedback_logs_db(
+                codex_home,
+                [
+                    (
+                        1_700_000_010,
+                        0,
+                        "INFO",
+                        "loaded parent sqlite log",
+                        parent_thread_id,
+                        "proc-loaded",
+                    ),
+                    (
+                        1_700_000_011,
+                        0,
+                        "INFO",
+                        "loaded child sqlite log",
+                        child_thread["id"],
+                        "proc-loaded",
+                    ),
+                    (
+                        1_700_000_012,
+                        0,
+                        "WARN",
+                        "loaded subtree threadless log",
+                        None,
+                        "proc-loaded",
+                    ),
+                ],
+            )
 
             write_json_line(
                 proc,
@@ -10526,6 +10645,9 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
                 proc.wait(timeout=5)
 
         loaded_subtree_envelope = server.request_bodies[1]
+        assert b"loaded parent sqlite log\n" in loaded_subtree_envelope
+        assert b"loaded child sqlite log\n" in loaded_subtree_envelope
+        assert b"loaded subtree threadless log\n" in loaded_subtree_envelope
         assert b"loaded parent rollout body\n" in loaded_subtree_envelope
         assert b"loaded child rollout body\n" in loaded_subtree_envelope
         assert (
