@@ -73,6 +73,7 @@ const AppServerState = struct {
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
     skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
+    subscribed_thread_ids: std.ArrayList([]const u8) = .empty,
     opt_out_notification_methods: std.ArrayList([]const u8) = .empty,
     pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
@@ -89,6 +90,8 @@ const AppServerState = struct {
         self.skill_watch_roots.deinit(allocator);
         clearSkillsListCache(allocator, self);
         self.skills_list_cache.deinit(allocator);
+        for (self.subscribed_thread_ids.items) |thread_id| allocator.free(thread_id);
+        self.subscribed_thread_ids.deinit(allocator);
         clearOptOutNotificationMethods(allocator, self);
         self.opt_out_notification_methods.deinit(allocator);
         for (self.pre_response_notifications.items) |payload| allocator.free(payload);
@@ -16163,10 +16166,14 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        if (findLoadedThreadIndex(state, thread_id) != null) {
-            return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notSubscribed\"}");
+        if (findLoadedThreadIndex(state, thread_id) == null) {
+            _ = removeThreadSubscription(allocator, state, thread_id);
+            return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notLoaded\"}");
         }
-        return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notLoaded\"}");
+        if (removeThreadSubscription(allocator, state, thread_id)) {
+            return renderJsonRpcResult(allocator, id_value, "{\"status\":\"unsubscribed\"}");
+        }
+        return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notSubscribed\"}");
     }
     if (std.mem.eql(u8, method, "thread/archive")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -16767,8 +16774,14 @@ fn handleThreadStart(
     var notification_moved = false;
     errdefer if (!notification_moved) allocator.free(started_notification);
 
+    const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
+    var subscription_committed = false;
+    errdefer {
+        if (subscription_added and !subscription_committed) _ = removeThreadSubscription(allocator, state, thread.id);
+    }
     try state.loaded_threads.append(allocator, thread);
     thread_moved = true;
+    subscription_committed = true;
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
 
@@ -16806,8 +16819,14 @@ fn handleThreadResume(
             const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
             defer allocator.free(result);
 
+            const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
+            var subscription_committed = false;
+            errdefer {
+                if (subscription_added and !subscription_committed) _ = removeThreadSubscription(allocator, state, thread.id);
+            }
             try upsertLoadedThread(allocator, state, thread);
             thread_moved = true;
+            subscription_committed = true;
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
 
             return renderJsonRpcResult(allocator, id_value, result);
@@ -16842,8 +16861,14 @@ fn handleThreadResume(
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
     defer allocator.free(result);
 
+    const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
+    var subscription_committed = false;
+    errdefer {
+        if (subscription_added and !subscription_committed) _ = removeThreadSubscription(allocator, state, thread.id);
+    }
     try upsertLoadedThread(allocator, state, thread);
     thread_moved = true;
+    subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
@@ -16909,8 +16934,14 @@ fn handleThreadForkWithSource(
     var notification_moved = false;
     errdefer if (!notification_moved) allocator.free(started_notification);
 
+    const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
+    var subscription_committed = false;
+    errdefer {
+        if (subscription_added and !subscription_committed) _ = removeThreadSubscription(allocator, state, thread.id);
+    }
     try state.loaded_threads.append(allocator, thread);
     thread_moved = true;
+    subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
@@ -17812,6 +17843,27 @@ fn upsertLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thre
         return;
     }
     try state.loaded_threads.append(allocator, thread);
+}
+
+fn ensureThreadSubscribed(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !bool {
+    for (state.subscribed_thread_ids.items) |subscribed_id| {
+        if (std.mem.eql(u8, subscribed_id, thread_id)) return false;
+    }
+    const owned_id = try allocator.dupe(u8, thread_id);
+    errdefer allocator.free(owned_id);
+    try state.subscribed_thread_ids.append(allocator, owned_id);
+    return true;
+}
+
+fn removeThreadSubscription(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) bool {
+    for (state.subscribed_thread_ids.items, 0..) |subscribed_id, index| {
+        if (std.mem.eql(u8, subscribed_id, thread_id)) {
+            const removed = state.subscribed_thread_ids.orderedRemove(index);
+            allocator.free(removed);
+            return true;
+        }
+    }
+    return false;
 }
 
 fn renderThreadLoadedListResult(
