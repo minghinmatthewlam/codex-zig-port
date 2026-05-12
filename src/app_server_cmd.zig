@@ -16373,6 +16373,9 @@ fn handleThreadMethod(
         session_store.appendThreadName(allocator, cfg.codex_home, thread_id, thread_name) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
         };
+        _ = thread_state.updateThreadTitle(allocator, cfg.codex_home, thread_id, thread_name) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
+        };
         try queueThreadNameUpdatedNotification(allocator, state, thread_id, thread_name);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
@@ -16508,6 +16511,9 @@ fn handleThreadMethod(
         session_store.appendThreadMemoryMode(allocator, stored_path, thread_id, mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
         };
+        _ = thread_state.updateThreadMemoryMode(allocator, cfg.codex_home, thread_id, mode) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
+        };
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/metadata/update")) {
@@ -16563,6 +16569,9 @@ fn handleThreadMethod(
         };
         const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
         session_store.appendThreadGitInfo(allocator, stored_path, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
+        };
+        _ = thread_state.updateThreadGitInfo(allocator, cfg.codex_home, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
         const result = try renderThreadReadResponse(allocator, &stored_thread, false);
