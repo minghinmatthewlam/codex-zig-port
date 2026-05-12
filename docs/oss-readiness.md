@@ -13,21 +13,24 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - License: MIT
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
+- GitHub community profile: 100%
 - Security settings: GitHub API checks on 2026-05-12 showed secret scanning,
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
-  validity checks as disabled.
+  validity checks as disabled. Dependabot and secret-scanning alert APIs
+  returned no open alerts.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS. Checked push run
-  `25708107227` passed for
-  `95a6e037568691f09484475befa69684b578dbf3`.
+  `25714032619` passed for
+  `87796afa9a8add39391aeb18d5adfc0449d27f79`.
 - Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
   tokens, Slack tokens, AWS access keys, private-key blocks, JWT-shaped blobs,
   unignored local auth/env files, or unignored local artifacts. Broad
   keyword/path scans only found test fixtures, docs, ignored local build output,
-  and temporary-path examples. Git-history regex scans found only an old dummy
-  `sk-proj-*` test fixture that was removed by commit `0383594`; no real secret
-  material was identified.
+  and temporary-path examples. Git-history regex scans found no provider-shaped
+  secrets, private-key blocks, or JWT-shaped blobs, and only an old dummy
+  `sk-proj-*` test fixture that was removed by commit `0383594` plus current
+  placeholder auth fixtures; no real secret material was identified.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
@@ -44,6 +47,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 ## Known Follow-Ups
 
 - Branch protection and repository rulesets are not enabled on `main` yet.
+- GitHub code scanning is not configured; the API returned no analysis.
 - GitHub wiki/projects are enabled; disable them if the project does not plan
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
