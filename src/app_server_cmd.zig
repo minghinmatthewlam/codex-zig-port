@@ -16265,6 +16265,20 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed to load config", err);
         };
         defer cfg.deinit(allocator);
+
+        var archive_thread_ids = std.ArrayList([]const u8).empty;
+        defer archive_thread_ids.deinit(allocator);
+        try archive_thread_ids.append(allocator, thread_id);
+        var owned_archive_thread_ids = std.ArrayList([]const u8).empty;
+        defer {
+            for (owned_archive_thread_ids.items) |owned_id| allocator.free(owned_id);
+            owned_archive_thread_ids.deinit(allocator);
+        }
+        feedback_state.appendSpawnDescendantThreadIds(allocator, cfg.codex_home, thread_id, &archive_thread_ids, &owned_archive_thread_ids) catch |err| switch (err) {
+            error.SqlitePrepareFailed => {},
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed to list spawned descendants", err),
+        };
+
         const archived_path = session_store.archiveRollout(allocator, cfg.codex_home, thread_id) catch |err| switch (err) {
             error.FileNotFound => return renderNoRolloutFoundForThreadId(allocator, id_value, thread_id),
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
@@ -16273,6 +16287,16 @@ fn handleThreadMethod(
         _ = removeLoadedThread(allocator, state, thread_id);
         _ = removeThreadSubscription(allocator, state, thread_id);
         try queueThreadIdNotification(allocator, state, "thread/archived", thread_id);
+        var descendant_index = archive_thread_ids.items.len;
+        while (descendant_index > 1) {
+            descendant_index -= 1;
+            const descendant_id = archive_thread_ids.items[descendant_index];
+            const descendant_archived_path = session_store.archiveRollout(allocator, cfg.codex_home, descendant_id) catch continue;
+            allocator.free(descendant_archived_path);
+            _ = removeLoadedThread(allocator, state, descendant_id);
+            _ = removeThreadSubscription(allocator, state, descendant_id);
+            try queueThreadIdNotification(allocator, state, "thread/archived", descendant_id);
+        }
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/unarchive")) {
