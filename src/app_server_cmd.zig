@@ -2821,6 +2821,16 @@ const WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const WINDOWS_WORLD_WRITABLE_WARNING_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface WindowsWorldWritableWarningNotification {
+    \\  samplePaths: string[];
+    \\  extraCount: number;
+    \\  failedScan: boolean;
+    \\}
+    \\
+    ;
+
 const COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { CommandExecOutputStream } from "./CommandExecOutputStream";
@@ -3093,6 +3103,66 @@ const THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_TS =
     \\  threadId: string;
     \\  turnId: string;
     \\  tokenUsage: ThreadTokenUsage;
+    \\}
+    \\
+    ;
+
+const WARNING_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface WarningNotification {
+    \\  threadId: string | null;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const GUARDIAN_WARNING_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GuardianWarningNotification {
+    \\  threadId: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const DEPRECATION_NOTICE_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface DeprecationNoticeNotification {
+    \\  summary: string;
+    \\  details: string | null;
+    \\}
+    \\
+    ;
+
+const TEXT_POSITION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TextPosition {
+    \\  line: number;
+    \\  column: number;
+    \\}
+    \\
+    ;
+
+const TEXT_RANGE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TextPosition } from "./TextPosition";
+    \\
+    \\export interface TextRange {
+    \\  start: TextPosition;
+    \\  end: TextPosition;
+    \\}
+    \\
+    ;
+
+const CONFIG_WARNING_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TextRange } from "./TextRange";
+    \\
+    \\export interface ConfigWarningNotification {
+    \\  summary: string;
+    \\  details: string | null;
+    \\  path?: string;
+    \\  range?: TextRange;
     \\}
     \\
     ;
@@ -4822,11 +4892,14 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
+    \\import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
+    \\import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
     \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
+    \\import type { GuardianWarningNotification } from "./v2/GuardianWarningNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
@@ -4844,7 +4917,9 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
+    \\import type { WarningNotification } from "./v2/WarningNotification";
     \\import type { WindowsSandboxSetupCompletedNotification } from "./v2/WindowsSandboxSetupCompletedNotification";
+    \\import type { WindowsWorldWritableWarningNotification } from "./v2/WindowsWorldWritableWarningNotification";
     \\
     \\export type ServerNotification =
     \\  | {
@@ -4886,6 +4961,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "windowsSandbox/setupCompleted";
     \\      params: WindowsSandboxSetupCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "windows/worldWritableWarning";
+    \\      params: WindowsWorldWritableWarningNotification;
     \\    }
     \\  | {
     \\      method: "fuzzyFileSearch/sessionUpdated";
@@ -4962,6 +5041,22 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "item/agentMessage/delta";
     \\      params: AgentMessageDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "warning";
+    \\      params: WarningNotification;
+    \\    }
+    \\  | {
+    \\      method: "guardianWarning";
+    \\      params: GuardianWarningNotification;
+    \\    }
+    \\  | {
+    \\      method: "deprecationNotice";
+    \\      params: DeprecationNoticeNotification;
+    \\    }
+    \\  | {
+    \\      method: "configWarning";
+    \\      params: ConfigWarningNotification;
     \\    };
     \\
     ;
@@ -5085,6 +5180,7 @@ const V2_INDEX_TS =
     \\export type { WindowsSandboxSetupMode } from "./WindowsSandboxSetupMode";
     \\export type { WindowsSandboxSetupStartParams } from "./WindowsSandboxSetupStartParams";
     \\export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
+    \\export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
     \\export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
@@ -5240,6 +5336,8 @@ const V2_INDEX_TS =
     \\export type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";
     \\export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";
     \\export type { TextElement } from "./TextElement";
+    \\export type { TextPosition } from "./TextPosition";
+    \\export type { TextRange } from "./TextRange";
     \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
@@ -5294,7 +5392,10 @@ const V2_INDEX_TS =
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
     \\export type { CodexErrorInfo } from "./CodexErrorInfo";
+    \\export type { ConfigWarningNotification } from "./ConfigWarningNotification";
+    \\export type { DeprecationNoticeNotification } from "./DeprecationNoticeNotification";
     \\export type { ErrorNotification } from "./ErrorNotification";
+    \\export type { GuardianWarningNotification } from "./GuardianWarningNotification";
     \\export type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
     \\export type { Turn } from "./Turn";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
@@ -5309,6 +5410,7 @@ const V2_INDEX_TS =
     \\export type { TurnSteerParams } from "./TurnSteerParams";
     \\export type { TurnSteerResponse } from "./TurnSteerResponse";
     \\export type { UserInput } from "./UserInput";
+    \\export type { WarningNotification } from "./WarningNotification";
     \\
     ;
 
@@ -9161,6 +9263,22 @@ const WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const WINDOWS_WORLD_WRITABLE_WARNING_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WindowsWorldWritableWarningNotification",
+    \\  "type": "object",
+    \\  "required": ["extraCount", "failedScan", "samplePaths"],
+    \\  "properties": {
+    \\    "samplePaths": { "type": "array", "items": { "type": "string" } },
+    \\    "extraCount": { "type": "integer", "minimum": 0 },
+    \\    "failedScan": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_START_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9542,6 +9660,51 @@ const THREAD_CLOSED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const WARNING_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WarningNotification",
+    \\  "type": "object",
+    \\  "required": ["message"],
+    \\  "properties": {
+    \\    "threadId": { "type": ["string", "null"] },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const GUARDIAN_WARNING_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GuardianWarningNotification",
+    \\  "type": "object",
+    \\  "required": ["message", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const DEPRECATION_NOTICE_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "DeprecationNoticeNotification",
+    \\  "type": "object",
+    \\  "required": ["summary"],
+    \\  "properties": {
+    \\    "summary": { "type": "string" },
+    \\    "details": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const TURN_START_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9673,6 +9836,53 @@ const TEXT_ELEMENT_JSON_SCHEMA =
     \\    }
     \\  },
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const TEXT_POSITION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TextPosition",
+    \\  "type": "object",
+    \\  "required": ["column", "line"],
+    \\  "properties": {
+    \\    "column": { "type": "integer", "minimum": 0 },
+    \\    "line": { "type": "integer", "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TEXT_RANGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TextRange",
+    \\  "type": "object",
+    \\  "required": ["end", "start"],
+    \\  "properties": {
+    \\    "end": { "$ref": "TextPosition.json" },
+    \\    "start": { "$ref": "TextPosition.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONFIG_WARNING_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigWarningNotification",
+    \\  "type": "object",
+    \\  "required": ["summary"],
+    \\  "properties": {
+    \\    "summary": { "type": "string" },
+    \\    "details": { "type": ["string", "null"] },
+    \\    "path": { "type": ["string", "null"] },
+    \\    "range": { "anyOf": [{ "$ref": "TextRange.json" }, { "type": "null" }] }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -13320,6 +13530,16 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "WindowsWorldWritableWarningNotification": {
+    \\      "type": "object",
+    \\      "required": ["extraCount", "failedScan", "samplePaths"],
+    \\      "properties": {
+    \\        "samplePaths": { "type": "array", "items": { "type": "string" } },
+    \\        "extraCount": { "type": "integer", "minimum": 0 },
+    \\        "failedScan": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadStartParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -13498,6 +13718,33 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "WarningNotification": {
+    \\      "type": "object",
+    \\      "required": ["message"],
+    \\      "properties": {
+    \\        "threadId": { "type": ["string", "null"] },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "GuardianWarningNotification": {
+    \\      "type": "object",
+    \\      "required": ["message", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "DeprecationNoticeNotification": {
+    \\      "type": "object",
+    \\      "required": ["summary"],
+    \\      "properties": {
+    \\        "summary": { "type": "string" },
+    \\        "details": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ByteRange": {
     \\      "type": "object",
     \\      "required": ["start", "end"],
@@ -13515,6 +13762,35 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "placeholder": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "TextPosition": {
+    \\      "type": "object",
+    \\      "required": ["column", "line"],
+    \\      "properties": {
+    \\        "column": { "type": "integer", "minimum": 0 },
+    \\        "line": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TextRange": {
+    \\      "type": "object",
+    \\      "required": ["end", "start"],
+    \\      "properties": {
+    \\        "end": { "$ref": "#/$defs/TextPosition" },
+    \\        "start": { "$ref": "#/$defs/TextPosition" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ConfigWarningNotification": {
+    \\      "type": "object",
+    \\      "required": ["summary"],
+    \\      "properties": {
+    \\        "summary": { "type": "string" },
+    \\        "details": { "type": ["string", "null"] },
+    \\        "path": { "type": ["string", "null"] },
+    \\        "range": { "anyOf": [{ "$ref": "#/$defs/TextRange" }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
     \\    },
     \\    "UserInput": {
     \\      "oneOf": [
@@ -14631,6 +14907,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "WindowsSandboxSetupStartResponse.json", .contents = WINDOWS_SANDBOX_SETUP_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "WindowsSandboxReadinessResponse.json", .contents = WINDOWS_SANDBOX_READINESS_RESPONSE_JSON_SCHEMA },
     .{ .name = "WindowsSandboxSetupCompletedNotification.json", .contents = WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "WindowsWorldWritableWarningNotification.json", .contents = WINDOWS_WORLD_WRITABLE_WARNING_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListParams.json", .contents = THREAD_LOADED_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
@@ -14647,8 +14924,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadTokenUsageBreakdown.json", .contents = THREAD_TOKEN_USAGE_BREAKDOWN_JSON_SCHEMA },
     .{ .name = "ThreadTokenUsage.json", .contents = THREAD_TOKEN_USAGE_JSON_SCHEMA },
     .{ .name = "ThreadTokenUsageUpdatedNotification.json", .contents = THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "WarningNotification.json", .contents = WARNING_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "GuardianWarningNotification.json", .contents = GUARDIAN_WARNING_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "DeprecationNoticeNotification.json", .contents = DEPRECATION_NOTICE_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ByteRange.json", .contents = BYTE_RANGE_JSON_SCHEMA },
     .{ .name = "TextElement.json", .contents = TEXT_ELEMENT_JSON_SCHEMA },
+    .{ .name = "TextPosition.json", .contents = TEXT_POSITION_JSON_SCHEMA },
+    .{ .name = "TextRange.json", .contents = TEXT_RANGE_JSON_SCHEMA },
+    .{ .name = "ConfigWarningNotification.json", .contents = CONFIG_WARNING_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "UserInput.json", .contents = USER_INPUT_JSON_SCHEMA },
     .{ .name = "NonSteerableTurnKind.json", .contents = NON_STEERABLE_TURN_KIND_JSON_SCHEMA },
     .{ .name = "CodexErrorInfo.json", .contents = CODEX_ERROR_INFO_JSON_SCHEMA },
@@ -14977,6 +15260,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/WindowsSandboxSetupStartResponse.ts", .contents = WINDOWS_SANDBOX_SETUP_START_RESPONSE_TS },
     .{ .name = "v2/WindowsSandboxReadinessResponse.ts", .contents = WINDOWS_SANDBOX_READINESS_RESPONSE_TS },
     .{ .name = "v2/WindowsSandboxSetupCompletedNotification.ts", .contents = WINDOWS_SANDBOX_SETUP_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/WindowsWorldWritableWarningNotification.ts", .contents = WINDOWS_WORLD_WRITABLE_WARNING_NOTIFICATION_TS },
     .{ .name = "v2/ThreadLoadedListParams.ts", .contents = THREAD_LOADED_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
@@ -14993,8 +15277,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadTokenUsageBreakdown.ts", .contents = THREAD_TOKEN_USAGE_BREAKDOWN_TS },
     .{ .name = "v2/ThreadTokenUsage.ts", .contents = THREAD_TOKEN_USAGE_TS },
     .{ .name = "v2/ThreadTokenUsageUpdatedNotification.ts", .contents = THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/WarningNotification.ts", .contents = WARNING_NOTIFICATION_TS },
+    .{ .name = "v2/GuardianWarningNotification.ts", .contents = GUARDIAN_WARNING_NOTIFICATION_TS },
+    .{ .name = "v2/DeprecationNoticeNotification.ts", .contents = DEPRECATION_NOTICE_NOTIFICATION_TS },
     .{ .name = "v2/ByteRange.ts", .contents = BYTE_RANGE_TS },
     .{ .name = "v2/TextElement.ts", .contents = TEXT_ELEMENT_TS },
+    .{ .name = "v2/TextPosition.ts", .contents = TEXT_POSITION_TS },
+    .{ .name = "v2/TextRange.ts", .contents = TEXT_RANGE_TS },
+    .{ .name = "v2/ConfigWarningNotification.ts", .contents = CONFIG_WARNING_NOTIFICATION_TS },
     .{ .name = "v2/UserInput.ts", .contents = USER_INPUT_TS },
     .{ .name = "v2/NonSteerableTurnKind.ts", .contents = NON_STEERABLE_TURN_KIND_TS },
     .{ .name = "v2/CodexErrorInfo.ts", .contents = CODEX_ERROR_INFO_TS },
