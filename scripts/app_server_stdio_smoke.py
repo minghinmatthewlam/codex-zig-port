@@ -3288,6 +3288,38 @@ def write_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
     )
 
 
+def write_external_agent_marketplace_fixture(
+    root: Path, name: str, plugin_name: str
+) -> None:
+    root.joinpath(".claude-plugin").mkdir(parents=True)
+    root.joinpath("plugins", plugin_name, ".codex-plugin").mkdir(parents=True)
+    root.joinpath(".claude-plugin", "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "plugins": [
+                    {
+                        "name": plugin_name,
+                        "source": f"./plugins/{plugin_name}",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    root.joinpath("plugins", plugin_name, ".codex-plugin", "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": plugin_name,
+                "interface": {
+                    "displayName": f"{plugin_name.title()} Plugin",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_git_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
     write_marketplace_fixture(root, name, plugin_name)
     git(root, "init")
@@ -15220,10 +15252,10 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             {
                 "migrationItems": [
                     {
-                        "itemType": "PLUGINS",
-                        "description": "Import plugins",
+                        "itemType": "SESSIONS",
+                        "description": "Import sessions",
                         "cwd": None,
-                        "details": {"plugins": []},
+                        "details": {"sessions": []},
                     }
                 ]
             },
@@ -15809,6 +15841,110 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert detect_after_subagents["id"] == "external-agent-detect-after-subagents"
         assert detect_after_subagents["result"] == {"items": []}
 
+        home_marketplace = claude_home / "home-marketplace"
+        write_external_agent_marketplace_fixture(
+            home_marketplace, "home-market", "home-plugin"
+        )
+        (claude_home / "settings.json").write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "FOO": "project",
+                        "PROJECT_ONLY": "yes",
+                        "SUPPRESSED": "base",
+                        "CI": False,
+                        "IGNORED": None,
+                        "LIST": ["a", "b"],
+                        "MAP": {"x": 1},
+                    },
+                    "sandbox": {"enabled": False},
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo Claude Code",
+                                        "timeout": 3,
+                                        "statusMessage": "Run Claude hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    "enabledPlugins": {"home-plugin@home-market": True},
+                    "extraKnownMarketplaces": {
+                        "home-market": {"source": {"path": "./home-marketplace"}}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        detected_plugins = rpc(
+            "external-agent-detect-plugins",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_plugins["id"] == "external-agent-detect-plugins"
+        assert detected_plugins["result"]["items"] == [
+            {
+                "itemType": "PLUGINS",
+                "description": (
+                    f"Migrate enabled plugins from {claude_home / 'settings.json'}"
+                ),
+                "cwd": None,
+                "details": {
+                    "plugins": [
+                        {
+                            "marketplaceName": "home-market",
+                            "pluginNames": ["home-plugin"],
+                        }
+                    ],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [],
+                },
+            }
+        ]
+
+        plugins_import = rpc(
+            "external-agent-import-plugins",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_plugins["result"]["items"]},
+        )
+        assert plugins_import["id"] == "external-agent-import-plugins"
+        assert plugins_import["result"] == {}
+        plugins_notification = read_json_line(proc, 5)
+        assert plugins_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        home_plugin_config = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "[marketplaces.home-market]\n" in home_plugin_config
+        assert 'source = "' in home_plugin_config
+        assert '[plugins."home-plugin@home-market"]\n' in home_plugin_config
+        assert (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "home-market"
+            / "home-plugin"
+            / "local"
+            / ".codex-plugin"
+            / "plugin.json"
+        ).exists()
+
+        detect_after_plugins = rpc(
+            "external-agent-detect-after-plugins",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_plugins["id"] == "external-agent-detect-after-plugins"
+        assert detect_after_plugins["result"] == {"items": []}
+
         project_root = root / "project"
         nested_cwd = project_root / "nested" / "child"
         project_claude = project_root / ".claude"
@@ -15837,6 +15973,10 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                                 ],
                             }
                         ]
+                    },
+                    "enabledPlugins": {"project-plugin@project-market": True},
+                    "extraKnownMarketplaces": {
+                        "project-market": {"source": {"path": "./project-marketplace"}}
                     },
                 }
             ),
@@ -15869,6 +16009,10 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 }
             ),
             encoding="utf-8",
+        )
+        project_marketplace = project_root / "project-marketplace"
+        write_marketplace_fixture(
+            project_marketplace, "project-market", "project-plugin"
         )
         (project_root / "CLAUDE.md").write_text(
             "Project Claude Code uses CLAUDE.md.",
@@ -16003,6 +16147,26 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 "cwd": str(project_root),
                 "details": None,
             },
+            {
+                "itemType": "PLUGINS",
+                "description": (
+                    f"Migrate enabled plugins from {project_claude / 'settings.json'}"
+                ),
+                "cwd": str(project_root),
+                "details": {
+                    "plugins": [
+                        {
+                            "marketplaceName": "project-market",
+                            "pluginNames": ["project-plugin"],
+                        }
+                    ],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [],
+                },
+            },
         ]
 
         project_import = rpc(
@@ -16033,6 +16197,9 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             'bearer_token_env_var = "PROJECT_API_TOKEN"\n',
         ):
             assert fragment in project_config_text
+        user_plugin_config = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "[marketplaces.project-market]\n" in user_plugin_config
+        assert '[plugins."project-plugin@project-market"]\n' in user_plugin_config
         assert json.loads(
             (project_root / ".codex" / "hooks.json").read_text(encoding="utf-8")
         ) == {
