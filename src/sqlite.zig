@@ -114,3 +114,10 @@ pub fn columnTextOwned(allocator: std.mem.Allocator, stmt: *Statement, column: c
     if (len < 0) return error.SqliteColumnFailed;
     return allocator.dupe(u8, text[0..@intCast(len)]);
 }
+
+pub fn columnNullableTextOwned(allocator: std.mem.Allocator, stmt: *Statement, column: c_int) !?[]const u8 {
+    const text = sqlite3_column_text(stmt, column) orelse return null;
+    const len = sqlite3_column_bytes(stmt, column);
+    if (len < 0) return error.SqliteColumnFailed;
+    return try allocator.dupe(u8, text[0..@intCast(len)]);
+}

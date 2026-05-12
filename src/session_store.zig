@@ -43,10 +43,21 @@ pub const RolloutFile = struct {
     id: []const u8,
     path: []const u8,
     modified_at_seconds: i64,
+    state_metadata_loaded: bool = false,
+    title: ?[]const u8 = null,
+    memory_mode: ?[]const u8 = null,
+    git_sha: ?[]const u8 = null,
+    git_branch: ?[]const u8 = null,
+    git_origin_url: ?[]const u8 = null,
 
     pub fn deinit(self: RolloutFile, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.path);
+        if (self.title) |value| allocator.free(value);
+        if (self.memory_mode) |value| allocator.free(value);
+        if (self.git_sha) |value| allocator.free(value);
+        if (self.git_branch) |value| allocator.free(value);
+        if (self.git_origin_url) |value| allocator.free(value);
     }
 };
 
@@ -294,11 +305,24 @@ pub fn appendThreadGitInfo(
     branch: ?[]const u8,
     origin_url: ?[]const u8,
 ) !void {
+    try appendThreadGitInfoWithMemoryMode(allocator, path, thread_id, sha, branch, origin_url, null);
+}
+
+pub fn appendThreadGitInfoWithMemoryMode(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    thread_id: []const u8,
+    sha: ?[]const u8,
+    branch: ?[]const u8,
+    origin_url: ?[]const u8,
+    memory_mode: ?[]const u8,
+) !void {
     var transcript = try loadTranscript(allocator, path);
     defer transcript.deinit(allocator);
     if (transcript.id) |id| {
         if (!std.mem.eql(u8, id, thread_id)) return error.InvalidSessionLine;
     }
+    const effective_memory_mode = if (memory_mode) |value| value else transcript.memory_mode;
 
     try appendJsonLineToPath(allocator, path, .{
         .timestamp = fallback_session_meta_timestamp,
@@ -312,7 +336,7 @@ pub fn appendThreadGitInfo(
             .source = transcript.source orelse "cli",
             .thread_source = transcript.thread_source orelse "user",
             .model_provider = transcript.model_provider orelse "openai",
-            .memory_mode = transcript.memory_mode,
+            .memory_mode = effective_memory_mode,
             .git = StoredGitInfo{
                 .commit_hash = sha,
                 .branch = branch,

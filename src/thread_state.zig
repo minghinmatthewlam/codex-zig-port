@@ -11,8 +11,21 @@ const LIST_ROLLOUT_PATHS_QUERY =
     \\ORDER BY id ASC
 ;
 
+const LIST_ROLLOUT_PATHS_WITH_METADATA_QUERY =
+    \\SELECT id, rollout_path, title, memory_mode, git_sha, git_branch, git_origin_url
+    \\FROM threads
+    \\WHERE rollout_path IS NOT NULL AND rollout_path != ''
+    \\ORDER BY id ASC
+;
+
 const ROLLOUT_PATH_QUERY =
     \\SELECT rollout_path
+    \\FROM threads
+    \\WHERE id = ?
+;
+
+const THREAD_METADATA_QUERY =
+    \\SELECT title, memory_mode, git_sha, git_branch, git_origin_url
     \\FROM threads
     \\WHERE id = ?
 ;
@@ -35,6 +48,22 @@ const UPDATE_GIT_INFO_QUERY =
     \\WHERE id = ?
 ;
 
+pub const ThreadMetadata = struct {
+    title: ?[]const u8,
+    memory_mode: ?[]const u8,
+    git_sha: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_origin_url: ?[]const u8,
+
+    pub fn deinit(self: ThreadMetadata, allocator: std.mem.Allocator) void {
+        if (self.title) |value| allocator.free(value);
+        if (self.memory_mode) |value| allocator.free(value);
+        if (self.git_sha) |value| allocator.free(value);
+        if (self.git_branch) |value| allocator.free(value);
+        if (self.git_origin_url) |value| allocator.free(value);
+    }
+};
+
 pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![]session_store.RolloutFile {
     const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
     defer allocator.free(state_path);
@@ -43,9 +72,16 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
     const db = try sqlite.openReadOnly(allocator, state_path);
     defer sqlite.close(db);
 
-    const statement = sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_QUERY) catch |err| switch (err) {
-        error.SqlitePrepareFailed => return allocator.alloc(session_store.RolloutFile, 0),
-        else => return err,
+    var has_metadata_columns = true;
+    const statement = sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_WITH_METADATA_QUERY) catch |metadata_err| switch (metadata_err) {
+        error.SqlitePrepareFailed => blk: {
+            has_metadata_columns = false;
+            break :blk sqlite.prepare(allocator, db, LIST_ROLLOUT_PATHS_QUERY) catch |fallback_err| switch (fallback_err) {
+                error.SqlitePrepareFailed => return allocator.alloc(session_store.RolloutFile, 0),
+                else => return fallback_err,
+            };
+        },
+        else => return metadata_err,
     };
     defer sqlite.finalize(statement);
 
@@ -85,11 +121,27 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
                 defer allocator.free(real_path_z);
                 const real_path = try allocator.dupe(u8, real_path_z);
                 errdefer allocator.free(real_path);
+                const title = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 2) else null;
+                errdefer if (title) |value| allocator.free(value);
+                const memory_mode = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 3) else null;
+                errdefer if (memory_mode) |value| allocator.free(value);
+                const git_sha = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 4) else null;
+                errdefer if (git_sha) |value| allocator.free(value);
+                const git_branch = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 5) else null;
+                errdefer if (git_branch) |value| allocator.free(value);
+                const git_origin_url = if (has_metadata_columns) try sqlite.columnNullableTextOwned(allocator, statement, 6) else null;
+                errdefer if (git_origin_url) |value| allocator.free(value);
 
                 try files.append(allocator, .{
                     .id = id,
                     .path = real_path,
                     .modified_at_seconds = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+                    .state_metadata_loaded = has_metadata_columns,
+                    .title = title,
+                    .memory_mode = memory_mode,
+                    .git_sha = git_sha,
+                    .git_branch = git_branch,
+                    .git_origin_url = git_origin_url,
                 });
             },
             sqlite.SQLITE_DONE => break,
@@ -123,6 +175,46 @@ pub fn findRolloutPathByThreadId(allocator: std.mem.Allocator, codex_home: []con
         },
         sqlite.SQLITE_DONE => return null,
         else => return error.StateDbRolloutPathStepFailed,
+    }
+}
+
+pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?ThreadMetadata {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
+
+    const db = try sqlite.openReadOnly(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db, THREAD_METADATA_QUERY) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return null,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+    try sqlite.bindText(statement, 1, thread_id);
+
+    switch (sqlite.step(statement)) {
+        sqlite.SQLITE_ROW => {
+            const title = try sqlite.columnNullableTextOwned(allocator, statement, 0);
+            errdefer if (title) |value| allocator.free(value);
+            const memory_mode = try sqlite.columnNullableTextOwned(allocator, statement, 1);
+            errdefer if (memory_mode) |value| allocator.free(value);
+            const git_sha = try sqlite.columnNullableTextOwned(allocator, statement, 2);
+            errdefer if (git_sha) |value| allocator.free(value);
+            const git_branch = try sqlite.columnNullableTextOwned(allocator, statement, 3);
+            errdefer if (git_branch) |value| allocator.free(value);
+            const git_origin_url = try sqlite.columnNullableTextOwned(allocator, statement, 4);
+            errdefer if (git_origin_url) |value| allocator.free(value);
+            return ThreadMetadata{
+                .title = title,
+                .memory_mode = memory_mode,
+                .git_sha = git_sha,
+                .git_branch = git_branch,
+                .git_origin_url = git_origin_url,
+            };
+        },
+        sqlite.SQLITE_DONE => return null,
+        else => return error.StateDbThreadMetadataStepFailed,
     }
 }
 
