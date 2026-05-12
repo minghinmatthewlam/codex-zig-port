@@ -15374,22 +15374,92 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             for line in rollout_files[0].read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+
+        def response_item_text(line: dict, role: str) -> str | None:
+            if line.get("type") != "response_item":
+                return None
+            payload = line.get("payload", {})
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("type") != "message" or payload.get("role") != role:
+                return None
+            content = payload.get("content", [])
+            if not content:
+                return None
+            content_item = content[0]
+            if not isinstance(content_item, dict):
+                return None
+            text = content_item.get("text")
+            return text if isinstance(text, str) else None
+
+        def event_payload(line: dict, event_type: str) -> dict | None:
+            if line.get("type") != "event_msg":
+                return None
+            payload = line.get("payload", {})
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("type") != event_type:
+                return None
+            return payload
+
         assert any(
             line.get("type") == "metadata"
             and line.get("title") == "Imported session title"
             for line in rollout_lines
         )
+        assert not any(line.get("type") == "message" for line in rollout_lines)
         assert any(
-            line.get("type") == "message"
-            and line.get("role") == "user"
-            and line.get("text") == "first imported question"
+            response_item_text(line, "user") == "first imported question"
             for line in rollout_lines
         )
         assert any(
-            line.get("type") == "message"
-            and line.get("role") == "assistant"
-            and "first imported answer" in line.get("text", "")
-            and "external_agent_tool_call" in line.get("text", "")
+            response_item_text(line, "assistant") is not None
+            and "first imported answer" in response_item_text(line, "assistant")
+            and "external_agent_tool_call" in response_item_text(line, "assistant")
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "task_started") is not None
+            and event_payload(line, "task_started").get("turn_id")
+            == "external-import-turn-1"
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "user_message") is not None
+            and event_payload(line, "user_message").get("message")
+            == "first imported question"
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "agent_message") is not None
+            and "first imported answer"
+            in event_payload(line, "agent_message").get("message", "")
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "agent_message") is not None
+            and event_payload(line, "agent_message").get("message")
+            == "<EXTERNAL SESSION IMPORTED>"
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "token_count") is not None
+            and event_payload(line, "token_count").get("rate_limits") is None
+            and event_payload(line, "token_count").get("info", {}).get("model_context_window")
+            == 200000
+            and event_payload(line, "token_count")
+            .get("info", {})
+            .get("total_token_usage", {})
+            .get("total_tokens", 0)
+            > 0
+            for line in rollout_lines
+        )
+        assert any(
+            event_payload(line, "task_complete") is not None
+            and event_payload(line, "task_complete").get("turn_id")
+            == "external-import-turn-1"
+            and "first imported answer"
+            in event_payload(line, "task_complete").get("last_agent_message", "")
             for line in rollout_lines
         )
         assert any(
@@ -15419,6 +15489,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         assert imported_thread["turns"][1]["items"][0]["type"] == "agentMessage"
         assert "first imported answer" in imported_thread["turns"][1]["items"][0]["text"]
+        assert imported_thread["turns"][2]["items"][0]["type"] == "agentMessage"
+        assert (
+            imported_thread["turns"][2]["items"][0]["text"]
+            == "<EXTERNAL SESSION IMPORTED>"
+        )
 
         detect_after_session_import = rpc(
             "external-agent-detect-after-session-import",
