@@ -16523,6 +16523,7 @@ fn handleThreadMethod(
         if (validateThreadMetadataGitInfoParams(object)) |validation_error| {
             return renderJsonRpcError(allocator, id_value, validation_error.code, validation_error.message);
         }
+        const git_info = object.get("gitInfo").?.object;
         if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
             const thread = &state.loaded_threads.items[thread_index];
             if (thread.ephemeral) {
@@ -16530,7 +16531,6 @@ fn handleThreadMethod(
                 defer allocator.free(message);
                 return renderJsonRpcError(allocator, id_value, -32600, message);
             }
-            const git_info = object.get("gitInfo").?.object;
             updateLoadedThreadGitInfo(allocator, thread, git_info) catch |err| switch (err) {
                 error.InvalidThreadMetadataGitInfo => return renderJsonRpcError(allocator, id_value, -32600, "invalid gitInfo patch"),
                 else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
@@ -16539,7 +16539,35 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        var stored_thread = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+            error.FileNotFound => return renderThreadNotFound(allocator, id_value, thread_id),
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
+        };
+        defer stored_thread.deinit(allocator);
+        patchLoadedThreadGitInfoField(allocator, git_info, "sha", &stored_thread.git_sha) catch |err| switch (err) {
+            error.InvalidThreadMetadataGitInfo => return renderJsonRpcError(allocator, id_value, -32600, "invalid gitInfo patch"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
+        };
+        patchLoadedThreadGitInfoField(allocator, git_info, "branch", &stored_thread.git_branch) catch |err| switch (err) {
+            error.InvalidThreadMetadataGitInfo => return renderJsonRpcError(allocator, id_value, -32600, "invalid gitInfo patch"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
+        };
+        patchLoadedThreadGitInfoField(allocator, git_info, "originUrl", &stored_thread.git_origin_url) catch |err| switch (err) {
+            error.InvalidThreadMetadataGitInfo => return renderJsonRpcError(allocator, id_value, -32600, "invalid gitInfo patch"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err),
+        };
+        const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
+        session_store.appendThreadGitInfo(allocator, stored_path, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
+        };
+        const result = try renderThreadReadResponse(allocator, &stored_thread, false);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/read")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
