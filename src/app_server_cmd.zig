@@ -24203,15 +24203,8 @@ fn commandExecEnvironment(allocator: std.mem.Allocator, value: std.json.Value) !
     if (value == .null) return error.InvalidCommandExecEnv;
     if (value != .object) return error.InvalidCommandExecEnv;
 
-    var child_env = std.process.Environ.Map.init(allocator);
+    var child_env = try commandExecCurrentEnvironment(allocator);
     errdefer child_env.deinit();
-
-    try putCurrentEnvIfPresent(&child_env, "PATH");
-    try putCurrentEnvIfPresent(&child_env, "HOME");
-    try putCurrentEnvIfPresent(&child_env, "USER");
-    try putCurrentEnvIfPresent(&child_env, "TMPDIR");
-    try putCurrentEnvIfPresent(&child_env, "SHELL");
-    try putCurrentEnvIfPresent(&child_env, "CODEX_HOME");
 
     var iterator = value.object.iterator();
     while (iterator.next()) |entry| {
@@ -24227,10 +24220,19 @@ fn commandExecEnvironment(allocator: std.mem.Allocator, value: std.json.Value) !
     return child_env;
 }
 
-fn putCurrentEnvIfPresent(child_env: *std.process.Environ.Map, comptime name: []const u8) !void {
-    const c_name: [*:0]const u8 = name ++ "\x00";
-    const value = std.c.getenv(c_name) orelse return;
-    try child_env.put(name, std.mem.span(value));
+fn commandExecCurrentEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+        const entry = std.mem.span(entry_ptr);
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const key = entry[0..eq];
+        if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+        try result.put(key, entry[eq + 1 ..]);
+    }
+    return result;
 }
 
 fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, destination_path: []const u8, recursive: bool) !void {
