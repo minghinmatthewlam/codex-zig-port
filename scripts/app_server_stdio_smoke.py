@@ -11798,6 +11798,49 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "",
         }
 
+        disable_output_cap = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-disable-output-cap",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write('x' * 70000)",
+                    ],
+                    "disableOutputCap": True,
+                },
+            },
+            env,
+        )
+        assert disable_output_cap["id"] == "command-exec-disable-output-cap"
+        assert disable_output_cap["result"]["exitCode"] == 0
+        assert len(disable_output_cap["result"]["stdout"]) == 70000
+        assert disable_output_cap["result"]["stderr"] == ""
+
+        output_cap_conflict = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-output-cap-conflict",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "outputBytesCap": 5,
+                    "disableOutputCap": True,
+                },
+            },
+            env,
+        )
+        assert output_cap_conflict["id"] == "command-exec-output-cap-conflict"
+        assert output_cap_conflict["error"]["code"] == -32602
+        assert (
+            output_cap_conflict["error"]["message"]
+            == "command/exec cannot set both outputBytesCap and disableOutputCap"
+        )
+
         timeout_response = request_stdio_app_server(
             binary,
             {
@@ -11821,6 +11864,27 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stdout": "before-timeout",
             "stderr": "timeout-err",
         }
+
+        timeout_conflict = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-timeout-conflict",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "timeoutMs": 100,
+                    "disableTimeout": True,
+                },
+            },
+            env,
+        )
+        assert timeout_conflict["id"] == "command-exec-timeout-conflict"
+        assert timeout_conflict["error"]["code"] == -32602
+        assert (
+            timeout_conflict["error"]["message"]
+            == "command/exec cannot set both timeoutMs and disableTimeout"
+        )
 
         negative_timeout = request_stdio_app_server(
             binary,
