@@ -2888,6 +2888,22 @@ const THREAD_STARTED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_ARCHIVED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadArchivedNotification {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_UNARCHIVED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadUnarchivedNotification {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
 const THREAD_NAME_UPDATED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export type ThreadNameUpdatedNotification = {
@@ -4682,11 +4698,13 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
+    \\import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
+    \\import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\import type { WindowsSandboxSetupCompletedNotification } from "./v2/WindowsSandboxSetupCompletedNotification";
@@ -4751,6 +4769,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/started";
     \\      params: ThreadStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/archived";
+    \\      params: ThreadArchivedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/unarchived";
+    \\      params: ThreadUnarchivedNotification;
     \\    }
     \\  | {
     \\      method: "thread/name/updated";
@@ -5078,6 +5104,7 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoUpdateParams";
     \\export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
+    \\export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
     \\export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
@@ -5110,6 +5137,7 @@ const V2_INDEX_TS =
     \\export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
     \\export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
     \\export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
+    \\export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";
     \\export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
     \\export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
     \\export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
@@ -9053,6 +9081,34 @@ const THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadArchivedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadUnarchivedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const TURN_START_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12877,6 +12933,22 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadArchivedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadUnarchivedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadNameUpdatedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -13959,6 +14031,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadArchivedNotification.json", .contents = THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadUnarchivedNotification.json", .contents = THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalUpdatedNotification.json", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadGoalClearedNotification.json", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_JSON_SCHEMA },
@@ -14293,6 +14367,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadArchivedNotification.ts", .contents = THREAD_ARCHIVED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadUnarchivedNotification.ts", .contents = THREAD_UNARCHIVED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalUpdatedNotification.ts", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalClearedNotification.ts", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_TS },
@@ -16194,6 +16270,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
         };
         defer allocator.free(archived_path);
+        try queueThreadIdNotification(allocator, state, "thread/archived", thread_id);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/unarchive")) {
@@ -16221,6 +16298,7 @@ fn handleThreadMethod(
         defer unarchived_thread.deinit(allocator);
         const result = try renderStoredThreadReadResponse(allocator, &unarchived_thread, false);
         defer allocator.free(result);
+        try queueThreadIdNotification(allocator, state, "thread/unarchived", thread_id);
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/compact/start")) {
@@ -18765,6 +18843,20 @@ fn queueThreadNameUpdatedNotification(allocator: std.mem.Allocator, state: *AppS
     try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, ",\"threadName\":");
     try appendJsonString(allocator, &notification, thread_name);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
+}
+
+fn queueThreadIdNotification(allocator: std.mem.Allocator, state: *AppServerState, method: []const u8, thread_id: []const u8) !void {
+    if (notificationMethodOptedOut(state, method)) return;
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, "}}");
     const owned = try notification.toOwnedSlice(allocator);
     errdefer allocator.free(owned);
