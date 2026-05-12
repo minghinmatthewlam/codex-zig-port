@@ -16311,7 +16311,16 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/list failed to load config", err);
         };
         defer cfg.deinit(allocator);
-        const result = try renderThreadListResult(allocator, state, cfg, params_value.?);
+        const result = renderThreadListResult(allocator, state, cfg, params_value.?) catch |err| switch (err) {
+            error.InvalidThreadListCursor => {
+                const params = params_value.?.object;
+                const cursor = optionalStringParam(params, "cursor") orelse "";
+                const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            else => return err,
+        };
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -17858,6 +17867,8 @@ const SavedThreadListItem = struct {
     model_provider: []const u8,
     created_at: i64,
     updated_at: i64,
+    created_at_ms: i64,
+    updated_at_ms: i64,
     archived: bool,
     path: []const u8,
     cwd: []const u8,
@@ -17940,6 +17951,8 @@ const SavedThreadListItem = struct {
             .model_provider = model_provider,
             .created_at = rolloutFileTimestampSeconds(file.state_lifecycle_loaded, file.created_at_ms, file.modified_at_seconds),
             .updated_at = rolloutFileTimestampSeconds(file.state_lifecycle_loaded, file.updated_at_ms, file.modified_at_seconds),
+            .created_at_ms = rolloutFileTimestampMilliseconds(file.state_lifecycle_loaded, file.created_at_ms, file.modified_at_seconds),
+            .updated_at_ms = rolloutFileTimestampMilliseconds(file.state_lifecycle_loaded, file.updated_at_ms, file.modified_at_seconds),
             .archived = file.archived,
             .path = path,
             .cwd = cwd,
@@ -17980,6 +17993,11 @@ fn rolloutFileTimestampSeconds(lifecycle_loaded: bool, value_ms: ?i64, fallback_
     if (!lifecycle_loaded) return fallback_seconds;
     const value = value_ms orelse return fallback_seconds;
     return @divFloor(value, 1000);
+}
+
+fn rolloutFileTimestampMilliseconds(lifecycle_loaded: bool, value_ms: ?i64, fallback_seconds: i64) i64 {
+    if (!lifecycle_loaded) return fallback_seconds * 1000;
+    return value_ms orelse fallback_seconds * 1000;
 }
 
 fn stateThreadTitle(title: ?[]const u8, preview: []const u8) ?[]const u8 {
@@ -18058,16 +18076,22 @@ fn renderThreadListResult(
         try appendSavedThreadListItems(allocator, &threads, params, rollout_files, fallback_model_provider orelse "openai", !archived, state, thread_names);
     }
 
-    std.mem.sort(ThreadListItem, threads.items, threadListSortContext(params), threadListLessThan);
+    const sort_context = threadListSortContext(params);
+    std.mem.sort(ThreadListItem, threads.items, sort_context, threadListLessThan);
 
-    const cursor = optionalStringParam(params, "cursor");
+    const cursor_ms = if (optionalStringParam(params, "cursor")) |cursor_value|
+        parseThreadListCursorMilliseconds(cursor_value) orelse return error.InvalidThreadListCursor
+    else
+        null;
     var start: usize = 0;
-    if (cursor) |cursor_value| {
+    if (cursor_ms) |anchor_ms| {
         for (threads.items, 0..) |thread, index| {
-            if (std.mem.eql(u8, threadListItemId(thread), cursor_value)) {
-                start = index + 1;
+            if (threadListItemIsPastCursor(thread, sort_context, anchor_ms)) {
+                start = index;
                 break;
             }
+        } else {
+            start = threads.items.len;
         }
     }
 
@@ -18084,13 +18108,21 @@ fn renderThreadListResult(
     }
     try result.appendSlice(allocator, "],\"nextCursor\":");
     if (capped_end < threads.items.len and page.len > 0) {
-        try appendJsonString(allocator, &result, threadListItemId(page[page.len - 1]));
+        const next_cursor = try formatThreadListCursorMilliseconds(allocator, threadListItemSortTimestampMs(page[page.len - 1], sort_context.key), false);
+        defer allocator.free(next_cursor);
+        try appendJsonString(allocator, &result, next_cursor);
     } else {
         try result.appendSlice(allocator, "null");
     }
     try result.appendSlice(allocator, ",\"backwardsCursor\":");
     if (page.len > 0) {
-        try appendJsonString(allocator, &result, threadListItemId(page[0]));
+        if (threadListBackwardsCursorTimestampMs(page[0], sort_context)) |cursor_timestamp| {
+            const backwards_cursor = try formatThreadListCursorMilliseconds(allocator, cursor_timestamp, true);
+            defer allocator.free(backwards_cursor);
+            try appendJsonString(allocator, &result, backwards_cursor);
+        } else {
+            try result.appendSlice(allocator, "null");
+        }
     } else {
         try result.appendSlice(allocator, "null");
     }
@@ -18178,18 +18210,28 @@ fn threadListSortContext(params: std.json.ObjectMap) ThreadListSortContext {
 }
 
 fn threadListLessThan(context: ThreadListSortContext, lhs: ThreadListItem, rhs: ThreadListItem) bool {
-    const lhs_timestamp = switch (context.key) {
-        .created_at => threadListItemCreatedAt(lhs),
-        .updated_at => threadListItemUpdatedAt(lhs),
-    };
-    const rhs_timestamp = switch (context.key) {
-        .created_at => threadListItemCreatedAt(rhs),
-        .updated_at => threadListItemUpdatedAt(rhs),
-    };
+    const lhs_timestamp = threadListItemSortTimestampMs(lhs, context.key);
+    const rhs_timestamp = threadListItemSortTimestampMs(rhs, context.key);
     if (lhs_timestamp != rhs_timestamp) {
         return if (context.direction == .asc) lhs_timestamp < rhs_timestamp else lhs_timestamp > rhs_timestamp;
     }
     return stringLessThan({}, threadListItemId(lhs), threadListItemId(rhs));
+}
+
+fn threadListItemIsPastCursor(thread: ThreadListItem, context: ThreadListSortContext, cursor_ms: i64) bool {
+    const timestamp_ms = threadListItemSortTimestampMs(thread, context.key);
+    return switch (context.direction) {
+        .asc => timestamp_ms > cursor_ms,
+        .desc => timestamp_ms < cursor_ms,
+    };
+}
+
+fn threadListBackwardsCursorTimestampMs(thread: ThreadListItem, context: ThreadListSortContext) ?i64 {
+    const timestamp_ms = threadListItemSortTimestampMs(thread, context.key);
+    return switch (context.direction) {
+        .asc => timestamp_ms + 1,
+        .desc => if (timestamp_ms > 0) timestamp_ms - 1 else null,
+    };
 }
 
 fn threadListItemId(thread: ThreadListItem) []const u8 {
@@ -18248,6 +18290,27 @@ fn threadListItemUpdatedAt(thread: ThreadListItem) i64 {
     };
 }
 
+fn threadListItemSortTimestampMs(thread: ThreadListItem, key: ThreadListSortKey) i64 {
+    return switch (key) {
+        .created_at => threadListItemCreatedAtMs(thread),
+        .updated_at => threadListItemUpdatedAtMs(thread),
+    };
+}
+
+fn threadListItemCreatedAtMs(thread: ThreadListItem) i64 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.created_at * 1000,
+        .saved => |saved| saved.created_at_ms,
+    };
+}
+
+fn threadListItemUpdatedAtMs(thread: ThreadListItem) i64 {
+    return switch (thread) {
+        .loaded => |loaded| loaded.updated_at * 1000,
+        .saved => |saved| saved.updated_at_ms,
+    };
+}
+
 fn threadListItemArchived(thread: ThreadListItem) bool {
     return switch (thread) {
         .loaded => false,
@@ -18259,6 +18322,122 @@ fn threadListLimit(params: std.json.ObjectMap) ?usize {
     const value = params.get("limit") orelse return null;
     if (value == .null) return null;
     return @intCast(value.integer);
+}
+
+fn parseThreadListCursorMilliseconds(value: []const u8) ?i64 {
+    if (std.mem.indexOfScalar(u8, value, '|') != null) return null;
+    if (parseThreadListRfc3339Milliseconds(value)) |timestamp_ms| return timestamp_ms;
+    return parseThreadListLegacyTimestampMilliseconds(value);
+}
+
+fn parseThreadListRfc3339Milliseconds(value: []const u8) ?i64 {
+    if (value.len < "YYYY-MM-DDTHH:MM:SSZ".len) return null;
+    if (value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != ':' or value[16] != ':') {
+        return null;
+    }
+
+    const year = parseFixedUnsigned(u16, value[0..4]) orelse return null;
+    const month = parseFixedUnsigned(u8, value[5..7]) orelse return null;
+    const day = parseFixedUnsigned(u8, value[8..10]) orelse return null;
+    const hour = parseFixedUnsigned(u8, value[11..13]) orelse return null;
+    const minute = parseFixedUnsigned(u8, value[14..16]) orelse return null;
+    const second = parseFixedUnsigned(u8, value[17..19]) orelse return null;
+
+    var index: usize = 19;
+    var millisecond: i64 = 0;
+    if (index < value.len and value[index] == '.') {
+        index += 1;
+        const fraction_start = index;
+        var digits_seen: u8 = 0;
+        while (index < value.len and std.ascii.isDigit(value[index])) : (index += 1) {
+            if (digits_seen < 3) {
+                millisecond = millisecond * 10 + (value[index] - '0');
+                digits_seen += 1;
+            }
+        }
+        if (index == fraction_start) return null;
+        while (digits_seen < 3) : (digits_seen += 1) {
+            millisecond *= 10;
+        }
+    }
+
+    const offset_seconds: i64 = blk: {
+        if (index >= value.len) return null;
+        if (value[index] == 'Z') {
+            if (index + 1 != value.len) return null;
+            break :blk 0;
+        }
+        const sign_char = value[index];
+        if (sign_char != '+' and sign_char != '-') return null;
+        if (index + 6 != value.len) return null;
+        if (value[index + 3] != ':') return null;
+        const offset_hours = parseFixedUnsigned(u8, value[index + 1 .. index + 3]) orelse return null;
+        const offset_minutes = parseFixedUnsigned(u8, value[index + 4 .. index + 6]) orelse return null;
+        if (offset_hours > 23 or offset_minutes > 59) return null;
+        const offset = @as(i64, offset_hours) * 60 * 60 + @as(i64, offset_minutes) * 60;
+        break :blk if (sign_char == '+') offset else -offset;
+    };
+
+    const local_seconds = epochSecondsFromDate(year, month, day, hour, minute, second) orelse return null;
+    const utc_seconds = local_seconds - offset_seconds;
+    if (utc_seconds < 0) return null;
+    return utc_seconds * 1000 + millisecond;
+}
+
+fn parseThreadListLegacyTimestampMilliseconds(value: []const u8) ?i64 {
+    if (value.len != "YYYY-MM-DDTHH-MM-SS".len) return null;
+    if (value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != '-' or value[16] != '-') {
+        return null;
+    }
+
+    const year = parseFixedUnsigned(u16, value[0..4]) orelse return null;
+    const month = parseFixedUnsigned(u8, value[5..7]) orelse return null;
+    const day = parseFixedUnsigned(u8, value[8..10]) orelse return null;
+    const hour = parseFixedUnsigned(u8, value[11..13]) orelse return null;
+    const minute = parseFixedUnsigned(u8, value[14..16]) orelse return null;
+    const second = parseFixedUnsigned(u8, value[17..19]) orelse return null;
+    const seconds = epochSecondsFromDate(year, month, day, hour, minute, second) orelse return null;
+    return seconds * 1000;
+}
+
+fn epochSecondsFromDate(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) ?i64 {
+    if (year < std.time.epoch.epoch_year or month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59) {
+        return null;
+    }
+    const month_enum: std.time.epoch.Month = @enumFromInt(month);
+    const days_in_month = std.time.epoch.getDaysInMonth(year, month_enum);
+    if (day < 1 or day > days_in_month) return null;
+
+    var days: i64 = 0;
+    var y: u16 = std.time.epoch.epoch_year;
+    while (y < year) : (y += 1) {
+        days += std.time.epoch.getDaysInYear(y);
+    }
+
+    var m: u8 = 1;
+    while (m < month) : (m += 1) {
+        days += std.time.epoch.getDaysInMonth(year, @enumFromInt(m));
+    }
+    days += day - 1;
+
+    return days * (24 * 60 * 60) + @as(i64, hour) * 60 * 60 + @as(i64, minute) * 60 + second;
+}
+
+fn parseFixedUnsigned(comptime T: type, value: []const u8) ?T {
+    for (value) |char| {
+        if (!std.ascii.isDigit(char)) return null;
+    }
+    return std.fmt.parseUnsigned(T, value, 10) catch null;
+}
+
+fn formatThreadListCursorMilliseconds(allocator: std.mem.Allocator, timestamp_ms: i64, force_millis: bool) ![]const u8 {
+    if (timestamp_ms < 0) return error.InvalidThreadListCursor;
+    const seconds: u64 = @intCast(@divFloor(timestamp_ms, 1000));
+    const millisecond: u16 = @intCast(@mod(timestamp_ms, 1000));
+    const seconds_text = try auth_mod.rfc3339FromSeconds(allocator, seconds);
+    if (!force_millis and millisecond == 0) return seconds_text;
+    defer allocator.free(seconds_text);
+    return std.fmt.allocPrint(allocator, "{s}.{d:0>3}Z", .{ seconds_text[0 .. seconds_text.len - 1], millisecond });
 }
 
 fn stringLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
