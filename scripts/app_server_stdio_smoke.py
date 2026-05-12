@@ -15246,8 +15246,8 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert invalid_import["error"]["code"] == -32602
         assert "supported itemType" in invalid_import["error"]["message"]
 
-        nonempty_import = rpc(
-            "external-agent-import-nonempty",
+        session_noop_import = rpc(
+            "external-agent-import-sessions-empty",
             "externalAgentConfig/import",
             {
                 "migrationItems": [
@@ -15260,15 +15260,154 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 ]
             },
         )
-        assert nonempty_import["id"] == "external-agent-import-nonempty"
-        assert nonempty_import["error"]["code"] == -32603
-        assert (
-            "migration items are parsed but not implemented yet"
-            in nonempty_import["error"]["message"]
-        )
+        assert session_noop_import["id"] == "external-agent-import-sessions-empty"
+        assert session_noop_import["result"] == {}
+        import_notification = read_json_line(proc, 5)
+        assert import_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
 
         claude_home = external_home / ".claude"
         claude_home.mkdir()
+        session_project_root = root / "external-session-project"
+        session_project_root.mkdir()
+        session_dir = claude_home / "projects" / "external-session-project"
+        session_dir.mkdir(parents=True)
+        session_path = session_dir / "session.jsonl"
+        session_timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        session_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "cwd": str(session_project_root),
+                            "timestamp": session_timestamp,
+                            "message": {"content": "first imported question"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "cwd": str(session_project_root),
+                            "timestamp": session_timestamp,
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": "first imported answer"},
+                                    {
+                                        "type": "tool_use",
+                                        "name": "Bash",
+                                        "input": {"command": "git status --short"},
+                                    },
+                                ]
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "custom-title",
+                            "customTitle": "Imported session title",
+                        }
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        detected_sessions = rpc(
+            "external-agent-detect-home-sessions",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_sessions["id"] == "external-agent-detect-home-sessions"
+        resolved_session_path = str(session_path.resolve())
+        assert detected_sessions["result"]["items"] == [
+            {
+                "itemType": "SESSIONS",
+                "description": f"Migrate recent sessions from {claude_home / 'projects'}",
+                "cwd": None,
+                "details": {
+                    "plugins": [],
+                    "sessions": [
+                        {
+                            "path": resolved_session_path,
+                            "cwd": str(session_project_root),
+                            "title": "Imported session title",
+                        }
+                    ],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [],
+                },
+            }
+        ]
+
+        session_import = rpc(
+            "external-agent-import-sessions",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_sessions["result"]["items"]},
+        )
+        assert session_import["id"] == "external-agent-import-sessions"
+        assert session_import["result"] == {}
+        import_notification = read_json_line(proc, 5)
+        assert import_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        ledger = json.loads(
+            (codex_home / "external_agent_session_imports.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert len(ledger["records"]) == 1
+        assert ledger["records"][0]["source_path"] == resolved_session_path
+        assert len(ledger["records"][0]["content_sha256"]) == 64
+        assert ledger["records"][0]["imported_thread_id"]
+
+        rollout_files = sorted((codex_home / "sessions" / "zig").glob("rollout-*.jsonl"))
+        assert len(rollout_files) == 1
+        rollout_lines = [
+            json.loads(line)
+            for line in rollout_files[0].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert any(
+            line.get("type") == "metadata"
+            and line.get("title") == "Imported session title"
+            for line in rollout_lines
+        )
+        assert any(
+            line.get("type") == "message"
+            and line.get("role") == "user"
+            and line.get("text") == "first imported question"
+            for line in rollout_lines
+        )
+        assert any(
+            line.get("type") == "message"
+            and line.get("role") == "assistant"
+            and "first imported answer" in line.get("text", "")
+            and "external_agent_tool_call" in line.get("text", "")
+            for line in rollout_lines
+        )
+        assert any(
+            line.get("type") == "session_meta"
+            and line.get("payload", {}).get("id")
+            == ledger["records"][0]["imported_thread_id"]
+            and line.get("payload", {}).get("cwd") == str(session_project_root)
+            for line in rollout_lines
+        )
+
+        detect_after_session_import = rpc(
+            "external-agent-detect-after-session-import",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_session_import["id"] == "external-agent-detect-after-session-import"
+        assert detect_after_session_import["result"] == {"items": []}
+
         (claude_home / "settings.json").write_text(
             json.dumps(
                 {
