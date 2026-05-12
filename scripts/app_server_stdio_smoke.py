@@ -15414,6 +15414,73 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert detect_after_skills["id"] == "external-agent-detect-after-skills"
         assert detect_after_skills["result"] == {"items": []}
 
+        source_command = claude_home / "commands" / "review.md"
+        source_command.parent.mkdir(parents=True)
+        source_command.write_text(
+            "---\ndescription: Review with Claude\n---\nReview Claude Code carefully.\n",
+            encoding="utf-8",
+        )
+        detected_commands = rpc(
+            "external-agent-detect-commands",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detected_commands["id"] == "external-agent-detect-commands"
+        assert detected_commands["result"]["items"] == [
+            {
+                "itemType": "COMMANDS",
+                "description": (
+                    f"Migrate commands from {claude_home / 'commands'} to {target_skills}"
+                ),
+                "cwd": None,
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [{"name": "source-command-review"}],
+                },
+            }
+        ]
+
+        commands_import = rpc(
+            "external-agent-import-commands",
+            "externalAgentConfig/import",
+            {"migrationItems": detected_commands["result"]["items"]},
+        )
+        assert commands_import["id"] == "external-agent-import-commands"
+        assert commands_import["result"] == {}
+        commands_notification = read_json_line(proc, 5)
+        assert commands_notification == {
+            "method": "externalAgentConfig/import/completed",
+            "params": {},
+        }
+        assert (
+            target_skills / "source-command-review" / "SKILL.md"
+        ).read_text(encoding="utf-8") == (
+            '---\n'
+            'name: "source-command-review"\n'
+            'description: "Review with Codex"\n'
+            '---\n'
+            '\n'
+            '# source-command-review\n'
+            '\n'
+            'Use this skill when the user asks to run the migrated source command `review`.\n'
+            '\n'
+            '## Command Template\n'
+            '\n'
+            'Review Codex carefully.\n'
+        )
+
+        detect_after_commands = rpc(
+            "external-agent-detect-after-commands",
+            "externalAgentConfig/detect",
+            {"includeHome": True},
+        )
+        assert detect_after_commands["id"] == "external-agent-detect-after-commands"
+        assert detect_after_commands["result"] == {"items": []}
+
         project_root = root / "project"
         nested_cwd = project_root / "nested" / "child"
         project_claude = project_root / ".claude"
@@ -15460,6 +15527,12 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "asset",
             encoding="utf-8",
         )
+        project_command = project_claude / "commands" / "pr" / "review.md"
+        project_command.parent.mkdir(parents=True)
+        project_command.write_text(
+            "---\ndescription: Review project PR\n---\nReview the Claude PR.\n",
+            encoding="utf-8",
+        )
 
         detected_project = rpc(
             "external-agent-detect-project",
@@ -15485,6 +15558,22 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 ),
                 "cwd": str(project_root),
                 "details": None,
+            },
+            {
+                "itemType": "COMMANDS",
+                "description": (
+                    f"Migrate commands from {project_claude / 'commands'} to "
+                    f"{project_root / '.agents' / 'skills'}"
+                ),
+                "cwd": str(project_root),
+                "details": {
+                    "plugins": [],
+                    "sessions": [],
+                    "mcpServers": [],
+                    "hooks": [],
+                    "subagents": [],
+                    "commands": [{"name": "source-command-pr-review"}],
+                },
             },
             {
                 "itemType": "AGENTS_MD",
@@ -15539,6 +15628,26 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             / "project-skill"
             / "asset.txt"
         ).read_text(encoding="utf-8") == "asset"
+        assert (
+            project_root
+            / ".agents"
+            / "skills"
+            / "source-command-pr-review"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8") == (
+            '---\n'
+            'name: "source-command-pr-review"\n'
+            'description: "Review project PR"\n'
+            '---\n'
+            '\n'
+            '# source-command-pr-review\n'
+            '\n'
+            'Use this skill when the user asks to run the migrated source command `pr-review`.\n'
+            '\n'
+            '## Command Template\n'
+            '\n'
+            'Review the Codex PR.\n'
+        )
 
         detect_after_project = rpc(
             "external-agent-detect-after-project",
