@@ -5859,6 +5859,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert state_db_resumed_thread["modelProvider"] == "state_provider"
             assert state_db_resumed_thread["cwd"] == "/state-db-cwd"
             assert state_db_resumed_thread["cliVersion"] == "state-db-cli"
+            assert state_db_resumed_thread["gitInfo"] == {
+                "sha": "state-db-sha",
+                "branch": "state-db-branch",
+                "originUrl": "https://example.test/state.git",
+            }
             assert state_db_resumed_thread["turns"] == []
 
             write_json_line(
