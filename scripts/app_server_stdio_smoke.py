@@ -559,6 +559,7 @@ def seed_feedback_state_db(
                 model TEXT,
                 reasoning_effort TEXT,
                 cwd TEXT NOT NULL DEFAULT '/',
+                cli_version TEXT NOT NULL DEFAULT '0.0.0',
                 title TEXT NOT NULL DEFAULT '',
                 sandbox_policy TEXT NOT NULL DEFAULT 'danger-full-access',
                 approval_mode TEXT NOT NULL DEFAULT 'never',
@@ -4488,6 +4489,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     agent_role = ?,
                     model_provider = ?,
                     cwd = ?,
+                    cli_version = ?,
                     first_user_message = ?,
                     created_at = ?,
                     updated_at = ?,
@@ -4505,9 +4507,10 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "subagent",
                     "Navigator",
                     "explorer",
-                    "mock_provider",
-                    "/",
-                    "state db only hello",
+                    "state_provider",
+                    "/state-db-cwd",
+                    "state-db-cli",
+                    "state db metadata preview",
                     1736078400,
                     1736078700,
                     1736078400000,
@@ -4525,6 +4528,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     source = ?,
                     model_provider = ?,
                     cwd = ?,
+                    cli_version = ?,
                     first_user_message = ?,
                     created_at = ?,
                     updated_at = ?,
@@ -4537,9 +4541,10 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 (
                     "Archived State DB Column Name",
                     "cli",
-                    "mock_provider",
-                    "/",
-                    "archived state db hello",
+                    "archived_provider",
+                    "/archived-state-db-cwd",
+                    "archived-state-db-cli",
+                    "archived state db metadata preview",
                     1736082000,
                     1736082300,
                     1736082000000,
@@ -4628,7 +4633,9 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "id": "thread-list-state-db-column-metadata",
                     "method": "thread/list",
                     "params": {
+                        "modelProviders": ["state_provider"],
                         "sourceKinds": ["cli"],
+                        "cwd": "/state-db-cwd",
                         "searchTerm": "State DB Column Name",
                         "useStateDbOnly": True,
                     },
@@ -4640,6 +4647,13 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert [thread["id"] for thread in state_db_metadata_threads] == [
                 state_db_thread_id
             ]
+            assert (
+                state_db_metadata_threads[0]["preview"]
+                == "state db metadata preview"
+            )
+            assert state_db_metadata_threads[0]["modelProvider"] == "state_provider"
+            assert state_db_metadata_threads[0]["cwd"] == "/state-db-cwd"
+            assert state_db_metadata_threads[0]["cliVersion"] == "state-db-cli"
             assert state_db_metadata_threads[0]["name"] == "State DB Column Name"
             assert state_db_metadata_threads[0]["createdAt"] == 1736078400
             assert state_db_metadata_threads[0]["updatedAt"] == 1736078700
@@ -4661,7 +4675,9 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "method": "thread/list",
                     "params": {
                         "archived": True,
+                        "modelProviders": ["archived_provider"],
                         "sourceKinds": ["cli"],
+                        "cwd": "/archived-state-db-cwd",
                         "searchTerm": "Archived State DB Column Name",
                         "useStateDbOnly": True,
                     },
@@ -4674,6 +4690,16 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 archived_state_db_thread_id
             ]
             assert archived_state_db_threads[0]["name"] == "Archived State DB Column Name"
+            assert (
+                archived_state_db_threads[0]["preview"]
+                == "archived state db metadata preview"
+            )
+            assert archived_state_db_threads[0]["modelProvider"] == "archived_provider"
+            assert archived_state_db_threads[0]["cwd"] == "/archived-state-db-cwd"
+            assert (
+                archived_state_db_threads[0]["cliVersion"]
+                == "archived-state-db-cli"
+            )
             assert archived_state_db_threads[0]["createdAt"] == 1736082000
             assert archived_state_db_threads[0]["updatedAt"] == 1736082300
             assert archived_state_db_threads[0]["path"] == os.path.realpath(
@@ -4694,13 +4720,13 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             read_state_db_only_thread = read_state_db_only["result"]["thread"]
             assert read_state_db_only_thread["id"] == state_db_thread_id
             assert read_state_db_only_thread["sessionId"] == state_db_thread_id
-            assert read_state_db_only_thread["preview"] == "state db only hello"
-            assert read_state_db_only_thread["modelProvider"] == "mock_provider"
+            assert read_state_db_only_thread["preview"] == "state db metadata preview"
+            assert read_state_db_only_thread["modelProvider"] == "state_provider"
             assert read_state_db_only_thread["path"] == os.path.realpath(
                 state_db_rollout_path
             )
-            assert read_state_db_only_thread["cwd"] == "/"
-            assert read_state_db_only_thread["cliVersion"] == "0.0.0"
+            assert read_state_db_only_thread["cwd"] == "/state-db-cwd"
+            assert read_state_db_only_thread["cliVersion"] == "state-db-cli"
             assert read_state_db_only_thread["source"] == "cli"
             assert read_state_db_only_thread["threadSource"] == "subagent"
             assert read_state_db_only_thread["agentNickname"] == "Navigator"
@@ -4772,6 +4798,15 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ]
             assert state_db_rollout_entries[-1]["type"] == "session_meta"
             assert state_db_rollout_entries[-1]["payload"]["id"] == state_db_thread_id
+            assert (
+                state_db_rollout_entries[-1]["payload"]["model_provider"]
+                == "state_provider"
+            )
+            assert state_db_rollout_entries[-1]["payload"]["cwd"] == "/state-db-cwd"
+            assert (
+                state_db_rollout_entries[-1]["payload"]["cli_version"]
+                == "state-db-cli"
+            )
             assert state_db_rollout_entries[-1]["payload"]["memory_mode"] == "polluted"
             assert sqlite_row(
                 state_db_path,
@@ -4880,6 +4915,15 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ]
             assert state_db_rollout_entries[-1]["type"] == "session_meta"
             assert state_db_rollout_entries[-1]["payload"]["id"] == state_db_thread_id
+            assert (
+                state_db_rollout_entries[-1]["payload"]["model_provider"]
+                == "state_provider"
+            )
+            assert state_db_rollout_entries[-1]["payload"]["cwd"] == "/state-db-cwd"
+            assert (
+                state_db_rollout_entries[-1]["payload"]["cli_version"]
+                == "state-db-cli"
+            )
             assert (
                 state_db_rollout_entries[-1]["payload"]["memory_mode"]
                 == "disabled"
