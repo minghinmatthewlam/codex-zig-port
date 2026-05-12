@@ -342,6 +342,7 @@ flags, implicit workspace-write temp-root defaults, required streaming
 `processId` validation, and follow-up command session validation/inactive-process
 errors,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
+app-list empty and enabled local plugin app manifest catalogs,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
