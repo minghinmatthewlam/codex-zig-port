@@ -24405,6 +24405,7 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
     var all_items_supported = true;
     var import_home_config = false;
     var import_home_agents_md = false;
+    var import_home_skills = false;
     for (migration_items.array.items) |item| {
         if (item != .object) return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must be objects");
         const item_type = item.object.get("itemType") orelse return renderJsonRpcError(allocator, id_value, -32602, "migrationItems entries must include itemType");
@@ -24422,6 +24423,7 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
         if (!isSupportedExternalAgentConfigImportItem(item.object)) all_items_supported = false;
         if (std.mem.eql(u8, item_type.string, "CONFIG")) import_home_config = true;
         if (std.mem.eql(u8, item_type.string, "AGENTS_MD")) import_home_agents_md = true;
+        if (std.mem.eql(u8, item_type.string, "SKILLS")) import_home_skills = true;
     }
     if (migration_items.array.items.len == 0) {
         return renderJsonRpcResult(allocator, id_value, "{}");
@@ -24445,6 +24447,11 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
             return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import AGENTS.md", err);
         };
     }
+    if (import_home_skills) {
+        importExternalAgentHomeSkills(allocator, codex_home) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import skills", err);
+        };
+    }
 
     const response = try renderJsonRpcResult(allocator, id_value, "{}");
     defer allocator.free(response);
@@ -24466,7 +24473,7 @@ fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
 fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
     const item_type = item.get("itemType") orelse return false;
     if (item_type != .string) return false;
-    if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD")) return false;
+    if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD") and !std.mem.eql(u8, item_type.string, "SKILLS")) return false;
     if (item.get("cwd")) |cwd| {
         if (cwd != .null) return false;
     }
@@ -24508,6 +24515,20 @@ fn renderExternalAgentConfigDetectResponse(
         defer allocator.free(description);
 
         try result.appendSlice(allocator, "{\"itemType\":\"AGENTS_MD\",\"description\":");
+        try appendJsonString(allocator, &result, description);
+        try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
+        first = false;
+    }
+    if (include_home and try externalAgentHomeSkillsNeedsMigration(allocator, codex_home)) {
+        if (!first) try result.appendSlice(allocator, ",");
+        const source_skills = try externalAgentHomeSkillsPath(allocator);
+        defer allocator.free(source_skills);
+        const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
+        defer allocator.free(target_skills);
+        const description = try std.fmt.allocPrint(allocator, "Migrate skills from {s} to {s}", .{ source_skills, target_skills });
+        defer allocator.free(description);
+
+        try result.appendSlice(allocator, "{\"itemType\":\"SKILLS\",\"description\":");
         try appendJsonString(allocator, &result, description);
         try result.appendSlice(allocator, ",\"cwd\":null,\"details\":null}");
     }
@@ -24598,6 +24619,93 @@ fn importExternalAgentHomeAgentsMd(allocator: std.mem.Allocator, codex_home: []c
     const rewritten = try rewriteExternalAgentTerms(allocator, source_contents);
     defer allocator.free(rewritten);
     try writeTextFile(target_path, rewritten);
+}
+
+fn externalAgentHomeSkillsNeedsMigration(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const source_skills = try externalAgentHomeSkillsPath(allocator);
+    defer allocator.free(source_skills);
+    const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
+    defer allocator.free(target_skills);
+    return externalAgentSkillsHaveMissingSubdirectories(allocator, source_skills, target_skills);
+}
+
+fn importExternalAgentHomeSkills(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const source_skills = try externalAgentHomeSkillsPath(allocator);
+    defer allocator.free(source_skills);
+    const target_skills = try externalAgentTargetSkillsPath(allocator, codex_home);
+    defer allocator.free(target_skills);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var source_dir = std.Io.Dir.openDirAbsolute(io, source_skills, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.NotDir => return,
+        else => return err,
+    };
+    defer source_dir.close(io);
+
+    try std.Io.Dir.cwd().createDirPath(io, target_skills);
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+
+        const source_path = try std.fs.path.join(allocator, &.{ source_skills, entry.name });
+        defer allocator.free(source_path);
+        const target_path = try std.fs.path.join(allocator, &.{ target_skills, entry.name });
+        defer allocator.free(target_path);
+        if (try dirExists(io, target_path)) continue;
+
+        try copyExternalAgentSkillDirRecursive(allocator, source_path, target_path);
+    }
+}
+
+fn externalAgentSkillsHaveMissingSubdirectories(allocator: std.mem.Allocator, source_skills: []const u8, target_skills: []const u8) !bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var source_dir = std.Io.Dir.openDirAbsolute(io, source_skills, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        error.NotDir => return false,
+        else => return err,
+    };
+    defer source_dir.close(io);
+
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        const target_path = try std.fs.path.join(allocator, &.{ target_skills, entry.name });
+        defer allocator.free(target_path);
+        if (!try dirExists(io, target_path)) return true;
+    }
+    return false;
+}
+
+fn copyExternalAgentSkillDirRecursive(allocator: std.mem.Allocator, source_root: []const u8, target_root: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, target_root);
+
+    var source_dir = try std.Io.Dir.openDirAbsolute(io, source_root, .{ .iterate = true });
+    defer source_dir.close(io);
+
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const source_path = try std.fs.path.join(allocator, &.{ source_root, entry.name });
+        defer allocator.free(source_path);
+        const target_path = try std.fs.path.join(allocator, &.{ target_root, entry.name });
+        defer allocator.free(target_path);
+
+        if (entry.kind == .directory) {
+            try copyExternalAgentSkillDirRecursive(allocator, source_path, target_path);
+        } else if (entry.kind == .file) {
+            if (asciiRegionEqlIgnoreCase(entry.name, "SKILL.md")) {
+                const source_contents = try readTextFile(allocator, source_path);
+                defer allocator.free(source_contents);
+                const rewritten = try rewriteExternalAgentTerms(allocator, source_contents);
+                defer allocator.free(rewritten);
+                try writeTextFile(target_path, rewritten);
+            } else {
+                try ensureParentDir(io, target_path);
+                try std.Io.Dir.copyFileAbsolute(source_path, target_path, io, .{});
+            }
+        }
+    }
 }
 
 fn externalAgentConfigPlanHasMissingValues(bytes: []const u8, plan: ExternalAgentHomeConfigPlan) bool {
@@ -24762,8 +24870,22 @@ fn externalAgentHomeAgentsMdPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ external_home, "CLAUDE.md" });
 }
 
+fn externalAgentHomeSkillsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    return std.fs.path.join(allocator, &.{ external_home, "skills" });
+}
+
 fn externalAgentTargetAgentsMdPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, "AGENTS.md" });
+}
+
+fn externalAgentTargetSkillsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const parent = std.fs.path.dirname(codex_home) orelse {
+        return std.fs.path.join(allocator, &.{ ".agents", "skills" });
+    };
+    if (parent.len == 0) return std.fs.path.join(allocator, &.{ ".agents", "skills" });
+    return std.fs.path.join(allocator, &.{ parent, ".agents", "skills" });
 }
 
 fn externalAgentHomePath(allocator: std.mem.Allocator) ![]const u8 {
