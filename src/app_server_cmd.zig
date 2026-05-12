@@ -25782,6 +25782,14 @@ fn renderConfigReadResponse(
     const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode) else project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode);
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
     try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer, system_layer));
+    const system_forced_chatgpt_workspace_id = if (system_layer) |layer| layer.forced_chatgpt_workspace_id else null;
+    const managed_forced_chatgpt_workspace_id = if (managed_layer) |layer| layer.forced_chatgpt_workspace_id else null;
+    const forced_chatgpt_workspace_id = managed_forced_chatgpt_workspace_id orelse project_layers.forcedChatGptWorkspaceId() orelse configReadUserOrSystemMaybeString(cfg.forced_chatgpt_workspace_id, user_layer, "forced_chatgpt_workspace_id", system_forced_chatgpt_workspace_id);
+    try appendJsonMaybeStringField(allocator, &result, &first, "forced_chatgpt_workspace_id", forced_chatgpt_workspace_id);
+    const system_forced_login_method = if (system_layer) |layer| layer.forced_login_method else null;
+    const managed_forced_login_method = if (managed_layer) |layer| layer.forced_login_method else null;
+    const forced_login_method = managed_forced_login_method orelse project_layers.forcedLoginMethod() orelse configReadUserOrSystemForcedLoginMethod(cfg.forced_login_method, user_layer, system_forced_login_method);
+    try appendJsonMaybeStringField(allocator, &result, &first, "forced_login_method", if (forced_login_method) |method| method.label() else null);
     const system_web_search_mode = if (system_layer) |layer| layer.web_search_mode else null;
     const managed_web_search_mode = if (managed_layer) |layer| layer.web_search_mode else null;
     const web_search_mode = managed_web_search_mode orelse project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
@@ -25821,6 +25829,8 @@ const ConfigReadManagedLayer = struct {
     web_search_mode: ?config.WebSearchMode = null,
     model_reasoning_effort: ?config.ReasoningEffort = null,
     service_tier: ?[]const u8 = null,
+    forced_chatgpt_workspace_id: ?[]const u8 = null,
+    forced_login_method: ?config.ForcedLoginMethod = null,
     tools: ConfigReadTools = .{},
     apps: ConfigReadApps = ConfigReadApps.empty(),
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -25830,6 +25840,7 @@ const ConfigReadManagedLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
+        if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
@@ -25863,6 +25874,8 @@ const ConfigReadProjectLayer = struct {
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
     service_tier: ?[]const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
+    forced_login_method: ?config.ForcedLoginMethod,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -25872,6 +25885,7 @@ const ConfigReadProjectLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
+        if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
@@ -25890,6 +25904,8 @@ const ConfigReadSystemLayer = struct {
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
     service_tier: ?[]const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
+    forced_login_method: ?config.ForcedLoginMethod,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -25899,6 +25915,7 @@ const ConfigReadSystemLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
+        if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
@@ -25963,6 +25980,15 @@ fn configReadUserOrSystemReasoningEffort(
     return system_value orelse user_value;
 }
 
+fn configReadUserOrSystemForcedLoginMethod(
+    user_value: ?config.ForcedLoginMethod,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.ForcedLoginMethod,
+) ?config.ForcedLoginMethod {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "forced_login_method") else false) return user_value;
+    return system_value orelse user_value;
+}
+
 const ConfigReadProjectLayers = struct {
     items: []ConfigReadProjectLayer,
 
@@ -26013,6 +26039,20 @@ const ConfigReadProjectLayers = struct {
     fn serviceTier(self: ConfigReadProjectLayers) ?[]const u8 {
         for (self.items) |layer| {
             if (layer.service_tier) |value| return value;
+        }
+        return null;
+    }
+
+    fn forcedChatGptWorkspaceId(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.forced_chatgpt_workspace_id) |value| return value;
+        }
+        return null;
+    }
+
+    fn forcedLoginMethod(self: ConfigReadProjectLayers) ?config.ForcedLoginMethod {
+        for (self.items) |layer| {
+            if (layer.forced_login_method) |value| return value;
         }
         return null;
     }
@@ -26824,6 +26864,26 @@ fn isConfigReadAppToolApproval(value: []const u8) bool {
         std.mem.eql(u8, value, "approve");
 }
 
+fn loadConfigReadForcedChatGptWorkspaceId(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
+    if (try config.topLevelStringValue(allocator, bytes, "forced_chatgpt_workspace_id")) |value| {
+        defer allocator.free(value);
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        return @as(?[]const u8, try allocator.dupe(u8, trimmed));
+    }
+
+    return null;
+}
+
+fn loadConfigReadForcedLoginMethod(allocator: std.mem.Allocator, bytes: []const u8) !?config.ForcedLoginMethod {
+    if (try config.topLevelStringValue(allocator, bytes, "forced_login_method")) |value| {
+        defer allocator.free(value);
+        return try config.ForcedLoginMethod.parse(value);
+    }
+
+    return null;
+}
+
 fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedLayer {
     const file_path = try managedConfigPath(allocator);
     errdefer allocator.free(file_path);
@@ -26848,6 +26908,9 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     var model_reasoning_effort: ?config.ReasoningEffort = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
+    var forced_chatgpt_workspace_id: ?[]const u8 = null;
+    errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
+    var forced_login_method: ?config.ForcedLoginMethod = null;
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
     var apps = ConfigReadApps.empty();
@@ -26882,6 +26945,14 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         service_tier = try config.normalizeServiceTier(allocator, value);
         try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
     }
+    forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, payload);
+    if (forced_chatgpt_workspace_id != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
+    }
+    forced_login_method = try loadConfigReadForcedLoginMethod(allocator, payload);
+    if (forced_login_method != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
+    }
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
     apps = try loadConfigReadApps(allocator, payload);
@@ -26905,6 +26976,8 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
+        .forced_login_method = forced_login_method,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -26932,6 +27005,9 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     var model_reasoning_effort: ?config.ReasoningEffort = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
+    var forced_chatgpt_workspace_id: ?[]const u8 = null;
+    errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
+    var forced_login_method: ?config.ForcedLoginMethod = null;
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
     var apps = ConfigReadApps.empty();
@@ -26966,6 +27042,14 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         service_tier = try config.normalizeServiceTier(allocator, value);
         try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
     }
+    forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, payload);
+    if (forced_chatgpt_workspace_id != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
+    }
+    forced_login_method = try loadConfigReadForcedLoginMethod(allocator, payload);
+    if (forced_login_method != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
+    }
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
     apps = try loadConfigReadApps(allocator, payload);
@@ -26989,6 +27073,8 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
+        .forced_login_method = forced_login_method,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -27233,6 +27319,9 @@ fn loadConfigReadProjectLayer(
     var model_reasoning_effort: ?config.ReasoningEffort = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
+    var forced_chatgpt_workspace_id: ?[]const u8 = null;
+    errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
+    var forced_login_method: ?config.ForcedLoginMethod = null;
     var tools = ConfigReadTools{};
     errdefer tools.deinit(allocator);
     var apps = ConfigReadApps.empty();
@@ -27269,6 +27358,14 @@ fn loadConfigReadProjectLayer(
             service_tier = try config.normalizeServiceTier(allocator, value);
             try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
         }
+        forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, config_bytes);
+        if (forced_chatgpt_workspace_id != null) {
+            try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
+        }
+        forced_login_method = try loadConfigReadForcedLoginMethod(allocator, config_bytes);
+        if (forced_login_method != null) {
+            try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
+        }
         tools = try loadConfigReadTools(allocator, config_bytes);
         try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
         apps = try loadConfigReadApps(allocator, config_bytes);
@@ -27290,6 +27387,8 @@ fn loadConfigReadProjectLayer(
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
         .service_tier = service_tier,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
+        .forced_login_method = forced_login_method,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -27328,6 +27427,8 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "profile") or
         std.mem.eql(u8, key, "approval_policy") or
         std.mem.eql(u8, key, "sandbox_mode") or
+        std.mem.eql(u8, key, "forced_chatgpt_workspace_id") or
+        std.mem.eql(u8, key, "forced_login_method") or
         std.mem.eql(u8, key, "web_search") or
         std.mem.eql(u8, key, "model_reasoning_effort") or
         std.mem.eql(u8, key, "service_tier") or
@@ -28235,6 +28336,10 @@ fn appendConfigReadProjectLayerConfig(
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.forced_chatgpt_workspace_id);
+        } else if (std.mem.eql(u8, key, "forced_login_method")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.forced_login_method) |method| method.label() else null);
         } else if (std.mem.eql(u8, key, "web_search")) {
             if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
@@ -28268,6 +28373,8 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.model) |value| try appendJsonStringField(allocator, result, &first, "model", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
+    if (layer.forced_chatgpt_workspace_id) |value| try appendJsonStringField(allocator, result, &first, "forced_chatgpt_workspace_id", value);
+    if (layer.forced_login_method) |method| try appendJsonStringField(allocator, result, &first, "forced_login_method", method.label());
     if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, "web_search", mode.label());
     if (layer.model_reasoning_effort) |effort| try appendJsonStringField(allocator, result, &first, "model_reasoning_effort", effort.label());
     if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, "service_tier", value);
@@ -28300,6 +28407,10 @@ fn appendConfigReadSystemLayerConfig(
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
+        } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.forced_chatgpt_workspace_id);
+        } else if (std.mem.eql(u8, key, "forced_login_method")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.forced_login_method) |method| method.label() else null);
         } else if (std.mem.eql(u8, key, "web_search")) {
             if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
@@ -28340,6 +28451,10 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonStringField(allocator, result, &first, key, cfg.approval_policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.sandbox_mode.label());
+        } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.forced_chatgpt_workspace_id);
+        } else if (std.mem.eql(u8, key, "forced_login_method")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.forced_login_method) |method| method.label() else null);
         } else if (std.mem.eql(u8, key, "web_search")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.web_search_mode) |mode| mode.label() else null);
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {

@@ -512,6 +512,13 @@ pub const ForcedLoginMethod = enum {
         if (std.mem.eql(u8, value, "api")) return .api;
         return error.InvalidForcedLoginMethod;
     }
+
+    pub fn label(self: ForcedLoginMethod) []const u8 {
+        return switch (self) {
+            .chatgpt => "chatgpt",
+            .api => "api",
+        };
+    }
 };
 
 pub const OssProvider = enum {
@@ -969,7 +976,14 @@ fn resolveForcedLoginMethod(allocator: std.mem.Allocator, config_view: ConfigVie
 }
 
 fn resolveForcedChatGptWorkspaceId(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
-    return config_view.getScopedString(allocator, active_profile, "forced_chatgpt_workspace_id");
+    if (try config_view.getScopedString(allocator, active_profile, "forced_chatgpt_workspace_id")) |value| {
+        defer allocator.free(value);
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        return @as(?[]const u8, try allocator.dupe(u8, trimmed));
+    }
+
+    return null;
 }
 
 fn resolveTuiStringArray(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?StringList {
