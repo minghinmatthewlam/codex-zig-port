@@ -13445,6 +13445,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'sandbox_mode = "danger-full-access"',
                 'web_search = "live"',
                 'service_tier = "flex"',
+                'forced_chatgpt_workspace_id = "acct-user"',
+                'forced_login_method = "chatgpt"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-user-root"]',
@@ -13576,6 +13578,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["web_search"] == "live"
         assert config_body["model_reasoning_effort"] == "medium"
         assert config_body["service_tier"] == "flex"
+        assert config_body["forced_chatgpt_workspace_id"] == "acct-user"
+        assert config_body["forced_login_method"] == "chatgpt"
         assert config_body["tools"] == {
             "web_search": {
                 "context_size": "high",
@@ -13642,6 +13646,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_workspace_write.exclude_slash_tmp",
             "web_search",
             "service_tier",
+            "forced_chatgpt_workspace_id",
+            "forced_login_method",
             "tools.web_search.context_size",
             "tools.web_search.allowed_domains.0",
             "tools.web_search.location.country",
@@ -13693,6 +13699,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             },
             "web_search": "live",
             "service_tier": "flex",
+            "forced_chatgpt_workspace_id": "acct-user",
+            "forced_login_method": "chatgpt",
             "tools": {
                 "web_search": {
                     "context_size": "high",
@@ -13803,6 +13811,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
         assert project_config_body["service_tier"] == "priority"
+        assert project_config_body["forced_chatgpt_workspace_id"] == "acct-user"
+        assert project_config_body["forced_login_method"] == "chatgpt"
         assert project_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -14003,6 +14013,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
         assert nested_config_body["service_tier"] == "flex"
+        assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-user"
+        assert nested_config_body["forced_login_method"] == "chatgpt"
         assert nested_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -14183,6 +14195,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["web_search"] == "disabled"
         assert managed_config_body["model_reasoning_effort"] == "low"
         assert managed_config_body["service_tier"] == "priority"
+        assert managed_config_body["forced_chatgpt_workspace_id"] == "acct-user"
+        assert managed_config_body["forced_login_method"] == "chatgpt"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
             "network_access": False,
