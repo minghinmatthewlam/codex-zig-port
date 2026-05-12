@@ -18,11 +18,12 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled. Dependabot and secret-scanning alert APIs
-  returned no open alerts.
+  returned no open alerts; the code-scanning alerts API still reports no
+  analysis.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS. Checked push run
-  `25717457553` passed for
-  `21ad42ac457c2286a932dc53ef045e3e3816aba0`.
+  `25725319531` passed for
+  `6b6fec04cb9b16a933513f1a65c598b6d72a21ad`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
