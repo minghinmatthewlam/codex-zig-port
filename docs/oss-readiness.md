@@ -23,9 +23,10 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
-  tests, and product-surface smoke tests on macOS. Checked push run
-  `25761726727` passed for
-  `6f20ca74b4885487e9614383744812c718c3a75f`.
+  tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
+  install from `ziglang.org` rather than a deprecated Node-based setup action.
+  Checked push run `25763543766` passed for
+  `0701a00f48f6ea9e1ac3f527523db2bc668605a7`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
@@ -55,9 +56,6 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
   the repository settings plan supports them.
-- CI currently emits a GitHub Actions annotation that `mlugg/setup-zig@v2`
-  targets Node.js 20 while `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` forces Node 24;
-  monitor or update the action when an updated runtime target is available.
 - A release process for tags, changelogs, and binary artifacts is not defined.
 - CI currently verifies macOS only because the first milestone targets macOS.
 - Exact CLI, TUI, app-server, MCP, and cloud-task parity remains incomplete; use
