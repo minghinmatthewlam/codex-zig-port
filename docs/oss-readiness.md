@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-11.
+Last checked: 2026-05-12.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -13,18 +13,20 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - License: MIT
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
-- Security settings: GitHub API checks on 2026-05-11 showed secret scanning,
+- Security settings: GitHub API checks on 2026-05-12 showed secret scanning,
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
-  tests, and product-surface smoke tests on macOS
+  tests, and product-surface smoke tests on macOS. Push run `25705857478`
+  passed for `0d8c60e972ecc1af4141a8d50a97e5b8d1c767b8`.
 - Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
   tokens, Slack tokens, AWS access keys, private-key blocks, JWT-shaped blobs,
-  or unignored local artifacts. Broad keyword/path scans only found test
-  fixtures, docs, ignored local build output, and temporary-path examples.
-  Git-history regex scans found only an old dummy `sk-proj-*` test fixture that
-  was removed by commit `0383594`; no real secret material was identified.
+  unignored local auth/env files, or unignored local artifacts. Broad
+  keyword/path scans only found test fixtures, docs, ignored local build output,
+  and temporary-path examples. Git-history regex scans found only an old dummy
+  `sk-proj-*` test fixture that was removed by commit `0383594`; no real secret
+  material was identified.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
@@ -45,6 +47,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
   the repository settings plan supports them.
+- CI currently emits a GitHub Actions annotation that `mlugg/setup-zig@v2`
+  targets Node.js 20 while `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` forces Node 24;
+  monitor or update the action when an updated runtime target is available.
 - A release process for tags, changelogs, and binary artifacts is not defined.
 - CI currently verifies macOS only because the first milestone targets macOS.
 - Exact CLI, TUI, app-server, MCP, and cloud-task parity remains incomplete; use
