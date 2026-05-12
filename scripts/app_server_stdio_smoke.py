@@ -4380,6 +4380,69 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-turns-list-saved-zig-page-one",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": resume_thread_id, "limit": 1},
+                },
+            )
+            saved_turns_page_one = read_json_line(proc, 5)
+            assert saved_turns_page_one["id"] == "thread-turns-list-saved-zig-page-one"
+            saved_page_one = saved_turns_page_one["result"]
+            assert saved_page_one["data"][0]["id"] == "turn-1"
+            assert saved_page_one["data"][0]["items"][0]["type"] == "agentMessage"
+            assert saved_page_one["data"][0]["items"][0]["text"] == "saved hi"
+            assert json.loads(saved_page_one["nextCursor"]) == {
+                "turnId": "turn-1",
+                "includeAnchor": False,
+            }
+            assert json.loads(saved_page_one["backwardsCursor"]) == {
+                "turnId": "turn-1",
+                "includeAnchor": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-saved-zig-page-two",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "cursor": saved_page_one["nextCursor"],
+                        "limit": 1,
+                    },
+                },
+            )
+            saved_turns_page_two = read_json_line(proc, 5)
+            assert saved_turns_page_two["id"] == "thread-turns-list-saved-zig-page-two"
+            saved_page_two = saved_turns_page_two["result"]
+            assert saved_page_two["data"][0]["id"] == "turn-0"
+            assert (
+                saved_page_two["data"][0]["items"][0]["content"][0]["text"]
+                == "saved hello"
+            )
+            assert saved_page_two["nextCursor"] is None
+            assert json.loads(saved_page_two["backwardsCursor"]) == {
+                "turnId": "turn-0",
+                "includeAnchor": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "loaded-threads-before-resume",
+                    "method": "thread/loaded/list",
+                },
+            )
+            loaded_before_resume = read_json_line(proc, 5)
+            assert loaded_before_resume["id"] == "loaded-threads-before-resume"
+            assert loaded_before_resume["result"] == {"data": [], "nextCursor": None}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume",
                     "method": "thread/resume",
                     "params": {

@@ -16511,22 +16511,9 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load config", err);
         };
         defer cfg.deinit(allocator);
-        const resume_path_raw = threadResumePath(allocator, cfg.codex_home, object) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to resolve thread", err);
-        };
-        defer allocator.free(resume_path_raw);
-        var transcript = session_store.loadTranscript(allocator, resume_path_raw) catch |err| switch (err) {
+        var stored_thread = createStoredThreadFromParams(allocator, cfg, object) catch |err| switch (err) {
             error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
-            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load transcript", err),
-        };
-        defer transcript.deinit(allocator);
-        const resume_path = std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), resume_path_raw, allocator) catch |err| switch (err) {
-            error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
-            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to resolve rollout path", err),
-        };
-        defer allocator.free(resume_path);
-        var stored_thread = createLoadedThreadFromResumeParams(allocator, cfg, object, resume_path, &transcript) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to create thread", err);
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load stored thread", err),
         };
         defer stored_thread.deinit(allocator);
         const include_turns = threadReadIncludeTurnsParam(object);
@@ -16561,7 +16548,27 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        return renderThreadNotLoaded(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/turns/list failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        var stored_thread = createStoredThreadFromParams(allocator, cfg, object) catch |err| switch (err) {
+            error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/turns/list failed to load stored thread", err),
+        };
+        defer stored_thread.deinit(allocator);
+        const result = renderThreadTurnsListResponse(allocator, &stored_thread, object) catch |err| switch (err) {
+            error.InvalidThreadTurnsCursor => {
+                const cursor = optionalStringParam(object, "cursor") orelse "";
+                const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            error.InvalidThreadTurnsCursorAnchor => return renderJsonRpcError(allocator, id_value, -32600, "invalid cursor: anchor turn is no longer present"),
+            else => |other| return other,
+        };
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/realtime/listVoices")) {
         _ = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -16807,6 +16814,23 @@ fn threadResumePath(allocator: std.mem.Allocator, codex_home: []const u8, params
     }
     const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
     return session_store.resolveResumePath(allocator, codex_home, thread_id);
+}
+
+fn createStoredThreadFromParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    const resume_path_raw = try threadResumePath(allocator, cfg.codex_home, params);
+    defer allocator.free(resume_path_raw);
+
+    var transcript = try session_store.loadTranscript(allocator, resume_path_raw);
+    defer transcript.deinit(allocator);
+
+    const resume_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), resume_path_raw, allocator);
+    defer allocator.free(resume_path);
+
+    return createLoadedThreadFromResumeParams(allocator, cfg, params, resume_path, &transcript);
 }
 
 fn createLoadedThreadFromStartParams(
