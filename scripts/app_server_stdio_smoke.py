@@ -4674,12 +4674,33 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-default-provider-filter",
+                    "method": "thread/list",
+                    "params": {
+                        "useStateDbOnly": True,
+                        "sourceKinds": ["appServer"],
+                    },
+                },
+            )
+            default_provider_filter = read_json_line(proc, 5)
+            assert default_provider_filter["id"] == "thread-list-default-provider-filter"
+            assert default_provider_filter["result"] == {
+                "data": [],
+                "nextCursor": None,
+                "backwardsCursor": None,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-state-db-page-one",
                     "method": "thread/list",
                     "params": {
                         "useStateDbOnly": True,
                         "sortKey": "created_at",
                         "sortDirection": "desc",
+                        "modelProviders": [],
                         "limit": 1,
                     },
                 },
@@ -4704,6 +4725,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "method": "thread/list",
                     "params": {
                         "useStateDbOnly": True,
+                        "modelProviders": [],
                         "limit": 0,
                     },
                 },
@@ -4727,6 +4749,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                         "sortKey": "created_at",
                         "sortDirection": "desc",
                         "cursor": state_db_page_one_result["nextCursor"],
+                        "modelProviders": [],
                         "limit": 1,
                     },
                 },
@@ -4957,6 +4980,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "id": "thread-list-state-db-only-rollout-renamed",
                     "method": "thread/list",
                     "params": {
+                        "modelProviders": ["state_provider"],
                         "sourceKinds": ["cli"],
                         "searchTerm": "State DB Indexed Name",
                         "useStateDbOnly": True,
