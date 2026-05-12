@@ -17028,10 +17028,17 @@ fn handleThreadFork(
     if (!isUuidString(source_thread_id)) {
         return renderInvalidThreadId(allocator, id_value, source_thread_id);
     }
-    const source = findLoadedThread(state, source_thread_id) orelse {
-        return renderThreadNotFound(allocator, id_value, source_thread_id);
+    if (findLoadedThread(state, source_thread_id)) |source| {
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source);
+    }
+
+    var stored_source = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+        error.FileNotFound => return renderThreadNotFound(allocator, id_value, source_thread_id),
+        error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/fork"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
     };
-    return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source);
+    defer stored_source.deinit(allocator);
+    return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source);
 }
 
 fn handleThreadForkWithSource(
