@@ -4281,6 +4281,125 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert injected_text in stored_after_inject_turn
                 assert after_inject_prompt in stored_after_inject_turn
 
+                server.response_payloads.append(
+                    b"event: response.failed\n"
+                    b'data: {"type":"response.failed","response":{"id":"resp-failed","error":{"code":"server_error","message":"simulated failure"}}}\n\n'
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-provider-failure",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": "trigger provider failure"},
+                            ],
+                        },
+                    },
+                )
+                failed_turn = read_json_line(proc, 5)
+                assert failed_turn["id"] == "turn-start-provider-failure"
+                assert failed_turn["error"]["code"] == -32603
+                assert "ApiResponseFailed" in failed_turn["error"]["message"]
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "systemError"
+                )
+                assert server.request_paths == [
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                ]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-provider-failure",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                read_after_failure = read_json_line(proc, 5)
+                assert read_after_failure["id"] == "thread-read-after-provider-failure"
+                assert (
+                    read_after_failure["result"]["thread"]["status"]
+                    == {"type": "systemError"}
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-list-after-provider-failure",
+                        "method": "thread/list",
+                        "params": {},
+                    },
+                )
+                list_after_failure = read_json_line(proc, 5)
+                assert list_after_failure["id"] == "thread-list-after-provider-failure"
+                listed_after_failure = {
+                    thread["id"]: thread for thread in list_after_failure["result"]["data"]
+                }
+                assert listed_after_failure[thread_id]["status"] == {
+                    "type": "systemError"
+                }
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-after-provider-failure",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": "recover after provider failure"},
+                            ],
+                        },
+                    },
+                )
+                recovery_turn = read_json_line(proc, 5)
+                assert recovery_turn["id"] == "turn-start-after-provider-failure"
+                assert recovery_turn["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-provider-recovery",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                read_after_recovery = read_json_line(proc, 5)
+                assert read_after_recovery["id"] == "thread-read-after-provider-recovery"
+                assert read_after_recovery["result"]["thread"]["status"] == {
+                    "type": "idle"
+                }
+                assert server.request_paths == [
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                ]
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
