@@ -361,7 +361,10 @@ directories under `.agents/skills`, detects supported project
 migrations, detects supported project `.claude/agents/*.md` subagents as
 generated agent TOML migrations, and detects home- and project-scoped enabled
 plugins from local `extraKnownMarketplaces` sources that are not already
-enabled in Codex user config. `externalAgentConfig/import` validates
+enabled in Codex user config, plus recent home-scoped external-agent session
+JSONL files under `${HOME}/.claude/projects` with path/cwd/title details while
+skipping missing-cwd, stale, unreadable, and already-imported current-content
+sessions. `externalAgentConfig/import` validates
 `migrationItems`, accepts an empty no-op import with an empty Rust-shaped
 response, imports home- and project-scoped `CONFIG` items by translating
 supported `env` scalar values into `[shell_environment_policy.set]`, local
@@ -378,12 +381,17 @@ and project-scoped command templates as `source-command-*` skills while
 skipping unsupported templates, imports supported home- and project-scoped
 subagents with `permissionMode` / `effort` mappings, imports detected local
 plugin marketplaces into user Codex config/cache, enables the selected plugins,
-then emits `externalAgentConfig/import/completed`. Session migration requests
-still return an explicit not-implemented error. TypeScript and JSON schema
-generation include the detect/import request and response shapes, migration
-item/detail types, and the `externalAgentConfig/import/completed` notification
-shape. Full external-agent session migration, remote/background plugin imports,
-runtime refresh, and session background imports remain planned.
+imports validated session details into Zig-native saved transcripts under
+`$CODEX_HOME/sessions/zig`, appends Rust-shaped session metadata for the
+imported thread id and cwd, records the current source hash in
+`external_agent_session_imports.json`, then emits
+`externalAgentConfig/import/completed`. TypeScript and JSON schema generation
+include the detect/import request and response shapes, migration item/detail
+types, and the `externalAgentConfig/import/completed` notification shape. Full
+Rust rollout-event fidelity for imported sessions, background session imports,
+large-session compaction before first follow-up, remote/background plugin
+imports, runtime refresh, and richer import progress notifications remain
+planned.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
