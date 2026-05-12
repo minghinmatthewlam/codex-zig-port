@@ -73,6 +73,9 @@ sandbox-policy, permission-profile, permission-profile helper, filesystem-path
 helper, absolute-path, network-access, and output-delta notification artifacts,
 experimental process request, response, terminal-size, stream, and lifecycle
 notification artifacts,
+concrete turn envelope artifacts for `Turn`, `TurnStatus`, `TurnItemsView`,
+`TurnError`, `CodexErrorInfo`, `NonSteerableTurnKind`, and turn
+start/completion payloads with permissive `ThreadItem` contents,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
