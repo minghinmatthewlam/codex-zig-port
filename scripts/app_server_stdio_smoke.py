@@ -4496,6 +4496,76 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-name-set-state-db-only-rollout",
+                    "method": "thread/name/set",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "name": "  State DB Indexed Name  ",
+                    },
+                },
+            )
+            state_db_name_set = read_json_line(proc, 5)
+            assert state_db_name_set["id"] == "thread-name-set-state-db-only-rollout"
+            assert state_db_name_set["result"] == {}
+            state_db_name_notification = read_json_line(proc, 5)
+            assert state_db_name_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/name/updated",
+                "params": {
+                    "threadId": state_db_thread_id,
+                    "threadName": "State DB Indexed Name",
+                },
+            }
+            session_index_path = codex_home / "session_index.jsonl"
+            session_index_entries = [
+                json.loads(line)
+                for line in session_index_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert session_index_entries[-1]["id"] == state_db_thread_id
+            assert session_index_entries[-1]["thread_name"] == "State DB Indexed Name"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-read-state-db-only-rollout-renamed",
+                    "method": "thread/read",
+                    "params": {"threadId": state_db_thread_id},
+                },
+            )
+            read_renamed_state_db = read_json_line(proc, 5)
+            assert read_renamed_state_db["id"] == "thread-read-state-db-only-rollout-renamed"
+            assert (
+                read_renamed_state_db["result"]["thread"]["name"]
+                == "State DB Indexed Name"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-only-rollout-renamed",
+                    "method": "thread/list",
+                    "params": {
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "State DB Indexed Name",
+                        "useStateDbOnly": True,
+                    },
+                },
+            )
+            renamed_state_db_list = read_json_line(proc, 5)
+            assert renamed_state_db_list["id"] == "thread-list-state-db-only-rollout-renamed"
+            renamed_state_db_threads = renamed_state_db_list["result"]["data"]
+            assert [thread["id"] for thread in renamed_state_db_threads] == [
+                state_db_thread_id
+            ]
+            assert renamed_state_db_threads[0]["name"] == "State DB Indexed Name"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-saved-rust-rollout",
                     "method": "thread/list",
                     "params": {
