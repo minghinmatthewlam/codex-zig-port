@@ -9,6 +9,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const config_requirements_hooks = @import("config_requirements_hooks.zig");
 const env = @import("env.zig");
+const feedback_upload = @import("feedback_upload.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
@@ -14661,7 +14662,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleCommandExecMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isFeedbackMethod(method)) {
-        return try handleFeedbackMethod(allocator, id_value.?, method, object.get("params"));
+        return try handleFeedbackMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isConfigMethod(method)) {
         return try handleConfigMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -22039,21 +22040,24 @@ fn isFeedbackMethod(method: []const u8) bool {
 
 fn handleFeedbackMethod(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "feedback/upload")) {
-        return handleFeedbackUpload(allocator, id_value, params_value);
+        return handleFeedbackUpload(allocator, state, id_value, params_value);
     }
     return renderJsonRpcError(allocator, id_value, -32601, "unknown feedback method");
 }
 
 fn handleFeedbackUpload(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     params_value: ?std.json.Value,
 ) ![]const u8 {
+    _ = state;
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
     const object = params.object;
@@ -22064,40 +22068,53 @@ fn handleFeedbackUpload(
     const include_logs = object.get("includeLogs") orelse return renderJsonRpcError(allocator, id_value, -32602, "includeLogs must be a boolean");
     if (include_logs != .bool) return renderJsonRpcError(allocator, id_value, -32602, "includeLogs must be a boolean");
 
-    if (object.get("reason")) |reason| {
-        if (reason != .null and reason != .string) {
+    var reason: ?[]const u8 = null;
+    if (object.get("reason")) |reason_value| {
+        if (reason_value != .null and reason_value != .string) {
             return renderJsonRpcError(allocator, id_value, -32602, "reason must be a string or null");
         }
+        if (reason_value == .string) reason = reason_value.string;
     }
-    if (object.get("threadId")) |thread_id| {
-        if (thread_id != .null) {
-            if (thread_id != .string) return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null");
-            if (!isUuidString(thread_id.string)) return renderInvalidThreadId(allocator, id_value, thread_id.string);
+
+    var owned_thread_id: ?[]const u8 = null;
+    defer if (owned_thread_id) |owned| allocator.free(owned);
+    var thread_id: ?[]const u8 = null;
+    if (object.get("threadId")) |thread_id_value| {
+        if (thread_id_value != .null) {
+            if (thread_id_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null");
+            if (!isUuidString(thread_id_value.string)) return renderInvalidThreadId(allocator, id_value, thread_id_value.string);
+            thread_id = thread_id_value.string;
         }
     }
-    if (object.get("extraLogFiles")) |extra_log_files| {
-        if (extra_log_files != .null) {
-            if (extra_log_files != .array) {
+
+    var extra_log_files = std.ArrayList([]const u8).empty;
+    defer extra_log_files.deinit(allocator);
+    if (object.get("extraLogFiles")) |extra_log_files_value| {
+        if (extra_log_files_value != .null) {
+            if (extra_log_files_value != .array) {
                 return renderJsonRpcError(allocator, id_value, -32602, "extraLogFiles must be an array of strings or null");
             }
-            for (extra_log_files.array.items) |file| {
+            for (extra_log_files_value.array.items) |file| {
                 if (file != .string) {
                     return renderJsonRpcError(allocator, id_value, -32602, "extraLogFiles must be an array of strings or null");
                 }
+                try extra_log_files.append(allocator, file.string);
             }
         }
     }
-    if (object.get("tags")) |tags| {
-        if (tags != .null) {
-            if (tags != .object) {
+    var tags_object: ?std.json.ObjectMap = null;
+    if (object.get("tags")) |tags_value| {
+        if (tags_value != .null) {
+            if (tags_value != .object) {
                 return renderJsonRpcError(allocator, id_value, -32602, "tags must be an object with string values or null");
             }
-            var iter = tags.object.iterator();
+            var iter = tags_value.object.iterator();
             while (iter.next()) |entry| {
                 if (entry.value_ptr.* != .string) {
                     return renderJsonRpcError(allocator, id_value, -32602, "tags must be an object with string values or null");
                 }
             }
+            tags_object = tags_value.object;
         }
     }
 
@@ -22107,7 +22124,37 @@ fn handleFeedbackUpload(
     if (!feedback_enabled) {
         return renderJsonRpcError(allocator, id_value, -32600, "sending feedback is disabled by configuration");
     }
-    return renderParsedButNotImplemented(allocator, id_value, "feedback/upload");
+
+    if (thread_id == null) {
+        const uuid = try generateUuidString(allocator);
+        defer allocator.free(uuid);
+        owned_thread_id = try std.fmt.allocPrint(allocator, "no-active-thread-{s}", .{uuid});
+        thread_id = owned_thread_id.?;
+    }
+
+    feedback_upload.upload(allocator, .{
+        .classification = classification.string,
+        .reason = reason,
+        .thread_id = thread_id.?,
+        .include_logs = include_logs.bool,
+        .extra_log_files = extra_log_files.items,
+        .tags = if (tags_object) |*tags| tags else null,
+    }) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "failed to upload feedback", err);
+    };
+
+    return renderFeedbackUploadResponse(allocator, id_value, thread_id.?);
+}
+
+fn renderFeedbackUploadResponse(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"threadId\":");
+    try appendJsonString(allocator, &result, thread_id);
+    try result.appendSlice(allocator, "}");
+    const result_json = try result.toOwnedSlice(allocator);
+    defer allocator.free(result_json);
+    return renderJsonRpcResult(allocator, id_value, result_json);
 }
 
 fn isWindowsSandboxMethod(method: []const u8) bool {

@@ -389,6 +389,29 @@ class StreamableMcpServer(ThreadingHTTPServer):
     session_id: str
 
 
+class FeedbackEnvelopeHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append(body)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class FeedbackEnvelopeServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[bytes]
+
+
 def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server = TurnResponsesServer(("127.0.0.1", 0), TurnResponsesHandler)
     server.request_paths = []
@@ -417,6 +440,15 @@ def start_streamable_mcp_server(sse: bool = False) -> tuple[StreamableMcpServer,
     server.session_id = "streamable-session-1"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}/mcp"
+
+
+def start_feedback_envelope_server() -> tuple[FeedbackEnvelopeServer, str]:
+    server = FeedbackEnvelopeServer(("127.0.0.1", 0), FeedbackEnvelopeHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_bodies = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://public@127.0.0.1:{server.server_port}/42"
 
 
 def toml_quoted_key(value: str) -> str:
@@ -10332,32 +10364,83 @@ def run_windows_sandbox_rpc_smoke(binary: Path) -> None:
 
 def run_feedback_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-feedback-", dir="/tmp"))
+    server, dsn = start_feedback_envelope_server()
     try:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_ZIG_FEEDBACK_SENTRY_DSN"] = dsn
+        extra_log_file = codex_home / "codex-zig-feedback.log"
+        extra_log_file.write_text("extra log body\n", encoding="utf-8")
 
         valid_params = {
             "classification": "bug",
             "reason": "smoke",
             "threadId": "00000000-0000-4000-8000-000000000123",
-            "includeLogs": False,
-            "extraLogFiles": ["/tmp/codex-zig-feedback.log"],
-            "tags": {"surface": "app-server"},
+            "includeLogs": True,
+            "extraLogFiles": [str(extra_log_file), str(codex_home / "missing.log")],
+            "tags": {
+                "surface": "app-server",
+                "thread_id": "wrong-thread",
+                "classification": "wrong-classification",
+            },
         }
-        parsed = request_stdio_app_server(
+        uploaded = request_stdio_app_server(
             binary,
             {
                 "jsonrpc": "2.0",
-                "id": "feedback-upload-parsed",
+                "id": "feedback-uploaded",
                 "method": "feedback/upload",
                 "params": valid_params,
             },
             env,
         )
-        assert parsed["id"] == "feedback-upload-parsed"
-        assert parsed["error"]["code"] == -32603
-        assert "feedback/upload" in parsed["error"]["message"]
-        assert "parsed but not implemented yet" in parsed["error"]["message"]
+        assert uploaded["id"] == "feedback-uploaded"
+        assert uploaded["result"] == {
+            "threadId": "00000000-0000-4000-8000-000000000123"
+        }
+        assert server.request_paths == [
+            "/api/42/envelope/?sentry_key=public&sentry_version=7&sentry_client=codex-zig-port%2F0.0.1"
+        ]
+        assert (
+            server.request_headers[0]["content-type"]
+            == "application/x-sentry-envelope"
+        )
+        envelope = server.request_bodies[0]
+        assert b'"dsn":"' in envelope
+        assert b'"type":"event"' in envelope
+        assert b'"level":"error"' in envelope
+        assert b"[Bug]: Codex session 00000000-0000-4000-8000-000000000123" in envelope
+        assert b'"thread_id":"00000000-0000-4000-8000-000000000123"' in envelope
+        assert b'"classification":"bug"' in envelope
+        assert b'"reason":"smoke"' in envelope
+        assert b'"surface":"app-server"' in envelope
+        assert b'"thread_id":"wrong-thread"' not in envelope
+        assert b'"classification":"wrong-classification"' not in envelope
+        assert b'"filename":"codex-logs.log"' in envelope
+        assert b'"filename":"codex-zig-feedback.log"' in envelope
+        assert b"extra log body\n" in envelope
+
+        no_thread = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-no-thread",
+                "method": "feedback/upload",
+                "params": {
+                    "classification": "good_result",
+                    "includeLogs": False,
+                    "tags": {"surface": "app-server"},
+                },
+            },
+            env,
+        )
+        assert no_thread["id"] == "feedback-no-thread"
+        generated_thread_id = no_thread["result"]["threadId"]
+        assert generated_thread_id.startswith("no-active-thread-")
+        assert len(generated_thread_id) == len("no-active-thread-") + 36
+        assert len(server.request_bodies) == 2
+        assert b'"level":"info"' in server.request_bodies[1]
+        assert b'"filename":"codex-logs.log"' not in server.request_bodies[1]
 
         invalid_thread = request_stdio_app_server(
             binary,
@@ -10415,7 +10498,10 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert disabled["id"] == "feedback-disabled"
         assert disabled["error"]["code"] == -32600
         assert disabled["error"]["message"] == "sending feedback is disabled by configuration"
+        assert len(server.request_bodies) == 2
     finally:
+        server.shutdown()
+        server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
