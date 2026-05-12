@@ -16744,6 +16744,10 @@ fn handleThreadMethod(
         }
         if (findLoadedThread(state, thread_id)) |thread| {
             const include_turns = threadReadIncludeTurnsParam(object);
+            if (include_turns) {
+                if (thread.ephemeral) return renderThreadReadIncludeTurnsEphemeral(allocator, id_value);
+                if (!(try loadedThreadHasMaterializedTurns(allocator, thread))) return renderThreadReadIncludeTurnsUnavailable(allocator, id_value, thread_id);
+            }
             const result = try renderThreadReadResponse(allocator, thread, include_turns);
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
@@ -16776,6 +16780,8 @@ fn handleThreadMethod(
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
         if (findLoadedThread(state, thread_id)) |thread| {
+            if (thread.ephemeral) return renderThreadTurnsListEphemeral(allocator, id_value);
+            if (!(try loadedThreadHasMaterializedTurns(allocator, thread))) return renderThreadTurnsListUnavailable(allocator, id_value, thread_id);
             const result = renderThreadTurnsListResponse(allocator, thread, object) catch |err| switch (err) {
                 error.InvalidThreadTurnsCursor => {
                     const cursor = optionalStringParam(object, "cursor") orelse "";
@@ -18717,6 +18723,14 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
     return renderThreadReadResponseWithStatus(allocator, thread, include_turns, .idle);
 }
 
+fn loadedThreadHasMaterializedTurns(allocator: std.mem.Allocator, thread: *const LoadedThread) !bool {
+    if (thread.transcript.history.items.len > 0) return true;
+    var parsed_turns = try std.json.parseFromSlice(std.json.Value, allocator, thread.turns_json, .{});
+    defer parsed_turns.deinit();
+    if (parsed_turns.value != .array) return true;
+    return parsed_turns.value.array.items.len > 0;
+}
+
 fn renderStoredThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
     return renderThreadReadResponseWithStatus(allocator, thread, include_turns, .not_loaded);
 }
@@ -19654,6 +19668,26 @@ fn renderThreadNotFound(allocator: std.mem.Allocator, id_value: std.json.Value, 
 
 fn renderThreadNotLoaded(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
     const message = try std.fmt.allocPrint(allocator, "thread not loaded: {s}", .{thread_id});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderThreadReadIncludeTurnsEphemeral(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
+    return renderJsonRpcError(allocator, id_value, -32600, "ephemeral threads do not support includeTurns");
+}
+
+fn renderThreadReadIncludeTurnsUnavailable(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "thread {s} is not materialized yet; includeTurns is unavailable before first user message", .{thread_id});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderThreadTurnsListEphemeral(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
+    return renderJsonRpcError(allocator, id_value, -32600, "ephemeral threads do not support thread/turns/list");
+}
+
+fn renderThreadTurnsListUnavailable(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "thread {s} is not materialized yet; thread/turns/list is unavailable before first user message", .{thread_id});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
 }
