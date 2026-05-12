@@ -11104,6 +11104,8 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["TMPDIR"] = str(command_tmpdir)
+        env["COMMAND_EXEC_BASELINE"] = "server"
+        env["COMMAND_EXEC_REMOVED"] = "server"
         network_server, network_url = start_command_exec_network_backend()
         network_probe = (
             "import sys, urllib.request; "
@@ -11148,6 +11150,35 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert cwd_env["result"]["exitCode"] == 0
         assert cwd_env["result"]["stdout"] == f"{cwd.resolve()}|token-value"
         assert cwd_env["result"]["stderr"] == ""
+
+        env_merge = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-env-merge",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        'printf "%s|%s|%s|%s" "$COMMAND_EXEC_BASELINE" "$COMMAND_EXEC_EXTRA" "${COMMAND_EXEC_REMOVED-unset}" "$CODEX_HOME"',
+                    ],
+                    "env": {
+                        "COMMAND_EXEC_BASELINE": "request",
+                        "COMMAND_EXEC_EXTRA": "added",
+                        "COMMAND_EXEC_REMOVED": None,
+                    },
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                },
+            },
+            env,
+        )
+        assert env_merge["id"] == "command-exec-env-merge"
+        assert env_merge["result"] == {
+            "exitCode": 0,
+            "stdout": f"request|added|unset|{codex_home}",
+            "stderr": "",
+        }
 
         sandbox_policy_tmpdir_default = request_stdio_app_server(
             binary,
