@@ -4250,6 +4250,53 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        appserver_thread_id = "33333333-3333-4333-8333-333333333333"
+        appserver_sessions_dir = codex_home / "sessions" / "app-server"
+        appserver_sessions_dir.mkdir(parents=True)
+        appserver_rollout_path = (
+            appserver_sessions_dir / f"rollout-{appserver_thread_id}.jsonl"
+        )
+        appserver_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": appserver_thread_id,
+                                "timestamp": "2025-01-05T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "appServer",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "appserver saved hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
@@ -4262,6 +4309,38 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             env=env,
         )
         try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-saved-appserver-rollout",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["appServer"],
+                        "cwd": "/",
+                        "searchTerm": "appserver saved",
+                    },
+                },
+            )
+            saved_appserver_list = read_json_line(proc, 5)
+            assert saved_appserver_list["id"] == "thread-list-saved-appserver-rollout"
+            saved_appserver_threads = saved_appserver_list["result"]["data"]
+            assert len(saved_appserver_threads) == 1
+            saved_appserver_thread = saved_appserver_threads[0]
+            assert saved_appserver_thread["id"] == appserver_thread_id
+            assert saved_appserver_thread["sessionId"] == appserver_thread_id
+            assert saved_appserver_thread["preview"] == "appserver saved hello"
+            assert saved_appserver_thread["ephemeral"] is False
+            assert saved_appserver_thread["modelProvider"] == "mock_provider"
+            assert saved_appserver_thread["path"] == os.path.realpath(
+                appserver_rollout_path
+            )
+            assert saved_appserver_thread["cwd"] == "/"
+            assert saved_appserver_thread["cliVersion"] == "0.0.0"
+            assert saved_appserver_thread["source"] == "appServer"
+            assert saved_appserver_thread["turns"] == []
+
             write_json_line(
                 proc,
                 {

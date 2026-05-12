@@ -17721,26 +17721,24 @@ fn renderThreadListResult(
             }
         }
 
-        if (threadListShouldScanSavedRollouts(params)) {
-            const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-            defer if (fallback_model_provider) |value| allocator.free(value);
-            const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
-            defer session_store.freeRolloutFiles(allocator, rollout_files);
-            for (rollout_files) |file| {
-                if (!archived and findLoadedThreadForRolloutFile(state, file) != null) continue;
-                var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider orelse "openai") catch |err| switch (err) {
-                    error.OutOfMemory => return err,
-                    else => continue,
-                };
-                var saved_moved = false;
-                errdefer if (!saved_moved) saved.deinit(allocator);
-                const item = ThreadListItem{ .saved = saved };
-                if (threadListItemMatchesParams(item, params)) {
-                    try threads.append(allocator, item);
-                    saved_moved = true;
-                } else {
-                    saved.deinit(allocator);
-                }
+        const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+        defer if (fallback_model_provider) |value| allocator.free(value);
+        const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
+        defer session_store.freeRolloutFiles(allocator, rollout_files);
+        for (rollout_files) |file| {
+            if (!archived and findLoadedThreadForRolloutFile(state, file) != null) continue;
+            var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider orelse "openai") catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => continue,
+            };
+            var saved_moved = false;
+            errdefer if (!saved_moved) saved.deinit(allocator);
+            const item = ThreadListItem{ .saved = saved };
+            if (threadListItemMatchesParams(item, params)) {
+                try threads.append(allocator, item);
+                saved_moved = true;
+            } else {
+                saved.deinit(allocator);
             }
         }
     }
@@ -17794,16 +17792,6 @@ fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMa
         if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
     }
     return true;
-}
-
-fn threadListShouldScanSavedRollouts(params: std.json.ObjectMap) bool {
-    const source_kinds = params.get("sourceKinds") orelse return true;
-    if (source_kinds == .null) return true;
-    if (source_kinds.array.items.len == 0) return true;
-    for (source_kinds.array.items) |source| {
-        if (!std.mem.eql(u8, source.string, "appServer")) return true;
-    }
-    return false;
 }
 
 fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {
