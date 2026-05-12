@@ -16481,6 +16481,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
+        const mode = object.get("mode").?.string;
         if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
             const thread = &state.loaded_threads.items[thread_index];
             if (thread.ephemeral) {
@@ -16488,12 +16489,26 @@ fn handleThreadMethod(
                 defer allocator.free(message);
                 return renderJsonRpcError(allocator, id_value, -32600, message);
             }
-            setLoadedThreadMemoryMode(allocator, thread, object.get("mode").?.string) catch |err| {
+            setLoadedThreadMemoryMode(allocator, thread, mode) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
             };
             return renderJsonRpcResult(allocator, id_value, "{}");
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        var stored_thread = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+            error.FileNotFound => return renderThreadNotFound(allocator, id_value, thread_id),
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err),
+        };
+        defer stored_thread.deinit(allocator);
+        const stored_path = stored_thread.path orelse return renderThreadNotFound(allocator, id_value, thread_id);
+        session_store.appendThreadMemoryMode(allocator, stored_path, thread_id, mode) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
+        };
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/metadata/update")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
