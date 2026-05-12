@@ -385,15 +385,16 @@ imports validated session details into `$CODEX_HOME/sessions/zig` using
 Rust-shaped `response_item` rows plus `task_started`, `user_message`,
 `agent_message`, `token_count`, and `task_complete` rollout events, preserves
 the imported session title, replays the `<EXTERNAL SESSION IMPORTED>` marker
-through `thread/read`, records the current source hash in
+through `thread/read`, renders imported user/assistant/import-marker items as a
+single completed turn through `thread/read` and `thread/turns/list`, records the
+current source hash in
 `external_agent_session_imports.json`, then emits
 `externalAgentConfig/import/completed`. TypeScript and JSON schema generation
 include the detect/import request and response shapes, migration item/detail
-types, and the `externalAgentConfig/import/completed` notification shape. Full
-Rust turn grouping reconstruction for imported sessions, background session
-imports, large-session compaction before first follow-up, remote/background
-plugin imports, runtime refresh, and richer import progress notifications
-remain planned.
+types, and the `externalAgentConfig/import/completed` notification shape.
+Background session imports, large-session compaction before first follow-up,
+remote/background plugin imports, runtime refresh, and richer import progress
+notifications remain planned.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
