@@ -134,6 +134,7 @@ const LoadedThread = struct {
     turns_json: []const u8,
     created_at: i64,
     updated_at: i64,
+    status: ThreadRuntimeStatus = .idle,
 
     fn deinit(self: *LoadedThread, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -15415,6 +15416,12 @@ fn handleTurnStart(
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
     }) catch |err| {
+        thread.status = .system_error;
+        try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
         return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to run turn", err);
     };
     defer allocator.free(answer);
@@ -15430,6 +15437,7 @@ fn handleTurnStart(
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
 
+    thread.status = .active;
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
     try queueTurnNotification(allocator, state, "turn/started", started_notification);
     started_notification_moved = true;
@@ -15452,6 +15460,7 @@ fn handleTurnStart(
     }
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
+    thread.status = .idle;
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
 
     return renderJsonRpcResult(allocator, id_value, response);
@@ -19028,7 +19037,7 @@ fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const Lo
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, "{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, include_turns, .idle);
+    try appendLoadedThreadJson(allocator, &result, thread, include_turns, thread.status);
     try result.appendSlice(allocator, ",\"model\":");
     try appendJsonString(allocator, &result, thread.model);
     try result.appendSlice(allocator, ",\"modelProvider\":");
@@ -19051,7 +19060,7 @@ fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const Lo
 }
 
 fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
-    return renderThreadReadResponseWithStatus(allocator, thread, include_turns, .idle);
+    return renderThreadReadResponseWithStatus(allocator, thread, include_turns, thread.status);
 }
 
 fn loadedThreadHasMaterializedTurns(allocator: std.mem.Allocator, thread: *const LoadedThread) !bool {
@@ -19206,7 +19215,7 @@ fn renderThreadStartedNotification(allocator: std.mem.Allocator, thread: *const 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/started\",\"params\":{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, false, .idle);
+    try appendLoadedThreadJson(allocator, &result, thread, false, thread.status);
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
 }
@@ -19565,7 +19574,7 @@ fn appendThreadRuntimeStatusJson(allocator: std.mem.Allocator, result: *std.Arra
 
 fn appendThreadListItemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: ThreadListItem) !void {
     switch (thread) {
-        .loaded => |loaded| try appendLoadedThreadJson(allocator, result, loaded, false, .idle),
+        .loaded => |loaded| try appendLoadedThreadJson(allocator, result, loaded, false, loaded.status),
         .saved => |saved| try appendSavedThreadListItemJson(allocator, result, saved),
     }
 }
