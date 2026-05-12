@@ -19697,6 +19697,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "TurnInterruptResponse.json").read_text(encoding="utf-8")
         )
         assert turn_interrupt_response_schema["additionalProperties"] is False
+        error_notification_schema = json.loads(
+            (out_dir / "ErrorNotification.json").read_text(encoding="utf-8")
+        )
+        assert error_notification_schema["required"] == [
+            "error",
+            "threadId",
+            "turnId",
+            "willRetry",
+        ]
+        assert (
+            error_notification_schema["properties"]["error"]["$ref"]
+            == "TurnError.json"
+        )
+        assert (
+            error_notification_schema["properties"]["willRetry"]["type"] == "boolean"
+        )
         turn_started_notification_schema = json.loads(
             (out_dir / "TurnStartedNotification.json").read_text(encoding="utf-8")
         )
@@ -20845,6 +20861,17 @@ def run_json_schema_smoke(binary: Path) -> None:
             "turnId",
         ]
         assert "TurnInterruptResponse" in bundle["$defs"]
+        assert "ErrorNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ErrorNotification"]["properties"]["error"]["$ref"]
+            == "#/$defs/TurnError"
+        )
+        assert bundle["$defs"]["ErrorNotification"]["required"] == [
+            "error",
+            "threadId",
+            "turnId",
+            "willRetry",
+        ]
         assert "TurnStartedNotification" in bundle["$defs"]
         assert (
             bundle["$defs"]["TurnStartedNotification"]["properties"]["turn"]["$ref"]
@@ -21341,6 +21368,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadGoalClearedNotification;" in server_notification
         assert 'method: "thread/tokenUsage/updated";' in server_notification
         assert "params: ThreadTokenUsageUpdatedNotification;" in server_notification
+        assert (
+            'import type { ErrorNotification } from "./v2/ErrorNotification";'
+            in server_notification
+        )
+        assert 'method: "error";' in server_notification
+        assert "params: ErrorNotification;" in server_notification
         assert 'method: "turn/started";' in server_notification
         assert "params: TurnStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
@@ -22562,6 +22595,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "TurnInterruptResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface TurnInterruptResponse {}" in turn_interrupt_response
+        error_notification = (out_dir / "v2" / "ErrorNotification.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { TurnError } from "./TurnError";' in error_notification
+        assert "export interface ErrorNotification" in error_notification
+        assert "error: TurnError;" in error_notification
+        assert "willRetry: boolean;" in error_notification
+        assert "threadId: string;" in error_notification
+        assert "turnId: string;" in error_notification
         turn_started_notification = (
             out_dir / "v2" / "TurnStartedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -23362,6 +23404,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { TurnInterruptResponse } from "./TurnInterruptResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ErrorNotification } from "./ErrorNotification";'
             in v2_index
         )
         assert (
