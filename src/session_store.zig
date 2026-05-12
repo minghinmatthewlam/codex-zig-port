@@ -54,6 +54,10 @@ pub const RolloutFile = struct {
     thread_source: ?[]const u8 = null,
     agent_nickname: ?[]const u8 = null,
     agent_role: ?[]const u8 = null,
+    model_provider: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
+    cli_version: ?[]const u8 = null,
+    first_user_message: ?[]const u8 = null,
     git_sha: ?[]const u8 = null,
     git_branch: ?[]const u8 = null,
     git_origin_url: ?[]const u8 = null,
@@ -67,6 +71,10 @@ pub const RolloutFile = struct {
         if (self.thread_source) |value| allocator.free(value);
         if (self.agent_nickname) |value| allocator.free(value);
         if (self.agent_role) |value| allocator.free(value);
+        if (self.model_provider) |value| allocator.free(value);
+        if (self.cwd) |value| allocator.free(value);
+        if (self.cli_version) |value| allocator.free(value);
+        if (self.first_user_message) |value| allocator.free(value);
         if (self.git_sha) |value| allocator.free(value);
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
