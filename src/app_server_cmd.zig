@@ -16795,7 +16795,7 @@ fn handleThreadResume(
         }
     }
 
-    const resume_path_raw = try threadResumePath(allocator, cfg.codex_home, object);
+    const resume_path_raw = try threadResumePathIncludingStateDb(allocator, cfg.codex_home, object);
     defer allocator.free(resume_path_raw);
 
     var transcript = session_store.loadTranscript(allocator, resume_path_raw) catch |err| switch (err) {
@@ -16815,6 +16815,9 @@ fn handleThreadResume(
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
+    applyStateResumeMetadata(allocator, cfg.codex_home, object, &thread) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply state metadata", err);
+    };
 
     const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
@@ -16908,6 +16911,24 @@ fn threadResumePath(allocator: std.mem.Allocator, codex_home: []const u8, params
     }
     const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
     return session_store.resolveResumePath(allocator, codex_home, thread_id);
+}
+
+fn threadResumePathIncludingStateDb(allocator: std.mem.Allocator, codex_home: []const u8, params: std.json.ObjectMap) ![]const u8 {
+    const path = try threadResumePath(allocator, codex_home, params);
+    errdefer allocator.free(path);
+    if (optionalStringParam(params, "path") != null) return path;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
+            const state_path = (try thread_state.findRolloutPathByThreadId(allocator, codex_home, thread_id)) orelse return path;
+            allocator.free(path);
+            return state_path;
+        },
+        else => return path,
+    };
+    return path;
 }
 
 fn createStoredThreadFromParams(
@@ -17008,7 +17029,37 @@ fn applyIndexedThreadName(allocator: std.mem.Allocator, codex_home: []const u8, 
     thread.name = name_copy;
 }
 
+const StateThreadMetadataApplyOptions = struct {
+    apply_model_runtime: bool = true,
+    apply_cwd: bool = true,
+};
+
 fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread, metadata: thread_state.ThreadMetadata) !void {
+    try applyStateThreadMetadataWithOptions(allocator, thread, metadata, .{});
+}
+
+fn applyStateResumeMetadata(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    params: std.json.ObjectMap,
+    thread: *LoadedThread,
+) !void {
+    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, codex_home, thread.id);
+    defer if (metadata) |value| value.deinit(allocator);
+    if (metadata) |value| {
+        try applyStateThreadMetadataWithOptions(allocator, thread, value, .{
+            .apply_model_runtime = !threadResumeHasModelRuntimeOverride(params),
+            .apply_cwd = optionalStringParam(params, "cwd") == null,
+        });
+    }
+}
+
+fn applyStateThreadMetadataWithOptions(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    metadata: thread_state.ThreadMetadata,
+    options: StateThreadMetadataApplyOptions,
+) !void {
     if (stateThreadString(metadata.first_user_message)) |preview| {
         try replaceOwnedString(allocator, &thread.preview, preview);
     }
@@ -17018,13 +17069,23 @@ fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread,
     if (metadata.memory_mode) |memory_mode| {
         try thread.transcript.setMemoryMode(allocator, memory_mode);
     }
-    if (stateThreadString(metadata.model_provider)) |model_provider| {
-        try replaceOwnedString(allocator, &thread.model_provider, model_provider);
-        try thread.transcript.setModelProvider(allocator, model_provider);
+    if (options.apply_model_runtime) {
+        if (stateThreadString(metadata.model)) |model| {
+            try replaceOwnedString(allocator, &thread.model, model);
+        }
+        if (stateThreadString(metadata.model_provider)) |model_provider| {
+            try replaceOwnedString(allocator, &thread.model_provider, model_provider);
+            try thread.transcript.setModelProvider(allocator, model_provider);
+        }
+        if (stateThreadReasoningEffort(metadata.reasoning_effort)) |reasoning_effort| {
+            try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, reasoning_effort);
+        }
     }
-    if (stateThreadString(metadata.cwd)) |cwd| {
-        try replaceOwnedString(allocator, &thread.cwd, cwd);
-        try thread.transcript.setCwd(allocator, cwd);
+    if (options.apply_cwd) {
+        if (stateThreadString(metadata.cwd)) |cwd| {
+            try replaceOwnedString(allocator, &thread.cwd, cwd);
+            try thread.transcript.setCwd(allocator, cwd);
+        }
     }
     if (stateThreadString(metadata.cli_version)) |cli_version| {
         try replaceOwnedString(allocator, &thread.cli_version, cli_version);
@@ -17058,6 +17119,16 @@ fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread,
     try replaceStateMetadataGitInfo(allocator, &thread.git_branch, metadata.git_branch);
     try replaceStateMetadataGitInfo(allocator, &thread.git_origin_url, metadata.git_origin_url);
     try syncLoadedThreadGitInfoToTranscript(allocator, thread);
+}
+
+fn threadResumeHasModelRuntimeOverride(params: std.json.ObjectMap) bool {
+    if (optionalStringParam(params, "model") != null) return true;
+    if (optionalStringParam(params, "modelProvider") != null) return true;
+    const config_value = params.get("config") orelse return false;
+    if (config_value != .object) return false;
+    return config_value.object.get("model") != null or
+        config_value.object.get("model_provider") != null or
+        config_value.object.get("model_reasoning_effort") != null;
 }
 
 fn replaceStateMetadataGitInfo(allocator: std.mem.Allocator, slot: *?[]const u8, value: ?[]const u8) !void {
@@ -17919,6 +17990,12 @@ fn stateThreadTitle(title: ?[]const u8, preview: []const u8) ?[]const u8 {
 fn stateThreadString(value: ?[]const u8) ?[]const u8 {
     const text = value orelse return null;
     if (text.len == 0) return null;
+    return text;
+}
+
+fn stateThreadReasoningEffort(value: ?[]const u8) ?[]const u8 {
+    const text = stateThreadString(value) orelse return null;
+    _ = config.ReasoningEffort.parse(text) catch return null;
     return text;
 }
 
