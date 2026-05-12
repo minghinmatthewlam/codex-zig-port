@@ -153,11 +153,11 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - remove app-server auth with `account/logout` and emit `account/updated`
 - read app-server config basics plus effective feature flags, user
   config-origin/layer metadata, user sandbox workspace settings, user tools
-  and apps config including app defaults, policy flags, and per-app tool
-  overrides, trusted project-stack scalar, tool, app, and sandbox workspace
-  layers, system scalar/tool/app/sandbox workspace precedence, required empty
-  user/system layers, and legacy managed scalar/tool/app/sandbox overrides with
-  `config/read`
+  and apps config including app defaults, forced account-login config, policy
+  flags, and per-app tool overrides, trusted project-stack scalar, tool, app,
+  and sandbox workspace layers, system scalar/tool/app/sandbox workspace
+  precedence, required empty user/system layers, and legacy managed
+  scalar/tool/app/sandbox overrides with `config/read`
 - write app-server config scalar, array, object, and null-clearing values with
   `config/value/write`
 - merge and replace existing app-server TOML table objects with

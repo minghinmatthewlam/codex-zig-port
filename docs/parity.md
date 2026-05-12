@@ -57,6 +57,11 @@ config (`model`, `approval_policy`, `sandbox_mode`, `web_search`,
 precedence. Layer reads also preserve required empty user and system layers
 when the corresponding config files are absent.
 
+Current app-server `config/read` scalar coverage also includes
+`forced_chatgpt_workspace_id` and `forced_login_method` in the effective config,
+origins, and user/project/system/legacy-managed layers, matching the account
+login validation surface.
+
 Current app-server TypeScript and JSON Schema generation coverage includes the
 minimal JSON-RPC envelope, client-notification, and initialize helper files plus
 top-level primitive TypeScript helpers for IDs, modalities, reasoning,
