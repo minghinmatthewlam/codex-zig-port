@@ -1492,6 +1492,18 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "unsubscribe-forked-thread",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": forked_thread_id},
+            }
+        )
+        unsubscribe_forked_thread = read_line()
+        assert unsubscribe_forked_thread["id"] == "unsubscribe-forked-thread"
+        assert unsubscribe_forked_thread["result"] == {"status": "unsubscribed"}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-name-loaded",
                 "method": "thread/name/set",
                 "params": {"threadId": thread_id, "name": "Started smoke thread"},
@@ -1671,7 +1683,19 @@ def exercise_json_rpc(write_line, read_line) -> None:
         )
         unsubscribe_started_thread = read_line()
         assert unsubscribe_started_thread["id"] == "unsubscribe-started-thread"
-        assert unsubscribe_started_thread["result"] == {"status": "notSubscribed"}
+        assert unsubscribe_started_thread["result"] == {"status": "unsubscribed"}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "unsubscribe-started-thread-again",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": thread_id},
+            }
+        )
+        unsubscribe_started_thread_again = read_line()
+        assert unsubscribe_started_thread_again["id"] == "unsubscribe-started-thread-again"
+        assert unsubscribe_started_thread_again["result"] == {"status": "notSubscribed"}
 
     write_line(
         {
@@ -5531,6 +5555,19 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             loaded = read_json_line(proc, 5)
             assert loaded["id"] == "loaded-threads-after-resume"
             assert loaded["result"] == {"data": [resume_thread_id], "nextCursor": None}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unsubscribe-resumed-thread",
+                    "method": "thread/unsubscribe",
+                    "params": {"threadId": resume_thread_id},
+                },
+            )
+            unsubscribe_resumed_thread = read_json_line(proc, 5)
+            assert unsubscribe_resumed_thread["id"] == "unsubscribe-resumed-thread"
+            assert unsubscribe_resumed_thread["result"] == {"status": "unsubscribed"}
 
             write_json_line(
                 proc,
