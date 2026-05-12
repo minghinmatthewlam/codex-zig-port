@@ -114,6 +114,7 @@ const LoadedThread = struct {
     approvals_reviewer: []const u8,
     sandbox_mode: []const u8,
     reasoning_effort: ?[]const u8,
+    runtime_overrides: LoadedThreadRuntimeOverrides,
     ephemeral: bool,
     path: ?[]const u8,
     source: []const u8,
@@ -162,6 +163,15 @@ const LoadedThread = struct {
         self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
     }
+};
+
+const LoadedThreadRuntimeOverrides = struct {
+    model: bool = false,
+    model_provider: bool = false,
+    service_tier: bool = false,
+    approval_policy: bool = false,
+    sandbox_mode: bool = false,
+    reasoning_effort: bool = false,
 };
 
 const LoadedThreadGoal = struct {
@@ -15656,7 +15666,10 @@ fn applyTurnStartRuntimeOverrides(
 ) !void {
     const effective_model = optionalStringParam(params, "model") orelse thread.model;
     try replaceOwnedString(allocator, &cfg.model, effective_model);
-    if (optionalStringParam(params, "model")) |model| try replaceOwnedString(allocator, &thread.model, model);
+    if (optionalStringParam(params, "model")) |model| {
+        try replaceOwnedString(allocator, &thread.model, model);
+        thread.runtime_overrides.model = true;
+    }
 
     if (optionalStringParam(params, "cwd")) |cwd_raw| {
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd_raw, allocator);
@@ -15669,17 +15682,20 @@ fn applyTurnStartRuntimeOverrides(
     cfg.approval_policy = config.ApprovalPolicy.parse(approval_policy_label) catch return error.InvalidTurnContextOverride;
     if (optionalStringParam(params, "approvalPolicy")) |approval_policy| {
         try replaceOwnedString(allocator, &thread.approval_policy, approval_policy);
+        thread.runtime_overrides.approval_policy = true;
     }
 
     const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
     cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
     if (optionalStringParam(params, "sandbox")) |sandbox| {
         try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
+        thread.runtime_overrides.sandbox_mode = true;
     }
 
     if (optionalStringParam(params, "modelProvider")) |model_provider| {
         try replaceOwnedString(allocator, &thread.model_provider, model_provider);
         try thread.transcript.setModelProvider(allocator, model_provider);
+        thread.runtime_overrides.model_provider = true;
     }
 
     if (params.get("serviceTier")) |service_tier_value| {
@@ -15691,6 +15707,7 @@ fn applyTurnStartRuntimeOverrides(
             null;
         if (cfg.service_tier) |existing| allocator.free(existing);
         cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
+        thread.runtime_overrides.service_tier = true;
     } else {
         if (cfg.service_tier) |existing| allocator.free(existing);
         cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
@@ -17264,13 +17281,16 @@ fn applyStateThreadMetadataWithOptions(
     if (options.apply_model_runtime) {
         if (stateThreadString(metadata.model)) |model| {
             try replaceOwnedString(allocator, &thread.model, model);
+            thread.runtime_overrides.model = true;
         }
         if (stateThreadString(metadata.model_provider)) |model_provider| {
             try replaceOwnedString(allocator, &thread.model_provider, model_provider);
             try thread.transcript.setModelProvider(allocator, model_provider);
+            thread.runtime_overrides.model_provider = true;
         }
         if (stateThreadReasoningEffort(metadata.reasoning_effort)) |reasoning_effort| {
             try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, reasoning_effort);
+            thread.runtime_overrides.reasoning_effort = true;
         }
     }
     if (options.apply_cwd) {
@@ -17414,6 +17434,13 @@ fn createLoadedThreadFromStartParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .runtime_overrides = .{
+            .model = paramPresent(params, "model"),
+            .model_provider = paramPresent(params, "modelProvider"),
+            .service_tier = paramPresent(params, "serviceTier"),
+            .approval_policy = paramPresent(params, "approvalPolicy"),
+            .sandbox_mode = paramPresent(params, "sandbox"),
+        },
         .ephemeral = ephemeral,
         .path = path,
         .source = source,
@@ -17510,6 +17537,13 @@ fn createLoadedThreadFromHistoryParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .runtime_overrides = .{
+            .model = paramPresent(params, "model"),
+            .model_provider = paramPresent(params, "modelProvider"),
+            .service_tier = paramPresent(params, "serviceTier"),
+            .approval_policy = paramPresent(params, "approvalPolicy"),
+            .sandbox_mode = paramPresent(params, "sandbox"),
+        },
         .ephemeral = false,
         .path = path,
         .source = source,
@@ -17619,6 +17653,13 @@ fn createLoadedThreadFromResumeParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .runtime_overrides = .{
+            .model = paramPresent(params, "model"),
+            .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
+            .service_tier = paramPresent(params, "serviceTier"),
+            .approval_policy = paramPresent(params, "approvalPolicy"),
+            .sandbox_mode = paramPresent(params, "sandbox"),
+        },
         .ephemeral = false,
         .path = path_copy,
         .source = source,
@@ -17752,6 +17793,14 @@ fn createLoadedThreadFromForkParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .runtime_overrides = .{
+            .model = paramPresent(params, "model") or source.runtime_overrides.model,
+            .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
+            .service_tier = paramPresent(params, "serviceTier") or source.runtime_overrides.service_tier,
+            .approval_policy = paramPresent(params, "approvalPolicy") or source.runtime_overrides.approval_policy,
+            .sandbox_mode = paramPresent(params, "sandbox") or source.runtime_overrides.sandbox_mode,
+            .reasoning_effort = source.runtime_overrides.reasoning_effort,
+        },
         .ephemeral = ephemeral,
         .path = path,
         .source = source_label,
@@ -17984,6 +18033,11 @@ fn optionalBoolParam(params: ?std.json.ObjectMap, name: []const u8) ?bool {
     const value = object.get(name) orelse return null;
     if (value == .null) return null;
     return value.bool;
+}
+
+fn paramPresent(params: ?std.json.ObjectMap, name: []const u8) bool {
+    const object = params orelse return false;
+    return object.get(name) != null;
 }
 
 fn optionalJsonParam(params: std.json.ObjectMap, name: []const u8) ?std.json.Value {
@@ -24422,7 +24476,7 @@ fn handleConfigMethod(
         return response;
     }
     if (std.mem.eql(u8, method, "config/batchWrite")) {
-        const response = try handleConfigBatchWrite(allocator, id_value, params_value);
+        const response = try handleConfigBatchWrite(allocator, state, id_value, params_value);
         clearSkillsListCache(allocator, state);
         return response;
     }
@@ -29568,17 +29622,24 @@ fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value
     return handleConfigWriteEdits(allocator, id_value, params.object, &.{edit}, "config/value/write");
 }
 
-fn handleConfigBatchWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleConfigBatchWrite(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/batchWrite params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/batchWrite params must be an object");
 
     const edits_value = params.object.get("edits") orelse return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
     if (edits_value != .array) return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
 
-    if (params.object.get("reloadUserConfig")) |reload_user_config| {
-        if (reload_user_config != .null and reload_user_config != .bool) {
+    var reload_user_config = false;
+    if (params.object.get("reloadUserConfig")) |reload_user_config_value| {
+        if (reload_user_config_value != .null and reload_user_config_value != .bool) {
             return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null");
         }
+        if (reload_user_config_value == .bool) reload_user_config = reload_user_config_value.bool;
     }
 
     const edits = try allocator.alloc(ConfigRawEdit, edits_value.array.items.len);
@@ -29593,7 +29654,58 @@ fn handleConfigBatchWrite(allocator: std.mem.Allocator, id_value: std.json.Value
         };
     }
 
-    return handleConfigWriteEdits(allocator, id_value, params.object, edits, "config/batchWrite");
+    const response = try handleConfigWriteEdits(allocator, id_value, params.object, edits, "config/batchWrite");
+    errdefer allocator.free(response);
+    if (reload_user_config) try reloadLoadedThreadRuntimeConfig(allocator, state);
+    return response;
+}
+
+fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    if (state.loaded_threads.items.len == 0) return;
+
+    var cfg = config.load(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer cfg.deinit(allocator);
+
+    const configured_model_provider = config.loadModelProviderId(allocator, cfg.active_profile) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    defer if (configured_model_provider) |value| allocator.free(value);
+    const model_provider = configured_model_provider orelse "openai";
+
+    for (state.loaded_threads.items) |*thread| {
+        if (!thread.runtime_overrides.model) {
+            try replaceOwnedString(allocator, &thread.model, cfg.model);
+        }
+        if (!thread.runtime_overrides.model_provider) {
+            try replaceOwnedString(allocator, &thread.model_provider, model_provider);
+            try thread.transcript.setModelProvider(allocator, model_provider);
+        }
+        if (!thread.runtime_overrides.service_tier) {
+            if (cfg.service_tier) |value| {
+                try replaceOptionalOwnedString(allocator, &thread.service_tier, value);
+            } else {
+                clearOptionalOwnedString(allocator, &thread.service_tier);
+            }
+        }
+        if (!thread.runtime_overrides.approval_policy) {
+            try replaceOwnedString(allocator, &thread.approval_policy, cfg.approval_policy.label());
+        }
+        if (!thread.runtime_overrides.sandbox_mode) {
+            try replaceOwnedString(allocator, &thread.sandbox_mode, cfg.sandbox_mode.label());
+        }
+        if (!thread.runtime_overrides.reasoning_effort) {
+            if (cfg.model_reasoning_effort) |effort| {
+                try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
+            } else {
+                clearOptionalOwnedString(allocator, &thread.reasoning_effort);
+            }
+        }
+        thread.updated_at = currentUnixSeconds();
+    }
 }
 
 fn parseConfigWriteEdit(object: std.json.ObjectMap) !ConfigRawEdit {
