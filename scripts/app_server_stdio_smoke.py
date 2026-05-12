@@ -58,6 +58,16 @@ EXPECTED_REALTIME_AUDIO_CHUNK = {
 }
 
 
+def assert_timestamp_cursor(value: object) -> str:
+    assert isinstance(value, str)
+    assert len(value) >= len("YYYY-MM-DDTHH:MM:SSZ")
+    assert value[4] == "-"
+    assert value[7] == "-"
+    assert value[10] == "T"
+    assert value.endswith("Z")
+    return value
+
+
 class TurnResponsesHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -1472,10 +1482,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert all(thread["modelProvider"] == "mock_provider" for thread in listed_threads)
         assert all(thread["cwd"] == thread_cwd_real for thread in listed_threads)
         assert thread_list_loaded["result"]["nextCursor"] is None
-        assert thread_list_loaded["result"]["backwardsCursor"] in {
-            thread_id,
-            forked_thread_id,
-        }
+        assert_timestamp_cursor(thread_list_loaded["result"]["backwardsCursor"])
 
         write_line(
             {
@@ -1491,7 +1498,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
             thread_id
         ]
         assert thread_list_loaded_search["result"]["nextCursor"] is None
-        assert thread_list_loaded_search["result"]["backwardsCursor"] == thread_id
+        assert_timestamp_cursor(thread_list_loaded_search["result"]["backwardsCursor"])
 
         write_line(
             {
@@ -1507,34 +1514,10 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert len(first_page_threads) == 1
         first_page_id = first_page_threads[0]["id"]
         assert first_page_id in {thread_id, forked_thread_id}
-        assert thread_list_loaded_page_1["result"]["nextCursor"] == first_page_id
-        assert thread_list_loaded_page_1["result"]["backwardsCursor"] == first_page_id
-
-        write_line(
-            {
-                "jsonrpc": "2.0",
-                "id": "thread-list-loaded-page-2",
-                "method": "thread/list",
-                "params": {
-                    **loaded_thread_list_params,
-                    "cursor": first_page_id,
-                    "limit": 1,
-                },
-            }
-        )
-        thread_list_loaded_page_2 = read_line()
-        assert thread_list_loaded_page_2["id"] == "thread-list-loaded-page-2"
-        second_page_threads = thread_list_loaded_page_2["result"]["data"]
-        assert len(second_page_threads) == 1
-        assert second_page_threads[0]["id"] in {
-            thread_id,
-            forked_thread_id,
-        } - {first_page_id}
-        assert thread_list_loaded_page_2["result"]["nextCursor"] is None
-        assert (
-            thread_list_loaded_page_2["result"]["backwardsCursor"]
-            == second_page_threads[0]["id"]
-        )
+        assert_timestamp_cursor(thread_list_loaded_page_1["result"]["nextCursor"])
+        assert_timestamp_cursor(thread_list_loaded_page_1["result"]["backwardsCursor"])
+        assert thread_list_loaded_page_1["result"]["nextCursor"] != first_page_id
+        assert thread_list_loaded_page_1["result"]["backwardsCursor"] != first_page_id
 
         write_line(
             {
@@ -1676,6 +1659,19 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert bad_thread_list_sort["id"] == "bad-thread-list-sort"
     assert bad_thread_list_sort["error"]["code"] == -32602
     assert "sortKey must be created_at or updated_at" in bad_thread_list_sort["error"]["message"]
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "bad-thread-list-cursor",
+            "method": "thread/list",
+            "params": {"cursor": "not-a-cursor"},
+        }
+    )
+    bad_thread_list_cursor = read_line()
+    assert bad_thread_list_cursor["id"] == "bad-thread-list-cursor"
+    assert bad_thread_list_cursor["error"]["code"] == -32600
+    assert "invalid cursor: not-a-cursor" in bad_thread_list_cursor["error"]["message"]
 
     write_line(
         {
@@ -4678,6 +4674,59 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-page-one",
+                    "method": "thread/list",
+                    "params": {
+                        "useStateDbOnly": True,
+                        "sortKey": "created_at",
+                        "sortDirection": "desc",
+                        "limit": 1,
+                    },
+                },
+            )
+            state_db_page_one = read_json_line(proc, 5)
+            assert state_db_page_one["id"] == "thread-list-state-db-page-one"
+            state_db_page_one_result = state_db_page_one["result"]
+            assert [thread["id"] for thread in state_db_page_one_result["data"]] == [
+                state_db_thread_id
+            ]
+            assert state_db_page_one_result["nextCursor"] == "2025-01-05T12:00:00Z"
+            assert (
+                state_db_page_one_result["backwardsCursor"]
+                == "2025-01-05T11:59:59.999Z"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-page-two",
+                    "method": "thread/list",
+                    "params": {
+                        "useStateDbOnly": True,
+                        "sortKey": "created_at",
+                        "sortDirection": "desc",
+                        "cursor": state_db_page_one_result["nextCursor"],
+                        "limit": 1,
+                    },
+                },
+            )
+            state_db_page_two = read_json_line(proc, 5)
+            assert state_db_page_two["id"] == "thread-list-state-db-page-two"
+            state_db_page_two_result = state_db_page_two["result"]
+            assert [thread["id"] for thread in state_db_page_two_result["data"]] == [
+                appserver_thread_id
+            ]
+            assert state_db_page_two_result["nextCursor"] is None
+            assert (
+                state_db_page_two_result["backwardsCursor"]
+                == "2025-01-05T11:49:59.999Z"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-state-db-archived-metadata",
                     "method": "thread/list",
                     "params": {
@@ -5041,7 +5090,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             }
             assert saved_rust_thread["turns"] == []
             assert saved_rust_list["result"]["nextCursor"] is None
-            assert saved_rust_list["result"]["backwardsCursor"] == rust_thread_id
+            assert_timestamp_cursor(saved_rust_list["result"]["backwardsCursor"])
 
             write_json_line(
                 proc,
