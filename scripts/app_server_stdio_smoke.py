@@ -4622,6 +4622,43 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-metadata-update-saved-rust-rollout",
+                    "method": "thread/metadata/update",
+                    "params": {
+                        "threadId": rust_thread_id,
+                        "gitInfo": {
+                            "branch": "stored-metadata-branch",
+                            "originUrl": None,
+                        },
+                    },
+                },
+            )
+            saved_rust_metadata_update = read_json_line(proc, 5)
+            assert saved_rust_metadata_update["id"] == "thread-metadata-update-saved-rust-rollout"
+            saved_rust_metadata_thread = saved_rust_metadata_update["result"]["thread"]
+            assert saved_rust_metadata_thread["id"] == rust_thread_id
+            assert saved_rust_metadata_thread["gitInfo"] == {
+                "sha": "rollout-sha",
+                "branch": "stored-metadata-branch",
+                "originUrl": None,
+            }
+            rust_rollout_entries = [
+                json.loads(line)
+                for line in rust_rollout_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert rust_rollout_entries[-1]["type"] == "session_meta"
+            assert rust_rollout_entries[-1]["payload"]["id"] == rust_thread_id
+            assert rust_rollout_entries[-1]["payload"]["memory_mode"] == "enabled"
+            assert rust_rollout_entries[-1]["payload"]["git"] == {
+                "commit_hash": "rollout-sha",
+                "branch": "stored-metadata-branch",
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-saved-rust-rollout",
                     "method": "thread/list",
                     "params": {
@@ -4650,8 +4687,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert saved_rust_thread["threadSource"] == "user"
             assert saved_rust_thread["gitInfo"] == {
                 "sha": "rollout-sha",
-                "branch": "rollout-branch",
-                "originUrl": "https://example.test/rollout.git",
+                "branch": "stored-metadata-branch",
+                "originUrl": None,
             }
             assert saved_rust_thread["turns"] == []
             assert saved_rust_list["result"]["nextCursor"] is None
@@ -4703,8 +4740,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert read_saved_rust_thread["threadSource"] == "user"
             assert read_saved_rust_thread["gitInfo"] == {
                 "sha": "rollout-sha",
-                "branch": "rollout-branch",
-                "originUrl": "https://example.test/rollout.git",
+                "branch": "stored-metadata-branch",
+                "originUrl": None,
             }
             assert read_saved_rust_thread["turns"] == []
 
@@ -5408,8 +5445,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert rust_summary_body["source"] == "cli"
             assert rust_summary_body["gitInfo"] == {
                 "sha": "rollout-sha",
-                "branch": "rollout-branch",
-                "origin_url": "https://example.test/rollout.git",
+                "branch": "stored-metadata-branch",
+                "origin_url": None,
             }
 
             write_json_line(
