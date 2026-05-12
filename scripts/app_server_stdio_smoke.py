@@ -15133,7 +15133,9 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
 
 
 def run_external_agent_config_rpc_smoke(binary: Path) -> None:
-    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-external-agent-", dir="/tmp"))
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-external-agent-root-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    codex_home.mkdir()
     external_home = Path(tempfile.mkdtemp(prefix="codex-zig-external-agent-home-", dir="/tmp"))
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
@@ -15421,7 +15423,7 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             proc.wait(timeout=5)
         if proc.returncode != 0:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
-        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(external_home, ignore_errors=True)
 
 
