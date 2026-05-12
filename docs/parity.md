@@ -338,7 +338,49 @@ Additional app-server fuzzy-file-search generation coverage: `fuzzyFileSearch`, 
 
 Additional app-server MCP reload generation coverage: `config/mcpServer/reload` is included in current TypeScript and JSON schema generation with optional empty-object params and an empty Rust-shaped response object until broader MCP status protocol generation parity lands.
 
-Additional app-server external-agent config coverage: `externalAgentConfig/detect` now validates `includeHome` and nullable/array `cwds` params, detects home-scoped Claude `settings.json` / `settings.local.json` `CONFIG` migrations when supported values are missing from Codex `config.toml`, detects home-scoped `CLAUDE.md` to `AGENTS.md` migrations when the target is missing or empty, detects missing home-scoped Claude skill directories under the sibling `.agents/skills` target, detects supported home-scoped `.claude/commands/**/*.md` command templates as generated command-skill migrations, detects supported home-scoped `.claude/agents/*.md` subagents as generated agent TOML migrations, resolves project `cwds` to repo roots, detects project-scoped `.claude/settings.json` / `.claude/settings.local.json` `CONFIG` migrations into `.codex/config.toml`, detects repo-root or `.claude/CLAUDE.md` migrations into repo-root `AGENTS.md`, detects missing project `.claude/skills` directories under `.agents/skills`, detects supported project `.claude/commands/**/*.md` command templates as generated command-skill migrations, and detects supported project `.claude/agents/*.md` subagents as generated agent TOML migrations. `externalAgentConfig/import` validates `migrationItems`, accepts an empty no-op import with an empty Rust-shaped response, imports home- and project-scoped `CONFIG` items by translating supported `env` scalar values into `[shell_environment_policy.set]`, local settings overrides, and `sandbox.enabled = true` into `sandbox_mode = "workspace-write"` without overwriting existing target keys, imports home- and project-scoped `AGENTS_MD` by rewriting Claude terms to Codex terms, copies missing home- and project-scoped skill directories while rewriting `SKILL.md` text, imports home- and project-scoped command templates as `source-command-*` skills while skipping unsupported templates, imports supported home- and project-scoped subagents with `permissionMode` / `effort` mappings, then emits `externalAgentConfig/import/completed`. Detailed MCP/hooks/session/plugin migration item requests still return an explicit not-implemented error. TypeScript and JSON schema generation include the detect/import request and response shapes, migration item/detail types, and the `externalAgentConfig/import/completed` notification shape. Full external-agent MCP/hooks/session/plugin migration application, runtime refresh, and session/plugin background imports remain planned.
+Additional app-server external-agent config coverage: `externalAgentConfig/detect`
+now validates `includeHome` and nullable/array `cwds` params, detects
+home-scoped Claude `settings.json` / `settings.local.json` `CONFIG` migrations
+when supported values are missing from Codex `config.toml`, detects
+home-scoped `.mcp.json` / `.claude.json` MCP server migrations into Codex
+`config.toml`, detects home-scoped convertible hook migrations into Codex
+`hooks.json`, detects home-scoped `CLAUDE.md` to `AGENTS.md` migrations when
+the target is missing or empty, detects missing home-scoped Claude skill
+directories under the sibling `.agents/skills` target, detects supported
+home-scoped `.claude/commands/**/*.md` command templates as generated
+command-skill migrations, detects supported home-scoped `.claude/agents/*.md`
+subagents as generated agent TOML migrations, resolves project `cwds` to repo
+roots, detects project-scoped `.claude/settings.json` /
+`.claude/settings.local.json` `CONFIG` migrations into `.codex/config.toml`,
+detects project `.mcp.json` / `.claude.json` MCP server migrations into
+`.codex/config.toml`, detects project `.claude/settings*.json` hook migrations
+into `.codex/hooks.json`, detects repo-root or `.claude/CLAUDE.md` migrations
+into repo-root `AGENTS.md`, detects missing project `.claude/skills`
+directories under `.agents/skills`, detects supported project
+`.claude/commands/**/*.md` command templates as generated command-skill
+migrations, and detects supported project `.claude/agents/*.md` subagents as
+generated agent TOML migrations. `externalAgentConfig/import` validates
+`migrationItems`, accepts an empty no-op import with an empty Rust-shaped
+response, imports home- and project-scoped `CONFIG` items by translating
+supported `env` scalar values into `[shell_environment_policy.set]`, local
+settings overrides, and `sandbox.enabled = true` into
+`sandbox_mode = "workspace-write"` without overwriting existing target keys,
+imports home- and project-scoped MCP server config for supported stdio and
+streamable HTTP entries while preserving existing target keys and skipping
+unsupported env-placeholder forms, imports home- and project-scoped convertible
+command hooks into Codex `hooks.json` while copying hook scripts and skipping
+unsupported hook groups/handlers, imports home- and project-scoped `AGENTS_MD`
+by rewriting Claude terms to Codex terms, copies missing home- and
+project-scoped skill directories while rewriting `SKILL.md` text, imports home-
+and project-scoped command templates as `source-command-*` skills while
+skipping unsupported templates, imports supported home- and project-scoped
+subagents with `permissionMode` / `effort` mappings, then emits
+`externalAgentConfig/import/completed`. Session/plugin migration item requests
+still return an explicit not-implemented error. TypeScript and JSON schema
+generation include the detect/import request and response shapes, migration
+item/detail types, and the `externalAgentConfig/import/completed` notification
+shape. Full external-agent session/plugin migration application, runtime
+refresh, and session/plugin background imports remain planned.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
