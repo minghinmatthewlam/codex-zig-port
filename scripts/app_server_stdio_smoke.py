@@ -4461,18 +4461,38 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
-                    "id": "thread-read-archived-zig-rollout-missing-active",
+                    "id": "thread-read-archived-zig-rollout",
                     "method": "thread/read",
                     "params": {"threadId": resume_thread_id},
                 },
             )
-            read_archived_missing = read_json_line(proc, 5)
-            assert read_archived_missing["id"] == "thread-read-archived-zig-rollout-missing-active"
-            assert read_archived_missing["error"]["code"] == -32600
-            assert (
-                f"thread not loaded: {resume_thread_id}"
-                in read_archived_missing["error"]["message"]
+            read_archived_zig = read_json_line(proc, 5)
+            assert read_archived_zig["id"] == "thread-read-archived-zig-rollout"
+            read_archived_zig_thread = read_archived_zig["result"]["thread"]
+            assert read_archived_zig_thread["id"] == resume_thread_id
+            assert read_archived_zig_thread["name"] == "Resume Smoke"
+            assert read_archived_zig_thread["preview"] == "saved hello"
+            assert read_archived_zig_thread["path"] == os.path.realpath(
+                archived_rollout_path
             )
+            assert read_archived_zig_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-archived-zig-rollout",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": resume_thread_id, "limit": 2},
+                },
+            )
+            archived_zig_turns = read_json_line(proc, 5)
+            assert archived_zig_turns["id"] == "thread-turns-list-archived-zig-rollout"
+            assert [turn["id"] for turn in archived_zig_turns["result"]["data"]] == [
+                "turn-1",
+                "turn-0",
+            ]
+            assert archived_zig_turns["result"]["nextCursor"] is None
 
             write_json_line(
                 proc,

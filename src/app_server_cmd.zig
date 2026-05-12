@@ -16535,7 +16535,7 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load config", err);
         };
         defer cfg.deinit(allocator);
-        var stored_thread = createStoredThreadFromParams(allocator, cfg, object) catch |err| switch (err) {
+        var stored_thread = createStoredThreadFromParamsIncludingArchived(allocator, cfg, object) catch |err| switch (err) {
             error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load stored thread", err),
         };
@@ -16576,7 +16576,7 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/turns/list failed to load config", err);
         };
         defer cfg.deinit(allocator);
-        var stored_thread = createStoredThreadFromParams(allocator, cfg, object) catch |err| switch (err) {
+        var stored_thread = createStoredThreadFromParamsIncludingArchived(allocator, cfg, object) catch |err| switch (err) {
             error.FileNotFound => return renderThreadNotLoaded(allocator, id_value, thread_id),
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/turns/list failed to load stored thread", err),
         };
@@ -16849,6 +16849,28 @@ fn createStoredThreadFromParams(
     defer allocator.free(resume_path_raw);
 
     return createStoredThreadFromPath(allocator, cfg, params, resume_path_raw);
+}
+
+fn createStoredThreadFromParamsIncludingArchived(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    return createStoredThreadFromParams(allocator, cfg, params) catch |err| switch (err) {
+        error.FileNotFound => createArchivedStoredThreadFromParams(allocator, cfg, params),
+        else => err,
+    };
+}
+
+fn createArchivedStoredThreadFromParams(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+) !LoadedThread {
+    const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
+    const archived_path = try session_store.resolveArchivedRolloutPath(allocator, cfg.codex_home, thread_id);
+    defer allocator.free(archived_path);
+    return createStoredThreadFromPath(allocator, cfg, params, archived_path);
 }
 
 fn createStoredThreadFromPath(

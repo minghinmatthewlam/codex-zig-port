@@ -486,6 +486,10 @@ pub fn unarchiveRollout(allocator: std.mem.Allocator, codex_home: []const u8, th
     return moveRolloutArchiveState(allocator, codex_home, thread_id, false);
 }
 
+pub fn resolveArchivedRolloutPath(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) ![]const u8 {
+    return (try findRolloutPathByThreadId(allocator, codex_home, thread_id, true)) orelse error.FileNotFound;
+}
+
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const sessions = try listSessions(allocator, codex_home, 1);
     defer freeSessionSummaries(allocator, sessions);
