@@ -24617,27 +24617,249 @@ fn importExternalAgentSessions(allocator: std.mem.Allocator, codex_home: []const
         const rollout_path = try session_store.createSessionPathForId(allocator, codex_home, thread_id);
         defer allocator.free(rollout_path);
 
-        var transcript = session_mod.Transcript{};
-        defer transcript.deinit(allocator);
-        try transcript.setId(allocator, thread_id);
-        try transcript.setCwd(allocator, import_data.cwd);
-        try transcript.setSource(allocator, "cli");
-        try transcript.setThreadSource(allocator, "user");
-        try transcript.setModelProvider(allocator, "openai");
-        try transcript.setCliVersion(allocator, "external-agent");
-        if (import_data.title) |title| try transcript.setTitle(allocator, title);
-
-        for (import_data.messages.items) |message| {
-            switch (message.role) {
-                .user => try transcript.appendUserMessage(allocator, message.text),
-                .assistant => try transcript.appendAssistantMessage(allocator, message.text),
-            }
-        }
-
-        try session_store.saveTranscript(allocator, rollout_path, &transcript);
-        try session_store.appendThreadGitInfoFromTranscript(allocator, rollout_path, thread_id, &transcript, null, null, null, null);
+        try writeExternalAgentImportedSessionRollout(allocator, rollout_path, thread_id, import_data);
         try ledger.recordImportedSession(allocator, codex_home, source_path, thread_id);
     }
+}
+
+fn writeExternalAgentImportedSessionRollout(
+    allocator: std.mem.Allocator,
+    rollout_path: []const u8,
+    thread_id: []const u8,
+    import_data: ExternalAgentSessionImportData,
+) !void {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    if (import_data.title) |title| {
+        try appendExternalAgentRolloutLine(allocator, &out, .{
+            .type = "metadata",
+            .title = title,
+        });
+    }
+
+    const import_timestamp = try externalAgentRfc3339Seconds(allocator, currentUnixSeconds());
+    defer allocator.free(import_timestamp);
+    try appendExternalAgentRolloutLine(allocator, &out, ExternalAgentRolloutSessionMetaLine{
+        .timestamp = import_timestamp,
+        .type = "session_meta",
+        .payload = .{
+            .id = thread_id,
+            .timestamp = import_timestamp,
+            .cwd = import_data.cwd,
+            .originator = "codex",
+            .cli_version = "external-agent",
+            .source = "cli",
+            .thread_source = "user",
+            .model_provider = "openai",
+        },
+    });
+
+    var active_turn_id: ?[]const u8 = null;
+    defer if (active_turn_id) |turn_id| allocator.free(turn_id);
+    var last_agent_message: ?[]const u8 = null;
+    var turn_index: usize = 0;
+
+    for (import_data.messages.items) |message| {
+        const timestamp_seconds = message.timestamp_seconds orelse import_data.latest_timestamp_seconds;
+        const timestamp = try externalAgentRfc3339Seconds(allocator, timestamp_seconds);
+        defer allocator.free(timestamp);
+
+        switch (message.role) {
+            .user => {
+                if (active_turn_id) |turn_id| {
+                    try appendExternalAgentRolloutTurnCompleteLine(allocator, &out, timestamp, turn_id, last_agent_message);
+                    allocator.free(turn_id);
+                    active_turn_id = null;
+                    last_agent_message = null;
+                }
+
+                active_turn_id = try startExternalAgentImportedTurn(allocator, &out, timestamp, &turn_index);
+                try appendExternalAgentRolloutMessageLine(allocator, &out, timestamp, "user", "input_text", message.text);
+                try appendExternalAgentRolloutUserMessageLine(allocator, &out, timestamp, message.text);
+            },
+            .assistant => {
+                if (active_turn_id == null) {
+                    active_turn_id = try startExternalAgentImportedTurn(allocator, &out, timestamp, &turn_index);
+                }
+                try appendExternalAgentRolloutMessageLine(allocator, &out, timestamp, "assistant", "output_text", message.text);
+                try appendExternalAgentRolloutAgentMessageLine(allocator, &out, timestamp, message.text);
+                last_agent_message = message.text;
+            },
+        }
+    }
+
+    if (active_turn_id) |turn_id| {
+        const final_timestamp = try externalAgentRfc3339Seconds(allocator, import_data.latest_timestamp_seconds);
+        defer allocator.free(final_timestamp);
+        try appendExternalAgentRolloutAgentMessageLine(allocator, &out, final_timestamp, EXTERNAL_AGENT_SESSION_IMPORTED_MARKER);
+        try appendExternalAgentRolloutTokenCountLine(allocator, &out, final_timestamp, import_data);
+        try appendExternalAgentRolloutTurnCompleteLine(allocator, &out, final_timestamp, turn_id, last_agent_message);
+        allocator.free(turn_id);
+        active_turn_id = null;
+    }
+
+    try writeTextFile(rollout_path, out.items);
+}
+
+fn startExternalAgentImportedTurn(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    turn_index: *usize,
+) ![]const u8 {
+    turn_index.* += 1;
+    const turn_id = try std.fmt.allocPrint(allocator, "external-import-turn-{d}", .{turn_index.*});
+    errdefer allocator.free(turn_id);
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutTurnStartedLine{
+        .timestamp = timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "task_started",
+            .turn_id = turn_id,
+            .started_at = timestamp,
+            .model_context_window = EXTERNAL_AGENT_SESSION_MODEL_CONTEXT_WINDOW,
+        },
+    });
+    return turn_id;
+}
+
+fn appendExternalAgentRolloutMessageLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    role: []const u8,
+    content_type: []const u8,
+    text: []const u8,
+) !void {
+    const content = [_]ExternalAgentRolloutTextContent{.{
+        .type = content_type,
+        .text = text,
+    }};
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutResponseItemLine{
+        .timestamp = timestamp,
+        .type = "response_item",
+        .payload = .{
+            .type = "message",
+            .role = role,
+            .content = content[0..],
+        },
+    });
+}
+
+fn appendExternalAgentRolloutUserMessageLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    message: []const u8,
+) !void {
+    const empty_strings = [_][]const u8{};
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutUserMessageLine{
+        .timestamp = timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "user_message",
+            .message = message,
+            .local_images = empty_strings[0..],
+            .text_elements = empty_strings[0..],
+        },
+    });
+}
+
+fn appendExternalAgentRolloutAgentMessageLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    message: []const u8,
+) !void {
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutAgentMessageLine{
+        .timestamp = timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "agent_message",
+            .message = message,
+        },
+    });
+}
+
+fn appendExternalAgentRolloutTokenCountLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    import_data: ExternalAgentSessionImportData,
+) !void {
+    const usage = externalAgentSessionTokenUsage(import_data);
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutTokenCountLine{
+        .timestamp = timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "token_count",
+            .info = .{
+                .total_token_usage = usage,
+                .last_token_usage = usage,
+                .model_context_window = EXTERNAL_AGENT_SESSION_MODEL_CONTEXT_WINDOW,
+            },
+            .rate_limits = .null,
+        },
+    });
+}
+
+fn appendExternalAgentRolloutTurnCompleteLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    timestamp: []const u8,
+    turn_id: []const u8,
+    last_agent_message: ?[]const u8,
+) !void {
+    try appendExternalAgentRolloutLine(allocator, out, ExternalAgentRolloutTurnCompleteLine{
+        .timestamp = timestamp,
+        .type = "event_msg",
+        .payload = .{
+            .type = "task_complete",
+            .turn_id = turn_id,
+            .last_agent_message = last_agent_message,
+            .completed_at = timestamp,
+        },
+    });
+}
+
+fn appendExternalAgentRolloutLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: anytype) !void {
+    const line = try std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+    defer allocator.free(line);
+    try out.appendSlice(allocator, line);
+    try out.append(allocator, '\n');
+}
+
+fn externalAgentRfc3339Seconds(allocator: std.mem.Allocator, seconds: i64) ![]const u8 {
+    const safe_seconds: u64 = if (seconds < 0) 0 else @intCast(seconds);
+    return auth_mod.rfc3339FromSeconds(allocator, safe_seconds);
+}
+
+fn externalAgentSessionTokenUsage(import_data: ExternalAgentSessionImportData) ExternalAgentRolloutTokenUsage {
+    var input_bytes: usize = 0;
+    var output_bytes: usize = EXTERNAL_AGENT_SESSION_IMPORTED_MARKER.len;
+    for (import_data.messages.items) |message| {
+        switch (message.role) {
+            .user => input_bytes += message.text.len,
+            .assistant => output_bytes += message.text.len,
+        }
+    }
+
+    const input_tokens = estimateExternalAgentTokenCount(input_bytes);
+    const output_tokens = estimateExternalAgentTokenCount(output_bytes);
+    return .{
+        .input_tokens = input_tokens,
+        .cached_input_tokens = 0,
+        .output_tokens = output_tokens,
+        .reasoning_output_tokens = 0,
+        .total_tokens = input_tokens + output_tokens,
+    };
+}
+
+fn estimateExternalAgentTokenCount(byte_count: usize) i64 {
+    if (byte_count == 0) return 0;
+    const tokens = @max(@divFloor(byte_count + 3, 4), 1);
+    return @intCast(tokens);
 }
 
 fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
@@ -25138,6 +25360,8 @@ const ExternalAgentPluginMigrationDetails = struct {
 const EXTERNAL_AGENT_SESSION_IMPORT_LEDGER_FILE = "external_agent_session_imports.json";
 const EXTERNAL_AGENT_SESSION_IMPORT_MAX_COUNT: usize = 50;
 const EXTERNAL_AGENT_SESSION_IMPORT_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
+const EXTERNAL_AGENT_SESSION_IMPORTED_MARKER = session_store.external_agent_session_imported_marker;
+const EXTERNAL_AGENT_SESSION_MODEL_CONTEXT_WINDOW: i64 = 200000;
 const EXTERNAL_AGENT_TOOL_CALL_TAG = "external_agent_tool_call";
 const EXTERNAL_AGENT_TOOL_RESULT_TAG = "external_agent_tool_result";
 const EXTERNAL_AGENT_NOTE_MAX_LEN: usize = 2000;
@@ -25196,6 +25420,116 @@ const ExternalAgentSessionImportData = struct {
         for (self.messages.items) |*message| message.deinit(allocator);
         self.messages.deinit(allocator);
     }
+};
+
+const ExternalAgentRolloutTextContent = struct {
+    type: []const u8,
+    text: []const u8,
+};
+
+const ExternalAgentRolloutMessagePayload = struct {
+    type: []const u8,
+    role: []const u8,
+    content: []const ExternalAgentRolloutTextContent,
+};
+
+const ExternalAgentRolloutResponseItemLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutMessagePayload,
+};
+
+const ExternalAgentRolloutSessionMetaPayload = struct {
+    id: []const u8,
+    timestamp: []const u8,
+    cwd: []const u8,
+    originator: []const u8,
+    cli_version: []const u8,
+    source: []const u8,
+    thread_source: []const u8,
+    model_provider: []const u8,
+};
+
+const ExternalAgentRolloutSessionMetaLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutSessionMetaPayload,
+};
+
+const ExternalAgentRolloutTurnStartedPayload = struct {
+    type: []const u8,
+    turn_id: []const u8,
+    started_at: []const u8,
+    model_context_window: i64,
+};
+
+const ExternalAgentRolloutTurnStartedLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutTurnStartedPayload,
+};
+
+const ExternalAgentRolloutUserMessagePayload = struct {
+    type: []const u8,
+    message: []const u8,
+    local_images: []const []const u8,
+    text_elements: []const []const u8,
+};
+
+const ExternalAgentRolloutUserMessageLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutUserMessagePayload,
+};
+
+const ExternalAgentRolloutAgentMessagePayload = struct {
+    type: []const u8,
+    message: []const u8,
+};
+
+const ExternalAgentRolloutAgentMessageLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutAgentMessagePayload,
+};
+
+const ExternalAgentRolloutTurnCompletePayload = struct {
+    type: []const u8,
+    turn_id: []const u8,
+    last_agent_message: ?[]const u8 = null,
+    completed_at: []const u8,
+};
+
+const ExternalAgentRolloutTurnCompleteLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutTurnCompletePayload,
+};
+
+const ExternalAgentRolloutTokenUsage = struct {
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    reasoning_output_tokens: i64,
+    total_tokens: i64,
+};
+
+const ExternalAgentRolloutTokenInfo = struct {
+    total_token_usage: ExternalAgentRolloutTokenUsage,
+    last_token_usage: ExternalAgentRolloutTokenUsage,
+    model_context_window: i64,
+};
+
+const ExternalAgentRolloutTokenCountPayload = struct {
+    type: []const u8,
+    info: ExternalAgentRolloutTokenInfo,
+    rate_limits: std.json.Value,
+};
+
+const ExternalAgentRolloutTokenCountLine = struct {
+    timestamp: []const u8,
+    type: []const u8,
+    payload: ExternalAgentRolloutTokenCountPayload,
 };
 
 const ExternalAgentExtractedMessage = struct {

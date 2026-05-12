@@ -6,6 +6,7 @@ const session = @import("session.zig");
 const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
 const session_index_file = "session_index.jsonl";
 const fallback_session_meta_timestamp = "1970-01-01T00:00:00Z";
+pub const external_agent_session_imported_marker = "<EXTERNAL SESSION IMPORTED>";
 
 const StoredLine = struct {
     type: []const u8,
@@ -673,6 +674,13 @@ fn applyRolloutEventMsg(allocator: std.mem.Allocator, transcript: *session.Trans
         const num_turns_int = jsonValueAsInt(num_turns_value) orelse return;
         if (num_turns_int <= 0) return;
         rollbackTranscript(allocator, transcript, @intCast(num_turns_int));
+        return;
+    }
+    if (std.mem.eql(u8, event_type, "agent_message")) {
+        const message = jsonStringField(object, "message") orelse return;
+        if (std.mem.eql(u8, message, external_agent_session_imported_marker)) {
+            try transcript.appendAssistantMessage(allocator, message);
+        }
         return;
     }
     if (!std.mem.eql(u8, event_type, "token_count")) return;
@@ -1554,4 +1562,35 @@ test "load transcript accepts Rust rollout response items and session metadata" 
     try std.testing.expectEqual(@as(i64, 10), loaded.token_usage.?.total.reasoning_output_tokens);
     try std.testing.expectEqual(@as(i64, 90), loaded.token_usage.?.last.total_tokens);
     try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
+}
+
+test "load transcript replays external session imported marker event only" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const path = try std.fs.path.join(allocator, &.{ root, "sessions", "zig", "rollout-marker.jsonl" });
+    defer allocator.free(path);
+    try ensureParentDir(path);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data =
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ordinary answer"}]}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"ordinary answer"}}
+        \\{"timestamp":"2025-01-05T12:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"<EXTERNAL SESSION IMPORTED>"}}
+        \\
+        ,
+    });
+
+    var loaded = try loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), loaded.history.items.len);
+    try std.testing.expectEqualStrings("assistant", loaded.history.items[0].role.?);
+    try std.testing.expectEqualStrings("ordinary answer", loaded.history.items[0].text.?);
+    try std.testing.expectEqualStrings("assistant", loaded.history.items[1].role.?);
+    try std.testing.expectEqualStrings(external_agent_session_imported_marker, loaded.history.items[1].text.?);
 }
