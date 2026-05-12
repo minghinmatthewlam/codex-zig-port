@@ -545,7 +545,12 @@ def seed_feedback_state_db(
             DROP TABLE IF EXISTS thread_spawn_edges;
             CREATE TABLE threads (
                 id TEXT PRIMARY KEY,
-                rollout_path TEXT NOT NULL
+                rollout_path TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT
             );
             CREATE TABLE thread_spawn_edges (
                 parent_thread_id TEXT NOT NULL,
@@ -573,6 +578,13 @@ def sqlite_count(db_path: Path, query: str) -> int:
         row = db.execute(query).fetchone()
     assert row is not None
     return int(row[0])
+
+
+def sqlite_row(db_path: Path, query: str, params: tuple[object, ...]) -> tuple[object, ...]:
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(query, params).fetchone()
+    assert row is not None
+    return tuple(row)
 
 
 def remote_plugin_bundle_bytes() -> bytes:
@@ -4366,7 +4378,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
-        seed_feedback_state_db(
+        state_db_path = seed_feedback_state_db(
             codex_home,
             [
                 (appserver_thread_id, appserver_rollout_path),
@@ -4529,6 +4541,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ]
             assert session_index_entries[-1]["id"] == state_db_thread_id
             assert session_index_entries[-1]["thread_name"] == "State DB Indexed Name"
+            assert sqlite_row(
+                state_db_path,
+                "SELECT title FROM threads WHERE id = ?",
+                (state_db_thread_id,),
+            ) == ("State DB Indexed Name",)
 
             write_json_line(
                 proc,
@@ -4592,6 +4609,44 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert (
                 state_db_rollout_entries[-1]["payload"]["memory_mode"]
                 == "disabled"
+            )
+            assert sqlite_row(
+                state_db_path,
+                "SELECT memory_mode FROM threads WHERE id = ?",
+                (state_db_thread_id,),
+            ) == ("disabled",)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-metadata-update-state-db-only-rollout",
+                    "method": "thread/metadata/update",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "gitInfo": {
+                            "sha": "state-db-sha",
+                            "branch": "state-db-branch",
+                            "originUrl": "https://example.test/state.git",
+                        },
+                    },
+                },
+            )
+            state_db_metadata_update = read_json_line(proc, 5)
+            assert state_db_metadata_update["id"] == "thread-metadata-update-state-db-only-rollout"
+            assert state_db_metadata_update["result"]["thread"]["gitInfo"] == {
+                "sha": "state-db-sha",
+                "branch": "state-db-branch",
+                "originUrl": "https://example.test/state.git",
+            }
+            assert sqlite_row(
+                state_db_path,
+                "SELECT git_sha, git_branch, git_origin_url FROM threads WHERE id = ?",
+                (state_db_thread_id,),
+            ) == (
+                "state-db-sha",
+                "state-db-branch",
+                "https://example.test/state.git",
             )
 
             write_json_line(
