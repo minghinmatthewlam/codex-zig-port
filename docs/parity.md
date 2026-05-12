@@ -194,7 +194,8 @@ Current app-server `command/exec` coverage includes buffered command execution,
 capture-time independent stdout/stderr output-cap truncation, timeout exit-code
 responses with captured pre-timeout output, `streamStdoutStderr` output-delta
 notifications for commands that run to completion, plus Rust-shaped validation
-for streaming `processId` requirements and
+for request environment merge/override/null-unset behavior, streaming
+`processId` requirements, and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
 accepts supported Rust-shaped `permissionProfile` payloads using
 `fileSystem`, `network.enabled`, and `globScanMaxDepth` for disabled,
