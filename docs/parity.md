@@ -93,7 +93,9 @@ Additional app-server error-notification generation coverage: the generated
 TypeScript and JSON Schema artifacts now include `ErrorNotification` with
 `TurnError`, `willRetry`, `threadId`, and `turnId`, exported through `v2/index.ts`
 and included in the top-level `ServerNotification` `"error"` union variant.
-Runtime emission of server error notifications remains planned.
+Synchronous `turn/start` provider failures now also emit `"error"` notifications
+with `willRetry: false`; retrying stream errors and the full async failed-turn
+notification lifecycle remain planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
@@ -423,8 +425,10 @@ Rust-shaped `thread/status/changed` notifications for the active state before
 the turn lifecycle notifications and the idle state after turn completion,
 and `thread/archive` emits `notLoaded` when archiving removes an already-loaded
 thread. Provider `response.failed` events from `turn/start` now mark the loaded
-thread `systemError`, expose that status through loaded thread reads/lists, and
-successful follow-up turns restore `idle`, honoring `optOutNotificationMethods`.
+thread `systemError`, emit an `"error"` notification with the same turn failure
+message and `willRetry: false`, expose that status through loaded thread
+reads/lists, and successful follow-up turns restore `idle`, honoring
+`optOutNotificationMethods`.
 `ThreadStatus` and
 `ThreadStatusChangedNotification` are included in generated TypeScript and JSON
 schemas. Idle-timeout `thread/closed` unload transitions, richer error payload
