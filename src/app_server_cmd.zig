@@ -16378,6 +16378,9 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
+        if (findLoadedThread(state, thread_id) != null) {
+            return renderJsonRpcResult(allocator, id_value, "{}");
+        }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) {
