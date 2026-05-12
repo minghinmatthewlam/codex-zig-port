@@ -24433,7 +24433,7 @@ fn handleConfigMethod(
         return handleExternalAgentConfigDetect(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "externalAgentConfig/import")) {
-        return handleExternalAgentConfigImport(allocator, id_value, params_value);
+        return handleExternalAgentConfigImport(allocator, state, id_value, params_value);
     }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown config method");
 }
@@ -24478,7 +24478,12 @@ const ExternalAgentConfigImportItem = struct {
     details: ?std.json.Value = null,
 };
 
-fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleExternalAgentConfigImport(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/import params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "externalAgentConfig/import params must be an object");
 
@@ -24521,6 +24526,7 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
     if (!all_items_supported) {
         return renderJsonRpcError(allocator, id_value, -32603, "externalAgentConfig/import migration items are parsed but not implemented yet");
     }
+    const needs_runtime_refresh = externalAgentImportNeedsRuntimeRefresh(import_items.items);
 
     const codex_home = resolveCodexHome(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to resolve CODEX_HOME", err);
@@ -24566,10 +24572,23 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
             };
         }
     }
+    if (needs_runtime_refresh) clearSkillsListCache(allocator, state);
 
     const response = try renderJsonRpcResult(allocator, id_value, "{}");
     defer allocator.free(response);
     return renderResultWithExternalAgentConfigImportCompletedNotification(allocator, response);
+}
+
+fn externalAgentImportNeedsRuntimeRefresh(items: []const ExternalAgentConfigImportItem) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.item_type, "CONFIG") or
+            std.mem.eql(u8, item.item_type, "MCP_SERVER_CONFIG") or
+            std.mem.eql(u8, item.item_type, "HOOKS") or
+            std.mem.eql(u8, item.item_type, "PLUGINS") or
+            std.mem.eql(u8, item.item_type, "SKILLS") or
+            std.mem.eql(u8, item.item_type, "COMMANDS")) return true;
+    }
+    return false;
 }
 
 fn importExternalAgentConfig(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
@@ -35100,6 +35119,19 @@ test "app-server plugin methods validate params" {
     );
     defer allocator.free(relative_cwd.?);
     try std.testing.expect(std.mem.indexOf(u8, relative_cwd.?, "\"code\":-32600") != null);
+}
+
+test "external agent import runtime refresh matches Rust item set" {
+    try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "CONFIG", .cwd = null }}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "SKILLS", .cwd = null }}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "MCP_SERVER_CONFIG", .cwd = null }}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "HOOKS", .cwd = null }}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "COMMANDS", .cwd = null }}));
+    try std.testing.expect(externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "PLUGINS", .cwd = null }}));
+    try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "AGENTS_MD", .cwd = null }}));
+    try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "SUBAGENTS", .cwd = null }}));
+    try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "SESSIONS", .cwd = null }}));
 }
 
 test "app-server fuzzy file search sessions emit update and complete notifications" {
