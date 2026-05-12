@@ -15770,6 +15770,14 @@ fn setLoadedThreadMemoryMode(allocator: std.mem.Allocator, thread: *LoadedThread
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn setLoadedThreadPath(allocator: std.mem.Allocator, thread: *LoadedThread, path: []const u8) !void {
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    if (thread.path) |existing| allocator.free(existing);
+    thread.path = owned_path;
+    thread.updated_at = currentUnixSeconds();
+}
+
 fn setLoadedThreadGoal(
     allocator: std.mem.Allocator,
     thread: *LoadedThread,
@@ -16325,7 +16333,13 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load thread", err);
         };
         defer unarchived_thread.deinit(allocator);
-        const result = try renderStoredThreadReadResponse(allocator, &unarchived_thread, false);
+        const response_status: ThreadRuntimeStatus = if (findLoadedThreadIndex(state, thread_id)) |thread_index| status: {
+            if (unarchived_thread.path) |path| {
+                try setLoadedThreadPath(allocator, &state.loaded_threads.items[thread_index], path);
+            }
+            break :status .idle;
+        } else .not_loaded;
+        const result = try renderThreadReadResponseWithStatus(allocator, &unarchived_thread, false, response_status);
         defer allocator.free(result);
         try queueThreadIdNotification(allocator, state, "thread/unarchived", thread_id);
         return renderJsonRpcResult(allocator, id_value, result);
