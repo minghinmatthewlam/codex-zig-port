@@ -512,13 +512,6 @@ pub const ForcedLoginMethod = enum {
         if (std.mem.eql(u8, value, "api")) return .api;
         return error.InvalidForcedLoginMethod;
     }
-
-    pub fn label(self: ForcedLoginMethod) []const u8 {
-        return switch (self) {
-            .chatgpt => "chatgpt",
-            .api => "api",
-        };
-    }
 };
 
 pub const OssProvider = enum {
