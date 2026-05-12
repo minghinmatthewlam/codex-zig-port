@@ -4303,6 +4303,16 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert failed_turn["id"] == "turn-start-provider-failure"
                 assert failed_turn["error"]["code"] == -32603
                 assert "ApiResponseFailed" in failed_turn["error"]["message"]
+                error_notification = read_json_line(proc, 5)
+                assert error_notification["method"] == "error"
+                error_params = error_notification["params"]
+                assert error_params["threadId"] == thread_id
+                assert isinstance(error_params["turnId"], str)
+                assert error_params["turnId"]
+                assert error_params["willRetry"] is False
+                assert "ApiResponseFailed" in error_params["error"]["message"]
+                assert error_params["error"]["codexErrorInfo"] is None
+                assert error_params["error"]["additionalDetails"] is None
                 assert_thread_status_notification(
                     read_json_line(proc, 5), thread_id, "systemError"
                 )
