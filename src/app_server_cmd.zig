@@ -2898,6 +2898,30 @@ const THREAD_STARTED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadStatus =
+    \\  | { type: "notLoaded" }
+    \\  | { type: "idle" }
+    \\  | { type: "systemError" }
+    \\  | {
+    \\      type: "active";
+    \\      activeFlags: ("waitingOnApproval" | "waitingOnUserInput")[];
+    \\    };
+    \\
+    ;
+
+const THREAD_STATUS_CHANGED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadStatus } from "./ThreadStatus";
+    \\
+    \\export interface ThreadStatusChangedNotification {
+    \\  threadId: string;
+    \\  status: ThreadStatus;
+    \\}
+    \\
+    ;
+
 const THREAD_ARCHIVED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadArchivedNotification {
@@ -4713,6 +4737,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
+    \\import type { ThreadStatusChangedNotification } from "./v2/ThreadStatusChangedNotification";
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
     \\import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
@@ -4779,6 +4804,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/started";
     \\      params: ThreadStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/status/changed";
+    \\      params: ThreadStatusChangedNotification;
     \\    }
     \\  | {
     \\      method: "thread/archived";
@@ -5141,6 +5170,8 @@ const V2_INDEX_TS =
     \\export type { ThreadSortKey } from "./ThreadSortKey";
     \\export type { ThreadSourceKind } from "./ThreadSourceKind";
     \\export type { ThreadStartedNotification } from "./ThreadStartedNotification";
+    \\export type { ThreadStatus } from "./ThreadStatus";
+    \\export type { ThreadStatusChangedNotification } from "./ThreadStatusChangedNotification";
     \\export type { ThreadStartParams } from "./ThreadStartParams";
     \\export type { ThreadStartResponse } from "./ThreadStartResponse";
     \\export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";
@@ -9076,6 +9107,109 @@ const THREAD_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadStatus",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "notLoaded" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "idle" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "systemError" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "activeFlags"],
+    \\      "properties": {
+    \\        "type": { "const": "active" },
+    \\        "activeFlags": {
+    \\          "type": "array",
+    \\          "items": { "enum": ["waitingOnApproval", "waitingOnUserInput"] }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadStatusChangedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "status"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "status": { "$ref": "#/$defs/ThreadStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadStatus": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "notLoaded" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "idle" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "systemError" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "activeFlags"],
+    \\          "properties": {
+    \\            "type": { "const": "active" },
+    \\            "activeFlags": {
+    \\              "type": "array",
+    \\              "items": { "enum": ["waitingOnApproval", "waitingOnUserInput"] }
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12943,6 +13077,55 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadStatus": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "notLoaded" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "idle" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "systemError" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "activeFlags"],
+    \\          "properties": {
+    \\            "type": { "const": "active" },
+    \\            "activeFlags": {
+    \\              "type": "array",
+    \\              "items": { "enum": ["waitingOnApproval", "waitingOnUserInput"] }
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "ThreadStatusChangedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "status"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/ThreadStatus" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadArchivedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -14041,6 +14224,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadStatus.json", .contents = THREAD_STATUS_JSON_SCHEMA },
+    .{ .name = "ThreadStatusChangedNotification.json", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadArchivedNotification.json", .contents = THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadUnarchivedNotification.json", .contents = THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
@@ -14377,6 +14562,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadStatus.ts", .contents = THREAD_STATUS_TS },
+    .{ .name = "v2/ThreadStatusChangedNotification.ts", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadArchivedNotification.ts", .contents = THREAD_ARCHIVED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadUnarchivedNotification.ts", .contents = THREAD_UNARCHIVED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
@@ -15243,6 +15430,7 @@ fn handleTurnStart(
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
 
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
     try queueTurnNotification(allocator, state, "turn/started", started_notification);
     started_notification_moved = true;
     if (user_item_index < thread.transcript.history.items.len) {
@@ -15264,6 +15452,7 @@ fn handleTurnStart(
     }
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
 
     return renderJsonRpcResult(allocator, id_value, response);
 }
@@ -18824,8 +19013,10 @@ fn threadLoadedListLimit(params_value: ?std.json.Value) ?usize {
 }
 
 const ThreadRuntimeStatus = enum {
+    active,
     idle,
     not_loaded,
+    system_error,
 };
 
 fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
@@ -19022,6 +19213,26 @@ fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServe
         return;
     }
     try state.pending_notifications.append(allocator, notification);
+}
+
+fn queueThreadStatusChangedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    status: ThreadRuntimeStatus,
+) !void {
+    if (notificationMethodOptedOut(state, "thread/status/changed")) return;
+
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/status/changed\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"status\":");
+    try appendThreadRuntimeStatusJson(allocator, &notification, status);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    errdefer allocator.free(owned);
+    try state.pending_notifications.append(allocator, owned);
 }
 
 fn queueThreadTokenUsageNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
@@ -19341,8 +19552,10 @@ fn appendLoadedThreadJson(
 
 fn appendThreadRuntimeStatusJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), status: ThreadRuntimeStatus) !void {
     try result.appendSlice(allocator, switch (status) {
+        .active => "{\"type\":\"active\",\"activeFlags\":[]}",
         .idle => "{\"type\":\"idle\"}",
         .not_loaded => "{\"type\":\"notLoaded\"}",
+        .system_error => "{\"type\":\"systemError\"}",
     });
 }
 
