@@ -10369,8 +10369,24 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = dsn
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_feedback",
+                    "chatgpt_user_id": "user_feedback",
+                }
+            }
+        )
         codex_home.joinpath("auth.json").write_text(
-            json.dumps({"tokens": {"access_token": "feedback-token", "account_id": "acct_feedback"}}),
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "feedback-token",
+                        "account_id": "acct_feedback",
+                        "id_token": id_token,
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         extra_log_file = codex_home / "codex-zig-feedback.log"
@@ -10423,6 +10439,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"reason":"smoke"' in envelope
         assert b'"surface":"app-server"' in envelope
         assert b'"account_id":"acct_feedback"' in envelope
+        assert b'"chatgpt_user_id":"user_feedback"' in envelope
         assert b'"thread_id":"wrong-thread"' not in envelope
         assert b'"classification":"wrong-classification"' not in envelope
         assert b'"filename":"codex-logs.log"' in envelope

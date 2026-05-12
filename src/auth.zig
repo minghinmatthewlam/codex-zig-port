@@ -12,6 +12,7 @@ pub const Credentials = struct {
     mode: Mode,
     token: []const u8,
     account_id: ?[]const u8 = null,
+    chatgpt_user_id: ?[]const u8 = null,
     fedramp: bool = false,
     provider_auth_fetched_ms: ?i64 = null,
 
@@ -26,6 +27,7 @@ pub const Credentials = struct {
     pub fn deinit(self: *Credentials, allocator: std.mem.Allocator) void {
         allocator.free(self.token);
         if (self.account_id) |account_id| allocator.free(account_id);
+        if (self.chatgpt_user_id) |chatgpt_user_id| allocator.free(chatgpt_user_id);
     }
 
     pub fn describe(self: Credentials) []const u8 {
@@ -56,21 +58,25 @@ const TokenData = struct {
 
 const AgentIdentityClaims = struct {
     account_id: ?[]const u8 = null,
+    chatgpt_user_id: ?[]const u8 = null,
     fedramp: bool = false,
 
     fn deinit(self: AgentIdentityClaims, allocator: std.mem.Allocator) void {
         if (self.account_id) |account_id| allocator.free(account_id);
+        if (self.chatgpt_user_id) |chatgpt_user_id| allocator.free(chatgpt_user_id);
     }
 };
 
 pub const ChatGptClaims = struct {
     account_id: ?[]const u8 = null,
+    chatgpt_user_id: ?[]const u8 = null,
     email: ?[]const u8 = null,
     plan_type: ?[]const u8 = null,
     fedramp: bool = false,
 
     pub fn deinit(self: ChatGptClaims, allocator: std.mem.Allocator) void {
         if (self.account_id) |account_id| allocator.free(account_id);
+        if (self.chatgpt_user_id) |chatgpt_user_id| allocator.free(chatgpt_user_id);
         if (self.email) |email| allocator.free(email);
         if (self.plan_type) |plan_type| allocator.free(plan_type);
     }
@@ -374,10 +380,25 @@ fn agentIdentityCredentials(allocator: std.mem.Allocator, token: []const u8) !Cr
 fn chatGptCredentials(allocator: std.mem.Allocator, tokens: TokenData, mode: Credentials.Mode) !Credentials {
     const account_id = if (tokens.account_id) |id| try allocator.dupe(u8, id) else null;
     errdefer if (account_id) |id| allocator.free(id);
+
+    var claims = if (tokens.id_token) |id_token|
+        parseChatGptClaims(allocator, id_token) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => ChatGptClaims{},
+        }
+    else
+        ChatGptClaims{};
+    defer claims.deinit(allocator);
+
+    const chatgpt_user_id = claims.chatgpt_user_id;
+    claims.chatgpt_user_id = null;
+    errdefer if (chatgpt_user_id) |id| allocator.free(id);
+
     return .{
         .mode = mode,
         .token = try allocator.dupe(u8, tokens.access_token),
         .account_id = account_id,
+        .chatgpt_user_id = chatgpt_user_id,
         .fedramp = false,
     };
 }
@@ -393,10 +414,13 @@ fn agentIdentityCredentialsFromOwnedToken(allocator: std.mem.Allocator, token: [
 
     const account_id = claims.account_id;
     claims.account_id = null;
+    const chatgpt_user_id = claims.chatgpt_user_id;
+    claims.chatgpt_user_id = null;
     return .{
         .mode = .agent_identity,
         .token = token,
         .account_id = account_id,
+        .chatgpt_user_id = chatgpt_user_id,
         .fedramp = claims.fedramp,
     };
 }
@@ -423,12 +447,15 @@ fn parseAgentIdentityClaims(allocator: std.mem.Allocator, jwt: []const u8) !Agen
         null;
     errdefer if (account_id) |id| allocator.free(id);
 
+    const chatgpt_user_id = try parseFirstStringClaim(allocator, object, &.{ "chatgpt_user_id", "user_id" });
+    errdefer if (chatgpt_user_id) |id| allocator.free(id);
+
     const fedramp = if (object.get("chatgpt_account_is_fedramp")) |value|
         value == .bool and value.bool
     else
         false;
 
-    return .{ .account_id = account_id, .fedramp = fedramp };
+    return .{ .account_id = account_id, .chatgpt_user_id = chatgpt_user_id, .fedramp = fedramp };
 }
 
 fn shouldRefreshChatGptToken(allocator: std.mem.Allocator, tokens: TokenData, last_refresh: ?[]const u8) !bool {
@@ -639,6 +666,9 @@ pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGp
         null;
     errdefer if (account_id) |id| allocator.free(id);
 
+    const chatgpt_user_id = try parseFirstStringClaim(allocator, auth_object, &.{ "chatgpt_user_id", "user_id" });
+    errdefer if (chatgpt_user_id) |id| allocator.free(id);
+
     const plan_type = if (auth_object.get("chatgpt_plan_type")) |value|
         if (value == .string) try normalizeChatGptPlanType(allocator, value.string) else null
     else
@@ -650,7 +680,7 @@ pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGp
     else
         false;
 
-    return .{ .account_id = account_id, .email = email, .plan_type = plan_type, .fedramp = fedramp };
+    return .{ .account_id = account_id, .chatgpt_user_id = chatgpt_user_id, .email = email, .plan_type = plan_type, .fedramp = fedramp };
 }
 
 fn parseChatGptEmailClaim(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
@@ -662,6 +692,18 @@ fn parseChatGptEmailClaim(allocator: std.mem.Allocator, object: std.json.ObjectM
     const email = profile.object.get("email") orelse return null;
     if (email != .string) return null;
     return try allocator.dupe(u8, email.string);
+}
+
+fn parseFirstStringClaim(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    names: []const []const u8,
+) !?[]const u8 {
+    for (names) |name| {
+        const value = object.get(name) orelse continue;
+        if (value == .string) return try allocator.dupe(u8, value.string);
+    }
+    return null;
 }
 
 fn normalizeChatGptPlanType(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
@@ -800,7 +842,7 @@ test "saves externally managed chatgpt auth tokens" {
     defer dir.cleanup();
 
     const payload =
-        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_plan_type":"pro"}}
+        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_user_id":"user_external","chatgpt_plan_type":"pro"}}
     ;
     var encoded_buffer: [512]u8 = undefined;
     const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
@@ -816,11 +858,27 @@ test "saves externally managed chatgpt auth tokens" {
     try std.testing.expectEqual(Credentials.Mode.chatgpt_auth_tokens, creds.mode);
     try std.testing.expectEqualStrings(jwt, creds.token);
     try std.testing.expectEqualStrings("acct_external", creds.account_id.?);
+    try std.testing.expectEqualStrings("user_external", creds.chatgpt_user_id.?);
 
     var info = (try loadStoredChatGptAccountInfo(allocator, root)).?;
     defer info.deinit(allocator);
     try std.testing.expectEqualStrings("external@example.com", info.email);
     try std.testing.expectEqualStrings("pro", info.plan_type);
+}
+
+test "parses chatgpt user id fallback claim" {
+    const allocator = std.testing.allocator;
+    const payload =
+        \\{"https://api.openai.com/auth":{"user_id":"user_fallback"}}
+    ;
+    var encoded_buffer: [256]u8 = undefined;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
+    const jwt = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
+    defer allocator.free(jwt);
+
+    var claims = try parseChatGptClaims(allocator, jwt);
+    defer claims.deinit(allocator);
+    try std.testing.expectEqualStrings("user_fallback", claims.chatgpt_user_id.?);
 }
 
 test "parses agent identity auth" {
@@ -846,7 +904,7 @@ test "parses agent identity auth metadata from jwt" {
     defer dir.cleanup();
 
     const payload =
-        \\{"account_id":"acct_agent","chatgpt_account_is_fedramp":true}
+        \\{"account_id":"acct_agent","chatgpt_user_id":"user_agent","chatgpt_account_is_fedramp":true}
     ;
     var encoded_buffer: [512]u8 = undefined;
     const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
@@ -866,6 +924,7 @@ test "parses agent identity auth metadata from jwt" {
     try std.testing.expectEqual(Credentials.Mode.agent_identity, creds.mode);
     try std.testing.expectEqualStrings(jwt, creds.token);
     try std.testing.expectEqualStrings("acct_agent", creds.account_id.?);
+    try std.testing.expectEqualStrings("user_agent", creds.chatgpt_user_id.?);
     try std.testing.expect(creds.fedramp);
 }
 

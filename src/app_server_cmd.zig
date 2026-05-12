@@ -22139,6 +22139,9 @@ fn handleFeedbackUpload(
             if (credentials.account_id) |account_id| {
                 try metadata_tags.append(allocator, .{ .key = "account_id", .value = account_id });
             }
+            if (credentials.chatgpt_user_id) |chatgpt_user_id| {
+                try metadata_tags.append(allocator, .{ .key = "chatgpt_user_id", .value = chatgpt_user_id });
+            }
         }
     } else |err| switch (err) {
         error.OutOfMemory => return err,
