@@ -25198,7 +25198,8 @@ fn externalAgentMcpServerFromJson(allocator: std.mem.Allocator, name: []const u8
     const transport_type = if (value.object.get("type")) |type_value| if (type_value == .string) type_value.string else null else null;
 
     var server = ExternalAgentMcpServer{ .name = try allocator.dupe(u8, name) };
-    errdefer server.deinit(allocator);
+    var keep_server = false;
+    defer if (!keep_server) server.deinit(allocator);
     if (value.object.get("command")) |command_value| {
         const command = try externalAgentJsonValueToString(allocator, command_value) orelse return null;
         defer allocator.free(command);
@@ -25230,6 +25231,7 @@ fn externalAgentMcpServerFromJson(allocator: std.mem.Allocator, name: []const u8
     std.mem.sort(ExternalAgentKeyValue, server.env.items, {}, externalAgentKeyValueLessThan);
     std.mem.sort(ExternalAgentKeyValue, server.http_headers.items, {}, externalAgentKeyValueLessThan);
     std.mem.sort(ExternalAgentKeyValue, server.env_http_headers.items, {}, externalAgentKeyValueLessThan);
+    keep_server = true;
     return server;
 }
 
@@ -25697,14 +25699,8 @@ fn externalAgentHookCommandFromJson(allocator: std.mem.Allocator, value: std.jso
     const command_trimmed = std.mem.trim(u8, command_value.string, " \t\r\n");
     if (command_trimmed.len == 0) return null;
 
-    const command = try allocator.dupe(u8, command_value.string);
-    errdefer allocator.free(command);
-
-    var status_message: ?[]const u8 = null;
-    errdefer if (status_message) |message| allocator.free(message);
     if (value.object.get("statusMessage")) |status| {
         if (status != .string) return null;
-        status_message = try rewriteExternalAgentTerms(allocator, status.string);
     }
 
     var timeout: ?ExternalAgentHookTimeout = null;
@@ -25715,6 +25711,15 @@ fn externalAgentHookCommandFromJson(allocator: std.mem.Allocator, value: std.jso
     if (value.object.get("timeoutSec")) |timeout_value| {
         const seconds = externalAgentHookTimeoutSeconds(timeout_value) orelse return null;
         timeout = .{ .field_name = "timeoutSec", .seconds = seconds };
+    }
+
+    const command = try allocator.dupe(u8, command_value.string);
+    errdefer allocator.free(command);
+
+    var status_message: ?[]const u8 = null;
+    errdefer if (status_message) |message| allocator.free(message);
+    if (value.object.get("statusMessage")) |status| {
+        status_message = try rewriteExternalAgentTerms(allocator, status.string);
     }
 
     return .{
