@@ -34,6 +34,8 @@ const thread_state = @import("thread_state.zig");
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
+const THREAD_LIST_DEFAULT_LIMIT = 25;
+const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
 const THREAD_TURNS_MAX_LIMIT = 100;
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
@@ -18096,7 +18098,7 @@ fn renderThreadListResult(
     }
 
     const limit = threadListLimit(params);
-    const capped_end = if (limit) |value| @min(threads.items.len, start + value) else threads.items.len;
+    const capped_end = @min(threads.items.len, start + limit);
     const page = threads.items[start..capped_end];
 
     var result = std.ArrayList(u8).empty;
@@ -18318,10 +18320,10 @@ fn threadListItemArchived(thread: ThreadListItem) bool {
     };
 }
 
-fn threadListLimit(params: std.json.ObjectMap) ?usize {
-    const value = params.get("limit") orelse return null;
-    if (value == .null) return null;
-    return @intCast(value.integer);
+fn threadListLimit(params: std.json.ObjectMap) usize {
+    const value = params.get("limit") orelse return THREAD_LIST_DEFAULT_LIMIT;
+    if (value == .null) return THREAD_LIST_DEFAULT_LIMIT;
+    return @min(@max(@as(usize, @intCast(value.integer)), 1), THREAD_LIST_MAX_LIMIT);
 }
 
 fn parseThreadListCursorMilliseconds(value: []const u8) ?i64 {
