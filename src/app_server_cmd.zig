@@ -22125,6 +22125,26 @@ fn handleFeedbackUpload(
         return renderJsonRpcError(allocator, id_value, -32600, "sending feedback is disabled by configuration");
     }
 
+    var metadata_tags = std.ArrayList(feedback_upload.Tag).empty;
+    defer metadata_tags.deinit(allocator);
+    var feedback_credentials: ?auth_mod.Credentials = null;
+    defer if (feedback_credentials) |*credentials| credentials.deinit(allocator);
+    if (resolveCodexHome(allocator)) |codex_home| {
+        defer allocator.free(codex_home);
+        feedback_credentials = auth_mod.loadNoRefresh(allocator, codex_home) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => null,
+        };
+        if (feedback_credentials) |credentials| {
+            if (credentials.account_id) |account_id| {
+                try metadata_tags.append(allocator, .{ .key = "account_id", .value = account_id });
+            }
+        }
+    } else |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {},
+    }
+
     if (thread_id == null) {
         const uuid = try generateUuidString(allocator);
         defer allocator.free(uuid);
@@ -22139,6 +22159,7 @@ fn handleFeedbackUpload(
         .include_logs = include_logs.bool,
         .extra_log_files = extra_log_files.items,
         .tags = if (tags_object) |*tags| tags else null,
+        .metadata_tags = metadata_tags.items,
     }) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "failed to upload feedback", err);
     };

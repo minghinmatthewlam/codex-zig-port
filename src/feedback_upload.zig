@@ -16,7 +16,13 @@ pub const UploadRequest = struct {
     log_bytes: []const u8 = "",
     extra_log_files: []const []const u8 = &.{},
     tags: ?*const std.json.ObjectMap = null,
+    metadata_tags: []const Tag = &.{},
     session_source: ?[]const u8 = "cli",
+};
+
+pub const Tag = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 const SentryDsn = struct {
@@ -164,6 +170,17 @@ fn appendTagsJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), request
             try appendTag(allocator, out, &first, key, entry.value_ptr.*.string);
         }
     }
+
+    for (request.metadata_tags) |tag| {
+        if (isReservedTag(tag.key)) continue;
+        if (clientTagsContain(request.tags, tag.key)) continue;
+        try appendTag(allocator, out, &first, tag.key, tag.value);
+    }
+}
+
+fn clientTagsContain(tags: ?*const std.json.ObjectMap, key: []const u8) bool {
+    const object = tags orelse return false;
+    return object.get(key) != null;
 }
 
 fn appendTag(
@@ -279,6 +296,7 @@ test "envelope event preserves reserved tags and attachments" {
         .include_logs = true,
         .log_bytes = "ring log",
         .tags = &parsed.value.object,
+        .metadata_tags = &.{.{ .key = "account_id", .value = "acct_actual" }},
     };
     const envelope = try buildEnvelope(allocator, dsn, request);
     defer allocator.free(envelope);
@@ -287,9 +305,33 @@ test "envelope event preserves reserved tags and attachments" {
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"classification\":\"bug\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"reason\":\"actual reason\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"client_tag\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"account_id\":\"acct_actual\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"filename\":\"codex-logs.log\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "ring log") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"thread_id\":\"wrong\"") == null);
+}
+
+test "client tags take precedence over metadata tags" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"account_id":"acct_client"}
+    , .{});
+    defer parsed.deinit();
+
+    const dsn = try parseSentryDsn("http://public@localhost/42");
+    const request = UploadRequest{
+        .classification = "bug",
+        .reason = null,
+        .thread_id = "00000000-0000-4000-8000-000000000123",
+        .include_logs = false,
+        .tags = &parsed.value.object,
+        .metadata_tags = &.{.{ .key = "account_id", .value = "acct_metadata" }},
+    };
+    const envelope = try buildEnvelope(allocator, dsn, request);
+    defer allocator.free(envelope);
+
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"account_id\":\"acct_client\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "acct_metadata") == null);
 }
 
 test "extra log files are de-duplicated by path" {
