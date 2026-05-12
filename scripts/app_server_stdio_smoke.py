@@ -4700,6 +4700,26 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-zero-limit",
+                    "method": "thread/list",
+                    "params": {
+                        "useStateDbOnly": True,
+                        "limit": 0,
+                    },
+                },
+            )
+            state_db_zero_limit = read_json_line(proc, 5)
+            assert state_db_zero_limit["id"] == "thread-list-state-db-zero-limit"
+            state_db_zero_limit_result = state_db_zero_limit["result"]
+            assert [thread["id"] for thread in state_db_zero_limit_result["data"]] == [
+                state_db_thread_id
+            ]
+            assert state_db_zero_limit_result["nextCursor"] == "2025-01-05T12:00:00Z"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-state-db-page-two",
                     "method": "thread/list",
                     "params": {
