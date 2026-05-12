@@ -19553,6 +19553,16 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "ThreadUnarchivedNotification"
         )
         assert thread_unarchived_notification_schema["required"] == ["threadId"]
+        thread_closed_notification_schema = json.loads(
+            (out_dir / "ThreadClosedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_closed_notification_schema["title"]
+            == "ThreadClosedNotification"
+        )
+        assert thread_closed_notification_schema["required"] == ["threadId"]
         thread_name_updated_notification_schema = json.loads(
             (out_dir / "ThreadNameUpdatedNotification.json").read_text(
                 encoding="utf-8"
@@ -20897,6 +20907,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
         assert "ThreadArchivedNotification" in bundle["$defs"]
         assert "ThreadUnarchivedNotification" in bundle["$defs"]
+        assert "ThreadClosedNotification" in bundle["$defs"]
         assert "ThreadNameUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalUpdatedNotification" in bundle["$defs"]
         assert "ThreadGoalClearedNotification" in bundle["$defs"]
@@ -21319,6 +21330,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";'
             in server_notification
         )
+        assert (
+            'import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";'
+            in server_notification
+        )
         assert 'method: "fuzzyFileSearch/sessionUpdated";' in server_notification
         assert (
             "params: FuzzyFileSearchSessionUpdatedNotification;"
@@ -21370,6 +21385,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadArchivedNotification;" in server_notification
         assert 'method: "thread/unarchived";' in server_notification
         assert "params: ThreadUnarchivedNotification;" in server_notification
+        assert 'method: "thread/closed";' in server_notification
+        assert "params: ThreadClosedNotification;" in server_notification
         assert 'method: "thread/name/updated";' in server_notification
         assert "params: ThreadNameUpdatedNotification;" in server_notification
         assert 'method: "thread/goal/updated";' in server_notification
@@ -22498,6 +22515,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in thread_unarchived_notification
         )
         assert "threadId: string;" in thread_unarchived_notification
+        thread_closed_notification = (
+            out_dir / "v2" / "ThreadClosedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadClosedNotification"
+            in thread_closed_notification
+        )
+        assert "threadId: string;" in thread_closed_notification
         thread_name_updated_notification = (
             out_dir / "v2" / "ThreadNameUpdatedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -23367,6 +23392,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadClosedNotification } from "./ThreadClosedNotification";'
             in v2_index
         )
         assert (
