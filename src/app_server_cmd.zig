@@ -113,6 +113,8 @@ const LoadedThread = struct {
     path: ?[]const u8,
     source: []const u8,
     thread_source: ?[]const u8,
+    agent_nickname: ?[]const u8,
+    agent_role: ?[]const u8,
     cli_version: []const u8,
     token_usage: ?session_mod.TokenUsageInfo,
     token_usage_turn_id: ?[]const u8,
@@ -143,6 +145,8 @@ const LoadedThread = struct {
         if (self.path) |value| allocator.free(value);
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
+        if (self.agent_nickname) |value| allocator.free(value);
+        if (self.agent_role) |value| allocator.free(value);
         allocator.free(self.cli_version);
         if (self.token_usage_turn_id) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
@@ -17011,6 +17015,30 @@ fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread,
     if (metadata.memory_mode) |memory_mode| {
         try thread.transcript.setMemoryMode(allocator, memory_mode);
     }
+    if (metadata.lifecycle_loaded) {
+        if (metadata.created_at_ms) |value| thread.created_at = @divFloor(value, 1000);
+        if (metadata.updated_at_ms) |value| thread.updated_at = @divFloor(value, 1000);
+        if (metadata.source) |source| {
+            try replaceOwnedString(allocator, &thread.source, source);
+            try thread.transcript.setSource(allocator, source);
+        }
+        if (metadata.thread_source) |thread_source| {
+            try replaceOptionalOwnedString(allocator, &thread.thread_source, thread_source);
+            try thread.transcript.setThreadSource(allocator, thread_source);
+        } else {
+            clearOptionalOwnedString(allocator, &thread.thread_source);
+        }
+        if (metadata.agent_nickname) |agent_nickname| {
+            try replaceOptionalOwnedString(allocator, &thread.agent_nickname, agent_nickname);
+        } else {
+            clearOptionalOwnedString(allocator, &thread.agent_nickname);
+        }
+        if (metadata.agent_role) |agent_role| {
+            try replaceOptionalOwnedString(allocator, &thread.agent_role, agent_role);
+        } else {
+            clearOptionalOwnedString(allocator, &thread.agent_role);
+        }
+    }
     try replaceStateMetadataGitInfo(allocator, &thread.git_sha, metadata.git_sha);
     try replaceStateMetadataGitInfo(allocator, &thread.git_branch, metadata.git_branch);
     try replaceStateMetadataGitInfo(allocator, &thread.git_origin_url, metadata.git_origin_url);
@@ -17112,6 +17140,8 @@ fn createLoadedThreadFromStartParams(
         .path = path,
         .source = source,
         .thread_source = thread_source,
+        .agent_nickname = null,
+        .agent_role = null,
         .cli_version = cli_version,
         .token_usage = null,
         .token_usage_turn_id = null,
@@ -17206,6 +17236,8 @@ fn createLoadedThreadFromHistoryParams(
         .path = path,
         .source = source,
         .thread_source = null,
+        .agent_nickname = null,
+        .agent_role = null,
         .cli_version = cli_version,
         .token_usage = null,
         .token_usage_turn_id = null,
@@ -17313,6 +17345,8 @@ fn createLoadedThreadFromResumeParams(
         .path = path_copy,
         .source = source,
         .thread_source = thread_source,
+        .agent_nickname = null,
+        .agent_role = null,
         .cli_version = cli_version,
         .token_usage = transcript.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
@@ -17444,6 +17478,8 @@ fn createLoadedThreadFromForkParams(
         .path = path,
         .source = source_label,
         .thread_source = thread_source,
+        .agent_nickname = null,
+        .agent_role = null,
         .cli_version = cli_version,
         .token_usage = source.token_usage,
         .token_usage_turn_id = token_usage_turn_id,
@@ -17736,11 +17772,14 @@ const SavedThreadListItem = struct {
     model_provider: []const u8,
     created_at: i64,
     updated_at: i64,
+    archived: bool,
     path: []const u8,
     cwd: []const u8,
     cli_version: []const u8,
     source: []const u8,
     thread_source: ?[]const u8,
+    agent_nickname: ?[]const u8,
+    agent_role: ?[]const u8,
     git_sha: ?[]const u8,
     git_branch: ?[]const u8,
     git_origin_url: ?[]const u8,
@@ -17771,10 +17810,18 @@ const SavedThreadListItem = struct {
         errdefer allocator.free(cwd);
         const cli_version = try allocator.dupe(u8, summary.cli_version orelse "0.0.1");
         errdefer allocator.free(cli_version);
-        const source = try allocator.dupe(u8, summary.source orelse "cli");
+        const source_value = if (file.state_lifecycle_loaded) file.source orelse summary.source orelse "cli" else summary.source orelse "cli";
+        const source = try allocator.dupe(u8, source_value);
         errdefer allocator.free(source);
-        const thread_source = if (summary.thread_source) |value| try allocator.dupe(u8, value) else null;
+        const thread_source_value = if (file.state_lifecycle_loaded) file.thread_source else summary.thread_source;
+        const thread_source = if (thread_source_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (thread_source) |value| allocator.free(value);
+        const agent_nickname_value = if (file.state_lifecycle_loaded) file.agent_nickname else null;
+        const agent_nickname = if (agent_nickname_value) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (agent_nickname) |value| allocator.free(value);
+        const agent_role_value = if (file.state_lifecycle_loaded) file.agent_role else null;
+        const agent_role = if (agent_role_value) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (agent_role) |value| allocator.free(value);
         const git_sha_value = if (file.state_metadata_loaded) file.git_sha else summary.git_sha;
         const git_sha = if (git_sha_value) |value| try allocator.dupe(u8, value) else null;
         errdefer if (git_sha) |value| allocator.free(value);
@@ -17801,13 +17848,16 @@ const SavedThreadListItem = struct {
             .forked_from_id = forked_from_id,
             .preview = preview,
             .model_provider = model_provider,
-            .created_at = file.modified_at_seconds,
-            .updated_at = file.modified_at_seconds,
+            .created_at = rolloutFileTimestampSeconds(file.state_lifecycle_loaded, file.created_at_ms, file.modified_at_seconds),
+            .updated_at = rolloutFileTimestampSeconds(file.state_lifecycle_loaded, file.updated_at_ms, file.modified_at_seconds),
+            .archived = file.archived,
             .path = path,
             .cwd = cwd,
             .cli_version = cli_version,
             .source = source,
             .thread_source = thread_source,
+            .agent_nickname = agent_nickname,
+            .agent_role = agent_role,
             .git_sha = git_sha,
             .git_branch = git_branch,
             .git_origin_url = git_origin_url,
@@ -17826,12 +17876,20 @@ const SavedThreadListItem = struct {
         allocator.free(self.cli_version);
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
+        if (self.agent_nickname) |value| allocator.free(value);
+        if (self.agent_role) |value| allocator.free(value);
         if (self.git_sha) |value| allocator.free(value);
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
     }
 };
+
+fn rolloutFileTimestampSeconds(lifecycle_loaded: bool, value_ms: ?i64, fallback_seconds: i64) i64 {
+    if (!lifecycle_loaded) return fallback_seconds;
+    const value = value_ms orelse return fallback_seconds;
+    return @divFloor(value, 1000);
+}
 
 fn stateThreadTitle(title: ?[]const u8, preview: []const u8) ?[]const u8 {
     const raw = title orelse return null;
@@ -17934,6 +17992,8 @@ fn renderThreadListResult(
 }
 
 fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap) bool {
+    const archived = optionalBoolParam(params, "archived") orelse false;
+    if (threadListItemArchived(thread) != archived) return false;
     if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), threadListItemModelProvider(thread))) return false;
     if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), threadListItemSource(thread))) return false;
     if (!threadListCwdMatches(params.get("cwd"), threadListItemCwd(thread))) return false;
@@ -18076,6 +18136,13 @@ fn threadListItemUpdatedAt(thread: ThreadListItem) i64 {
     return switch (thread) {
         .loaded => |loaded| loaded.updated_at,
         .saved => |saved| saved.updated_at,
+    };
+}
+
+fn threadListItemArchived(thread: ThreadListItem) bool {
+    return switch (thread) {
+        .loaded => false,
+        .saved => |saved| saved.archived,
     };
 }
 
@@ -18560,7 +18627,11 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     try appendJsonString(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);
-    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":");
+    try result.appendSlice(allocator, ",\"agentNickname\":");
+    try appendOptionalJsonString(allocator, result, thread.agent_nickname);
+    try result.appendSlice(allocator, ",\"agentRole\":");
+    try appendOptionalJsonString(allocator, result, thread.agent_role);
+    try result.appendSlice(allocator, ",\"gitInfo\":");
     try appendLoadedThreadGitInfoJson(allocator, result, thread);
     try result.appendSlice(allocator, ",\"name\":");
     try appendOptionalJsonString(allocator, result, thread.name);
@@ -18605,7 +18676,11 @@ fn appendSavedThreadListItemJson(allocator: std.mem.Allocator, result: *std.Arra
     try appendJsonString(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);
-    try result.appendSlice(allocator, ",\"agentNickname\":null,\"agentRole\":null,\"gitInfo\":");
+    try result.appendSlice(allocator, ",\"agentNickname\":");
+    try appendOptionalJsonString(allocator, result, thread.agent_nickname);
+    try result.appendSlice(allocator, ",\"agentRole\":");
+    try appendOptionalJsonString(allocator, result, thread.agent_role);
+    try result.appendSlice(allocator, ",\"gitInfo\":");
     try appendSavedThreadListGitInfoJson(allocator, result, thread);
     try result.appendSlice(allocator, ",\"name\":");
     try appendOptionalJsonString(allocator, result, thread.name);
