@@ -5961,6 +5961,9 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 == "thread-archive-loaded-unarchive-smoke"
             )
             assert archive_loaded_unarchive_smoke["result"] == {}
+            assert_thread_status_notification(
+                read_json_line(proc, 5), loaded_unarchive_thread_id, "notLoaded"
+            )
             archive_loaded_unarchive_notification = read_json_line(proc, 5)
             assert archive_loaded_unarchive_notification == {
                 "jsonrpc": "2.0",
@@ -6873,6 +6876,9 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             archived_loaded_rust = read_json_line(proc, 5)
             assert archived_loaded_rust["id"] == "thread-archive-loaded-rust-rollout"
             assert archived_loaded_rust["result"] == {}
+            assert_thread_status_notification(
+                read_json_line(proc, 5), rust_thread_id, "notLoaded"
+            )
             archived_loaded_rust_notification = read_json_line(proc, 5)
             assert archived_loaded_rust_notification == {
                 "jsonrpc": "2.0",
