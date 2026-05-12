@@ -14728,16 +14728,86 @@ fn handleAppsList(
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
 
+    var scoped_thread: ?*const LoadedThread = null;
     if (params) |object| {
         if (object.get("threadId")) |value| {
             if (value != .null) {
                 if (value != .string or value.string.len == 0) return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string or null");
-                if (findLoadedThread(state, value.string) == null) return renderThreadNotFound(allocator, id_value, value.string);
+                scoped_thread = findLoadedThread(state, value.string) orelse return renderThreadNotFound(allocator, id_value, value.string);
             }
         }
     }
 
-    return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
+    if (!(try appServerFeatureEnabled(allocator, state, "apps"))) {
+        return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null}");
+    }
+
+    var cursor: ?[]const u8 = null;
+    var limit: ?usize = null;
+    if (params) |object| {
+        if (object.get("cursor")) |value| {
+            if (value != .null) {
+                if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cursor must be a string or null");
+                cursor = value.string;
+            }
+        }
+        if (object.get("limit")) |value| {
+            limit = switch (value) {
+                .null => null,
+                .integer => |integer| blk: {
+                    if (integer < 0) return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                    break :blk @intCast(integer);
+                },
+                .number_string => |number| std.fmt.parseUnsigned(usize, number, 10) catch {
+                    return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                },
+                else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+            };
+        }
+    }
+
+    const start = if (cursor) |value|
+        std.fmt.parseUnsigned(usize, value, 10) catch {
+            const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    else
+        0;
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    var scoped_cwds_storage: [1][]const u8 = undefined;
+    var scoped_cwds: []const []const u8 = &.{};
+    if (scoped_thread) |thread| {
+        scoped_cwds_storage[0] = thread.cwd;
+        scoped_cwds = scoped_cwds_storage[0..];
+    }
+
+    var total: usize = 0;
+    const result = plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", scoped_cwds, start, limit, &total) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    const result_json = result orelse {
+        const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total apps {d}", .{ start, total });
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    };
+    defer allocator.free(result_json);
+
+    return renderJsonRpcResult(allocator, id_value, result_json);
 }
 
 fn handleGetConversationSummary(

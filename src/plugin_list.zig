@@ -66,6 +66,97 @@ pub const InstallResult = struct {
     }
 };
 
+const AppListEntry = struct {
+    id: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    install_url: ?[]const u8,
+    is_enabled: bool,
+    plugin_display_names: std.ArrayList([]const u8),
+
+    fn deinit(self: *AppListEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.name);
+        if (self.description) |value| allocator.free(value);
+        if (self.install_url) |value| allocator.free(value);
+        for (self.plugin_display_names.items) |value| allocator.free(value);
+        self.plugin_display_names.deinit(allocator);
+    }
+};
+
+pub fn renderAppsListResponse(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    cwds: []const []const u8,
+    start: usize,
+    limit: ?usize,
+    total_out: *usize,
+) !?[]const u8 {
+    var apps = std.ArrayList(AppListEntry).empty;
+    defer {
+        for (apps.items) |*app| app.deinit(allocator);
+        apps.deinit(allocator);
+    }
+
+    if (plugin_config.pluginsFeatureEnabled(config_bytes)) {
+        const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
+        defer plugin_config.freeStringList(allocator, enabled_ids);
+
+        var seen_plugin_ids = std.ArrayList([]const u8).empty;
+        defer {
+            for (seen_plugin_ids.items) |plugin_id| allocator.free(plugin_id);
+            seen_plugin_ids.deinit(allocator);
+        }
+
+        try collectAppsFromEnabledPluginCache(allocator, codex_home, config_bytes, enabled_ids, &seen_plugin_ids, &apps);
+        try collectAppsForRoot(allocator, config_bytes, codex_home, enabled_ids, &seen_plugin_ids, &apps);
+        const configured_roots = try marketplace_config.configuredMarketplaceRoots(allocator, codex_home, config_bytes);
+        defer {
+            for (configured_roots) |*root| root.deinit(allocator);
+            allocator.free(configured_roots);
+        }
+        for (configured_roots) |root| {
+            try collectAppsForRoot(allocator, config_bytes, root.root, enabled_ids, &seen_plugin_ids, &apps);
+        }
+        for (cwds) |cwd| {
+            try collectAppsForRoot(allocator, config_bytes, cwd, enabled_ids, &seen_plugin_ids, &apps);
+        }
+    }
+
+    std.mem.sort(AppListEntry, apps.items, {}, appListEntryLessThan);
+    for (apps.items) |*app| {
+        std.mem.sort([]const u8, app.plugin_display_names.items, {}, appListStringLessThan);
+    }
+
+    const total = apps.items.len;
+    total_out.* = total;
+    if (start > total) return null;
+
+    const effective_limit = @min(@max(limit orelse total, 1), total);
+    const end = @min(start + effective_limit, total);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"data\":[");
+    for (apps.items[start..end], 0..) |app, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendAppListEntryJson(allocator, &out, app);
+    }
+    try out.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        const next_cursor_json = try jsonString(allocator, next_cursor);
+        defer allocator.free(next_cursor_json);
+        try out.appendSlice(allocator, next_cursor_json);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}");
+    return try out.toOwnedSlice(allocator);
+}
+
 pub fn renderResponse(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -963,6 +1054,348 @@ fn appendPluginHooksJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), 
     try out.appendSlice(allocator, "]");
 }
 
+fn collectAppsForRoot(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    root: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
+        const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(marketplace_path);
+        try collectAppsFromMarketplaceFile(allocator, config_bytes, marketplace_path, enabled_ids, seen_plugin_ids, apps);
+    }
+}
+
+fn collectAppsFromEnabledPluginCache(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    for (enabled_ids) |plugin_id| {
+        if (containsString(seen_plugin_ids.items, plugin_id)) continue;
+        const parts = plugin_config.splitPluginId(plugin_id) orelse continue;
+        const plugin_base_root = (try plugin_config.localPluginBaseRoot(allocator, codex_home, plugin_id)) orelse continue;
+        defer allocator.free(plugin_base_root);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var dir = std.Io.Dir.openDirAbsolute(io, plugin_base_root, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => continue,
+            else => return err,
+        };
+        defer dir.close(io);
+
+        var added = false;
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            if (entry.kind != .directory) continue;
+            const plugin_root = try std.fs.path.join(allocator, &.{ plugin_base_root, entry.name });
+            defer allocator.free(plugin_root);
+
+            var manifest_parse: ?std.json.Parsed(std.json.Value) = null;
+            defer if (manifest_parse) |*parsed| parsed.deinit();
+            var manifest_bytes: ?[]const u8 = null;
+            defer if (manifest_bytes) |bytes| allocator.free(bytes);
+            manifest_bytes = try readPluginManifestBytes(allocator, plugin_root);
+            if (manifest_bytes) |bytes| {
+                manifest_parse = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch null;
+            }
+            const manifest_value = if (manifest_parse) |parsed| parsed.value else null;
+            const display_name = pluginDisplayName(manifest_value, parts.name);
+            added = (try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, display_name, apps)) or added;
+        }
+        if (added) {
+            try appendSeenPluginId(allocator, seen_plugin_ids, plugin_id);
+        }
+    }
+}
+
+fn collectAppsFromMarketplaceFile(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return;
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const object = parsed.value.object;
+    const marketplace_name = stringField(object, "name") orelse return;
+    const plugins_value = object.get("plugins") orelse return;
+    if (plugins_value != .array) return;
+
+    for (plugins_value.array.items) |plugin_value| {
+        try collectAppsFromMarketplaceEntry(allocator, config_bytes, marketplace_path, marketplace_name, plugin_value, enabled_ids, seen_plugin_ids, apps);
+    }
+}
+
+fn collectAppsFromMarketplaceEntry(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    marketplace_name: []const u8,
+    plugin_value: std.json.Value,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    if (plugin_value != .object) return;
+    const object = plugin_value.object;
+    const plugin_name = stringField(object, "name") orelse return;
+    if (plugin_name.len == 0 or marketplace_name.len == 0) return;
+
+    const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name, marketplace_name });
+    if (!containsString(enabled_ids, plugin_id)) {
+        allocator.free(plugin_id);
+        return;
+    }
+
+    const source_value = object.get("source") orelse {
+        allocator.free(plugin_id);
+        return;
+    };
+    const source = (renderPluginSource(allocator, marketplace_path, source_value) catch |err| {
+        allocator.free(plugin_id);
+        return err;
+    }) orelse {
+        allocator.free(plugin_id);
+        return;
+    };
+    defer source.deinit(allocator);
+    const plugin_root = source.plugin_root orelse {
+        allocator.free(plugin_id);
+        return;
+    };
+
+    if (containsString(seen_plugin_ids.items, plugin_id)) {
+        allocator.free(plugin_id);
+        return;
+    }
+    seen_plugin_ids.append(allocator, plugin_id) catch |err| {
+        allocator.free(plugin_id);
+        return err;
+    };
+
+    var manifest_parse: ?std.json.Parsed(std.json.Value) = null;
+    defer if (manifest_parse) |*parsed| parsed.deinit();
+    var manifest_bytes: ?[]const u8 = null;
+    defer if (manifest_bytes) |bytes| allocator.free(bytes);
+    manifest_bytes = try readPluginManifestBytes(allocator, plugin_root);
+    if (manifest_bytes) |bytes| {
+        manifest_parse = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch null;
+    }
+    const manifest_value = if (manifest_parse) |parsed| parsed.value else null;
+    const display_name = pluginDisplayName(manifest_value, plugin_name);
+
+    _ = try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, display_name, apps);
+}
+
+fn collectAppsFromPluginRoot(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    plugin_root: []const u8,
+    plugin_display_name: []const u8,
+    apps: *std.ArrayList(AppListEntry),
+) !bool {
+    const path = try std.fs.path.join(allocator, &.{ plugin_root, ".app.json" });
+    defer allocator.free(path);
+    const bytes = try readFileOptional(allocator, path, 1024 * 256) orelse return false;
+    defer allocator.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const apps_value = parsed.value.object.get("apps") orelse parsed.value;
+    if (apps_value != .object) return false;
+
+    var added = false;
+    var iterator = apps_value.object.iterator();
+    while (iterator.next()) |entry| {
+        const fallback_id = entry.key_ptr.*;
+        const app_object = if (entry.value_ptr.* == .object) entry.value_ptr.object else null;
+        const app_id = stringFieldOpt(app_object, "id") orelse fallback_id;
+        if (app_id.len == 0 or app_id[0] == '$') continue;
+        const name = stringFieldOpt(app_object, "name") orelse app_id;
+        const description = stringFieldOpt(app_object, "description");
+        const raw_install_url = stringFieldOpt(app_object, "installUrl") orelse stringFieldOpt(app_object, "install_url");
+        const default_install_url = try std.fmt.allocPrint(allocator, "https://chatgpt.com/apps/{s}/{s}", .{ app_id, app_id });
+        defer allocator.free(default_install_url);
+        const install_url = raw_install_url orelse default_install_url;
+        try upsertAppListEntry(allocator, apps, app_id, name, description, install_url, plugin_display_name, appEnabledFromConfig(config_bytes, app_id));
+        added = true;
+    }
+    return added;
+}
+
+fn pluginDisplayName(manifest_value: ?std.json.Value, fallback: []const u8) []const u8 {
+    const interface_value = pluginManifestInterfaceValue(manifest_value) orelse return fallback;
+    return stringField(interface_value.object, "displayName") orelse fallback;
+}
+
+fn upsertAppListEntry(
+    allocator: std.mem.Allocator,
+    apps: *std.ArrayList(AppListEntry),
+    app_id: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    install_url: ?[]const u8,
+    plugin_display_name: []const u8,
+    is_enabled: bool,
+) !void {
+    for (apps.items) |*app| {
+        if (!std.mem.eql(u8, app.id, app_id)) continue;
+        if (std.mem.eql(u8, app.name, app.id) and !std.mem.eql(u8, name, app_id)) {
+            const updated_name = try allocator.dupe(u8, name);
+            allocator.free(app.name);
+            app.name = updated_name;
+        }
+        if (app.description == null and description != null) {
+            app.description = try allocator.dupe(u8, description.?);
+        }
+        if (app.install_url == null and install_url != null) {
+            app.install_url = try allocator.dupe(u8, install_url.?);
+        }
+        app.is_enabled = app.is_enabled and is_enabled;
+        try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
+        return;
+    }
+
+    var owned_id: ?[]const u8 = try allocator.dupe(u8, app_id);
+    errdefer if (owned_id) |value| allocator.free(value);
+    var owned_name: ?[]const u8 = try allocator.dupe(u8, name);
+    errdefer if (owned_name) |value| allocator.free(value);
+    var owned_description: ?[]const u8 = if (description) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_description) |value| allocator.free(value);
+    var owned_install_url: ?[]const u8 = if (install_url) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_install_url) |value| allocator.free(value);
+
+    var app = AppListEntry{
+        .id = owned_id.?,
+        .name = owned_name.?,
+        .description = owned_description,
+        .install_url = owned_install_url,
+        .is_enabled = is_enabled,
+        .plugin_display_names = .empty,
+    };
+    owned_id = null;
+    owned_name = null;
+    owned_description = null;
+    owned_install_url = null;
+    errdefer app.deinit(allocator);
+    try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
+    try apps.append(allocator, app);
+}
+
+fn appendUniquePluginDisplayName(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8), value: []const u8) !void {
+    if (value.len == 0) return;
+    if (containsString(names.items, value)) return;
+    var owned: ?[]const u8 = try allocator.dupe(u8, value);
+    errdefer if (owned) |name| allocator.free(name);
+    try names.append(allocator, owned.?);
+    owned = null;
+}
+
+fn appendSeenPluginId(allocator: std.mem.Allocator, seen_plugin_ids: *std.ArrayList([]const u8), plugin_id: []const u8) !void {
+    var owned: ?[]const u8 = try allocator.dupe(u8, plugin_id);
+    errdefer if (owned) |value| allocator.free(value);
+    try seen_plugin_ids.append(allocator, owned.?);
+    owned = null;
+}
+
+fn appEnabledFromConfig(config_bytes: []const u8, app_id: []const u8) bool {
+    var table: AppConfigTable = .none;
+    var default_enabled: ?bool = null;
+    var app_enabled: ?bool = null;
+
+    var lines = std.mem.splitScalar(u8, config_bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index| raw_line[0..index] else raw_line;
+        const line = std.mem.trim(u8, without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            table = appConfigTableForLine(line, app_id);
+            continue;
+        }
+        const enabled = appConfigBoolValueForKey(line, "enabled") orelse continue;
+        switch (table) {
+            .default => default_enabled = enabled,
+            .target => app_enabled = enabled,
+            .none => {},
+        }
+    }
+
+    return app_enabled orelse default_enabled orelse true;
+}
+
+const AppConfigTable = enum {
+    none,
+    default,
+    target,
+};
+
+fn appConfigTableForLine(line: []const u8, app_id: []const u8) AppConfigTable {
+    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return .none;
+    if (line.len >= 4 and line[1] == '[') return .none;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    if (std.mem.eql(u8, inner, "apps._default")) return .default;
+    const prefix = "apps.";
+    if (!std.mem.startsWith(u8, inner, prefix)) return .none;
+    const suffix = inner[prefix.len..];
+    if (suffix.len >= 2 and suffix[0] == '"' and suffix[suffix.len - 1] == '"') {
+        const quoted = suffix[1 .. suffix.len - 1];
+        return if (std.mem.eql(u8, quoted, app_id)) .target else .none;
+    }
+    if (std.mem.indexOfScalar(u8, suffix, '.') != null) return .none;
+    return if (std.mem.eql(u8, suffix, app_id)) .target else .none;
+}
+
+fn appConfigBoolValueForKey(line: []const u8, key: []const u8) ?bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (std.mem.eql(u8, rhs, "true")) return true;
+    if (std.mem.eql(u8, rhs, "false")) return false;
+    return null;
+}
+
+fn appendAppListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), app: AppListEntry) !void {
+    try out.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, out, app.id);
+    try out.appendSlice(allocator, ",\"name\":");
+    try appendJsonString(allocator, out, app.name);
+    try out.appendSlice(allocator, ",\"description\":");
+    try appendOptionalStringJson(allocator, out, app.description);
+    try out.appendSlice(allocator, ",\"logoUrl\":null,\"logoUrlDark\":null,\"distributionChannel\":null,\"branding\":null,\"appMetadata\":null,\"labels\":null,\"installUrl\":");
+    try appendOptionalStringJson(allocator, out, app.install_url);
+    try out.appendSlice(allocator, ",\"isAccessible\":false,\"isEnabled\":");
+    try appendBool(allocator, out, app.is_enabled);
+    try out.appendSlice(allocator, ",\"pluginDisplayNames\":[");
+    for (app.plugin_display_names.items, 0..) |name, index| {
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try appendJsonString(allocator, out, name);
+    }
+    try out.appendSlice(allocator, "]}");
+}
+
+fn appListEntryLessThan(_: void, left: AppListEntry, right: AppListEntry) bool {
+    const name_order = std.mem.order(u8, left.name, right.name);
+    if (name_order != .eq) return name_order == .lt;
+    return std.mem.lessThan(u8, left.id, right.id);
+}
+
+fn appListStringLessThan(_: void, left: []const u8, right: []const u8) bool {
+    return std.mem.lessThan(u8, left, right);
+}
+
 fn appendPluginAppsJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), plugin_root: []const u8) !void {
     const path = try std.fs.path.join(allocator, &.{ plugin_root, ".app.json" });
     defer allocator.free(path);
@@ -1442,6 +1875,12 @@ fn containsString(values: []const []const u8, needle: []const u8) bool {
 
 fn appendBool(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: bool) !void {
     try out.appendSlice(allocator, if (value) "true" else "false");
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const encoded = try jsonString(allocator, value);
+    defer allocator.free(encoded);
+    try out.appendSlice(allocator, encoded);
 }
 
 fn jsonString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
