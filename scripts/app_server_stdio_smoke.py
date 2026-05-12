@@ -15556,6 +15556,58 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_ACCESS_TOKEN", None)
         env["CODEX_HOME"] = str(codex_home)
+
+        def assert_forced_login_rejection(
+            config_text: str,
+            request_id: str,
+            params: dict[str, object],
+            expected_message: str,
+        ) -> None:
+            forced_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-forced-login-", dir="/tmp"))
+            try:
+                (forced_home / "config.toml").write_text(config_text, encoding="utf-8")
+                forced_env = os.environ.copy()
+                forced_env.pop("OPENAI_API_KEY", None)
+                forced_env.pop("CODEX_ACCESS_TOKEN", None)
+                forced_env["CODEX_HOME"] = str(forced_home)
+                forced_proc = subprocess.Popen(
+                    [str(binary), "app-server"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=forced_env,
+                )
+                try:
+                    write_json_line(
+                        forced_proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "account/login/start",
+                            "params": params,
+                        },
+                    )
+                    rejected = read_json_line(forced_proc, 5)
+                    assert rejected["id"] == request_id
+                    assert rejected["error"]["code"] == -32600
+                    assert rejected["error"]["message"] == expected_message
+
+                    assert forced_proc.stdin is not None
+                    forced_proc.stdin.close()
+                    forced_proc.wait(timeout=5)
+                    if forced_proc.returncode != 0:
+                        raise AssertionError(
+                            f"forced login app-server exited {forced_proc.returncode}: "
+                            f"{forced_proc.stderr.read()}"
+                        )
+                finally:
+                    if forced_proc.poll() is None:
+                        forced_proc.kill()
+                        forced_proc.wait(timeout=5)
+            finally:
+                shutil.rmtree(forced_home, ignore_errors=True)
+
         proc = subprocess.Popen(
             [str(binary), "app-server"],
             stdin=subprocess.PIPE,
@@ -15720,6 +15772,39 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+        assert_forced_login_rejection(
+            'forced_login_method = "chatgpt"\n',
+            "forced-chatgpt-api-key",
+            {"type": "apiKey", "apiKey": "test-api-key"},
+            "API key login is disabled. Use ChatGPT login instead.",
+        )
+        assert_forced_login_rejection(
+            'forced_login_method = "api"\n',
+            "forced-api-chatgpt",
+            {"type": "chatgpt"},
+            "ChatGPT login is disabled. Use API key login instead.",
+        )
+        assert_forced_login_rejection(
+            'forced_login_method = "api"\n',
+            "forced-api-auth-tokens",
+            {
+                "type": "chatgptAuthTokens",
+                "accessToken": "external-token",
+                "chatgptAccountId": "acct_external",
+            },
+            "External ChatGPT auth is disabled. Use API key login instead.",
+        )
+        assert_forced_login_rejection(
+            'forced_chatgpt_workspace_id = "acct_expected"\n',
+            "forced-workspace-auth-tokens",
+            {
+                "type": "chatgptAuthTokens",
+                "accessToken": "external-token",
+                "chatgptAccountId": "acct_external",
+            },
+            'External auth must use workspace acct_expected, but received "acct_external".',
+        )
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
