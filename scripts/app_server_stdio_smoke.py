@@ -1432,9 +1432,61 @@ def exercise_json_rpc(write_line, read_line) -> None:
         )
         loaded_threads_after_fork = read_line()
         assert loaded_threads_after_fork["id"] == "loaded-threads-after-fork"
+        expected_loaded_thread_ids = sorted([thread_id, forked_thread_id])
         assert loaded_threads_after_fork["result"] == {
-            "data": sorted([thread_id, forked_thread_id]),
+            "data": expected_loaded_thread_ids,
             "nextCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-threads-invalid-cursor",
+                "method": "thread/loaded/list",
+                "params": {"cursor": "not-a-uuid"},
+            }
+        )
+        loaded_threads_invalid_cursor = read_line()
+        assert loaded_threads_invalid_cursor["id"] == "loaded-threads-invalid-cursor"
+        assert loaded_threads_invalid_cursor["error"]["code"] == -32600
+        assert (
+            "invalid cursor: not-a-uuid"
+            in loaded_threads_invalid_cursor["error"]["message"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-threads-uppercase-cursor",
+                "method": "thread/loaded/list",
+                "params": {"cursor": expected_loaded_thread_ids[0].upper(), "limit": 1},
+            }
+        )
+        loaded_threads_uppercase_cursor = read_line()
+        assert loaded_threads_uppercase_cursor["id"] == "loaded-threads-uppercase-cursor"
+        assert loaded_threads_uppercase_cursor["result"] == {
+            "data": [expected_loaded_thread_ids[1]],
+            "nextCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-threads-valid-missing-cursor",
+                "method": "thread/loaded/list",
+                "params": {
+                    "cursor": "00000000-0000-0000-0000-000000000000",
+                    "limit": 0,
+                },
+            }
+        )
+        loaded_threads_valid_missing_cursor = read_line()
+        assert loaded_threads_valid_missing_cursor["id"] == (
+            "loaded-threads-valid-missing-cursor"
+        )
+        assert loaded_threads_valid_missing_cursor["result"] == {
+            "data": [expected_loaded_thread_ids[0]],
+            "nextCursor": expected_loaded_thread_ids[0],
         }
 
         write_line(
