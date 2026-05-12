@@ -4571,6 +4571,57 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-memory-mode-state-db-only-rollout",
+                    "method": "thread/memoryMode/set",
+                    "params": {
+                        "threadId": state_db_thread_id,
+                        "mode": "disabled",
+                    },
+                },
+            )
+            state_db_memory_mode_set = read_json_line(proc, 5)
+            assert state_db_memory_mode_set["id"] == "thread-memory-mode-state-db-only-rollout"
+            assert state_db_memory_mode_set["result"] == {}
+            state_db_rollout_entries = [
+                json.loads(line)
+                for line in state_db_rollout_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert state_db_rollout_entries[-1]["type"] == "session_meta"
+            assert state_db_rollout_entries[-1]["payload"]["id"] == state_db_thread_id
+            assert (
+                state_db_rollout_entries[-1]["payload"]["memory_mode"]
+                == "disabled"
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-memory-mode-saved-rust-rollout",
+                    "method": "thread/memoryMode/set",
+                    "params": {
+                        "threadId": rust_thread_id,
+                        "mode": "enabled",
+                    },
+                },
+            )
+            saved_rust_memory_mode_set = read_json_line(proc, 5)
+            assert saved_rust_memory_mode_set["id"] == "thread-memory-mode-saved-rust-rollout"
+            assert saved_rust_memory_mode_set["result"] == {}
+            rust_rollout_entries = [
+                json.loads(line)
+                for line in rust_rollout_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert rust_rollout_entries[-1]["type"] == "session_meta"
+            assert rust_rollout_entries[-1]["payload"]["id"] == rust_thread_id
+            assert rust_rollout_entries[-1]["payload"]["memory_mode"] == "enabled"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-saved-rust-rollout",
                     "method": "thread/list",
                     "params": {
