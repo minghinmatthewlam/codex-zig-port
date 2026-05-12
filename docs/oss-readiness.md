@@ -18,7 +18,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
-  tests, and product-surface smoke tests on macOS. Latest checked push run
+  tests, and product-surface smoke tests on macOS. Checked push run
   `25708107227` passed for
   `95a6e037568691f09484475befa69684b578dbf3`.
 - Source hygiene: tracked-file scans found no provider-shaped tokens, GitHub
