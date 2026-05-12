@@ -24453,6 +24453,14 @@ fn handleExternalAgentConfigImport(allocator: std.mem.Allocator, id_value: std.j
             importExternalAgentConfig(allocator, codex_home, item.cwd) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import config", err);
             };
+        } else if (std.mem.eql(u8, item.item_type, "MCP_SERVER_CONFIG")) {
+            importExternalAgentMcpServerConfig(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import MCP server config", err);
+            };
+        } else if (std.mem.eql(u8, item.item_type, "HOOKS")) {
+            importExternalAgentHooks(allocator, codex_home, item.cwd) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import hooks", err);
+            };
         } else if (std.mem.eql(u8, item.item_type, "AGENTS_MD")) {
             importExternalAgentAgentsMd(allocator, codex_home, item.cwd) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import AGENTS.md", err);
@@ -24490,6 +24498,28 @@ fn importExternalAgentConfig(allocator: std.mem.Allocator, codex_home: []const u
         }
     }
     return importExternalAgentHomeConfig(allocator, codex_home);
+}
+
+fn importExternalAgentMcpServerConfig(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectMcpServerConfig(allocator, repo_root);
+        }
+    }
+    return importExternalAgentHomeMcpServerConfig(allocator, codex_home);
+}
+
+fn importExternalAgentHooks(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
+    if (cwd) |cwd_value| {
+        if (cwd_value.len != 0) {
+            const repo_root = (try findExternalAgentRepoRoot(allocator, cwd_value)) orelse return;
+            defer allocator.free(repo_root);
+            return importExternalAgentProjectHooks(allocator, repo_root);
+        }
+    }
+    return importExternalAgentHomeHooks(allocator, codex_home);
 }
 
 fn importExternalAgentAgentsMd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
@@ -24551,7 +24581,13 @@ fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
 fn isSupportedExternalAgentConfigImportItem(item: std.json.ObjectMap) bool {
     const item_type = item.get("itemType") orelse return false;
     if (item_type != .string) return false;
-    if (!std.mem.eql(u8, item_type.string, "CONFIG") and !std.mem.eql(u8, item_type.string, "AGENTS_MD") and !std.mem.eql(u8, item_type.string, "SKILLS") and !std.mem.eql(u8, item_type.string, "COMMANDS") and !std.mem.eql(u8, item_type.string, "SUBAGENTS")) return false;
+    if (!std.mem.eql(u8, item_type.string, "CONFIG") and
+        !std.mem.eql(u8, item_type.string, "MCP_SERVER_CONFIG") and
+        !std.mem.eql(u8, item_type.string, "HOOKS") and
+        !std.mem.eql(u8, item_type.string, "AGENTS_MD") and
+        !std.mem.eql(u8, item_type.string, "SKILLS") and
+        !std.mem.eql(u8, item_type.string, "COMMANDS") and
+        !std.mem.eql(u8, item_type.string, "SUBAGENTS")) return false;
     if (item.get("cwd")) |cwd| {
         if (cwd != .null and cwd != .string) return false;
     }
@@ -24579,6 +24615,38 @@ fn renderExternalAgentConfigDetectResponse(
         const description = try std.fmt.allocPrint(allocator, "Migrate {s} into {s}", .{ external_settings, target_config });
         defer allocator.free(description);
         try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "CONFIG", description, null);
+    }
+    if (include_home) {
+        var mcp_plan = try loadExternalAgentHomeMcpPlan(allocator);
+        defer mcp_plan.deinit(allocator);
+        if (!mcp_plan.isEmpty()) {
+            const target_config = try config.configTomlPath(allocator, codex_home);
+            defer allocator.free(target_config);
+            const config_bytes = try config.readConfigTomlFile(allocator, target_config);
+            defer if (config_bytes) |bytes| allocator.free(bytes);
+            if (externalAgentMcpPlanHasMissingValues(config_bytes orelse "", mcp_plan)) {
+                const source_root = try externalAgentHomeSourceRootPath(allocator);
+                defer allocator.free(source_root);
+                var names = try externalAgentMcpServerNames(allocator, mcp_plan);
+                defer deinitExternalAgentNamedItems(allocator, &names);
+                const description = try std.fmt.allocPrint(allocator, "Migrate MCP servers from {s} into {s}", .{ source_root, target_config });
+                defer allocator.free(description);
+                try appendExternalAgentConfigMigrationItemWithNamedDetails(allocator, &result, &first, "MCP_SERVER_CONFIG", description, null, "mcpServers", names.items);
+            }
+        }
+    }
+    if (include_home) {
+        const source_hooks_dir = try externalAgentHomePath(allocator);
+        defer allocator.free(source_hooks_dir);
+        const target_hooks = try externalAgentTargetHooksPath(allocator, codex_home);
+        defer allocator.free(target_hooks);
+        var hook_names = try missingExternalAgentHookEventNames(allocator, source_hooks_dir, target_hooks);
+        defer deinitExternalAgentNamedItems(allocator, &hook_names);
+        if (hook_names.items.len > 0) {
+            const description = try std.fmt.allocPrint(allocator, "Migrate hooks from {s} to {s}", .{ source_hooks_dir, target_hooks });
+            defer allocator.free(description);
+            try appendExternalAgentConfigMigrationItemWithNamedDetails(allocator, &result, &first, "HOOKS", description, null, "hooks", hook_names.items);
+        }
     }
     if (include_home and try externalAgentHomeSkillsNeedsMigration(allocator, codex_home)) {
         const source_skills = try externalAgentHomeSkillsPath(allocator);
@@ -24637,6 +24705,36 @@ fn renderExternalAgentConfigDetectResponse(
             const description = try std.fmt.allocPrint(allocator, "Migrate {s} into {s}", .{ source_settings, target_config });
             defer allocator.free(description);
             try appendExternalAgentConfigMigrationItem(allocator, &result, &first, "CONFIG", description, repo_root);
+        }
+        {
+            var mcp_plan = try loadExternalAgentProjectMcpPlan(allocator, repo_root);
+            defer mcp_plan.deinit(allocator);
+            if (!mcp_plan.isEmpty()) {
+                const target_config = try externalAgentProjectConfigPath(allocator, repo_root);
+                defer allocator.free(target_config);
+                const config_bytes = try config.readConfigTomlFile(allocator, target_config);
+                defer if (config_bytes) |bytes| allocator.free(bytes);
+                if (externalAgentMcpPlanHasMissingValues(config_bytes orelse "", mcp_plan)) {
+                    var names = try externalAgentMcpServerNames(allocator, mcp_plan);
+                    defer deinitExternalAgentNamedItems(allocator, &names);
+                    const description = try std.fmt.allocPrint(allocator, "Migrate MCP servers from {s} into {s}", .{ repo_root, target_config });
+                    defer allocator.free(description);
+                    try appendExternalAgentConfigMigrationItemWithNamedDetails(allocator, &result, &first, "MCP_SERVER_CONFIG", description, repo_root, "mcpServers", names.items);
+                }
+            }
+        }
+        {
+            const source_hooks_dir = try externalAgentProjectDirPath(allocator, repo_root);
+            defer allocator.free(source_hooks_dir);
+            const target_hooks = try externalAgentProjectTargetHooksPath(allocator, repo_root);
+            defer allocator.free(target_hooks);
+            var hook_names = try missingExternalAgentHookEventNames(allocator, source_hooks_dir, target_hooks);
+            defer deinitExternalAgentNamedItems(allocator, &hook_names);
+            if (hook_names.items.len > 0) {
+                const description = try std.fmt.allocPrint(allocator, "Migrate hooks from {s} to {s}", .{ source_hooks_dir, target_hooks });
+                defer allocator.free(description);
+                try appendExternalAgentConfigMigrationItemWithNamedDetails(allocator, &result, &first, "HOOKS", description, repo_root, "hooks", hook_names.items);
+            }
         }
         if (try externalAgentProjectSkillsNeedsMigration(allocator, repo_root)) {
             const source_skills = try externalAgentProjectSkillsPath(allocator, repo_root);
@@ -24731,7 +24829,19 @@ fn appendExternalAgentConfigMigrationItemWithNamedDetails(
     } else {
         try result.appendSlice(allocator, "null");
     }
-    try result.appendSlice(allocator, ",\"details\":{\"plugins\":[],\"sessions\":[],\"mcpServers\":[],\"hooks\":[],\"subagents\":");
+    try result.appendSlice(allocator, ",\"details\":{\"plugins\":[],\"sessions\":[],\"mcpServers\":");
+    if (std.mem.eql(u8, detail_field, "mcpServers")) {
+        try appendExternalAgentNamedDetailsArray(allocator, result, names);
+    } else {
+        try result.appendSlice(allocator, "[]");
+    }
+    try result.appendSlice(allocator, ",\"hooks\":");
+    if (std.mem.eql(u8, detail_field, "hooks")) {
+        try appendExternalAgentNamedDetailsArray(allocator, result, names);
+    } else {
+        try result.appendSlice(allocator, "[]");
+    }
+    try result.appendSlice(allocator, ",\"subagents\":");
     if (std.mem.eql(u8, detail_field, "subagents")) {
         try appendExternalAgentNamedDetailsArray(allocator, result, names);
     } else {
@@ -24832,6 +24942,899 @@ fn importExternalAgentConfigAt(allocator: std.mem.Allocator, settings_path: []co
 
     if (!changed) return;
     try config.writeConfigTomlFile(config_path, updated);
+}
+
+const ExternalAgentKeyValue = struct {
+    key: []const u8,
+    value: []const u8,
+
+    fn deinit(self: ExternalAgentKeyValue, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.value);
+    }
+};
+
+const ExternalAgentMcpSettings = struct {
+    enabled: std.ArrayList([]const u8) = .empty,
+    disabled: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *ExternalAgentMcpSettings, allocator: std.mem.Allocator) void {
+        deinitExternalAgentNamedItems(allocator, &self.enabled);
+        deinitExternalAgentNamedItems(allocator, &self.disabled);
+    }
+};
+
+const ExternalAgentMcpServer = struct {
+    name: []const u8,
+    command: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+    args: std.ArrayList([]const u8) = .empty,
+    env_vars: std.ArrayList([]const u8) = .empty,
+    env: std.ArrayList(ExternalAgentKeyValue) = .empty,
+    http_headers: std.ArrayList(ExternalAgentKeyValue) = .empty,
+    env_http_headers: std.ArrayList(ExternalAgentKeyValue) = .empty,
+    bearer_token_env_var: ?[]const u8 = null,
+
+    fn deinit(self: *ExternalAgentMcpServer, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.command) |value| allocator.free(value);
+        if (self.url) |value| allocator.free(value);
+        deinitExternalAgentNamedItems(allocator, &self.args);
+        deinitExternalAgentNamedItems(allocator, &self.env_vars);
+        deinitExternalAgentKeyValues(allocator, &self.env);
+        deinitExternalAgentKeyValues(allocator, &self.http_headers);
+        deinitExternalAgentKeyValues(allocator, &self.env_http_headers);
+        if (self.bearer_token_env_var) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+const ExternalAgentMcpPlan = struct {
+    servers: std.ArrayList(ExternalAgentMcpServer) = .empty,
+
+    fn deinit(self: *ExternalAgentMcpPlan, allocator: std.mem.Allocator) void {
+        for (self.servers.items) |*server| server.deinit(allocator);
+        self.servers.deinit(allocator);
+    }
+
+    fn isEmpty(self: ExternalAgentMcpPlan) bool {
+        return self.servers.items.len == 0;
+    }
+};
+
+fn deinitExternalAgentKeyValues(allocator: std.mem.Allocator, values: *std.ArrayList(ExternalAgentKeyValue)) void {
+    for (values.items) |entry| entry.deinit(allocator);
+    values.deinit(allocator);
+}
+
+fn importExternalAgentHomeMcpServerConfig(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    var plan = try loadExternalAgentHomeMcpPlan(allocator);
+    defer plan.deinit(allocator);
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    try importExternalAgentMcpPlanAt(allocator, config_path, plan);
+}
+
+fn importExternalAgentProjectMcpServerConfig(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    var plan = try loadExternalAgentProjectMcpPlan(allocator, repo_root);
+    defer plan.deinit(allocator);
+    const config_path = try externalAgentProjectConfigPath(allocator, repo_root);
+    defer allocator.free(config_path);
+    try importExternalAgentMcpPlanAt(allocator, config_path, plan);
+}
+
+fn loadExternalAgentHomeMcpPlan(allocator: std.mem.Allocator) !ExternalAgentMcpPlan {
+    const source_root = try externalAgentHomeSourceRootPath(allocator);
+    defer allocator.free(source_root);
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    const settings_path = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(settings_path);
+    var settings = try loadExternalAgentMcpSettingsFromPath(allocator, settings_path, false);
+    defer settings.deinit(allocator);
+    return loadExternalAgentMcpPlanForRoot(allocator, source_root, external_home, null, settings);
+}
+
+fn loadExternalAgentProjectMcpPlan(allocator: std.mem.Allocator, repo_root: []const u8) !ExternalAgentMcpPlan {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    const settings_path = try externalAgentProjectSettingsPath(allocator, repo_root);
+    defer allocator.free(settings_path);
+    var settings = try loadExternalAgentMcpSettingsFromPath(allocator, settings_path, false);
+    if (settings.enabled.items.len == 0 and settings.disabled.items.len == 0 and !try externalAgentPathExists(allocator, settings_path)) {
+        const home_settings_path = try externalAgentHomeSettingsPath(allocator);
+        defer allocator.free(home_settings_path);
+        settings.deinit(allocator);
+        settings = try loadExternalAgentMcpSettingsFromPath(allocator, home_settings_path, true);
+    }
+    defer settings.deinit(allocator);
+    return loadExternalAgentMcpPlanForRoot(allocator, repo_root, external_home, repo_root, settings);
+}
+
+fn loadExternalAgentMcpSettingsFromPath(allocator: std.mem.Allocator, settings_path: []const u8, ignore_invalid_main: bool) !ExternalAgentMcpSettings {
+    const settings_dir = std.fs.path.dirname(settings_path) orelse return .{};
+    const local_settings_path = try std.fs.path.join(allocator, &.{ settings_dir, "settings.local.json" });
+    defer allocator.free(local_settings_path);
+
+    var settings = try readExternalAgentSettings(allocator, settings_path, ignore_invalid_main);
+    defer if (settings) |*parsed| parsed.deinit();
+    var local_settings = try readExternalAgentSettings(allocator, local_settings_path, true);
+    defer if (local_settings) |*parsed| parsed.deinit();
+
+    var result = ExternalAgentMcpSettings{};
+    errdefer result.deinit(allocator);
+    try applyExternalAgentMcpSettingsValue(allocator, &result, if (settings) |parsed| parsed.value else null);
+    try applyExternalAgentMcpSettingsValue(allocator, &result, if (local_settings) |parsed| parsed.value else null);
+    std.mem.sort([]const u8, result.enabled.items, {}, stringLessThan);
+    std.mem.sort([]const u8, result.disabled.items, {}, stringLessThan);
+    return result;
+}
+
+fn applyExternalAgentMcpSettingsValue(allocator: std.mem.Allocator, settings: *ExternalAgentMcpSettings, value: ?std.json.Value) !void {
+    const object = value orelse return;
+    if (object != .object) return;
+    if (object.object.get("enabledMcpjsonServers")) |enabled| {
+        deinitExternalAgentNamedItems(allocator, &settings.enabled);
+        settings.enabled = .empty;
+        try appendExternalAgentJsonStringList(allocator, &settings.enabled, enabled);
+    }
+    if (object.object.get("disabledMcpjsonServers")) |disabled| {
+        deinitExternalAgentNamedItems(allocator, &settings.disabled);
+        settings.disabled = .empty;
+        try appendExternalAgentJsonStringList(allocator, &settings.disabled, disabled);
+    }
+}
+
+fn appendExternalAgentJsonStringList(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), value: std.json.Value) !void {
+    if (value == .array) {
+        for (value.array.items) |item| {
+            const string = try externalAgentJsonValueToString(allocator, item) orelse continue;
+            errdefer allocator.free(string);
+            try list.append(allocator, string);
+        }
+    } else if (try externalAgentJsonValueToString(allocator, value)) |string| {
+        errdefer allocator.free(string);
+        try list.append(allocator, string);
+    }
+}
+
+fn loadExternalAgentMcpPlanForRoot(
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    external_home: []const u8,
+    repo_root: ?[]const u8,
+    settings: ExternalAgentMcpSettings,
+) !ExternalAgentMcpPlan {
+    var plan = ExternalAgentMcpPlan{};
+    errdefer plan.deinit(allocator);
+
+    const mcp_path = try std.fs.path.join(allocator, &.{ source_root, ".mcp.json" });
+    defer allocator.free(mcp_path);
+    try appendExternalAgentMcpServersFromFile(allocator, &plan, mcp_path, settings, true);
+
+    const claude_json_path = try std.fs.path.join(allocator, &.{ source_root, ".claude.json" });
+    defer allocator.free(claude_json_path);
+    try appendExternalAgentMcpServersFromFile(allocator, &plan, claude_json_path, settings, true);
+    if (repo_root) |root| {
+        try appendExternalAgentProjectMcpServersFromFile(allocator, &plan, claude_json_path, root, settings, true);
+        const external_parent = std.fs.path.dirname(external_home);
+        if (external_parent) |parent| {
+            const home_claude_json_path = try std.fs.path.join(allocator, &.{ parent, ".claude.json" });
+            defer allocator.free(home_claude_json_path);
+            if (!std.mem.eql(u8, home_claude_json_path, claude_json_path)) {
+                try appendExternalAgentProjectMcpServersFromFile(allocator, &plan, home_claude_json_path, root, settings, false);
+            }
+        }
+    }
+
+    std.mem.sort(ExternalAgentMcpServer, plan.servers.items, {}, externalAgentMcpServerLessThan);
+    return plan;
+}
+
+fn appendExternalAgentMcpServersFromFile(
+    allocator: std.mem.Allocator,
+    plan: *ExternalAgentMcpPlan,
+    path: []const u8,
+    settings: ExternalAgentMcpSettings,
+    overwrite: bool,
+) !void {
+    const bytes = readTextFile(allocator, path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    try appendExternalAgentMcpServersFromValue(allocator, plan, parsed.value, settings, overwrite);
+}
+
+fn appendExternalAgentProjectMcpServersFromFile(
+    allocator: std.mem.Allocator,
+    plan: *ExternalAgentMcpPlan,
+    path: []const u8,
+    repo_root: []const u8,
+    settings: ExternalAgentMcpSettings,
+    overwrite: bool,
+) !void {
+    const bytes = readTextFile(allocator, path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const projects = parsed.value.object.get("projects") orelse return;
+    if (projects != .object) return;
+    var iterator = projects.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!try externalAgentProjectPathMatchesRoot(allocator, entry.key_ptr.*, repo_root)) continue;
+        try appendExternalAgentMcpServersFromValue(allocator, plan, entry.value_ptr.*, settings, overwrite);
+    }
+}
+
+fn appendExternalAgentMcpServersFromValue(
+    allocator: std.mem.Allocator,
+    plan: *ExternalAgentMcpPlan,
+    value: std.json.Value,
+    settings: ExternalAgentMcpSettings,
+    overwrite: bool,
+) !void {
+    if (value != .object) return;
+    const servers = value.object.get("mcpServers") orelse return;
+    if (servers != .object) return;
+    var iterator = servers.object.iterator();
+    while (iterator.next()) |entry| {
+        var server = try externalAgentMcpServerFromJson(allocator, entry.key_ptr.*, entry.value_ptr.*, settings) orelse continue;
+        errdefer server.deinit(allocator);
+        try putExternalAgentMcpServer(allocator, plan, server, overwrite);
+    }
+}
+
+fn externalAgentMcpServerFromJson(allocator: std.mem.Allocator, name: []const u8, value: std.json.Value, settings: ExternalAgentMcpSettings) !?ExternalAgentMcpServer {
+    if (!isBareTomlKeySegment(name)) return null;
+    if (value != .object) return null;
+    if (externalAgentMcpServerDisabled(name, value.object, settings)) return null;
+    const transport_type = if (value.object.get("type")) |type_value| if (type_value == .string) type_value.string else null else null;
+
+    var server = ExternalAgentMcpServer{ .name = try allocator.dupe(u8, name) };
+    errdefer server.deinit(allocator);
+    if (value.object.get("command")) |command_value| {
+        const command = try externalAgentJsonValueToString(allocator, command_value) orelse return null;
+        defer allocator.free(command);
+        if (transport_type != null and !std.mem.eql(u8, transport_type.?, "stdio")) return null;
+        if (containsExternalAgentEnvPlaceholder(command)) return null;
+        server.command = try allocator.dupe(u8, command);
+        if (value.object.get("args")) |args_value| {
+            try appendExternalAgentMcpStringArgs(allocator, &server.args, args_value) orelse return null;
+        }
+        if (value.object.get("env")) |env_value| {
+            try appendExternalAgentMcpEnv(allocator, &server, env_value) orelse return null;
+        }
+    } else if (value.object.get("url")) |url_value| {
+        const url = try externalAgentJsonValueToString(allocator, url_value) orelse return null;
+        defer allocator.free(url);
+        if (transport_type) |kind| {
+            if (!std.mem.eql(u8, kind, "http") and !std.mem.eql(u8, kind, "streamable_http")) return null;
+        }
+        if (containsExternalAgentEnvPlaceholder(url)) return null;
+        server.url = try allocator.dupe(u8, url);
+        if (value.object.get("headers")) |headers_value| {
+            try appendExternalAgentMcpHeaders(allocator, &server, headers_value) orelse return null;
+        }
+    } else {
+        return null;
+    }
+
+    std.mem.sort([]const u8, server.env_vars.items, {}, stringLessThan);
+    std.mem.sort(ExternalAgentKeyValue, server.env.items, {}, externalAgentKeyValueLessThan);
+    std.mem.sort(ExternalAgentKeyValue, server.http_headers.items, {}, externalAgentKeyValueLessThan);
+    std.mem.sort(ExternalAgentKeyValue, server.env_http_headers.items, {}, externalAgentKeyValueLessThan);
+    return server;
+}
+
+fn externalAgentMcpServerDisabled(name: []const u8, object: std.json.ObjectMap, settings: ExternalAgentMcpSettings) bool {
+    if (object.get("enabled")) |value| {
+        if (value == .bool and !value.bool) return true;
+    }
+    if (object.get("disabled")) |value| {
+        if (value == .bool and value.bool) return true;
+    }
+    if (settings.enabled.items.len > 0 and !externalAgentStringListContains(settings.enabled.items, name)) return true;
+    if (externalAgentStringListContains(settings.disabled.items, name)) return true;
+    return false;
+}
+
+fn appendExternalAgentMcpStringArgs(allocator: std.mem.Allocator, args: *std.ArrayList([]const u8), value: std.json.Value) !?void {
+    if (value != .array) return {};
+    for (value.array.items) |item| {
+        const string = try externalAgentJsonValueToString(allocator, item) orelse continue;
+        errdefer allocator.free(string);
+        if (containsExternalAgentEnvPlaceholder(string)) {
+            allocator.free(string);
+            return null;
+        }
+        try args.append(allocator, string);
+    }
+    return {};
+}
+
+fn appendExternalAgentMcpEnv(allocator: std.mem.Allocator, server: *ExternalAgentMcpServer, value: std.json.Value) !?void {
+    if (value != .object) return {};
+    var iterator = value.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!isBareTomlKeySegment(entry.key_ptr.*)) return null;
+        const env_value = try externalAgentJsonValueToString(allocator, entry.value_ptr.*) orelse continue;
+        defer allocator.free(env_value);
+        if (try parseExternalAgentEnvPlaceholder(allocator, env_value)) |env_name| {
+            defer allocator.free(env_name);
+            if (!std.mem.eql(u8, env_name, entry.key_ptr.*)) return null;
+            try server.env_vars.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
+        } else if (containsExternalAgentEnvPlaceholder(env_value)) {
+            return null;
+        } else {
+            try appendExternalAgentKeyValue(allocator, &server.env, entry.key_ptr.*, env_value);
+        }
+    }
+    return {};
+}
+
+fn appendExternalAgentMcpHeaders(allocator: std.mem.Allocator, server: *ExternalAgentMcpServer, value: std.json.Value) !?void {
+    if (value != .object) return {};
+    var iterator = value.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!isBareTomlKeySegment(entry.key_ptr.*)) return null;
+        const header_value = try externalAgentJsonValueToString(allocator, entry.value_ptr.*) orelse continue;
+        defer allocator.free(header_value);
+        if (asciiRegionEqlIgnoreCase(entry.key_ptr.*, "authorization") and std.mem.startsWith(u8, header_value, "Bearer ")) {
+            if (try parseExternalAgentEnvPlaceholder(allocator, std.mem.trim(u8, header_value["Bearer ".len..], " \t\r\n"))) |env_name| {
+                if (server.bearer_token_env_var) |old| allocator.free(old);
+                server.bearer_token_env_var = env_name;
+                continue;
+            }
+        }
+        if (try parseExternalAgentEnvPlaceholder(allocator, header_value)) |env_name| {
+            defer allocator.free(env_name);
+            try appendExternalAgentKeyValue(allocator, &server.env_http_headers, entry.key_ptr.*, env_name);
+        } else if (containsExternalAgentEnvPlaceholder(header_value)) {
+            return null;
+        } else {
+            try appendExternalAgentKeyValue(allocator, &server.http_headers, entry.key_ptr.*, header_value);
+        }
+    }
+    return {};
+}
+
+fn putExternalAgentMcpServer(allocator: std.mem.Allocator, plan: *ExternalAgentMcpPlan, server: ExternalAgentMcpServer, overwrite: bool) !void {
+    for (plan.servers.items, 0..) |*existing, index| {
+        if (!std.mem.eql(u8, existing.name, server.name)) continue;
+        if (!overwrite) {
+            var discarded = server;
+            discarded.deinit(allocator);
+            return;
+        }
+        existing.deinit(allocator);
+        _ = plan.servers.swapRemove(index);
+        break;
+    }
+    try plan.servers.append(allocator, server);
+}
+
+fn importExternalAgentMcpPlanAt(allocator: std.mem.Allocator, config_path: []const u8, plan: ExternalAgentMcpPlan) !void {
+    if (plan.isEmpty()) return;
+    const current_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (current_bytes) |bytes| allocator.free(bytes);
+    var updated: []const u8 = try allocator.dupe(u8, current_bytes orelse "");
+    defer allocator.free(updated);
+    var changed = false;
+
+    for (plan.servers.items) |server| {
+        if (server.command) |command| {
+            try maybeApplyExternalAgentTomlString(allocator, &updated, &changed, server.name, "command", command);
+            if (server.args.items.len > 0) try maybeApplyExternalAgentTomlStringArray(allocator, &updated, &changed, server.name, "args", server.args.items);
+            if (server.env_vars.items.len > 0) try maybeApplyExternalAgentTomlStringArray(allocator, &updated, &changed, server.name, "env_vars", server.env_vars.items);
+            try maybeApplyExternalAgentTomlKeyValues(allocator, &updated, &changed, server.name, "env", server.env.items);
+        } else if (server.url) |url| {
+            try maybeApplyExternalAgentTomlString(allocator, &updated, &changed, server.name, "url", url);
+            if (server.bearer_token_env_var) |env_name| try maybeApplyExternalAgentTomlString(allocator, &updated, &changed, server.name, "bearer_token_env_var", env_name);
+            try maybeApplyExternalAgentTomlKeyValues(allocator, &updated, &changed, server.name, "http_headers", server.http_headers.items);
+            try maybeApplyExternalAgentTomlKeyValues(allocator, &updated, &changed, server.name, "env_http_headers", server.env_http_headers.items);
+        }
+    }
+
+    if (changed) try config.writeConfigTomlFile(config_path, updated);
+}
+
+fn maybeApplyExternalAgentTomlString(allocator: std.mem.Allocator, updated: *[]const u8, changed: *bool, server_name: []const u8, key: []const u8, value: []const u8) !void {
+    const key_path = try std.fmt.allocPrint(allocator, "mcp_servers.{s}.{s}", .{ server_name, key });
+    defer allocator.free(key_path);
+    if (tomlKeyPathHasAssignment(updated.*, key_path)) return;
+    const rendered = try renderTomlString(allocator, value);
+    defer allocator.free(rendered);
+    const next = try config.updateTomlRawValueForKeyPath(allocator, updated.*, key_path, rendered);
+    allocator.free(updated.*);
+    updated.* = next;
+    changed.* = true;
+}
+
+fn maybeApplyExternalAgentTomlStringArray(allocator: std.mem.Allocator, updated: *[]const u8, changed: *bool, server_name: []const u8, key: []const u8, values: []const []const u8) !void {
+    const key_path = try std.fmt.allocPrint(allocator, "mcp_servers.{s}.{s}", .{ server_name, key });
+    defer allocator.free(key_path);
+    if (tomlKeyPathHasAssignment(updated.*, key_path)) return;
+    const rendered = try renderExternalAgentTomlStringArray(allocator, values);
+    defer allocator.free(rendered);
+    const next = try config.updateTomlRawValueForKeyPath(allocator, updated.*, key_path, rendered);
+    allocator.free(updated.*);
+    updated.* = next;
+    changed.* = true;
+}
+
+fn maybeApplyExternalAgentTomlKeyValues(allocator: std.mem.Allocator, updated: *[]const u8, changed: *bool, server_name: []const u8, table: []const u8, values: []const ExternalAgentKeyValue) !void {
+    for (values) |entry| {
+        const key_path = try std.fmt.allocPrint(allocator, "mcp_servers.{s}.{s}.{s}", .{ server_name, table, entry.key });
+        defer allocator.free(key_path);
+        if (tomlKeyPathHasAssignment(updated.*, key_path)) continue;
+        const rendered = try renderTomlString(allocator, entry.value);
+        defer allocator.free(rendered);
+        const next = try config.updateTomlRawValueForKeyPath(allocator, updated.*, key_path, rendered);
+        allocator.free(updated.*);
+        updated.* = next;
+        changed.* = true;
+    }
+}
+
+fn externalAgentMcpPlanHasMissingValues(bytes: []const u8, plan: ExternalAgentMcpPlan) bool {
+    for (plan.servers.items) |server| {
+        var key_path_buffer: [256]u8 = undefined;
+        const key = if (server.command != null) "command" else "url";
+        const key_path = std.fmt.bufPrint(&key_path_buffer, "mcp_servers.{s}.{s}", .{ server.name, key }) catch return true;
+        if (!tomlKeyPathHasAssignment(bytes, key_path)) return true;
+    }
+    return false;
+}
+
+fn externalAgentMcpServerNames(allocator: std.mem.Allocator, plan: ExternalAgentMcpPlan) !std.ArrayList([]const u8) {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer deinitExternalAgentNamedItems(allocator, &names);
+    for (plan.servers.items) |server| {
+        try names.append(allocator, try allocator.dupe(u8, server.name));
+    }
+    return names;
+}
+
+fn externalAgentMcpServerLessThan(_: void, lhs: ExternalAgentMcpServer, rhs: ExternalAgentMcpServer) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn externalAgentKeyValueLessThan(_: void, lhs: ExternalAgentKeyValue, rhs: ExternalAgentKeyValue) bool {
+    return std.mem.lessThan(u8, lhs.key, rhs.key);
+}
+
+fn appendExternalAgentKeyValue(allocator: std.mem.Allocator, values: *std.ArrayList(ExternalAgentKeyValue), key: []const u8, value: []const u8) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    const owned_value = try allocator.dupe(u8, value);
+    errdefer allocator.free(owned_value);
+    try values.append(allocator, .{ .key = owned_key, .value = owned_value });
+}
+
+fn externalAgentJsonValueToString(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+    return switch (value) {
+        .string => |string| try allocator.dupe(u8, string),
+        .bool => |boolean| try allocator.dupe(u8, if (boolean) "true" else "false"),
+        .integer => |integer| try std.fmt.allocPrint(allocator, "{}", .{integer}),
+        .float => |float| try std.fmt.allocPrint(allocator, "{d}", .{float}),
+        .number_string => |number| try allocator.dupe(u8, number),
+        .null, .array, .object => null,
+    };
+}
+
+fn parseExternalAgentEnvPlaceholder(allocator: std.mem.Allocator, value: []const u8) !?[]const u8 {
+    if (!std.mem.startsWith(u8, value, "${") or !std.mem.endsWith(u8, value, "}")) return null;
+    var inner = value[2 .. value.len - 1];
+    if (std.mem.indexOf(u8, inner, ":-")) |index| inner = inner[0..index];
+    if (inner.len == 0) return null;
+    if (!(inner[0] == '_' or std.ascii.isAlphabetic(inner[0]))) return null;
+    for (inner[1..]) |byte| {
+        if (byte == '_' or std.ascii.isAlphanumeric(byte)) continue;
+        return null;
+    }
+    return try allocator.dupe(u8, inner);
+}
+
+fn containsExternalAgentEnvPlaceholder(value: []const u8) bool {
+    return std.mem.indexOf(u8, value, "${") != null;
+}
+
+fn externalAgentStringListContains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
+}
+
+fn renderExternalAgentTomlStringArray(allocator: std.mem.Allocator, values: []const []const u8) ![]const u8 {
+    var rendered = std.ArrayList(u8).empty;
+    errdefer rendered.deinit(allocator);
+    try rendered.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index != 0) try rendered.appendSlice(allocator, ", ");
+        const string = try renderTomlString(allocator, value);
+        defer allocator.free(string);
+        try rendered.appendSlice(allocator, string);
+    }
+    try rendered.append(allocator, ']');
+    return rendered.toOwnedSlice(allocator);
+}
+
+fn externalAgentProjectPathMatchesRoot(allocator: std.mem.Allocator, project_path: []const u8, repo_root: []const u8) !bool {
+    if (std.mem.eql(u8, project_path, repo_root)) return true;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const project_real = std.Io.Dir.cwd().realPathFileAlloc(io, project_path, allocator) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(project_real);
+    const repo_real = std.Io.Dir.cwd().realPathFileAlloc(io, repo_root, allocator) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(repo_real);
+    return std.mem.eql(u8, project_real, repo_real);
+}
+
+const EXTERNAL_AGENT_HOOK_EVENTS = [_][]const u8{
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+};
+
+const ExternalAgentHookTimeout = struct {
+    field_name: []const u8,
+    seconds: u64,
+};
+
+const ExternalAgentHookCommand = struct {
+    command: []const u8,
+    timeout: ?ExternalAgentHookTimeout = null,
+    status_message: ?[]const u8 = null,
+
+    fn deinit(self: ExternalAgentHookCommand, allocator: std.mem.Allocator) void {
+        allocator.free(self.command);
+        if (self.status_message) |value| allocator.free(value);
+    }
+};
+
+const ExternalAgentHookGroup = struct {
+    event_name: []const u8,
+    matcher: ?[]const u8 = null,
+    commands: std.ArrayList(ExternalAgentHookCommand) = .empty,
+
+    fn deinit(self: *ExternalAgentHookGroup, allocator: std.mem.Allocator) void {
+        allocator.free(self.event_name);
+        if (self.matcher) |value| allocator.free(value);
+        for (self.commands.items) |hook| hook.deinit(allocator);
+        self.commands.deinit(allocator);
+    }
+};
+
+const ExternalAgentHookPlan = struct {
+    groups: std.ArrayList(ExternalAgentHookGroup) = .empty,
+
+    fn deinit(self: *ExternalAgentHookPlan, allocator: std.mem.Allocator) void {
+        for (self.groups.items) |*group| group.deinit(allocator);
+        self.groups.deinit(allocator);
+    }
+
+    fn isEmpty(self: ExternalAgentHookPlan) bool {
+        return self.groups.items.len == 0;
+    }
+};
+
+fn importExternalAgentHomeHooks(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const source_hooks_dir = try externalAgentHomePath(allocator);
+    defer allocator.free(source_hooks_dir);
+    const target_hooks = try externalAgentTargetHooksPath(allocator, codex_home);
+    defer allocator.free(target_hooks);
+    return importExternalAgentHooksAt(allocator, source_hooks_dir, target_hooks);
+}
+
+fn importExternalAgentProjectHooks(allocator: std.mem.Allocator, repo_root: []const u8) !void {
+    const source_hooks_dir = try externalAgentProjectDirPath(allocator, repo_root);
+    defer allocator.free(source_hooks_dir);
+    const target_hooks = try externalAgentProjectTargetHooksPath(allocator, repo_root);
+    defer allocator.free(target_hooks);
+    return importExternalAgentHooksAt(allocator, source_hooks_dir, target_hooks);
+}
+
+fn importExternalAgentHooksAt(allocator: std.mem.Allocator, source_external_agent_dir: []const u8, target_hooks: []const u8) !void {
+    var plan = try loadExternalAgentHookPlan(allocator, source_external_agent_dir);
+    defer plan.deinit(allocator);
+    if (plan.isEmpty()) return;
+    if (!try isMissingOrEmptyTextFile(allocator, target_hooks)) return;
+
+    try copyExternalAgentHookScripts(allocator, source_external_agent_dir, target_hooks);
+
+    const rendered = try renderExternalAgentHooksJson(allocator, plan);
+    defer allocator.free(rendered);
+    try writeTextFile(target_hooks, rendered);
+}
+
+fn missingExternalAgentHookEventNames(allocator: std.mem.Allocator, source_external_agent_dir: []const u8, target_hooks: []const u8) !std.ArrayList([]const u8) {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer deinitExternalAgentNamedItems(allocator, &names);
+    if (!try isMissingOrEmptyTextFile(allocator, target_hooks)) return names;
+
+    var plan = try loadExternalAgentHookPlan(allocator, source_external_agent_dir);
+    defer plan.deinit(allocator);
+    if (plan.isEmpty()) return names;
+
+    for (EXTERNAL_AGENT_HOOK_EVENTS) |event_name| {
+        for (plan.groups.items) |group| {
+            if (!std.mem.eql(u8, group.event_name, event_name)) continue;
+            try names.append(allocator, try allocator.dupe(u8, event_name));
+            break;
+        }
+    }
+    return names;
+}
+
+fn loadExternalAgentHookPlan(allocator: std.mem.Allocator, source_external_agent_dir: []const u8) !ExternalAgentHookPlan {
+    const settings_path = try std.fs.path.join(allocator, &.{ source_external_agent_dir, "settings.json" });
+    defer allocator.free(settings_path);
+    const local_settings_path = try std.fs.path.join(allocator, &.{ source_external_agent_dir, "settings.local.json" });
+    defer allocator.free(local_settings_path);
+
+    var settings = try readExternalAgentSettings(allocator, settings_path, false);
+    defer if (settings) |*parsed| parsed.deinit();
+    var local_settings = try readExternalAgentSettings(allocator, local_settings_path, true);
+    defer if (local_settings) |*parsed| parsed.deinit();
+
+    var plan = ExternalAgentHookPlan{};
+    errdefer plan.deinit(allocator);
+    var disable_all_hooks = false;
+    if (settings) |parsed| {
+        if (externalAgentHooksDisableAllValue(parsed.value)) |disabled| disable_all_hooks = disabled;
+        try appendExternalAgentHookGroupsFromSettings(allocator, &plan, parsed.value);
+    }
+    if (local_settings) |parsed| {
+        if (externalAgentHooksDisableAllValue(parsed.value)) |disabled| disable_all_hooks = disabled;
+        try appendExternalAgentHookGroupsFromSettings(allocator, &plan, parsed.value);
+    }
+    if (disable_all_hooks) {
+        plan.deinit(allocator);
+        return .{};
+    }
+    return plan;
+}
+
+fn externalAgentHooksDisableAllValue(value: std.json.Value) ?bool {
+    if (value != .object) return null;
+    const disabled = value.object.get("disableAllHooks") orelse return null;
+    if (disabled != .bool) return null;
+    return disabled.bool;
+}
+
+fn appendExternalAgentHookGroupsFromSettings(allocator: std.mem.Allocator, plan: *ExternalAgentHookPlan, value: std.json.Value) !void {
+    if (value != .object) return;
+    const hooks = value.object.get("hooks") orelse return;
+    if (hooks != .object) return;
+
+    for (EXTERNAL_AGENT_HOOK_EVENTS) |event_name| {
+        const groups = hooks.object.get(event_name) orelse continue;
+        if (groups != .array) continue;
+        for (groups.array.items) |group_value| {
+            var group = try externalAgentHookGroupFromJson(allocator, event_name, group_value) orelse continue;
+            errdefer group.deinit(allocator);
+            try plan.groups.append(allocator, group);
+        }
+    }
+}
+
+fn externalAgentHookGroupFromJson(allocator: std.mem.Allocator, event_name: []const u8, value: std.json.Value) !?ExternalAgentHookGroup {
+    if (value != .object) return null;
+    if (!externalAgentHookGroupKeysSupported(value.object)) return null;
+    const hooks = value.object.get("hooks") orelse return null;
+    if (hooks != .array) return null;
+
+    var group = ExternalAgentHookGroup{ .event_name = try allocator.dupe(u8, event_name) };
+    errdefer group.deinit(allocator);
+
+    if (externalAgentHookEventSupportsMatcher(event_name)) {
+        if (value.object.get("matcher")) |matcher| {
+            if (matcher == .string and matcher.string.len > 0) {
+                group.matcher = try allocator.dupe(u8, matcher.string);
+            }
+        }
+    }
+
+    for (hooks.array.items) |hook_value| {
+        const command = try externalAgentHookCommandFromJson(allocator, hook_value) orelse continue;
+        errdefer command.deinit(allocator);
+        try group.commands.append(allocator, command);
+    }
+    if (group.commands.items.len == 0) {
+        group.deinit(allocator);
+        return null;
+    }
+    return group;
+}
+
+fn externalAgentHookGroupKeysSupported(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "matcher")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "hooks")) continue;
+        return false;
+    }
+    return true;
+}
+
+fn externalAgentHookEventSupportsMatcher(event_name: []const u8) bool {
+    return std.mem.eql(u8, event_name, "PreToolUse") or
+        std.mem.eql(u8, event_name, "PermissionRequest") or
+        std.mem.eql(u8, event_name, "PostToolUse") or
+        std.mem.eql(u8, event_name, "PreCompact") or
+        std.mem.eql(u8, event_name, "PostCompact") or
+        std.mem.eql(u8, event_name, "SessionStart");
+}
+
+fn externalAgentHookCommandFromJson(allocator: std.mem.Allocator, value: std.json.Value) !?ExternalAgentHookCommand {
+    if (value != .object) return null;
+    if (!externalAgentHookCommandKeysSupported(value.object)) return null;
+    const type_value = value.object.get("type") orelse return null;
+    if (type_value != .string or !std.mem.eql(u8, type_value.string, "command")) return null;
+    if (value.object.get("async")) |async_value| {
+        if (async_value != .bool or async_value.bool) return null;
+    }
+    const command_value = value.object.get("command") orelse return null;
+    if (command_value != .string) return null;
+    const command_trimmed = std.mem.trim(u8, command_value.string, " \t\r\n");
+    if (command_trimmed.len == 0) return null;
+
+    const command = try allocator.dupe(u8, command_value.string);
+    errdefer allocator.free(command);
+
+    var status_message: ?[]const u8 = null;
+    errdefer if (status_message) |message| allocator.free(message);
+    if (value.object.get("statusMessage")) |status| {
+        if (status != .string) return null;
+        status_message = try rewriteExternalAgentTerms(allocator, status.string);
+    }
+
+    var timeout: ?ExternalAgentHookTimeout = null;
+    if (value.object.get("timeout")) |timeout_value| {
+        const seconds = externalAgentHookTimeoutSeconds(timeout_value) orelse return null;
+        timeout = .{ .field_name = "timeout", .seconds = seconds };
+    }
+    if (value.object.get("timeoutSec")) |timeout_value| {
+        const seconds = externalAgentHookTimeoutSeconds(timeout_value) orelse return null;
+        timeout = .{ .field_name = "timeoutSec", .seconds = seconds };
+    }
+
+    return .{
+        .command = command,
+        .timeout = timeout,
+        .status_message = status_message,
+    };
+}
+
+fn externalAgentHookCommandKeysSupported(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "type")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "command")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "timeout")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "timeoutSec")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "async")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "statusMessage")) continue;
+        return false;
+    }
+    return true;
+}
+
+fn externalAgentHookTimeoutSeconds(value: std.json.Value) ?u64 {
+    return switch (value) {
+        .integer => |integer| if (integer >= 0) @intCast(integer) else null,
+        .number_string => |number| std.fmt.parseUnsigned(u64, number, 10) catch null,
+        else => null,
+    };
+}
+
+fn renderExternalAgentHooksJson(allocator: std.mem.Allocator, plan: ExternalAgentHookPlan) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"hooks\":{");
+    var first_event = true;
+    for (EXTERNAL_AGENT_HOOK_EVENTS) |event_name| {
+        var has_event = false;
+        for (plan.groups.items) |group| {
+            if (std.mem.eql(u8, group.event_name, event_name)) {
+                has_event = true;
+                break;
+            }
+        }
+        if (!has_event) continue;
+
+        if (!first_event) try result.appendSlice(allocator, ",");
+        first_event = false;
+        try appendJsonString(allocator, &result, event_name);
+        try result.appendSlice(allocator, ":[");
+        var first_group = true;
+        for (plan.groups.items) |group| {
+            if (!std.mem.eql(u8, group.event_name, event_name)) continue;
+            if (!first_group) try result.appendSlice(allocator, ",");
+            first_group = false;
+            try appendExternalAgentHookGroupJson(allocator, &result, group);
+        }
+        try result.appendSlice(allocator, "]");
+    }
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendExternalAgentHookGroupJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), group: ExternalAgentHookGroup) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    if (group.matcher) |matcher| try appendJsonStringField(allocator, result, &first, "matcher", matcher);
+    try appendJsonFieldName(allocator, result, &first, "hooks");
+    try result.appendSlice(allocator, "[");
+    for (group.commands.items, 0..) |hook, index| {
+        if (index != 0) try result.appendSlice(allocator, ",");
+        try appendExternalAgentHookCommandJson(allocator, result, hook);
+    }
+    try result.appendSlice(allocator, "]}");
+}
+
+fn appendExternalAgentHookCommandJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), hook: ExternalAgentHookCommand) !void {
+    var first = true;
+    try result.appendSlice(allocator, "{");
+    try appendJsonStringField(allocator, result, &first, "type", "command");
+    try appendJsonStringField(allocator, result, &first, "command", hook.command);
+    if (hook.timeout) |timeout| try appendJsonU64Field(allocator, result, &first, timeout.field_name, timeout.seconds);
+    if (hook.status_message) |status_message| try appendJsonStringField(allocator, result, &first, "statusMessage", status_message);
+    try result.appendSlice(allocator, "}");
+}
+
+fn copyExternalAgentHookScripts(allocator: std.mem.Allocator, source_external_agent_dir: []const u8, target_hooks: []const u8) !void {
+    const target_parent = std.fs.path.dirname(target_hooks) orelse return;
+    const source_hooks = try std.fs.path.join(allocator, &.{ source_external_agent_dir, "hooks" });
+    defer allocator.free(source_hooks);
+    const target_hooks_dir = try std.fs.path.join(allocator, &.{ target_parent, "hooks" });
+    defer allocator.free(target_hooks_dir);
+    try copyExternalAgentHookScriptsRecursive(allocator, source_hooks, target_hooks_dir);
+}
+
+fn copyExternalAgentHookScriptsRecursive(allocator: std.mem.Allocator, source_root: []const u8, target_root: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var source_dir = std.Io.Dir.openDirAbsolute(io, source_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.NotDir => return,
+        else => return err,
+    };
+    defer source_dir.close(io);
+
+    try std.Io.Dir.cwd().createDirPath(io, target_root);
+    var iter = source_dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const source_path = try std.fs.path.join(allocator, &.{ source_root, entry.name });
+        defer allocator.free(source_path);
+        const target_path = try std.fs.path.join(allocator, &.{ target_root, entry.name });
+        defer allocator.free(target_path);
+
+        if (entry.kind == .directory) {
+            try copyExternalAgentHookScriptsRecursive(allocator, source_path, target_path);
+        } else if (entry.kind == .file) {
+            if (try externalAgentPathExists(allocator, target_path)) continue;
+            try ensureParentDir(io, target_path);
+            try std.Io.Dir.copyFileAbsolute(source_path, target_path, io, .{});
+        }
+    }
 }
 
 fn externalAgentHomeAgentsMdNeedsMigration(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
@@ -25698,6 +26701,25 @@ fn externalAgentProjectSettingsPath(allocator: std.mem.Allocator, repo_root: []c
 
 fn externalAgentProjectConfigPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ repo_root, ".codex", "config.toml" });
+}
+
+fn externalAgentHomeSourceRootPath(allocator: std.mem.Allocator) ![]const u8 {
+    const external_home = try externalAgentHomePath(allocator);
+    defer allocator.free(external_home);
+    const parent = std.fs.path.dirname(external_home) orelse return allocator.dupe(u8, external_home);
+    return allocator.dupe(u8, parent);
+}
+
+fn externalAgentProjectDirPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".claude" });
+}
+
+fn externalAgentTargetHooksPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, "hooks.json" });
+}
+
+fn externalAgentProjectTargetHooksPath(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ repo_root, ".codex", "hooks.json" });
 }
 
 fn externalAgentHomeAgentsMdPath(allocator: std.mem.Allocator) ![]const u8 {
