@@ -16278,7 +16278,9 @@ fn handleThreadMethod(
         if (validateThreadListParams(params_value)) |message| {
             return renderJsonRpcError(allocator, id_value, -32602, message);
         }
-        return renderJsonRpcResult(allocator, id_value, "{\"data\":[],\"nextCursor\":null,\"backwardsCursor\":null}");
+        const result = try renderThreadListResult(allocator, state, params_value.?);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/inject_items")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -17454,6 +17456,146 @@ fn renderThreadLoadedListResult(
     }
     try result.appendSlice(allocator, "}");
     return result.toOwnedSlice(allocator);
+}
+
+const ThreadListSortKey = enum {
+    created_at,
+    updated_at,
+};
+
+const ThreadListSortDirection = enum {
+    asc,
+    desc,
+};
+
+const ThreadListSortContext = struct {
+    key: ThreadListSortKey,
+    direction: ThreadListSortDirection,
+};
+
+fn renderThreadListResult(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    params_value: std.json.Value,
+) ![]const u8 {
+    const params = params_value.object;
+    var threads = std.ArrayList(*const LoadedThread).empty;
+    defer threads.deinit(allocator);
+
+    for (state.loaded_threads.items) |*thread| {
+        if (threadMatchesThreadListParams(thread, params)) {
+            try threads.append(allocator, thread);
+        }
+    }
+
+    std.mem.sort(*const LoadedThread, threads.items, threadListSortContext(params), threadListLessThan);
+
+    const cursor = optionalStringParam(params, "cursor");
+    var start: usize = 0;
+    if (cursor) |cursor_value| {
+        for (threads.items, 0..) |thread, index| {
+            if (std.mem.eql(u8, thread.id, cursor_value)) {
+                start = index + 1;
+                break;
+            }
+        }
+    }
+
+    const limit = threadListLimit(params);
+    const capped_end = if (limit) |value| @min(threads.items.len, start + value) else threads.items.len;
+    const page = threads.items[start..capped_end];
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (page, 0..) |thread, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendLoadedThreadJson(allocator, &result, thread, false);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (capped_end < threads.items.len and page.len > 0) {
+        try appendJsonString(allocator, &result, page[page.len - 1].id);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"backwardsCursor\":");
+    if (page.len > 0) {
+        try appendJsonString(allocator, &result, page[0].id);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn threadMatchesThreadListParams(thread: *const LoadedThread, params: std.json.ObjectMap) bool {
+    if (optionalBoolParam(params, "useStateDbOnly") orelse false) return false;
+    if (optionalBoolParam(params, "archived") orelse false) return false;
+    if (!jsonStringArrayContainsOrEmpty(params.get("modelProviders"), thread.model_provider)) return false;
+    if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), thread.source)) return false;
+    if (!threadListCwdMatches(params.get("cwd"), thread.cwd)) return false;
+    if (optionalStringParam(params, "searchTerm")) |search| {
+        if (search.len > 0 and !threadMatchesSearchTerm(thread, search)) return false;
+    }
+    return true;
+}
+
+fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {
+    const actual = value orelse return true;
+    if (actual == .null) return true;
+    if (actual.array.items.len == 0) return true;
+    for (actual.array.items) |item| {
+        if (std.mem.eql(u8, item.string, candidate)) return true;
+    }
+    return false;
+}
+
+fn threadListCwdMatches(value: ?std.json.Value, cwd: []const u8) bool {
+    const actual = value orelse return true;
+    if (actual == .null) return true;
+    if (actual == .string) return std.mem.eql(u8, actual.string, cwd);
+    if (actual.array.items.len == 0) return false;
+    for (actual.array.items) |item| {
+        if (std.mem.eql(u8, item.string, cwd)) return true;
+    }
+    return false;
+}
+
+fn threadMatchesSearchTerm(thread: *const LoadedThread, search: []const u8) bool {
+    if (thread.name) |name| {
+        if (std.mem.indexOf(u8, name, search) != null) return true;
+    }
+    return std.mem.indexOf(u8, thread.preview, search) != null;
+}
+
+fn threadListSortContext(params: std.json.ObjectMap) ThreadListSortContext {
+    const key_text = optionalStringParam(params, "sortKey") orelse "created_at";
+    const direction_text = optionalStringParam(params, "sortDirection") orelse "desc";
+    return .{
+        .key = if (std.mem.eql(u8, key_text, "updated_at")) .updated_at else .created_at,
+        .direction = if (std.mem.eql(u8, direction_text, "asc")) .asc else .desc,
+    };
+}
+
+fn threadListLessThan(context: ThreadListSortContext, lhs: *const LoadedThread, rhs: *const LoadedThread) bool {
+    const lhs_timestamp = switch (context.key) {
+        .created_at => lhs.created_at,
+        .updated_at => lhs.updated_at,
+    };
+    const rhs_timestamp = switch (context.key) {
+        .created_at => rhs.created_at,
+        .updated_at => rhs.updated_at,
+    };
+    if (lhs_timestamp != rhs_timestamp) {
+        return if (context.direction == .asc) lhs_timestamp < rhs_timestamp else lhs_timestamp > rhs_timestamp;
+    }
+    return stringLessThan({}, lhs.id, rhs.id);
+}
+
+fn threadListLimit(params: std.json.ObjectMap) ?usize {
+    const value = params.get("limit") orelse return null;
+    if (value == .null) return null;
+    return @intCast(value.integer);
 }
 
 fn stringLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {

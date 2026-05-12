@@ -1398,6 +1398,163 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-name-loaded",
+                "method": "thread/name/set",
+                "params": {"threadId": thread_id, "name": "Started smoke thread"},
+            }
+        )
+        thread_name_loaded = read_line()
+        assert thread_name_loaded["id"] == "thread-name-loaded"
+        assert thread_name_loaded["result"] == {}
+        thread_name_notification = read_line()
+        assert thread_name_notification == {
+            "jsonrpc": "2.0",
+            "method": "thread/name/updated",
+            "params": {
+                "threadId": thread_id,
+                "threadName": "Started smoke thread",
+            },
+        }
+
+        loaded_thread_list_params = {
+            "sortKey": "created_at",
+            "sortDirection": "asc",
+            "modelProviders": ["mock_provider"],
+            "sourceKinds": ["appServer"],
+            "cwd": thread_cwd_real,
+        }
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded",
+                "method": "thread/list",
+                "params": loaded_thread_list_params,
+            }
+        )
+        thread_list_loaded = read_line()
+        assert thread_list_loaded["id"] == "thread-list-loaded"
+        listed_threads = thread_list_loaded["result"]["data"]
+        assert {thread["id"] for thread in listed_threads} == {thread_id, forked_thread_id}
+        assert all(thread["turns"] == [] for thread in listed_threads)
+        assert all(thread["source"] == "appServer" for thread in listed_threads)
+        assert all(thread["modelProvider"] == "mock_provider" for thread in listed_threads)
+        assert all(thread["cwd"] == thread_cwd_real for thread in listed_threads)
+        assert thread_list_loaded["result"]["nextCursor"] is None
+        assert thread_list_loaded["result"]["backwardsCursor"] in {
+            thread_id,
+            forked_thread_id,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-search",
+                "method": "thread/list",
+                "params": {**loaded_thread_list_params, "searchTerm": "smoke thread"},
+            }
+        )
+        thread_list_loaded_search = read_line()
+        assert thread_list_loaded_search["id"] == "thread-list-loaded-search"
+        assert [thread["id"] for thread in thread_list_loaded_search["result"]["data"]] == [
+            thread_id
+        ]
+        assert thread_list_loaded_search["result"]["nextCursor"] is None
+        assert thread_list_loaded_search["result"]["backwardsCursor"] == thread_id
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-page-1",
+                "method": "thread/list",
+                "params": {**loaded_thread_list_params, "limit": 1},
+            }
+        )
+        thread_list_loaded_page_1 = read_line()
+        assert thread_list_loaded_page_1["id"] == "thread-list-loaded-page-1"
+        first_page_threads = thread_list_loaded_page_1["result"]["data"]
+        assert len(first_page_threads) == 1
+        first_page_id = first_page_threads[0]["id"]
+        assert first_page_id in {thread_id, forked_thread_id}
+        assert thread_list_loaded_page_1["result"]["nextCursor"] == first_page_id
+        assert thread_list_loaded_page_1["result"]["backwardsCursor"] == first_page_id
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-page-2",
+                "method": "thread/list",
+                "params": {
+                    **loaded_thread_list_params,
+                    "cursor": first_page_id,
+                    "limit": 1,
+                },
+            }
+        )
+        thread_list_loaded_page_2 = read_line()
+        assert thread_list_loaded_page_2["id"] == "thread-list-loaded-page-2"
+        second_page_threads = thread_list_loaded_page_2["result"]["data"]
+        assert len(second_page_threads) == 1
+        assert second_page_threads[0]["id"] in {
+            thread_id,
+            forked_thread_id,
+        } - {first_page_id}
+        assert thread_list_loaded_page_2["result"]["nextCursor"] is None
+        assert (
+            thread_list_loaded_page_2["result"]["backwardsCursor"]
+            == second_page_threads[0]["id"]
+        )
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-archived",
+                "method": "thread/list",
+                "params": {**loaded_thread_list_params, "archived": True},
+            }
+        )
+        thread_list_loaded_archived = read_line()
+        assert thread_list_loaded_archived["id"] == "thread-list-loaded-archived"
+        assert thread_list_loaded_archived["result"] == {
+            "data": [],
+            "nextCursor": None,
+            "backwardsCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-state-db-only",
+                "method": "thread/list",
+                "params": {**loaded_thread_list_params, "useStateDbOnly": True},
+            }
+        )
+        thread_list_loaded_state_db_only = read_line()
+        assert thread_list_loaded_state_db_only["id"] == "thread-list-loaded-state-db-only"
+        assert thread_list_loaded_state_db_only["result"] == {
+            "data": [],
+            "nextCursor": None,
+            "backwardsCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-list-loaded-source-filter",
+                "method": "thread/list",
+                "params": {**loaded_thread_list_params, "sourceKinds": ["cli"]},
+            }
+        )
+        thread_list_loaded_source_filter = read_line()
+        assert thread_list_loaded_source_filter["id"] == "thread-list-loaded-source-filter"
+        assert thread_list_loaded_source_filter["result"] == {
+            "data": [],
+            "nextCursor": None,
+            "backwardsCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-fork-missing",
                 "method": "thread/fork",
                 "params": {"threadId": "00000000-0000-0000-0000-000000000012"},
