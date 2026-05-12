@@ -4,6 +4,7 @@ const api = @import("api.zig");
 const session = @import("session.zig");
 
 const sessions_dir_parts = [_][]const u8{ "sessions", "zig" };
+const session_index_file = "session_index.jsonl";
 
 const StoredLine = struct {
     type: []const u8,
@@ -75,6 +76,16 @@ pub const ThreadListSummary = struct {
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
         if (self.title) |value| allocator.free(value);
+    }
+};
+
+pub const ThreadNameEntry = struct {
+    id: []const u8,
+    name: []const u8,
+
+    pub fn deinit(self: ThreadNameEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.name);
     }
 };
 
@@ -229,6 +240,124 @@ pub fn loadThreadListSummary(allocator: std.mem.Allocator, path: []const u8, fal
         .git_origin_url = git_origin_url,
         .title = title,
     };
+}
+
+pub fn appendThreadName(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, name: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, session_index_file });
+    defer allocator.free(path);
+
+    const previous = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        path,
+        allocator,
+        .limited(1024 * 1024 * 16),
+    ) catch |err| switch (err) {
+        error.FileNotFound => try allocator.dupe(u8, ""),
+        else => return err,
+    };
+    defer allocator.free(previous);
+
+    const line = try std.json.Stringify.valueAlloc(allocator, .{
+        .id = thread_id,
+        .thread_name = name,
+        .updated_at = "unknown",
+    }, .{});
+    defer allocator.free(line);
+
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+    try output.appendSlice(allocator, previous);
+    if (previous.len > 0 and !std.mem.endsWith(u8, previous, "\n")) {
+        try output.append(allocator, '\n');
+    }
+    try output.appendSlice(allocator, line);
+    try output.append(allocator, '\n');
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data = output.items,
+    });
+}
+
+pub fn findThreadName(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?[]const u8 {
+    const entries = try loadThreadNameIndex(allocator, codex_home);
+    defer freeThreadNameIndex(allocator, entries);
+    const name = threadNameFromIndex(entries, thread_id) orelse return null;
+    const copy = try allocator.dupe(u8, name);
+    return @as(?[]const u8, copy);
+}
+
+pub fn loadThreadNameIndex(allocator: std.mem.Allocator, codex_home: []const u8) ![]ThreadNameEntry {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, session_index_file });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        path,
+        allocator,
+        .limited(1024 * 1024 * 16),
+    ) catch |err| switch (err) {
+        error.FileNotFound => return allocator.alloc(ThreadNameEntry, 0),
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var entries = std.ArrayList(ThreadNameEntry).empty;
+    errdefer {
+        for (entries.items) |entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer parsed.deinit();
+
+        if (parsed.value != .object) continue;
+        const object = parsed.value.object;
+        const id = jsonStringField(object, "id") orelse continue;
+        const name = jsonStringField(object, "thread_name") orelse continue;
+        try putThreadNameEntry(allocator, &entries, id, name);
+    }
+
+    return entries.toOwnedSlice(allocator);
+}
+
+pub fn freeThreadNameIndex(allocator: std.mem.Allocator, entries: []ThreadNameEntry) void {
+    for (entries) |entry| entry.deinit(allocator);
+    allocator.free(entries);
+}
+
+pub fn threadNameFromIndex(entries: []const ThreadNameEntry, thread_id: []const u8) ?[]const u8 {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.id, thread_id)) return entry.name;
+    }
+    return null;
+}
+
+fn putThreadNameEntry(allocator: std.mem.Allocator, entries: *std.ArrayList(ThreadNameEntry), id: []const u8, name: []const u8) !void {
+    for (entries.items) |*entry| {
+        if (std.mem.eql(u8, entry.id, id)) {
+            const name_copy = try allocator.dupe(u8, name);
+            allocator.free(entry.name);
+            entry.name = name_copy;
+            return;
+        }
+    }
+    const id_copy = try allocator.dupe(u8, id);
+    errdefer allocator.free(id_copy);
+    const name_copy = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_copy);
+    try entries.append(allocator, .{
+        .id = id_copy,
+        .name = name_copy,
+    });
 }
 
 fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Transcript, line: std.json.Value) !void {
@@ -997,6 +1126,26 @@ test "list sessions tolerates large untitled transcript lines" {
     try std.testing.expectEqual(@as(usize, 1), sessions.len);
     try std.testing.expectEqualStrings("001-large", sessions[0].id);
     try std.testing.expect(sessions[0].title == null);
+}
+
+test "session index names use latest appended entry" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try appendThreadName(allocator, root, "11111111-1111-4111-8111-111111111111", "first name");
+    try appendThreadName(allocator, root, "22222222-2222-4222-8222-222222222222", "other name");
+    try appendThreadName(allocator, root, "11111111-1111-4111-8111-111111111111", "latest name");
+
+    const found = (try findThreadName(allocator, root, "11111111-1111-4111-8111-111111111111")).?;
+    defer allocator.free(found);
+    try std.testing.expectEqualStrings("latest name", found);
+
+    const missing = try findThreadName(allocator, root, "33333333-3333-4333-8333-333333333333");
+    try std.testing.expect(missing == null);
 }
 
 test "latest session path picks lexicographically newest rollout" {
