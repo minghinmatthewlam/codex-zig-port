@@ -16141,7 +16141,15 @@ fn handleThreadMethod(
         if (validateThreadLoadedListParams(params_value)) |message| {
             return renderJsonRpcError(allocator, id_value, -32602, message);
         }
-        const result = try renderThreadLoadedListResult(allocator, state, params_value);
+        const result = renderThreadLoadedListResult(allocator, state, params_value) catch |err| switch (err) {
+            error.InvalidThreadLoadedListCursor => {
+                const cursor = threadLoadedListCursor(params_value) orelse "";
+                const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            else => return err,
+        };
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -17814,20 +17822,35 @@ fn renderThreadLoadedListResult(
     var ids = std.ArrayList([]const u8).empty;
     defer ids.deinit(allocator);
     for (state.loaded_threads.items) |thread| try ids.append(allocator, thread.id);
+    if (ids.items.len == 0) {
+        return allocator.dupe(u8, "{\"data\":[],\"nextCursor\":null}");
+    }
     std.mem.sort([]const u8, ids.items, {}, stringLessThan);
 
     const cursor = threadLoadedListCursor(params_value);
     const limit = threadLoadedListLimit(params_value);
     var start: usize = 0;
     if (cursor) |cursor_value| {
+        const normalized_cursor = canonicalUuidString(allocator, cursor_value) catch |err| switch (err) {
+            error.InvalidUuidString => return error.InvalidThreadLoadedListCursor,
+            else => return err,
+        };
+        defer allocator.free(normalized_cursor);
         for (ids.items, 0..) |id, index| {
-            if (std.mem.eql(u8, id, cursor_value)) {
+            if (std.mem.eql(u8, id, normalized_cursor)) {
                 start = index + 1;
                 break;
             }
+            if (std.mem.order(u8, id, normalized_cursor) == .gt) {
+                start = index;
+                break;
+            }
+        } else {
+            start = ids.items.len;
         }
     }
-    const capped_end = if (limit) |value| @min(ids.items.len, start + value) else ids.items.len;
+    const effective_limit = if (limit) |value| @max(value, 1) else ids.items.len;
+    const capped_end = @min(ids.items.len, start +| effective_limit);
 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -28507,6 +28530,39 @@ fn isUuidString(value: []const u8) bool {
         45 => std.mem.startsWith(u8, value, "urn:uuid:") and isHyphenatedUuidString(value[9..]),
         else => false,
     };
+}
+
+fn canonicalUuidString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    if (!isUuidString(value)) return error.InvalidUuidString;
+
+    const raw = switch (value.len) {
+        38 => value[1..37],
+        45 => value[9..],
+        else => value,
+    };
+
+    var hex: [32]u8 = undefined;
+    var hex_index: usize = 0;
+    for (raw) |byte| {
+        if (byte == '-') continue;
+        if (hex_index >= hex.len) return error.InvalidUuidString;
+        hex[hex_index] = std.ascii.toLower(byte);
+        hex_index += 1;
+    }
+    if (hex_index != hex.len) return error.InvalidUuidString;
+
+    var canonical: [36]u8 = undefined;
+    var input_index: usize = 0;
+    for (&canonical, 0..) |*byte, index| {
+        switch (index) {
+            8, 13, 18, 23 => byte.* = '-',
+            else => {
+                byte.* = hex[input_index];
+                input_index += 1;
+            },
+        }
+    }
+    return allocator.dupe(u8, canonical[0..]);
 }
 
 fn isSimpleUuidString(value: []const u8) bool {
