@@ -6079,6 +6079,52 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-archive-loaded-rust-rollout",
+                    "method": "thread/archive",
+                    "params": {"threadId": rust_thread_id},
+                },
+            )
+            archived_loaded_rust = read_json_line(proc, 5)
+            assert archived_loaded_rust["id"] == "thread-archive-loaded-rust-rollout"
+            assert archived_loaded_rust["result"] == {}
+            archived_loaded_rust_notification = read_json_line(proc, 5)
+            assert archived_loaded_rust_notification == {
+                "jsonrpc": "2.0",
+                "method": "thread/archived",
+                "params": {"threadId": rust_thread_id},
+            }
+            archived_rust_rollout_path = (
+                codex_home
+                / "archived_sessions"
+                / "2025"
+                / "01"
+                / "05"
+                / rust_rollout_path.name
+            )
+            assert not rust_rollout_path.exists()
+            assert archived_rust_rollout_path.exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "loaded-threads-after-loaded-archive",
+                    "method": "thread/loaded/list",
+                },
+            )
+            loaded_after_loaded_archive = read_json_line(proc, 5)
+            assert loaded_after_loaded_archive["id"] == (
+                "loaded-threads-after-loaded-archive"
+            )
+            assert (
+                rust_thread_id
+                not in loaded_after_loaded_archive["result"]["data"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume-excluded-turns-list",
                     "method": "thread/turns/list",
                     "params": {"threadId": resume_thread_id, "limit": 1},
