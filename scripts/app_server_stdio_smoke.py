@@ -13223,6 +13223,7 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
 
 def run_apps_list_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-apps-list-", dir="/tmp"))
+    workspace_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-apps-list-workspace-", dir="/tmp"))
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
@@ -13240,6 +13241,103 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             payload["params"] = params
         write_json_line(proc, payload)
         return read_json_line(proc, 5)
+
+    def write_plugin_app_marketplace(
+        root: Path,
+        marketplace_name: str,
+        plugin_name: str,
+        plugin_display_name: str,
+        apps: dict,
+    ) -> None:
+        marketplace_dir = root / ".agents" / "plugins"
+        plugin_root = root / "plugins" / plugin_name
+        plugin_manifest_dir = plugin_root / ".codex-plugin"
+        marketplace_dir.mkdir(parents=True, exist_ok=True)
+        plugin_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (marketplace_dir / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": marketplace_name,
+                    "plugins": [
+                        {
+                            "name": plugin_name,
+                            "source": {
+                                "source": "local",
+                                "path": f"./plugins/{plugin_name}",
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_manifest_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": plugin_name,
+                    "interface": {"displayName": plugin_display_name},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".app.json").write_text(
+            json.dumps({"apps": apps}),
+            encoding="utf-8",
+        )
+
+    def write_cached_plugin_app(
+        codex_home: Path,
+        marketplace_name: str,
+        plugin_name: str,
+        plugin_display_name: str,
+        apps: dict,
+    ) -> None:
+        plugin_root = (
+            codex_home
+            / "plugins"
+            / "cache"
+            / marketplace_name
+            / plugin_name
+            / "1.0.0"
+        )
+        plugin_manifest_dir = plugin_root / ".codex-plugin"
+        plugin_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_manifest_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": plugin_name,
+                    "interface": {"displayName": plugin_display_name},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".app.json").write_text(
+            json.dumps({"apps": apps}),
+            encoding="utf-8",
+        )
+
+    def expected_app(
+        app_id: str,
+        name: str,
+        description: str | None,
+        is_enabled: bool,
+        plugin_display_name: str,
+    ) -> dict:
+        return {
+            "id": app_id,
+            "name": name,
+            "description": description,
+            "logoUrl": None,
+            "logoUrlDark": None,
+            "distributionChannel": None,
+            "branding": None,
+            "appMetadata": None,
+            "labels": None,
+            "installUrl": f"https://chatgpt.com/apps/{app_id}/{app_id}",
+            "isAccessible": False,
+            "isEnabled": is_enabled,
+            "pluginDisplayNames": [plugin_display_name],
+        }
 
     try:
         write_json_line(
@@ -13270,13 +13368,100 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         assert explicit_page["id"] == "apps-list-explicit"
         assert explicit_page["result"] == {"data": [], "nextCursor": None}
 
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."gmail-plugin@local-market"]',
+                    "enabled = true",
+                    "",
+                    '[plugins."calendar-plugin@workspace-market"]',
+                    "enabled = true",
+                    "",
+                    '[plugins."zoom-plugin@cache-market"]',
+                    "enabled = true",
+                    "",
+                    "[apps.gmail]",
+                    "enabled = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_plugin_app_marketplace(
+            codex_home,
+            "local-market",
+            "gmail-plugin",
+            "Gmail Plugin",
+            {
+                "gmail": {
+                    "id": "gmail",
+                    "name": "Gmail",
+                    "description": "Read mail",
+                },
+                "slack": {"id": "slack", "name": "Slack"},
+            },
+        )
+        write_plugin_app_marketplace(
+            workspace_root,
+            "workspace-market",
+            "calendar-plugin",
+            "Calendar Plugin",
+            {"calendar": {"id": "calendar", "name": "Calendar"}},
+        )
+        write_cached_plugin_app(
+            codex_home,
+            "cache-market",
+            "zoom-plugin",
+            "Zoom Plugin",
+            {"zoom": {"id": "zoom", "name": "Zoom"}},
+        )
+
+        gmail_app = expected_app("gmail", "Gmail", "Read mail", False, "Gmail Plugin")
+        slack_app = expected_app("slack", "Slack", None, True, "Gmail Plugin")
+        calendar_app = expected_app(
+            "calendar", "Calendar", None, True, "Calendar Plugin"
+        )
+        zoom_app = expected_app("zoom", "Zoom", None, True, "Zoom Plugin")
+
+        first_page = rpc("apps-list-first-page", {"limit": 1})
+        assert first_page["id"] == "apps-list-first-page"
+        assert first_page["result"] == {"data": [gmail_app], "nextCursor": "1"}
+
+        limit_zero = rpc("apps-list-limit-zero", {"limit": 0})
+        assert limit_zero["id"] == "apps-list-limit-zero"
+        assert limit_zero["result"] == {"data": [gmail_app], "nextCursor": "1"}
+
+        second_page = rpc(
+            "apps-list-second-page",
+            {"cursor": first_page["result"]["nextCursor"], "limit": 1},
+        )
+        assert second_page["id"] == "apps-list-second-page"
+        assert second_page["result"] == {"data": [slack_app], "nextCursor": "2"}
+
+        third_page = rpc(
+            "apps-list-third-page",
+            {"cursor": second_page["result"]["nextCursor"], "limit": 1},
+        )
+        assert third_page["id"] == "apps-list-third-page"
+        assert third_page["result"] == {"data": [zoom_app], "nextCursor": None}
+
+        all_page = rpc("apps-list-all-local")
+        assert all_page["id"] == "apps-list-all-local"
+        assert all_page["result"] == {
+            "data": [gmail_app, slack_app, zoom_app],
+            "nextCursor": None,
+        }
+
         write_json_line(
             proc,
             {
                 "jsonrpc": "2.0",
                 "id": "apps-list-thread-start",
                 "method": "thread/start",
-                "params": {"ephemeral": True},
+                "params": {"cwd": str(workspace_root), "ephemeral": True},
             },
         )
         started = read_json_line(proc, 5)
@@ -13285,7 +13470,20 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
 
         loaded_thread_page = rpc("apps-list-loaded-thread", {"threadId": thread_id})
         assert loaded_thread_page["id"] == "apps-list-loaded-thread"
-        assert loaded_thread_page["result"] == {"data": [], "nextCursor": None}
+        assert loaded_thread_page["result"] == {
+            "data": [calendar_app, gmail_app, slack_app, zoom_app],
+            "nextCursor": None,
+        }
+
+        invalid_cursor = rpc("apps-list-invalid-cursor", {"cursor": "bad"})
+        assert invalid_cursor["id"] == "apps-list-invalid-cursor"
+        assert invalid_cursor["error"]["code"] == -32600
+        assert "invalid cursor: bad" in invalid_cursor["error"]["message"]
+
+        cursor_out_of_range = rpc("apps-list-cursor-out-of-range", {"cursor": "4"})
+        assert cursor_out_of_range["id"] == "apps-list-cursor-out-of-range"
+        assert cursor_out_of_range["error"]["code"] == -32600
+        assert "cursor 4 exceeds total apps 3" in cursor_out_of_range["error"]["message"]
 
         invalid_limit = rpc("apps-list-invalid-limit", {"limit": -1})
         assert invalid_limit["id"] == "apps-list-invalid-limit"
@@ -13312,6 +13510,7 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             proc.kill()
             proc.wait(timeout=5)
         shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace_root, ignore_errors=True)
 
 
 def run_experimental_feature_rpc_smoke(binary: Path) -> None:
