@@ -22623,16 +22623,19 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     const disable_timeout = commandExecOptionalBool(object, "disableTimeout", false) catch |err| {
         return commandExecBoolError(allocator, id_value, err, "disableTimeout must be a boolean");
     };
-    const timeout_ms = commandExecOptionalU64(object, "timeoutMs", "timeoutMs must be a non-negative integer or null") catch |err| {
-        return commandExecNumberError(allocator, id_value, err, "timeoutMs must be a non-negative integer or null");
+    const timeout_ms = switch (commandExecOptionalTimeoutMs(object, "timeoutMs")) {
+        .value => |value| value,
+        .negative => |value| {
+            const message = try std.fmt.allocPrint(allocator, "command/exec timeoutMs must be non-negative, got {d}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        },
+        .invalid => return renderJsonRpcError(allocator, id_value, -32602, "timeoutMs must be a non-negative integer or null"),
     };
     if (disable_timeout and timeout_ms != null) {
         return renderJsonRpcError(allocator, id_value, -32602, "command/exec cannot set both timeoutMs and disableTimeout");
     }
-    const timeout_ms_i64: i64 = if (timeout_ms) |value|
-        std.math.cast(i64, value) orelse return renderJsonRpcError(allocator, id_value, -32602, "timeoutMs must be a non-negative integer or null")
-    else
-        COMMAND_EXEC_DEFAULT_TIMEOUT_MS;
+    const timeout_ms_i64 = timeout_ms orelse COMMAND_EXEC_DEFAULT_TIMEOUT_MS;
 
     const cwd = commandExecOptionalString(object, "cwd") catch |err| switch (err) {
         error.InvalidCommandExecString => return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null"),
@@ -23867,6 +23870,24 @@ fn commandExecOptionalU64(object: std.json.ObjectMap, field: []const u8, message
     if (value == .null) return null;
     const parsed = try commandExecNonNegativeU64(value);
     return parsed;
+}
+
+const CommandExecTimeoutMsParse = union(enum) {
+    value: ?i64,
+    negative: i64,
+    invalid,
+};
+
+fn commandExecOptionalTimeoutMs(object: std.json.ObjectMap, field: []const u8) CommandExecTimeoutMsParse {
+    const value = object.get(field) orelse return .{ .value = null };
+    if (value == .null) return .{ .value = null };
+    const integer = switch (value) {
+        .integer => |raw| raw,
+        .number_string => |raw| std.fmt.parseInt(i64, raw, 10) catch return .invalid,
+        else => return .invalid,
+    };
+    if (integer < 0) return .{ .negative = integer };
+    return .{ .value = integer };
 }
 
 fn commandExecNonNegativeUsize(value: std.json.Value) !usize {
