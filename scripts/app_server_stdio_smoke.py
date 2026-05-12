@@ -10391,11 +10391,15 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         )
         extra_log_file = codex_home / "codex-zig-feedback.log"
         extra_log_file.write_text("extra log body\n", encoding="utf-8")
+        feedback_thread_id = "00000000-0000-4000-8000-000000000123"
+        rollout_file = codex_home / "sessions" / "zig" / f"rollout-{feedback_thread_id}.jsonl"
+        rollout_file.parent.mkdir(parents=True, exist_ok=True)
+        rollout_file.write_text("rollout log body\n", encoding="utf-8")
 
         valid_params = {
             "classification": "bug",
             "reason": "smoke",
-            "threadId": "00000000-0000-4000-8000-000000000123",
+            "threadId": feedback_thread_id,
             "includeLogs": True,
             "extraLogFiles": [
                 str(extra_log_file),
@@ -10420,7 +10424,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         )
         assert uploaded["id"] == "feedback-uploaded"
         assert uploaded["result"] == {
-            "threadId": "00000000-0000-4000-8000-000000000123"
+            "threadId": feedback_thread_id
         }
         assert server.request_paths == [
             "/api/42/envelope/?sentry_key=public&sentry_version=7&sentry_client=codex-zig-port%2F0.0.1"
@@ -10433,8 +10437,8 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"dsn":"' in envelope
         assert b'"type":"event"' in envelope
         assert b'"level":"error"' in envelope
-        assert b"[Bug]: Codex session 00000000-0000-4000-8000-000000000123" in envelope
-        assert b'"thread_id":"00000000-0000-4000-8000-000000000123"' in envelope
+        assert f"[Bug]: Codex session {feedback_thread_id}".encode() in envelope
+        assert f'"thread_id":"{feedback_thread_id}"'.encode() in envelope
         assert b'"classification":"bug"' in envelope
         assert b'"reason":"smoke"' in envelope
         assert b'"surface":"app-server"' in envelope
@@ -10443,6 +10447,8 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"thread_id":"wrong-thread"' not in envelope
         assert b'"classification":"wrong-classification"' not in envelope
         assert b'"filename":"codex-logs.log"' in envelope
+        assert f'"filename":"rollout-{feedback_thread_id}.jsonl"'.encode() in envelope
+        assert b"rollout log body\n" in envelope
         assert b'"filename":"codex-zig-feedback.log"' in envelope
         assert envelope.count(b'"filename":"codex-zig-feedback.log"') == 1
         assert b"extra log body\n" in envelope

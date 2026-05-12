@@ -22057,7 +22057,6 @@ fn handleFeedbackUpload(
     id_value: std.json.Value,
     params_value: ?std.json.Value,
 ) ![]const u8 {
-    _ = state;
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "feedback/upload params must be an object");
     const object = params.object;
@@ -22155,12 +22154,24 @@ fn handleFeedbackUpload(
         thread_id = owned_thread_id.?;
     }
 
+    var upload_log_files = std.ArrayList([]const u8).empty;
+    defer upload_log_files.deinit(allocator);
+    var owned_upload_log_files = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_upload_log_files.items) |path| allocator.free(path);
+        owned_upload_log_files.deinit(allocator);
+    }
+    if (include_logs.bool) {
+        try appendFeedbackThreadRolloutPath(allocator, state, thread_id.?, &upload_log_files, &owned_upload_log_files);
+    }
+    for (extra_log_files.items) |path| try upload_log_files.append(allocator, path);
+
     feedback_upload.upload(allocator, .{
         .classification = classification.string,
         .reason = reason,
         .thread_id = thread_id.?,
         .include_logs = include_logs.bool,
-        .extra_log_files = extra_log_files.items,
+        .extra_log_files = upload_log_files.items,
         .tags = if (tags_object) |*tags| tags else null,
         .metadata_tags = metadata_tags.items,
     }) catch |err| {
@@ -22168,6 +22179,38 @@ fn handleFeedbackUpload(
     };
 
     return renderFeedbackUploadResponse(allocator, id_value, thread_id.?);
+}
+
+fn appendFeedbackThreadRolloutPath(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    thread_id: []const u8,
+    upload_log_files: *std.ArrayList([]const u8),
+    owned_upload_log_files: *std.ArrayList([]const u8),
+) !void {
+    if (std.mem.startsWith(u8, thread_id, "no-active-thread-")) return;
+    if (findLoadedThread(state, thread_id)) |thread| {
+        if (thread.path) |path| {
+            try upload_log_files.append(allocator, path);
+            return;
+        }
+    }
+
+    const codex_home = resolveCodexHome(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer allocator.free(codex_home);
+
+    const path = session_store.resolveResumePath(allocator, codex_home, thread_id) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    owned_upload_log_files.append(allocator, path) catch |err| {
+        allocator.free(path);
+        return err;
+    };
+    try upload_log_files.append(allocator, path);
 }
 
 fn renderFeedbackUploadResponse(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
