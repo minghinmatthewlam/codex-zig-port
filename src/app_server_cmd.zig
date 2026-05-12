@@ -15805,13 +15805,16 @@ fn handleTurnStart(
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
     }) catch |err| {
+        const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
+        defer allocator.free(error_message);
         thread.status = .system_error;
         try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
+        try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
         try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
-        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to run turn", err);
+        return renderJsonRpcError(allocator, id_value, -32603, error_message);
     };
     defer allocator.free(answer);
 
@@ -16780,6 +16783,42 @@ fn queueTurnNotification(allocator: std.mem.Allocator, state: *AppServerState, m
         return;
     }
     try state.pending_notifications.append(allocator, notification);
+}
+
+fn queueErrorNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    message: []const u8,
+    will_retry: bool,
+) !void {
+    const notification = try renderErrorNotification(allocator, thread_id, turn_id, message, will_retry);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, "error", notification);
+    notification_moved = true;
+}
+
+fn renderErrorNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    message: []const u8,
+    will_retry: bool,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"error\",\"params\":{\"error\":{\"message\":");
+    try appendJsonString(allocator, &notification, message);
+    try notification.appendSlice(allocator, ",\"codexErrorInfo\":null,\"additionalDetails\":null},\"willRetry\":");
+    try notification.appendSlice(allocator, if (will_retry) "true" else "false");
+    try notification.appendSlice(allocator, ",\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn isThreadMethod(method: []const u8) bool {
