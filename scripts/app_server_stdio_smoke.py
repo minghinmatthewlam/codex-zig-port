@@ -4594,6 +4594,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert saved_appserver_thread["preview"] == "appserver saved hello"
             assert saved_appserver_thread["ephemeral"] is False
             assert saved_appserver_thread["modelProvider"] == "mock_provider"
+            assert saved_appserver_thread["status"] == {"type": "notLoaded"}
             assert saved_appserver_thread["path"] == os.path.realpath(
                 appserver_rollout_path
             )
@@ -4624,6 +4625,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             state_db_appserver_thread = state_db_appserver_threads[0]
             assert state_db_appserver_thread["id"] == appserver_thread_id
             assert state_db_appserver_thread["preview"] == "appserver saved hello"
+            assert state_db_appserver_thread["status"] == {"type": "notLoaded"}
             assert state_db_appserver_thread["path"] == os.path.realpath(
                 appserver_rollout_path
             )
@@ -4656,6 +4658,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 == "state db metadata preview"
             )
             assert state_db_metadata_threads[0]["modelProvider"] == "state_provider"
+            assert state_db_metadata_threads[0]["status"] == {"type": "notLoaded"}
             assert state_db_metadata_threads[0]["cwd"] == "/state-db-cwd"
             assert state_db_metadata_threads[0]["cliVersion"] == "state-db-cli"
             assert state_db_metadata_threads[0]["name"] == "State DB Column Name"
@@ -4699,6 +4702,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 == "archived state db metadata preview"
             )
             assert archived_state_db_threads[0]["modelProvider"] == "archived_provider"
+            assert archived_state_db_threads[0]["status"] == {"type": "notLoaded"}
             assert archived_state_db_threads[0]["cwd"] == "/archived-state-db-cwd"
             assert (
                 archived_state_db_threads[0]["cliVersion"]
@@ -4726,6 +4730,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert read_state_db_only_thread["sessionId"] == state_db_thread_id
             assert read_state_db_only_thread["preview"] == "state db metadata preview"
             assert read_state_db_only_thread["modelProvider"] == "state_provider"
+            assert read_state_db_only_thread["status"] == {"type": "notLoaded"}
             assert read_state_db_only_thread["path"] == os.path.realpath(
                 state_db_rollout_path
             )
