@@ -16270,6 +16270,8 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
         };
         defer allocator.free(archived_path);
+        _ = removeLoadedThread(allocator, state, thread_id);
+        _ = removeThreadSubscription(allocator, state, thread_id);
         try queueThreadIdNotification(allocator, state, "thread/archived", thread_id);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
@@ -17911,6 +17913,13 @@ fn findLoadedThreadIndex(state: *const AppServerState, thread_id: []const u8) ?u
         if (std.mem.eql(u8, thread.id, thread_id)) return index;
     }
     return null;
+}
+
+fn removeLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) bool {
+    const index = findLoadedThreadIndex(state, thread_id) orelse return false;
+    var removed = state.loaded_threads.orderedRemove(index);
+    removed.deinit(allocator);
+    return true;
 }
 
 fn upsertLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thread: LoadedThread) !void {
