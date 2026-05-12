@@ -76,6 +76,8 @@ notification artifacts,
 concrete turn envelope artifacts for `Turn`, `TurnStatus`, `TurnItemsView`,
 `TurnError`, `CodexErrorInfo`, `NonSteerableTurnKind`, and turn
 start/completion payloads with permissive `ThreadItem` contents,
+`ErrorNotification` artifacts and the top-level server-notification `"error"`
+variant,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -86,6 +88,12 @@ read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC artifacts,
 MCP config reload artifacts, and MCP server status artifacts, in standalone
 files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
+
+Additional app-server error-notification generation coverage: the generated
+TypeScript and JSON Schema artifacts now include `ErrorNotification` with
+`TurnError`, `willRetry`, `threadId`, and `turnId`, exported through `v2/index.ts`
+and included in the top-level `ServerNotification` `"error"` union variant.
+Runtime emission of server error notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
