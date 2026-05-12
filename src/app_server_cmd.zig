@@ -16202,7 +16202,7 @@ fn handleThreadMethod(
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load thread", err);
         };
         defer unarchived_thread.deinit(allocator);
-        const result = try renderThreadReadResponse(allocator, &unarchived_thread, false);
+        const result = try renderStoredThreadReadResponse(allocator, &unarchived_thread, false);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -16578,7 +16578,7 @@ fn handleThreadMethod(
         _ = thread_state.updateThreadGitInfo(allocator, cfg.codex_home, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
-        const result = try renderThreadReadResponse(allocator, &stored_thread, false);
+        const result = try renderStoredThreadReadResponse(allocator, &stored_thread, false);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -16611,7 +16611,7 @@ fn handleThreadMethod(
         };
         defer stored_thread.deinit(allocator);
         const include_turns = threadReadIncludeTurnsParam(object);
-        const result = try renderThreadReadResponse(allocator, &stored_thread, include_turns);
+        const result = try renderStoredThreadReadResponse(allocator, &stored_thread, include_turns);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -17870,12 +17870,14 @@ const SavedThreadListItem = struct {
     git_branch: ?[]const u8,
     git_origin_url: ?[]const u8,
     name: ?[]const u8,
+    status: ThreadRuntimeStatus,
 
     fn fromRolloutFile(
         allocator: std.mem.Allocator,
         file: session_store.RolloutFile,
         fallback_model_provider: []const u8,
         thread_names: []const session_store.ThreadNameEntry,
+        status: ThreadRuntimeStatus,
     ) !SavedThreadListItem {
         var summary = try session_store.loadThreadListSummary(allocator, file.path, file.id);
         defer summary.deinit(allocator);
@@ -17950,6 +17952,7 @@ const SavedThreadListItem = struct {
             .git_branch = git_branch,
             .git_origin_url = git_origin_url,
             .name = name,
+            .status = status,
         };
     }
 
@@ -18118,8 +18121,10 @@ fn appendSavedThreadListItems(
     thread_names: []const session_store.ThreadNameEntry,
 ) !void {
     for (rollout_files) |file| {
-        if (dedupe_loaded and findLoadedThreadForRolloutFile(state, file) != null) continue;
-        var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider, thread_names) catch |err| switch (err) {
+        const loaded_duplicate = findLoadedThreadForRolloutFile(state, file) != null;
+        if (dedupe_loaded and loaded_duplicate) continue;
+        const status: ThreadRuntimeStatus = if (loaded_duplicate) .idle else .not_loaded;
+        var saved = SavedThreadListItem.fromRolloutFile(allocator, file, fallback_model_provider, thread_names, status) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => continue,
         };
@@ -18276,12 +18281,17 @@ fn threadLoadedListLimit(params_value: ?std.json.Value) ?usize {
     return @intCast(limit.integer);
 }
 
+const ThreadRuntimeStatus = enum {
+    idle,
+    not_loaded,
+};
+
 fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, "{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, include_turns);
+    try appendLoadedThreadJson(allocator, &result, thread, include_turns, .idle);
     try result.appendSlice(allocator, ",\"model\":");
     try appendJsonString(allocator, &result, thread.model);
     try result.appendSlice(allocator, ",\"modelProvider\":");
@@ -18304,10 +18314,23 @@ fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const Lo
 }
 
 fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
+    return renderThreadReadResponseWithStatus(allocator, thread, include_turns, .idle);
+}
+
+fn renderStoredThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
+    return renderThreadReadResponseWithStatus(allocator, thread, include_turns, .not_loaded);
+}
+
+fn renderThreadReadResponseWithStatus(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    include_turns: bool,
+    status: ThreadRuntimeStatus,
+) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, include_turns);
+    try appendLoadedThreadJson(allocator, &result, thread, include_turns, status);
     try result.appendSlice(allocator, "}");
     return result.toOwnedSlice(allocator);
 }
@@ -18438,7 +18461,7 @@ fn renderThreadStartedNotification(allocator: std.mem.Allocator, thread: *const 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/started\",\"params\":{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, false);
+    try appendLoadedThreadJson(allocator, &result, thread, false, .idle);
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
 }
@@ -18700,7 +18723,13 @@ fn serializeThreadTurnsCursor(allocator: std.mem.Allocator, turn_id: []const u8,
     return std.json.Stringify.valueAlloc(allocator, .{ .turnId = turn_id, .includeAnchor = include_anchor }, .{});
 }
 
-fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread, include_turns: bool) !void {
+fn appendLoadedThreadJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    thread: *const LoadedThread,
+    include_turns: bool,
+    status: ThreadRuntimeStatus,
+) !void {
     try result.appendSlice(allocator, "{\"id\":");
     try appendJsonString(allocator, result, thread.id);
     try result.appendSlice(allocator, ",\"sessionId\":");
@@ -18721,7 +18750,9 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     const updated_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.updated_at});
     defer allocator.free(updated_at);
     try result.appendSlice(allocator, updated_at);
-    try result.appendSlice(allocator, ",\"status\":{\"type\":\"idle\"},\"path\":");
+    try result.appendSlice(allocator, ",\"status\":");
+    try appendThreadRuntimeStatusJson(allocator, result, status);
+    try result.appendSlice(allocator, ",\"path\":");
     try appendOptionalJsonString(allocator, result, thread.path);
     try result.appendSlice(allocator, ",\"cwd\":");
     try appendJsonString(allocator, result, thread.cwd);
@@ -18744,9 +18775,16 @@ fn appendLoadedThreadJson(allocator: std.mem.Allocator, result: *std.ArrayList(u
     try result.append(allocator, '}');
 }
 
+fn appendThreadRuntimeStatusJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), status: ThreadRuntimeStatus) !void {
+    try result.appendSlice(allocator, switch (status) {
+        .idle => "{\"type\":\"idle\"}",
+        .not_loaded => "{\"type\":\"notLoaded\"}",
+    });
+}
+
 fn appendThreadListItemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: ThreadListItem) !void {
     switch (thread) {
-        .loaded => |loaded| try appendLoadedThreadJson(allocator, result, loaded, false),
+        .loaded => |loaded| try appendLoadedThreadJson(allocator, result, loaded, false, .idle),
         .saved => |saved| try appendSavedThreadListItemJson(allocator, result, saved),
     }
 }
@@ -18770,7 +18808,9 @@ fn appendSavedThreadListItemJson(allocator: std.mem.Allocator, result: *std.Arra
     const updated_at = try std.fmt.allocPrint(allocator, "{d}", .{thread.updated_at});
     defer allocator.free(updated_at);
     try result.appendSlice(allocator, updated_at);
-    try result.appendSlice(allocator, ",\"status\":{\"type\":\"idle\"},\"path\":");
+    try result.appendSlice(allocator, ",\"status\":");
+    try appendThreadRuntimeStatusJson(allocator, result, thread.status);
+    try result.appendSlice(allocator, ",\"path\":");
     try appendJsonString(allocator, result, thread.path);
     try result.appendSlice(allocator, ",\"cwd\":");
     try appendJsonString(allocator, result, thread.cwd);
