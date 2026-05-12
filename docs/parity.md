@@ -288,6 +288,8 @@ Additional app-server thread-start coverage: `thread/start` now creates an in-me
 
 Additional app-server loaded-thread list coverage: `thread/loaded/list` now validates and canonicalizes cursors as UUIDs with Rust-shaped invalid-request errors, sorts loaded thread ids before pagination, treats missing-but-valid cursors as insertion points, clamps zero limits to one for non-empty results, and still returns an empty page before cursor validation when no threads are loaded.
 
+Additional app-server thread unsubscribe coverage: `thread/start`, `thread/resume`, and `thread/fork` now mark the current app-server connection as subscribed to the loaded thread, so `thread/unsubscribe` returns `unsubscribed` once for that connection, `notSubscribed` after repeat unsubscribe calls, and `notLoaded` for missing loaded threads.
+
 Additional app-server model-provider capabilities coverage: `modelProvider/capabilities/read` is included in current TypeScript and JSON schema generation with its optional params shape and Rust-shaped `namespaceTools`, `imageGeneration`, and `webSearch` response fields until broader model-provider protocol generation parity lands.
 
 Additional app-server collaboration mode generation coverage: `collaborationMode/list` is included in current TypeScript and JSON schema generation with its optional params shape and Rust-shaped `data` entries for the built-in Plan and Default presets until broader collaboration-mode protocol generation parity lands.
