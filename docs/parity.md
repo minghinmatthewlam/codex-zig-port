@@ -77,7 +77,8 @@ concrete turn envelope artifacts for `Turn`, `TurnStatus`, `TurnItemsView`,
 `TurnError`, `CodexErrorInfo`, `NonSteerableTurnKind`, and turn
 start/completion payloads with permissive `ThreadItem` contents,
 `ErrorNotification` artifacts and the top-level server-notification `"error"`
-variant,
+variant, plus `ThreadClosedNotification` artifacts and the top-level
+server-notification `"thread/closed"` variant,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -430,7 +431,8 @@ message and `willRetry: false`, expose that status through loaded thread
 reads/lists, and successful follow-up turns restore `idle`, honoring
 `optOutNotificationMethods`.
 `ThreadStatus` and
-`ThreadStatusChangedNotification` are included in generated TypeScript and JSON
+`ThreadStatus`, `ThreadStatusChangedNotification`, and
+`ThreadClosedNotification` are included in generated TypeScript and JSON
 schemas. Idle-timeout `thread/closed` unload transitions, richer error payload
 serialization, and true async active-turn status tracking remain planned.
 
