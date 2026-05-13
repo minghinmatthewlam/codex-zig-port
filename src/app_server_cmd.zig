@@ -1177,6 +1177,158 @@ const APPS_LIST_PARAMS_TS =
     \\
     ;
 
+const MARKETPLACE_ADD_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MarketplaceAddParams {
+    \\  source: string;
+    \\  refName?: string | null;
+    \\  sparsePaths?: string[] | null;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_REMOVE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MarketplaceRemoveParams {
+    \\  marketplaceName: string;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_UPGRADE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MarketplaceUpgradeParams {
+    \\  marketplaceName?: string | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_LIST_MARKETPLACE_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginListMarketplaceKind =
+    \\  | "local"
+    \\  | "workspace-directory"
+    \\  | "shared-with-me";
+    \\
+    ;
+
+const PLUGIN_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { PluginListMarketplaceKind } from "./PluginListMarketplaceKind";
+    \\
+    \\export interface PluginListParams {
+    \\  cwds?: AbsolutePathBuf[] | null;
+    \\  marketplaceKinds?: PluginListMarketplaceKind[] | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface PluginReadParams {
+    \\  marketplacePath?: AbsolutePathBuf | null;
+    \\  remoteMarketplaceName?: string | null;
+    \\  pluginName: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SKILL_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginSkillReadParams {
+    \\  remoteMarketplaceName: string;
+    \\  remotePluginId: string;
+    \\  skillName: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_DISCOVERABILITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginShareDiscoverability = "LISTED" | "UNLISTED" | "PRIVATE";
+    \\
+    ;
+
+const PLUGIN_SHARE_PRINCIPAL_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginSharePrincipalType = "user" | "group" | "workspace";
+    \\
+    ;
+
+const PLUGIN_SHARE_TARGET_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginSharePrincipalType } from "./PluginSharePrincipalType";
+    \\
+    \\export interface PluginShareTarget {
+    \\  principalType: PluginSharePrincipalType;
+    \\  principalId: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_SAVE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { PluginShareDiscoverability } from "./PluginShareDiscoverability";
+    \\import type { PluginShareTarget } from "./PluginShareTarget";
+    \\
+    \\export interface PluginShareSaveParams {
+    \\  pluginPath: AbsolutePathBuf;
+    \\  remotePluginId?: string | null;
+    \\  discoverability?: PluginShareDiscoverability | null;
+    \\  shareTargets?: PluginShareTarget[] | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_UPDATE_TARGETS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginShareTarget } from "./PluginShareTarget";
+    \\
+    \\export interface PluginShareUpdateTargetsParams {
+    \\  remotePluginId: string;
+    \\  shareTargets: PluginShareTarget[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginShareListParams = Record<string, never>;
+    \\
+    ;
+
+const PLUGIN_SHARE_DELETE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginShareDeleteParams {
+    \\  remotePluginId: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_INSTALL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface PluginInstallParams {
+    \\  marketplacePath?: AbsolutePathBuf | null;
+    \\  remoteMarketplaceName?: string | null;
+    \\  pluginName: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_UNINSTALL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginUninstallParams {
+    \\  pluginId: string;
+    \\}
+    \\
+    ;
+
 const APP_BRANDING_TS =
     GENERATED_TS_HEADER ++
     \\export interface AppBranding {
@@ -1896,6 +2048,74 @@ const CONFIG_MCP_SERVER_RELOAD_PARAMS_TS =
 const CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface ConfigMcpServerReloadResponse {}
+    \\
+    ;
+
+const CONFIG_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ConfigReadParams {
+    \\  includeLayers: boolean;
+    \\  cwd?: string | null;
+    \\}
+    \\
+    ;
+
+const MERGE_STRATEGY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type MergeStrategy = "replace" | "upsert";
+    \\
+    ;
+
+const JSON_VALUE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type JsonValue =
+    \\  | number
+    \\  | string
+    \\  | boolean
+    \\  | JsonValue[]
+    \\  | { [key: string]: JsonValue | undefined }
+    \\  | null;
+    \\
+    ;
+
+const CONFIG_EDIT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { MergeStrategy } from "./MergeStrategy";
+    \\
+    \\export interface ConfigEdit {
+    \\  keyPath: string;
+    \\  value: JsonValue;
+    \\  mergeStrategy: MergeStrategy;
+    \\}
+    \\
+    ;
+
+const CONFIG_VALUE_WRITE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { MergeStrategy } from "./MergeStrategy";
+    \\
+    \\export interface ConfigValueWriteParams {
+    \\  keyPath: string;
+    \\  value: JsonValue;
+    \\  mergeStrategy: MergeStrategy;
+    \\  filePath?: string | null;
+    \\  expectedVersion?: string | null;
+    \\}
+    \\
+    ;
+
+const CONFIG_BATCH_WRITE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConfigEdit } from "./ConfigEdit";
+    \\
+    \\export interface ConfigBatchWriteParams {
+    \\  edits: ConfigEdit[];
+    \\  filePath?: string | null;
+    \\  expectedVersion?: string | null;
+    \\  reloadUserConfig?: boolean;
+    \\}
     \\
     ;
 
@@ -4116,6 +4336,35 @@ const THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_TS =
     \\
     ;
 
+const REVIEW_DELIVERY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ReviewDelivery = "inline" | "detached";
+    \\
+    ;
+
+const REVIEW_TARGET_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ReviewTarget =
+    \\  | { type: "uncommittedChanges" }
+    \\  | { type: "baseBranch"; branch: string }
+    \\  | { type: "commit"; sha: string; title: string | null }
+    \\  | { type: "custom"; instructions: string };
+    \\
+    ;
+
+const REVIEW_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ReviewDelivery } from "./ReviewDelivery";
+    \\import type { ReviewTarget } from "./ReviewTarget";
+    \\
+    \\export interface ReviewStartParams {
+    \\  threadId: string;
+    \\  target: ReviewTarget;
+    \\  delivery?: ReviewDelivery | null;
+    \\}
+    \\
+    ;
+
 const THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadBackgroundTerminalsCleanParams {
@@ -4677,7 +4926,10 @@ const CLIENT_REQUEST_TS =
     \\import type { CommandExecTerminateParams } from "./v2/CommandExecTerminateParams";
     \\import type { CommandExecWriteParams } from "./v2/CommandExecWriteParams";
     \\import type { CollaborationModeListParams } from "./v2/CollaborationModeListParams";
+    \\import type { ConfigBatchWriteParams } from "./v2/ConfigBatchWriteParams";
     \\import type { ConfigMcpServerReloadParams } from "./v2/ConfigMcpServerReloadParams";
+    \\import type { ConfigReadParams } from "./v2/ConfigReadParams";
+    \\import type { ConfigValueWriteParams } from "./v2/ConfigValueWriteParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
@@ -4702,16 +4954,29 @@ const CLIENT_REQUEST_TS =
     \\import type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\import type { HooksListParams } from "./v2/HooksListParams";
     \\import type { LoginAccountParams } from "./v2/LoginAccountParams";
+    \\import type { MarketplaceAddParams } from "./v2/MarketplaceAddParams";
+    \\import type { MarketplaceRemoveParams } from "./v2/MarketplaceRemoveParams";
+    \\import type { MarketplaceUpgradeParams } from "./v2/MarketplaceUpgradeParams";
     \\import type { McpResourceReadParams } from "./v2/McpResourceReadParams";
     \\import type { McpServerOauthLoginParams } from "./v2/McpServerOauthLoginParams";
     \\import type { McpServerStatusListParams } from "./v2/McpServerStatusListParams";
     \\import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
+    \\import type { PluginInstallParams } from "./v2/PluginInstallParams";
+    \\import type { PluginListParams } from "./v2/PluginListParams";
+    \\import type { PluginReadParams } from "./v2/PluginReadParams";
+    \\import type { PluginShareDeleteParams } from "./v2/PluginShareDeleteParams";
+    \\import type { PluginShareListParams } from "./v2/PluginShareListParams";
+    \\import type { PluginShareSaveParams } from "./v2/PluginShareSaveParams";
+    \\import type { PluginShareUpdateTargetsParams } from "./v2/PluginShareUpdateTargetsParams";
+    \\import type { PluginSkillReadParams } from "./v2/PluginSkillReadParams";
+    \\import type { PluginUninstallParams } from "./v2/PluginUninstallParams";
     \\import type { ProcessKillParams } from "./v2/ProcessKillParams";
     \\import type { ProcessResizePtyParams } from "./v2/ProcessResizePtyParams";
     \\import type { ProcessSpawnParams } from "./v2/ProcessSpawnParams";
     \\import type { ProcessWriteStdinParams } from "./v2/ProcessWriteStdinParams";
+    \\import type { ReviewStartParams } from "./v2/ReviewStartParams";
     \\import type { SendAddCreditsNudgeEmailParams } from "./v2/SendAddCreditsNudgeEmailParams";
     \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
     \\import type { SkillsListParams } from "./v2/SkillsListParams";
@@ -4797,6 +5062,54 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "skills/config/write";
     \\      params: SkillsConfigWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "marketplace/add";
+    \\      params: MarketplaceAddParams;
+    \\    }
+    \\  | {
+    \\      method: "marketplace/remove";
+    \\      params: MarketplaceRemoveParams;
+    \\    }
+    \\  | {
+    \\      method: "marketplace/upgrade";
+    \\      params: MarketplaceUpgradeParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/list";
+    \\      params: PluginListParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/read";
+    \\      params: PluginReadParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/skill/read";
+    \\      params: PluginSkillReadParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/share/save";
+    \\      params: PluginShareSaveParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/share/updateTargets";
+    \\      params: PluginShareUpdateTargetsParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/share/list";
+    \\      params: PluginShareListParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/share/delete";
+    \\      params: PluginShareDeleteParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/install";
+    \\      params: PluginInstallParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/uninstall";
+    \\      params: PluginUninstallParams;
     \\    }
     \\  | {
     \\      method: "account/read";
@@ -4968,6 +5281,10 @@ const CLIENT_REQUEST_TS =
     \\      params: TurnInterruptParams;
     \\    }
     \\  | {
+    \\      method: "review/start";
+    \\      params: ReviewStartParams;
+    \\    }
+    \\  | {
     \\      method: "thread/resume";
     \\      params: ThreadResumeParams;
     \\    }
@@ -5078,6 +5395,21 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "thread/realtime/stop";
     \\      params: ThreadRealtimeStopParams;
+    \\    }
+    \\  | {
+    \\      method: "config/read";
+    \\      params: ConfigReadParams;
+    \\    }
+    \\  | {
+    \\      method: "config/value/write";
+    \\      params: ConfigValueWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "config/batchWrite";
+    \\      params: ConfigBatchWriteParams;
+    \\    }
+    \\  | {
+    \\      method: "configRequirements/read";
     \\    };
     \\
     ;
@@ -6039,8 +6371,12 @@ const V2_INDEX_TS =
     \\export type { WindowsSandboxSetupStartParams } from "./WindowsSandboxSetupStartParams";
     \\export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
     \\export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
+    \\export type { ConfigBatchWriteParams } from "./ConfigBatchWriteParams";
+    \\export type { ConfigEdit } from "./ConfigEdit";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { ConfigReadParams } from "./ConfigReadParams";
+    \\export type { ConfigValueWriteParams } from "./ConfigValueWriteParams";
     \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
     \\export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";
     \\export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
@@ -6122,7 +6458,27 @@ const V2_INDEX_TS =
     \\export type { LoginAccountParams } from "./LoginAccountParams";
     \\export type { LoginAccountResponse } from "./LoginAccountResponse";
     \\export type { LogoutAccountResponse } from "./LogoutAccountResponse";
+    \\export type { MarketplaceAddParams } from "./MarketplaceAddParams";
+    \\export type { MarketplaceRemoveParams } from "./MarketplaceRemoveParams";
+    \\export type { MarketplaceUpgradeParams } from "./MarketplaceUpgradeParams";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
+    \\export type { MergeStrategy } from "./MergeStrategy";
+    \\export type { PluginInstallParams } from "./PluginInstallParams";
+    \\export type { PluginListMarketplaceKind } from "./PluginListMarketplaceKind";
+    \\export type { PluginListParams } from "./PluginListParams";
+    \\export type { PluginReadParams } from "./PluginReadParams";
+    \\export type { PluginShareDeleteParams } from "./PluginShareDeleteParams";
+    \\export type { PluginShareDiscoverability } from "./PluginShareDiscoverability";
+    \\export type { PluginShareListParams } from "./PluginShareListParams";
+    \\export type { PluginSharePrincipalType } from "./PluginSharePrincipalType";
+    \\export type { PluginShareSaveParams } from "./PluginShareSaveParams";
+    \\export type { PluginShareTarget } from "./PluginShareTarget";
+    \\export type { PluginShareUpdateTargetsParams } from "./PluginShareUpdateTargetsParams";
+    \\export type { PluginSkillReadParams } from "./PluginSkillReadParams";
+    \\export type { PluginUninstallParams } from "./PluginUninstallParams";
+    \\export type { ReviewDelivery } from "./ReviewDelivery";
+    \\export type { ReviewStartParams } from "./ReviewStartParams";
+    \\export type { ReviewTarget } from "./ReviewTarget";
     \\export type { Skill } from "./Skill";
     \\export type { SkillDependencies } from "./SkillDependencies";
     \\export type { SkillError } from "./SkillError";
@@ -17753,6 +18109,22 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/GetAccountRateLimitsResponse.ts", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS },
     .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/AppsListParams.ts", .contents = APPS_LIST_PARAMS_TS },
+    .{ .name = "v2/MarketplaceAddParams.ts", .contents = MARKETPLACE_ADD_PARAMS_TS },
+    .{ .name = "v2/MarketplaceRemoveParams.ts", .contents = MARKETPLACE_REMOVE_PARAMS_TS },
+    .{ .name = "v2/MarketplaceUpgradeParams.ts", .contents = MARKETPLACE_UPGRADE_PARAMS_TS },
+    .{ .name = "v2/PluginListMarketplaceKind.ts", .contents = PLUGIN_LIST_MARKETPLACE_KIND_TS },
+    .{ .name = "v2/PluginListParams.ts", .contents = PLUGIN_LIST_PARAMS_TS },
+    .{ .name = "v2/PluginReadParams.ts", .contents = PLUGIN_READ_PARAMS_TS },
+    .{ .name = "v2/PluginSkillReadParams.ts", .contents = PLUGIN_SKILL_READ_PARAMS_TS },
+    .{ .name = "v2/PluginShareDiscoverability.ts", .contents = PLUGIN_SHARE_DISCOVERABILITY_TS },
+    .{ .name = "v2/PluginSharePrincipalType.ts", .contents = PLUGIN_SHARE_PRINCIPAL_TYPE_TS },
+    .{ .name = "v2/PluginShareTarget.ts", .contents = PLUGIN_SHARE_TARGET_TS },
+    .{ .name = "v2/PluginShareSaveParams.ts", .contents = PLUGIN_SHARE_SAVE_PARAMS_TS },
+    .{ .name = "v2/PluginShareUpdateTargetsParams.ts", .contents = PLUGIN_SHARE_UPDATE_TARGETS_PARAMS_TS },
+    .{ .name = "v2/PluginShareListParams.ts", .contents = PLUGIN_SHARE_LIST_PARAMS_TS },
+    .{ .name = "v2/PluginShareDeleteParams.ts", .contents = PLUGIN_SHARE_DELETE_PARAMS_TS },
+    .{ .name = "v2/PluginInstallParams.ts", .contents = PLUGIN_INSTALL_PARAMS_TS },
+    .{ .name = "v2/PluginUninstallParams.ts", .contents = PLUGIN_UNINSTALL_PARAMS_TS },
     .{ .name = "v2/AppBranding.ts", .contents = APP_BRANDING_TS },
     .{ .name = "v2/AppReview.ts", .contents = APP_REVIEW_TS },
     .{ .name = "v2/AppScreenshot.ts", .contents = APP_SCREENSHOT_TS },
@@ -17812,6 +18184,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/SkillsChangedNotification.ts", .contents = SKILLS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
+    .{ .name = "v2/ConfigReadParams.ts", .contents = CONFIG_READ_PARAMS_TS },
+    .{ .name = "v2/MergeStrategy.ts", .contents = MERGE_STRATEGY_TS },
+    .{ .name = "serde_json/JsonValue.ts", .contents = JSON_VALUE_TS },
+    .{ .name = "v2/ConfigEdit.ts", .contents = CONFIG_EDIT_TS },
+    .{ .name = "v2/ConfigValueWriteParams.ts", .contents = CONFIG_VALUE_WRITE_PARAMS_TS },
+    .{ .name = "v2/ConfigBatchWriteParams.ts", .contents = CONFIG_BATCH_WRITE_PARAMS_TS },
     .{ .name = "v2/McpServerOauthLoginParams.ts", .contents = MCP_SERVER_OAUTH_LOGIN_PARAMS_TS },
     .{ .name = "v2/McpServerOauthLoginResponse.ts", .contents = MCP_SERVER_OAUTH_LOGIN_RESPONSE_TS },
     .{ .name = "v2/McpServerOauthLoginCompletedNotification.ts", .contents = MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_TS },
@@ -18015,6 +18393,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadShellCommandResponse.ts", .contents = THREAD_SHELL_COMMAND_RESPONSE_TS },
     .{ .name = "v2/ThreadApproveGuardianDeniedActionParams.ts", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_TS },
     .{ .name = "v2/ThreadApproveGuardianDeniedActionResponse.ts", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_TS },
+    .{ .name = "v2/ReviewDelivery.ts", .contents = REVIEW_DELIVERY_TS },
+    .{ .name = "v2/ReviewTarget.ts", .contents = REVIEW_TARGET_TS },
+    .{ .name = "v2/ReviewStartParams.ts", .contents = REVIEW_START_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
     .{ .name = "v2/ThreadIncrementElicitationParams.ts", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_TS },
@@ -18078,6 +18459,9 @@ fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier:
     const v2_out_dir = try std.fs.path.join(allocator, &.{ out_dir, "v2" });
     defer allocator.free(v2_out_dir);
     try std.Io.Dir.cwd().createDirPath(io, v2_out_dir);
+    const serde_json_out_dir = try std.fs.path.join(allocator, &.{ out_dir, "serde_json" });
+    defer allocator.free(serde_json_out_dir);
+    try std.Io.Dir.cwd().createDirPath(io, serde_json_out_dir);
     try writeSchemaFiles(allocator, out_dir, &APP_SERVER_TS_FILES);
 }
 
