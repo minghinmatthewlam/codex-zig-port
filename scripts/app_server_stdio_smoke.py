@@ -22129,6 +22129,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert 'type: "find_in_page"' in web_search_action
+        v2_web_search_action = (
+            out_dir / "v2" / "WebSearchAction.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "openPage";' in v2_web_search_action
+        assert "queries: string[] | null" in v2_web_search_action
         web_search_context_size = (
             out_dir / "WebSearchContextSize.ts"
         ).read_text(encoding="utf-8")
@@ -22649,6 +22654,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "PreToolUse: ConfiguredHookMatcherGroup[];",
                 "UserPromptSubmit: ConfiguredHookMatcherGroup[];",
             ],
+            "HookErrorInfo": [
+                "path: string;",
+                "message: string;",
+            ],
+            "HookPromptFragment": [
+                "text: string;",
+                "hookRunId: string;",
+            ],
+            "HookMetadata": [
+                'import type { HookTrustStatus } from "./HookTrustStatus";',
+                "command: string | null;",
+                "timeoutSec: bigint;",
+                "sourcePath: AbsolutePathBuf;",
+                "trustStatus: HookTrustStatus;",
+            ],
             "NetworkDomainPermission": [
                 'export type NetworkDomainPermission = "allow" | "deny";',
             ],
@@ -22684,6 +22704,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "threadId: string;",
                 "delivery?: ReviewDelivery | null;",
             ],
+            "ReviewStartResponse": [
+                'import type { Turn } from "./Turn";',
+                "turn: Turn;",
+                "reviewThreadId: string;",
+            ],
             "CommandExecutionSource": [
                 '"agent"',
                 '"unifiedExecInteraction"',
@@ -22709,6 +22734,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PatchApplyStatus": [
                 '"completed"',
                 '"declined"',
+            ],
+            "SkillScope": [
+                '"user" | "repo" | "system" | "admin"',
+            ],
+            "SkillMetadata": [
+                'import type { SkillScope } from "./SkillScope";',
+                "shortDescription?: string;",
+                "path: AbsolutePathBuf;",
+                "scope: SkillScope;",
+            ],
+            "SkillErrorInfo": [
+                "path: string;",
+                "message: string;",
             ],
         }.items():
             generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
@@ -23680,13 +23718,27 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "supportedReasoningEfforts: ModelReasoningEffort[];" in model_list_item
         assert "serviceTiers: ModelServiceTier[];" in model_list_item
         assert "isDefault: boolean;" in model_list_item
+        reasoning_effort_option = (
+            out_dir / "v2" / "ReasoningEffortOption.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ReasoningEffort } from "../ReasoningEffort";' in (
+            reasoning_effort_option
+        )
+        assert "reasoningEffort: ReasoningEffort;" in reasoning_effort_option
+        model = (out_dir / "v2" / "Model.ts").read_text(encoding="utf-8")
+        assert 'import type { ReasoningEffortOption } from "./ReasoningEffortOption";' in (
+            model
+        )
+        assert "supportedReasoningEfforts: ReasoningEffortOption[];" in model
+        assert "defaultReasoningEffort: ReasoningEffort;" in model
+        assert "inputModalities: InputModality[];" in model
         model_list_response = (out_dir / "v2" / "ModelListResponse.ts").read_text(
             encoding="utf-8"
         )
-        assert 'import type { ModelListItem } from "./ModelListItem";' in (
+        assert 'import type { Model } from "./Model";' in (
             model_list_response
         )
-        assert "data: ModelListItem[];" in model_list_response
+        assert "data: Model[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
         model_reroute_reason = (
             out_dir / "v2" / "ModelRerouteReason.ts"
@@ -23785,6 +23837,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         session_source = (out_dir / "SessionSource.ts").read_text(encoding="utf-8")
         assert 'import type { SubAgentSource } from "./SubAgentSource";' in session_source
         assert '"cli" | "vscode" | "exec" | "mcp"' in session_source
+        v2_session_source = (
+            out_dir / "v2" / "SessionSource.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { SubAgentSource } from "../SubAgentSource";' in (
+            v2_session_source
+        )
+        assert '"appServer"' in v2_session_source
+        assert "{ subAgent: SubAgentSource }" in v2_session_source
         conversation_git_info = (
             out_dir / "ConversationGitInfo.ts"
         ).read_text(encoding="utf-8")
@@ -24271,6 +24331,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "cursor?: string | null;" in mcp_status_params
         assert "limit?: number | null;" in mcp_status_params
         assert "detail?: McpServerStatusDetail | null;" in mcp_status_params
+        list_mcp_status_params = (
+            out_dir / "v2" / "ListMcpServerStatusParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { McpServerStatusDetail } from "./McpServerStatusDetail";' in (
+            list_mcp_status_params
+        )
+        assert "cursor?: string | null;" in list_mcp_status_params
+        assert "limit?: number | null;" in list_mcp_status_params
+        assert "detail?: McpServerStatusDetail | null;" in list_mcp_status_params
         mcp_auth_status = (
             out_dir / "v2" / "McpServerAuthStatus.ts"
         ).read_text(encoding="utf-8")
@@ -24296,6 +24365,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: McpServerStatus[];" in mcp_status_response
         assert "nextCursor: string | null;" in mcp_status_response
+        list_mcp_status_response = (
+            out_dir / "v2" / "ListMcpServerStatusResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { McpServerStatus } from "./McpServerStatus";' in (
+            list_mcp_status_response
+        )
+        assert "data: McpServerStatus[];" in list_mcp_status_response
+        assert "nextCursor: string | null;" in list_mcp_status_response
         mcp_startup_state = (
             out_dir / "v2" / "McpServerStartupState.ts"
         ).read_text(encoding="utf-8")
@@ -24654,18 +24731,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "export interface ThreadStartResponse" in thread_start_response
-        assert "thread: unknown;" in thread_start_response
+        assert 'import type { Thread } from "./Thread";' in thread_start_response
+        assert "thread: Thread;" in thread_start_response
+        assert "cwd: AbsolutePathBuf;" in thread_start_response
         assert "modelProvider: string;" in thread_start_response
         thread_started_notification = (
             out_dir / "v2" / "ThreadStartedNotification.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadStartedNotification" in thread_started_notification
-        assert "thread: unknown;" in thread_started_notification
+        assert "thread: Thread;" in thread_started_notification
+        thread_active_flag = (out_dir / "v2" / "ThreadActiveFlag.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"waitingOnApproval"' in thread_active_flag
         thread_status = (out_dir / "v2" / "ThreadStatus.ts").read_text(
             encoding="utf-8"
         )
+        assert 'import type { ThreadActiveFlag } from "./ThreadActiveFlag";' in thread_status
         assert 'type: "active";' in thread_status
-        assert 'activeFlags: ("waitingOnApproval" | "waitingOnUserInput")[];' in thread_status
+        assert "activeFlags: ThreadActiveFlag[];" in thread_status
         thread_status_changed_notification = (
             out_dir / "v2" / "ThreadStatusChangedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -24731,11 +24815,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert (
-            'import type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";'
+            'import type { TokenUsageBreakdown } from "./TokenUsageBreakdown";'
             in thread_token_usage
         )
-        assert "total: ThreadTokenUsageBreakdown;" in thread_token_usage
-        assert "last: ThreadTokenUsageBreakdown;" in thread_token_usage
+        token_usage_breakdown = (
+            out_dir / "v2" / "TokenUsageBreakdown.ts"
+        ).read_text(encoding="utf-8")
+        assert "totalTokens: number;" in token_usage_breakdown
+        assert "reasoningOutputTokens: number;" in token_usage_breakdown
+        assert "total: TokenUsageBreakdown;" in thread_token_usage
+        assert "last: TokenUsageBreakdown;" in thread_token_usage
         assert "modelContextWindow: number | null;" in thread_token_usage
         thread_token_usage_updated_notification = (
             out_dir / "v2" / "ThreadTokenUsageUpdatedNotification.ts"
@@ -24809,11 +24898,39 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'import type { Turn } from "./Turn";' in turn_start_response
         assert "turn: Turn;" in turn_start_response
+        thread_source = (out_dir / "v2" / "ThreadSource.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"memory_consolidation"' in thread_source
+        thread_start_source = (
+            out_dir / "v2" / "ThreadStartSource.ts"
+        ).read_text(encoding="utf-8")
+        assert '"startup" | "clear"' in thread_start_source
+        thread_item = (out_dir / "v2" / "ThreadItem.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { HookPromptFragment } from "./HookPromptFragment";' in thread_item
+        assert 'type: "commandExecution";' in thread_item
+        assert "source: CommandExecutionSource;" in thread_item
+        assert "memoryCitation: MemoryCitation | null;" in thread_item
+        assert "status: PatchApplyStatus;" in thread_item
+        thread_ts = (out_dir / "v2" / "Thread.ts").read_text(encoding="utf-8")
+        assert 'import type { GitInfo } from "./GitInfo";' in thread_ts
+        assert 'import type { ThreadSource } from "./ThreadSource";' in thread_ts
+        assert "sessionId: string;" in thread_ts
+        assert "threadSource: ThreadSource | null;" in thread_ts
+        assert "turns: Turn[];" in thread_ts
+        turn_environment_params = (
+            out_dir / "v2" / "TurnEnvironmentParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "environmentId: string;" in turn_environment_params
+        assert "cwd: AbsolutePathBuf;" in turn_environment_params
         turn_ts = (out_dir / "v2" / "Turn.ts").read_text(encoding="utf-8")
+        assert 'import type { ThreadItem } from "./ThreadItem";' in turn_ts
         assert 'import type { TurnError } from "./TurnError";' in turn_ts
         assert 'import type { TurnItemsView } from "./TurnItemsView";' in turn_ts
         assert 'import type { TurnStatus } from "./TurnStatus";' in turn_ts
-        assert "items: unknown[];" in turn_ts
+        assert "items: ThreadItem[];" in turn_ts
         assert "itemsView: TurnItemsView;" in turn_ts
         assert "status: TurnStatus;" in turn_ts
         assert "error: TurnError | null;" in turn_ts
@@ -25742,6 +25859,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PluginUninstallResponse",
             "ReviewDelivery",
             "ReviewStartParams",
+            "ReviewStartResponse",
             "ReviewTarget",
             "SkillSummary",
         ]:
@@ -25989,15 +26107,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in v2_index
         )
         assert 'export type { HookError } from "./HookError";' in v2_index
+        assert 'export type { HookErrorInfo } from "./HookErrorInfo";' in v2_index
         assert 'export type { HookEventName } from "./HookEventName";' in v2_index
         assert (
             'export type { HookExecutionMode } from "./HookExecutionMode";'
             in v2_index
         )
         assert 'export type { HookHandlerType } from "./HookHandlerType";' in v2_index
+        assert 'export type { HookMetadata } from "./HookMetadata";' in v2_index
         assert 'export type { HookOutputEntry } from "./HookOutputEntry";' in v2_index
         assert (
             'export type { HookOutputEntryKind } from "./HookOutputEntryKind";'
+            in v2_index
+        )
+        assert (
+            'export type { HookPromptFragment } from "./HookPromptFragment";'
             in v2_index
         )
         assert 'export type { HookRunStatus } from "./HookRunStatus";' in v2_index
@@ -26047,7 +26171,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { Skill } from "./Skill";' in v2_index
         assert 'export type { SkillDependencies } from "./SkillDependencies";' in v2_index
         assert 'export type { SkillError } from "./SkillError";' in v2_index
+        assert 'export type { SkillErrorInfo } from "./SkillErrorInfo";' in v2_index
         assert 'export type { SkillInterface } from "./SkillInterface";' in v2_index
+        assert 'export type { SkillMetadata } from "./SkillMetadata";' in v2_index
+        assert 'export type { SkillScope } from "./SkillScope";' in v2_index
         assert (
             'export type { SkillToolDependency } from "./SkillToolDependency";'
             in v2_index
@@ -26090,6 +26217,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { McpServerStatusDetail } from "./McpServerStatusDetail";'
+            in v2_index
+        )
+        assert (
+            'export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";'
             in v2_index
         )
         assert (
@@ -26177,6 +26312,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ModelServiceTier } from "./ModelServiceTier";'
             in v2_index
         )
+        assert 'export type { Model } from "./Model";' in v2_index
+        assert (
+            'export type { ReasoningEffortOption } from "./ReasoningEffortOption";'
+            in v2_index
+        )
         assert 'export type { PermissionProfile } from "./PermissionProfile";' in v2_index
         assert (
             'export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";'
@@ -26215,6 +26355,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ThreadGoalClearedNotification } from "./ThreadGoalClearedNotification";'
             in v2_index
         )
+        for thread_helper_export in [
+            "Thread",
+            "ThreadActiveFlag",
+            "ThreadItem",
+            "ThreadSource",
+            "ThreadStartSource",
+            "TokenUsageBreakdown",
+        ]:
+            assert (
+                f'export type {{ {thread_helper_export} }} from "./{thread_helper_export}";'
+                in v2_index
+            )
         assert (
             'export type { ThreadTokenUsage } from "./ThreadTokenUsage";'
             in v2_index
@@ -26247,6 +26399,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in v2_index
         )
         assert 'export type { Turn } from "./Turn";' in v2_index
+        assert (
+            'export type { TurnEnvironmentParams } from "./TurnEnvironmentParams";'
+            in v2_index
+        )
         assert 'export type { TurnStartParams } from "./TurnStartParams";' in v2_index
         assert 'export type { TurnStartResponse } from "./TurnStartResponse";' in v2_index
         assert 'export type { TurnStatus } from "./TurnStatus";' in v2_index
@@ -26254,6 +26410,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { TurnItemsView } from "./TurnItemsView";' in v2_index
         assert 'export type { TurnSteerParams } from "./TurnSteerParams";' in v2_index
         assert 'export type { TurnSteerResponse } from "./TurnSteerResponse";' in v2_index
+        assert 'export type { SessionSource } from "./SessionSource";' in v2_index
+        assert 'export type { WebSearchAction } from "./WebSearchAction";' in v2_index
         assert (
             'export type { TurnInterruptParams } from "./TurnInterruptParams";'
             in v2_index
