@@ -1333,6 +1333,18 @@ def exercise_json_rpc(write_line, read_line) -> None:
         write_line(
             {
                 "jsonrpc": "2.0",
+                "id": "thread-background-clean-loaded",
+                "method": "thread/backgroundTerminals/clean",
+                "params": {"threadId": thread_id},
+            }
+        )
+        background_clean_loaded = read_line()
+        assert background_clean_loaded["id"] == "thread-background-clean-loaded"
+        assert background_clean_loaded["result"] == {}
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
                 "id": "thread-increment-elicitation-loaded",
                 "method": "thread/increment_elicitation",
                 "params": {"threadId": thread_id},
