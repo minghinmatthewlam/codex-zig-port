@@ -18824,6 +18824,25 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert dynamic_tool_call_response["properties"]["contentItems"]["items"][
             "oneOf"
         ][0]["properties"]["type"]["const"] == "inputText"
+        review_start_params = json.loads(
+            (out_dir / "v2" / "ReviewStartParams.json").read_text(encoding="utf-8")
+        )
+        assert review_start_params["required"] == ["threadId", "target"]
+        assert (
+            review_start_params["properties"]["target"]["oneOf"][2]["properties"][
+                "type"
+            ]["const"]
+            == "commit"
+        )
+        assert review_start_params["properties"]["delivery"]["anyOf"][0]["enum"] == [
+            "inline",
+            "detached",
+        ]
+        review_start_response = json.loads(
+            (out_dir / "v2" / "ReviewStartResponse.json").read_text(encoding="utf-8")
+        )
+        assert review_start_response["required"] == ["turn", "reviewThreadId"]
+        assert review_start_response["properties"]["turn"] is True
 
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert (out_dir / "v1" / "InitializeParams.json").read_text(
@@ -19562,6 +19581,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             mcp_status_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/McpServerStatus"
         )
+        mcp_refresh_response = json.loads(
+            (out_dir / "v2" / "McpServerRefreshResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_refresh_response["additionalProperties"] is False
         mcp_startup_state = json.loads(
             (out_dir / "McpServerStartupState.json").read_text(encoding="utf-8")
         )
