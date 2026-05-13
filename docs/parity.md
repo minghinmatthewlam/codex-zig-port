@@ -102,12 +102,18 @@ helpers,
 server-request TypeScript artifacts, plus
 experimental-feature list/enablement artifacts,
 memory-reset response, memory citation, Git info, command execution
-source/status, and patch-apply status helper artifacts, git-diff-to-remote and
-fuzzy-file-search JSON Schema artifacts,
+source/status, patch-apply status, hook metadata/error/prompt-fragment,
+skill metadata/scope/error, MCP status alias, model, session-source,
+web-search action, review-start response, and thread helper artifacts,
+git-diff-to-remote and fuzzy-file-search JSON Schema artifacts,
 hooks-list artifacts, skills list/config artifacts, account
 read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC artifacts,
 MCP config reload artifacts, and MCP server status artifacts, in standalone
 files and the bundled schema `$defs`.
+For TypeScript file names, the Zig generator covers the complete Rust-named
+`app-server-protocol/schema/typescript` set observed in the adjacent Rust
+checkout at comparison time; the remaining Zig-only files are compatibility
+aliases or legacy artifacts, not Rust-missing files.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
