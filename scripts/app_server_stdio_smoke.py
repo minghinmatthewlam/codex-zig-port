@@ -1205,6 +1205,19 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert bad_client_error["error"]["code"] == -32600
     assert "Invalid Request" in bad_client_error["error"]["message"]
 
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "ambiguous-client-response",
+            "result": {},
+            "error": {"code": -32000, "message": "also rejected"},
+        }
+    )
+    ambiguous_client_response = read_line()
+    assert ambiguous_client_response["id"] == "ambiguous-client-response"
+    assert ambiguous_client_response["error"]["code"] == -32600
+    assert "Invalid Request" in ambiguous_client_response["error"]["message"]
+
     write_line({"jsonrpc": "2.0", "id": "missing", "method": "codex/unknown"})
     missing = read_line()
     assert missing["id"] == "missing"
