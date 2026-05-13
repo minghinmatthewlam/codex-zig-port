@@ -1524,13 +1524,122 @@ const HOOK_EVENT_NAME_TS =
 
 const HOOK_HANDLER_TYPE_TS =
     GENERATED_TS_HEADER ++
-    \\export type HookHandlerType = "command";
+    \\export type HookHandlerType = "command" | "prompt" | "agent";
     \\
     ;
 
 const HOOK_SOURCE_TS =
     GENERATED_TS_HEADER ++
-    \\export type HookSource = "user" | "project" | "plugin";
+    \\export type HookSource =
+    \\  | "system"
+    \\  | "user"
+    \\  | "project"
+    \\  | "mdm"
+    \\  | "sessionFlags"
+    \\  | "plugin"
+    \\  | "cloudRequirements"
+    \\  | "legacyManagedConfigFile"
+    \\  | "legacyManagedConfigMdm"
+    \\  | "unknown";
+    \\
+    ;
+
+const HOOK_EXECUTION_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookExecutionMode = "sync" | "async";
+    \\
+    ;
+
+const HOOK_OUTPUT_ENTRY_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookOutputEntryKind =
+    \\  | "warning"
+    \\  | "stop"
+    \\  | "feedback"
+    \\  | "context"
+    \\  | "error";
+    \\
+    ;
+
+const HOOK_OUTPUT_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HookOutputEntryKind } from "./HookOutputEntryKind";
+    \\
+    \\export interface HookOutputEntry {
+    \\  kind: HookOutputEntryKind;
+    \\  text: string;
+    \\}
+    \\
+    ;
+
+const HOOK_RUN_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookRunStatus =
+    \\  | "running"
+    \\  | "completed"
+    \\  | "failed"
+    \\  | "blocked"
+    \\  | "stopped";
+    \\
+    ;
+
+const HOOK_SCOPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type HookScope = "thread" | "turn";
+    \\
+    ;
+
+const HOOK_RUN_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { HookEventName } from "./HookEventName";
+    \\import type { HookExecutionMode } from "./HookExecutionMode";
+    \\import type { HookHandlerType } from "./HookHandlerType";
+    \\import type { HookOutputEntry } from "./HookOutputEntry";
+    \\import type { HookRunStatus } from "./HookRunStatus";
+    \\import type { HookScope } from "./HookScope";
+    \\import type { HookSource } from "./HookSource";
+    \\
+    \\export interface HookRunSummary {
+    \\  id: string;
+    \\  eventName: HookEventName;
+    \\  handlerType: HookHandlerType;
+    \\  executionMode: HookExecutionMode;
+    \\  scope: HookScope;
+    \\  sourcePath: AbsolutePathBuf;
+    \\  source: HookSource;
+    \\  displayOrder: bigint;
+    \\  status: HookRunStatus;
+    \\  statusMessage: string | null;
+    \\  startedAt: bigint;
+    \\  completedAt: bigint | null;
+    \\  durationMs: bigint | null;
+    \\  entries: HookOutputEntry[];
+    \\}
+    \\
+    ;
+
+const HOOK_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HookRunSummary } from "./HookRunSummary";
+    \\
+    \\export interface HookStartedNotification {
+    \\  threadId: string;
+    \\  turnId: string | null;
+    \\  run: HookRunSummary;
+    \\}
+    \\
+    ;
+
+const HOOK_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HookRunSummary } from "./HookRunSummary";
+    \\
+    \\export interface HookCompletedNotification {
+    \\  threadId: string;
+    \\  turnId: string | null;
+    \\  run: HookRunSummary;
+    \\}
     \\
     ;
 
@@ -4900,6 +5009,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
     \\import type { GuardianWarningNotification } from "./v2/GuardianWarningNotification";
+    \\import type { HookCompletedNotification } from "./v2/HookCompletedNotification";
+    \\import type { HookStartedNotification } from "./v2/HookStartedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
@@ -5027,8 +5138,16 @@ const SERVER_NOTIFICATION_TS =
     \\      params: TurnStartedNotification;
     \\    }
     \\  | {
+    \\      method: "hook/started";
+    \\      params: HookStartedNotification;
+    \\    }
+    \\  | {
     \\      method: "turn/completed";
     \\      params: TurnCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "hook/completed";
+    \\      params: HookCompletedNotification;
     \\    }
     \\  | {
     \\      method: "item/started";
@@ -5233,10 +5352,18 @@ const V2_INDEX_TS =
     \\export type { FuzzyFileSearchSessionUpdateParams } from "./FuzzyFileSearchSessionUpdateParams";
     \\export type { FuzzyFileSearchSessionUpdateResponse } from "./FuzzyFileSearchSessionUpdateResponse";
     \\export type { Hook } from "./Hook";
+    \\export type { HookCompletedNotification } from "./HookCompletedNotification";
     \\export type { HookError } from "./HookError";
     \\export type { HookEventName } from "./HookEventName";
+    \\export type { HookExecutionMode } from "./HookExecutionMode";
     \\export type { HookHandlerType } from "./HookHandlerType";
+    \\export type { HookOutputEntry } from "./HookOutputEntry";
+    \\export type { HookOutputEntryKind } from "./HookOutputEntryKind";
+    \\export type { HookRunStatus } from "./HookRunStatus";
+    \\export type { HookRunSummary } from "./HookRunSummary";
+    \\export type { HookScope } from "./HookScope";
     \\export type { HookSource } from "./HookSource";
+    \\export type { HookStartedNotification } from "./HookStartedNotification";
     \\export type { HookTrustStatus } from "./HookTrustStatus";
     \\export type { HooksListEntry } from "./HooksListEntry";
     \\export type { HooksListParams } from "./HooksListParams";
@@ -6632,7 +6759,7 @@ const HOOK_HANDLER_TYPE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "HookHandlerType",
     \\  "type": "string",
-    \\  "enum": ["command"]
+    \\  "enum": ["command", "prompt", "agent"]
     \\}
     \\
 ;
@@ -6642,7 +6769,289 @@ const HOOK_SOURCE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "HookSource",
     \\  "type": "string",
-    \\  "enum": ["user", "project", "plugin"]
+    \\  "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
+    \\}
+    \\
+;
+
+const HOOK_EXECUTION_MODE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookExecutionMode",
+    \\  "type": "string",
+    \\  "enum": ["sync", "async"]
+    \\}
+    \\
+;
+
+const HOOK_OUTPUT_ENTRY_KIND_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookOutputEntryKind",
+    \\  "type": "string",
+    \\  "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\}
+    \\
+;
+
+const HOOK_OUTPUT_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookOutputEntry",
+    \\  "type": "object",
+    \\  "required": ["kind", "text"],
+    \\  "properties": {
+    \\    "kind": { "$ref": "#/$defs/HookOutputEntryKind" },
+    \\    "text": { "type": "string" }
+    \\  },
+    \\  "$defs": {
+    \\    "HookOutputEntryKind": {
+    \\      "type": "string",
+    \\      "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const HOOK_RUN_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookRunStatus",
+    \\  "type": "string",
+    \\  "enum": ["running", "completed", "failed", "blocked", "stopped"]
+    \\}
+    \\
+;
+
+const HOOK_SCOPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookScope",
+    \\  "type": "string",
+    \\  "enum": ["thread", "turn"]
+    \\}
+    \\
+;
+
+const HOOK_RUN_SUMMARY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookRunSummary",
+    \\  "type": "object",
+    \\  "required": ["displayOrder", "entries", "eventName", "executionMode", "handlerType", "id", "scope", "sourcePath", "startedAt", "status"],
+    \\  "properties": {
+    \\    "id": { "type": "string" },
+    \\    "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\    "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\    "executionMode": { "$ref": "#/$defs/HookExecutionMode" },
+    \\    "scope": { "$ref": "#/$defs/HookScope" },
+    \\    "sourcePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\    "source": { "$ref": "#/$defs/HookSource" },
+    \\    "displayOrder": { "type": "integer" },
+    \\    "status": { "$ref": "#/$defs/HookRunStatus" },
+    \\    "statusMessage": { "type": ["string", "null"] },
+    \\    "startedAt": { "type": "integer" },
+    \\    "completedAt": { "type": ["integer", "null"] },
+    \\    "durationMs": { "type": ["integer", "null"] },
+    \\    "entries": { "type": "array", "items": { "$ref": "#/$defs/HookOutputEntry" } }
+    \\  },
+    \\  "$defs": {
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command", "prompt", "agent"]
+    \\    },
+    \\    "HookExecutionMode": {
+    \\      "type": "string",
+    \\      "enum": ["sync", "async"]
+    \\    },
+    \\    "HookScope": {
+    \\      "type": "string",
+    \\      "enum": ["thread", "turn"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
+    \\    },
+    \\    "HookRunStatus": {
+    \\      "type": "string",
+    \\      "enum": ["running", "completed", "failed", "blocked", "stopped"]
+    \\    },
+    \\    "HookOutputEntryKind": {
+    \\      "type": "string",
+    \\      "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\    },
+    \\    "HookOutputEntry": {
+    \\      "type": "object",
+    \\      "required": ["kind", "text"],
+    \\      "properties": {
+    \\        "kind": { "$ref": "#/$defs/HookOutputEntryKind" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const HOOK_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookStartedNotification",
+    \\  "type": "object",
+    \\  "required": ["run", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": ["string", "null"] },
+    \\    "run": { "$ref": "#/$defs/HookRunSummary" }
+    \\  },
+    \\  "$defs": {
+    \\    "HookRunSummary": {
+    \\      "type": "object",
+    \\      "required": ["displayOrder", "entries", "eventName", "executionMode", "handlerType", "id", "scope", "sourcePath", "startedAt", "status"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "executionMode": { "$ref": "#/$defs/HookExecutionMode" },
+    \\        "scope": { "$ref": "#/$defs/HookScope" },
+    \\        "sourcePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "displayOrder": { "type": "integer" },
+    \\        "status": { "$ref": "#/$defs/HookRunStatus" },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "startedAt": { "type": "integer" },
+    \\        "completedAt": { "type": ["integer", "null"] },
+    \\        "durationMs": { "type": ["integer", "null"] },
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/HookOutputEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command", "prompt", "agent"]
+    \\    },
+    \\    "HookExecutionMode": {
+    \\      "type": "string",
+    \\      "enum": ["sync", "async"]
+    \\    },
+    \\    "HookScope": {
+    \\      "type": "string",
+    \\      "enum": ["thread", "turn"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
+    \\    },
+    \\    "HookRunStatus": {
+    \\      "type": "string",
+    \\      "enum": ["running", "completed", "failed", "blocked", "stopped"]
+    \\    },
+    \\    "HookOutputEntryKind": {
+    \\      "type": "string",
+    \\      "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\    },
+    \\    "HookOutputEntry": {
+    \\      "type": "object",
+    \\      "required": ["kind", "text"],
+    \\      "properties": {
+    \\        "kind": { "$ref": "#/$defs/HookOutputEntryKind" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const HOOK_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "HookCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["run", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": ["string", "null"] },
+    \\    "run": { "$ref": "#/$defs/HookRunSummary" }
+    \\  },
+    \\  "$defs": {
+    \\    "HookRunSummary": {
+    \\      "type": "object",
+    \\      "required": ["displayOrder", "entries", "eventName", "executionMode", "handlerType", "id", "scope", "sourcePath", "startedAt", "status"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "executionMode": { "$ref": "#/$defs/HookExecutionMode" },
+    \\        "scope": { "$ref": "#/$defs/HookScope" },
+    \\        "sourcePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "displayOrder": { "type": "integer" },
+    \\        "status": { "$ref": "#/$defs/HookRunStatus" },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "startedAt": { "type": "integer" },
+    \\        "completedAt": { "type": ["integer", "null"] },
+    \\        "durationMs": { "type": ["integer", "null"] },
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/HookOutputEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": ["preToolUse", "permissionRequest", "postToolUse", "preCompact", "postCompact", "sessionStart", "userPromptSubmit", "stop"]
+    \\    },
+    \\    "HookHandlerType": {
+    \\      "type": "string",
+    \\      "enum": ["command", "prompt", "agent"]
+    \\    },
+    \\    "HookExecutionMode": {
+    \\      "type": "string",
+    \\      "enum": ["sync", "async"]
+    \\    },
+    \\    "HookScope": {
+    \\      "type": "string",
+    \\      "enum": ["thread", "turn"]
+    \\    },
+    \\    "HookSource": {
+    \\      "type": "string",
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
+    \\    },
+    \\    "HookRunStatus": {
+    \\      "type": "string",
+    \\      "enum": ["running", "completed", "failed", "blocked", "stopped"]
+    \\    },
+    \\    "HookOutputEntryKind": {
+    \\      "type": "string",
+    \\      "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\    },
+    \\    "HookOutputEntry": {
+    \\      "type": "object",
+    \\      "required": ["kind", "text"],
+    \\      "properties": {
+    \\        "kind": { "$ref": "#/$defs/HookOutputEntryKind" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -6702,11 +7111,11 @@ const HOOK_JSON_SCHEMA =
     \\    },
     \\    "HookHandlerType": {
     \\      "type": "string",
-    \\      "enum": ["command"]
+    \\      "enum": ["command", "prompt", "agent"]
     \\    },
     \\    "HookSource": {
     \\      "type": "string",
-    \\      "enum": ["user", "project", "plugin"]
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
     \\    },
     \\    "HookTrustStatus": {
     \\      "type": "string",
@@ -6737,11 +7146,11 @@ const HOOKS_LIST_ENTRY_JSON_SCHEMA =
     \\    },
     \\    "HookHandlerType": {
     \\      "type": "string",
-    \\      "enum": ["command"]
+    \\      "enum": ["command", "prompt", "agent"]
     \\    },
     \\    "HookSource": {
     \\      "type": "string",
-    \\      "enum": ["user", "project", "plugin"]
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
     \\    },
     \\    "HookTrustStatus": {
     \\      "type": "string",
@@ -6800,11 +7209,11 @@ const HOOKS_LIST_RESPONSE_JSON_SCHEMA =
     \\    },
     \\    "HookHandlerType": {
     \\      "type": "string",
-    \\      "enum": ["command"]
+    \\      "enum": ["command", "prompt", "agent"]
     \\    },
     \\    "HookSource": {
     \\      "type": "string",
-    \\      "enum": ["user", "project", "plugin"]
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
     \\    },
     \\    "HookTrustStatus": {
     \\      "type": "string",
@@ -11764,11 +12173,77 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "HookHandlerType": {
     \\      "type": "string",
-    \\      "enum": ["command"]
+    \\      "enum": ["command", "prompt", "agent"]
     \\    },
     \\    "HookSource": {
     \\      "type": "string",
-    \\      "enum": ["user", "project", "plugin"]
+    \\      "enum": ["system", "user", "project", "mdm", "sessionFlags", "plugin", "cloudRequirements", "legacyManagedConfigFile", "legacyManagedConfigMdm", "unknown"]
+    \\    },
+    \\    "HookExecutionMode": {
+    \\      "type": "string",
+    \\      "enum": ["sync", "async"]
+    \\    },
+    \\    "HookOutputEntryKind": {
+    \\      "type": "string",
+    \\      "enum": ["warning", "stop", "feedback", "context", "error"]
+    \\    },
+    \\    "HookOutputEntry": {
+    \\      "type": "object",
+    \\      "required": ["kind", "text"],
+    \\      "properties": {
+    \\        "kind": { "$ref": "#/$defs/HookOutputEntryKind" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "HookRunStatus": {
+    \\      "type": "string",
+    \\      "enum": ["running", "completed", "failed", "blocked", "stopped"]
+    \\    },
+    \\    "HookScope": {
+    \\      "type": "string",
+    \\      "enum": ["thread", "turn"]
+    \\    },
+    \\    "HookRunSummary": {
+    \\      "type": "object",
+    \\      "required": ["displayOrder", "entries", "eventName", "executionMode", "handlerType", "id", "scope", "sourcePath", "startedAt", "status"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" },
+    \\        "handlerType": { "$ref": "#/$defs/HookHandlerType" },
+    \\        "executionMode": { "$ref": "#/$defs/HookExecutionMode" },
+    \\        "scope": { "$ref": "#/$defs/HookScope" },
+    \\        "sourcePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "source": { "$ref": "#/$defs/HookSource" },
+    \\        "displayOrder": { "type": "integer" },
+    \\        "status": { "$ref": "#/$defs/HookRunStatus" },
+    \\        "statusMessage": { "type": ["string", "null"] },
+    \\        "startedAt": { "type": "integer" },
+    \\        "completedAt": { "type": ["integer", "null"] },
+    \\        "durationMs": { "type": ["integer", "null"] },
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/HookOutputEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "HookStartedNotification": {
+    \\      "type": "object",
+    \\      "required": ["run", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": ["string", "null"] },
+    \\        "run": { "$ref": "#/$defs/HookRunSummary" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "HookCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["run", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": ["string", "null"] },
+    \\        "run": { "$ref": "#/$defs/HookRunSummary" }
+    \\      },
+    \\      "additionalProperties": true
     \\    },
     \\    "HookTrustStatus": {
     \\      "type": "string",
@@ -14782,6 +15257,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "HookEventName.json", .contents = HOOK_EVENT_NAME_JSON_SCHEMA },
     .{ .name = "HookHandlerType.json", .contents = HOOK_HANDLER_TYPE_JSON_SCHEMA },
     .{ .name = "HookSource.json", .contents = HOOK_SOURCE_JSON_SCHEMA },
+    .{ .name = "HookExecutionMode.json", .contents = HOOK_EXECUTION_MODE_JSON_SCHEMA },
+    .{ .name = "HookOutputEntryKind.json", .contents = HOOK_OUTPUT_ENTRY_KIND_JSON_SCHEMA },
+    .{ .name = "HookOutputEntry.json", .contents = HOOK_OUTPUT_ENTRY_JSON_SCHEMA },
+    .{ .name = "HookRunStatus.json", .contents = HOOK_RUN_STATUS_JSON_SCHEMA },
+    .{ .name = "HookScope.json", .contents = HOOK_SCOPE_JSON_SCHEMA },
+    .{ .name = "HookRunSummary.json", .contents = HOOK_RUN_SUMMARY_JSON_SCHEMA },
+    .{ .name = "HookStartedNotification.json", .contents = HOOK_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "HookCompletedNotification.json", .contents = HOOK_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "HookTrustStatus.json", .contents = HOOK_TRUST_STATUS_JSON_SCHEMA },
     .{ .name = "HookError.json", .contents = HOOK_ERROR_JSON_SCHEMA },
     .{ .name = "Hook.json", .contents = HOOK_JSON_SCHEMA },
@@ -15135,6 +15618,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/HookEventName.ts", .contents = HOOK_EVENT_NAME_TS },
     .{ .name = "v2/HookHandlerType.ts", .contents = HOOK_HANDLER_TYPE_TS },
     .{ .name = "v2/HookSource.ts", .contents = HOOK_SOURCE_TS },
+    .{ .name = "v2/HookExecutionMode.ts", .contents = HOOK_EXECUTION_MODE_TS },
+    .{ .name = "v2/HookOutputEntryKind.ts", .contents = HOOK_OUTPUT_ENTRY_KIND_TS },
+    .{ .name = "v2/HookOutputEntry.ts", .contents = HOOK_OUTPUT_ENTRY_TS },
+    .{ .name = "v2/HookRunStatus.ts", .contents = HOOK_RUN_STATUS_TS },
+    .{ .name = "v2/HookScope.ts", .contents = HOOK_SCOPE_TS },
+    .{ .name = "v2/HookRunSummary.ts", .contents = HOOK_RUN_SUMMARY_TS },
+    .{ .name = "v2/HookStartedNotification.ts", .contents = HOOK_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/HookCompletedNotification.ts", .contents = HOOK_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/HookTrustStatus.ts", .contents = HOOK_TRUST_STATUS_TS },
     .{ .name = "v2/HookError.ts", .contents = HOOK_ERROR_TS },
     .{ .name = "v2/Hook.ts", .contents = HOOK_TS },
