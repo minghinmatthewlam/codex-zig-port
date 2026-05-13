@@ -84,7 +84,7 @@ warning/notice notification artifacts for `WarningNotification`,
 `ConfigWarningNotification` with `TextPosition` / `TextRange` helpers, plus
 `WindowsWorldWritableWarningNotification`, hook run summary artifacts, and
 `HookStartedNotification` / `HookCompletedNotification` server-notification
-artifacts,
+artifacts, plus turn diff/plan update notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -121,6 +121,14 @@ TypeScript and JSON Schema artifacts now include `HookExecutionMode`,
 They are exported through `v2/index.ts` and included in the top-level
 `ServerNotification` `"hook/started"` and `"hook/completed"` union variants.
 Runtime emission for hook lifecycle notifications remains planned.
+
+Additional app-server turn-update notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include `TurnDiffUpdatedNotification`,
+`TurnPlanStepStatus`, `TurnPlanStep`, and `TurnPlanUpdatedNotification`,
+exported through `v2/index.ts` and included in the top-level
+`ServerNotification` `"turn/diff/updated"` and `"turn/plan/updated"` union
+variants. Runtime emission for turn diff and plan update notifications remains
+planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
