@@ -24619,6 +24619,126 @@ fn injectLoadedThreadItems(
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn handleLoadedThreadShellCommand(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    thread_index: usize,
+    command_raw: []const u8,
+) ![]const u8 {
+    const command = std.mem.trim(u8, command_raw, " \t\r\n");
+    const thread = &state.loaded_threads.items[thread_index];
+    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    defer allocator.free(turn_id);
+
+    const started_at_ms = currentUnixMilliseconds();
+    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+    const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
+    var started_notification_moved = false;
+    errdefer if (!started_notification_moved) allocator.free(started_notification);
+
+    thread.status = .active;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+    try queueTurnNotification(allocator, state, "turn/started", started_notification);
+    started_notification_moved = true;
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const shell = currentUserShell();
+    const argv = [_][]const u8{ shell, "-lc", command };
+    const command_started_at_ms = currentUnixMilliseconds();
+    var result = runCommandExecProcess(
+        allocator,
+        &io_instance,
+        &argv,
+        .{ .path = thread.cwd },
+        null,
+        60 * 60 * 1000,
+        COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP,
+    ) catch |err| {
+        thread.status = .system_error;
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/shellCommand failed", err);
+    };
+    defer result.deinit(allocator);
+    const command_completed_at_ms = currentUnixMilliseconds();
+    const duration_ms = @max(command_completed_at_ms - command_started_at_ms, 0);
+
+    const aggregated_output = try commandExecAggregatedOutput(allocator, result.stdout, result.stderr);
+    defer allocator.free(aggregated_output);
+    const record = try renderUserShellCommandRecord(
+        allocator,
+        command,
+        result.exit_code,
+        duration_ms,
+        aggregated_output,
+    );
+    defer allocator.free(record);
+
+    const item_index = thread.transcript.history.items.len;
+    try thread.transcript.appendUserMessage(allocator, record);
+    try refreshLoadedThreadAfterTurn(allocator, thread, record);
+    if (thread.path) |path| {
+        try session_store.saveTranscript(allocator, path, &thread.transcript);
+    }
+
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+    const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+    var completed_notification_moved = false;
+    errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+    const user_content_json = try renderSingleTextUserContentJson(allocator, record);
+    defer allocator.free(user_content_json);
+    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, item_index, user_content_json, "startedAtMs", started_at_ms);
+    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, item_index, user_content_json, "completedAtMs", completed_at_ms);
+    try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+    completed_notification_moved = true;
+    thread.status = .idle;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn commandExecAggregatedOutput(allocator: std.mem.Allocator, stdout: []const u8, stderr: []const u8) ![]const u8 {
+    if (stdout.len == 0) return allocator.dupe(u8, stderr);
+    if (stderr.len == 0) return allocator.dupe(u8, stdout);
+    const separator = if (stdout[stdout.len - 1] == '\n') "" else "\n";
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ stdout, separator, stderr });
+}
+
+fn renderUserShellCommandRecord(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    exit_code: i32,
+    duration_ms: i64,
+    output: []const u8,
+) ![]const u8 {
+    const seconds = @divTrunc(duration_ms, std.time.ms_per_s);
+    const fractional = @mod(duration_ms, std.time.ms_per_s) * 10;
+    return std.fmt.allocPrint(
+        allocator,
+        "<user_shell_command>\n<command>\n{s}\n</command>\n<result>\nExit code: {d}\nDuration: {d}.{d:0>4} seconds\nOutput:\n{s}\n</result>\n</user_shell_command>",
+        .{ command, exit_code, seconds, fractional, output },
+    );
+}
+
+fn renderSingleTextUserContentJson(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "[{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, &out, text);
+    try out.appendSlice(allocator, ",\"text_elements\":[]}]");
+    return out.toOwnedSlice(allocator);
+}
+
+fn currentUserShell() []const u8 {
+    const raw = std.c.getenv("SHELL") orelse return "/bin/zsh";
+    const shell = std.mem.span(raw);
+    if (shell.len == 0 or !std.fs.path.isAbsolute(shell)) return "/bin/zsh";
+    return shell;
+}
+
 fn renderTurnStartResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
     var response = std.ArrayList(u8).empty;
     errdefer response.deinit(allocator);
@@ -25054,7 +25174,10 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        return handleLoadedThreadShellCommand(allocator, state, id_value, thread_index, command_value.string);
     }
     if (std.mem.eql(u8, method, "thread/approveGuardianDeniedAction")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
