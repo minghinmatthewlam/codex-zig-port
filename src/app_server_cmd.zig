@@ -26888,7 +26888,22 @@ fn handleThreadMethod(
         return renderJsonRpcResult(allocator, id_value, THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON);
     }
     if (std.mem.eql(u8, method, "thread/realtime/stop")) {
-        return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (findLoadedThread(state, thread_id) == null) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
+            return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
+        }
+        return renderParsedButNotImplemented(allocator, id_value, method);
     }
     if (std.mem.eql(u8, method, "thread/realtime/appendText")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -26902,7 +26917,13 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        if (findLoadedThread(state, thread_id) == null) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
+            return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
+        }
+        return renderParsedButNotImplemented(allocator, id_value, method);
     }
     if (std.mem.eql(u8, method, "thread/realtime/appendAudio")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -26917,7 +26938,13 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        if (findLoadedThread(state, thread_id) == null) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
+            return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
+        }
+        return renderParsedButNotImplemented(allocator, id_value, method);
     }
     if (std.mem.eql(u8, method, "thread/realtime/start")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -26932,7 +26959,13 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        if (findLoadedThread(state, thread_id) == null) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
+            return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
+        }
+        return renderParsedButNotImplemented(allocator, id_value, method);
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
@@ -29542,6 +29575,16 @@ fn renderThreadNotFoundForThreadIdParam(
         return renderInvalidThreadId(allocator, id_value, thread_id);
     }
     return renderThreadNotFound(allocator, id_value, thread_id);
+}
+
+fn renderThreadRealtimeFeatureDisabled(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "thread {s} does not support realtime conversation",
+        .{thread_id},
+    );
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
 }
 
 fn parseThreadObjectParams(params_value: ?std.json.Value) !std.json.ObjectMap {
