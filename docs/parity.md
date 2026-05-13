@@ -107,6 +107,10 @@ MCP config reload artifacts, and MCP server status artifacts, in standalone
 files and the bundled schema `$defs`.
 Full Rust generator parity remains planned.
 
+Current app-server stdio/Unix JSON-RPC handling accepts standalone client
+response and error envelopes for server-request replies and ignores unmatched
+request IDs until full pending server-request tracking is implemented.
+
 Additional app-server error-notification generation coverage: the generated
 TypeScript and JSON Schema artifacts now include `ErrorNotification` with
 `TurnError`, `willRetry`, `threadId`, and `turnId`, exported through `v2/index.ts`
