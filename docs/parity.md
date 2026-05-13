@@ -69,8 +69,9 @@ verbosity, and web-search config plus top-level fuzzy-file-search TypeScript
 artifacts, and top-level legacy conversation-summary, git-diff/auth-status
 TypeScript artifacts. It
 also covers command-exec request, response, follow-up, terminal-size,
-sandbox-policy, permission-profile, permission-profile helper, filesystem-path
-helper, absolute-path, network-access, and output-delta notification artifacts,
+sandbox-policy, permission-profile, active/selection/overlay
+permission-profile helpers, filesystem-path helper, absolute-path,
+network-access, and output-delta notification artifacts,
 experimental process request, response, terminal-size, stream, and lifecycle
 notification artifacts,
 concrete turn envelope artifacts for `Turn`, `TurnStatus`, `TurnItemsView`,
@@ -93,8 +94,9 @@ notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list and collaboration-agent helper artifacts, and
 model-list catalog artifacts,
-app-list catalog artifacts, marketplace/plugin/config/review client-request
-TypeScript artifacts, config read/write/requirements TypeScript artifacts
+app-list catalog artifacts, marketplace/plugin request, response, detail, share,
+source, policy, and marketplace helper TypeScript artifacts, config/review
+client-request TypeScript artifacts, config read/write/requirements TypeScript artifacts
 including app-tool config, managed-hook requirements, and network requirements
 helpers,
 server-request TypeScript artifacts, plus
