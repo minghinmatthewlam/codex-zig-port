@@ -577,6 +577,57 @@ const RESPONSE_ITEM_TS =
     \\
     ;
 
+const FILE_CHANGE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type FileChange =
+    \\  | { type: "add"; content: string }
+    \\  | { type: "delete"; content: string }
+    \\  | { type: "update"; unified_diff: string; move_path: string | null };
+    \\
+    ;
+
+const PARSED_COMMAND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ParsedCommand =
+    \\  | { type: "read"; cmd: string; name: string; path: string }
+    \\  | { type: "list_files"; cmd: string; path: string | null }
+    \\  | { type: "search"; cmd: string; query: string | null; path: string | null }
+    \\  | { type: "unknown"; cmd: string };
+    \\
+    ;
+
+const APPLY_PATCH_APPROVAL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FileChange } from "./FileChange";
+    \\import type { ThreadId } from "./ThreadId";
+    \\
+    \\export interface ApplyPatchApprovalParams {
+    \\  conversationId: ThreadId;
+    \\  callId: string;
+    \\  fileChanges: Record<string, FileChange | undefined>;
+    \\  reason: string | null;
+    \\  grantRoot: string | null;
+    \\}
+    \\
+    ;
+
+const EXEC_COMMAND_APPROVAL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ParsedCommand } from "./ParsedCommand";
+    \\import type { ThreadId } from "./ThreadId";
+    \\
+    \\export interface ExecCommandApprovalParams {
+    \\  conversationId: ThreadId;
+    \\  callId: string;
+    \\  approvalId: string | null;
+    \\  command: string[];
+    \\  cwd: string;
+    \\  reason: string | null;
+    \\  parsedCmd: ParsedCommand[];
+    \\}
+    \\
+    ;
+
 const JSONRPC_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { RequestId } from "./RequestId";
@@ -4000,6 +4051,209 @@ const REQUEST_PERMISSION_PROFILE_TS =
     \\
     ;
 
+const COMMAND_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type CommandAction =
+    \\  | { type: "read"; command: string; name: string; path: AbsolutePathBuf }
+    \\  | { type: "listFiles"; command: string; path: string | null }
+    \\  | { type: "search"; command: string; query: string | null; path: string | null }
+    \\  | { type: "unknown"; command: string };
+    \\
+    ;
+
+const EXEC_POLICY_AMENDMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ExecPolicyAmendment = string[];
+    \\
+    ;
+
+const NETWORK_APPROVAL_CONTEXT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
+    \\
+    \\export interface NetworkApprovalContext {
+    \\  host: string;
+    \\  protocol: NetworkApprovalProtocol;
+    \\}
+    \\
+    ;
+
+const NETWORK_POLICY_RULE_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NetworkPolicyRuleAction = "allow" | "deny";
+    \\
+    ;
+
+const NETWORK_POLICY_AMENDMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";
+    \\
+    \\export interface NetworkPolicyAmendment {
+    \\  host: string;
+    \\  action: NetworkPolicyRuleAction;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { CommandAction } from "./CommandAction";
+    \\import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
+    \\import type { NetworkApprovalContext } from "./NetworkApprovalContext";
+    \\import type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
+    \\
+    \\export interface CommandExecutionRequestApprovalParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  approvalId?: string | null;
+    \\  reason?: string | null;
+    \\  networkApprovalContext?: NetworkApprovalContext | null;
+    \\  command?: string | null;
+    \\  cwd?: AbsolutePathBuf | null;
+    \\  commandActions?: CommandAction[] | null;
+    \\  proposedExecpolicyAmendment?: ExecPolicyAmendment | null;
+    \\  proposedNetworkPolicyAmendments?: NetworkPolicyAmendment[] | null;
+    \\}
+    \\
+    ;
+
+const FILE_CHANGE_REQUEST_APPROVAL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FileChangeRequestApprovalParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  reason?: string | null;
+    \\  grantRoot?: string | null;
+    \\}
+    \\
+    ;
+
+const TOOL_REQUEST_USER_INPUT_QUESTION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";
+    \\
+    \\export interface ToolRequestUserInputQuestion {
+    \\  id: string;
+    \\  header: string;
+    \\  question: string;
+    \\  isOther: boolean;
+    \\  isSecret: boolean;
+    \\  options: ToolRequestUserInputOption[] | null;
+    \\}
+    \\
+    ;
+
+const TOOL_REQUEST_USER_INPUT_OPTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ToolRequestUserInputOption {
+    \\  label: string;
+    \\  description: string;
+    \\}
+    \\
+    ;
+
+const TOOL_REQUEST_USER_INPUT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ToolRequestUserInputQuestion } from "./ToolRequestUserInputQuestion";
+    \\
+    \\export interface ToolRequestUserInputParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  questions: ToolRequestUserInputQuestion[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationObjectType } from "./McpElicitationObjectType";
+    \\import type { McpElicitationPrimitiveSchema } from "./McpElicitationPrimitiveSchema";
+    \\
+    \\export interface McpElicitationSchema {
+    \\  $schema?: string;
+    \\  type: McpElicitationObjectType;
+    \\  properties: Record<string, McpElicitationPrimitiveSchema | undefined>;
+    \\  required?: string[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_OBJECT_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationObjectType = "object";
+    \\
+    ;
+
+const MCP_ELICITATION_PRIMITIVE_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationPrimitiveSchema = unknown;
+    \\
+    ;
+
+const MCP_SERVER_ELICITATION_REQUEST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { McpElicitationSchema } from "./McpElicitationSchema";
+    \\
+    \\export type McpServerElicitationRequestParams = {
+    \\  threadId: string;
+    \\  turnId: string | null;
+    \\  serverName: string;
+    \\} & (
+    \\  | {
+    \\      mode: "form";
+    \\      _meta: JsonValue | null;
+    \\      message: string;
+    \\      requestedSchema: McpElicitationSchema;
+    \\    }
+    \\  | {
+    \\      mode: "url";
+    \\      _meta: JsonValue | null;
+    \\      message: string;
+    \\      url: string;
+    \\      elicitationId: string;
+    \\    }
+    \\);
+    \\
+    ;
+
+const PERMISSIONS_REQUEST_APPROVAL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { RequestPermissionProfile } from "./RequestPermissionProfile";
+    \\
+    \\export interface PermissionsRequestApprovalParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  cwd: AbsolutePathBuf;
+    \\  reason: string | null;
+    \\  permissions: RequestPermissionProfile;
+    \\}
+    \\
+    ;
+
+const DYNAMIC_TOOL_CALL_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\
+    \\export interface DynamicToolCallParams {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  callId: string;
+    \\  namespace: string | null;
+    \\  tool: string;
+    \\  arguments: JsonValue;
+    \\}
+    \\
+    ;
+
 const GUARDIAN_APPROVAL_REVIEW_TS =
     GENERATED_TS_HEADER ++
     \\import type { GuardianApprovalReviewStatus } from "./GuardianApprovalReviewStatus";
@@ -5920,6 +6174,68 @@ const CLIENT_RESPONSE_TS =
     \\
     ;
 
+const SERVER_REQUEST_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
+    \\import type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
+    \\import type { RequestId } from "./RequestId";
+    \\import type { ChatgptAuthTokensRefreshParams } from "./v2/ChatgptAuthTokensRefreshParams";
+    \\import type { CommandExecutionRequestApprovalParams } from "./v2/CommandExecutionRequestApprovalParams";
+    \\import type { DynamicToolCallParams } from "./v2/DynamicToolCallParams";
+    \\import type { FileChangeRequestApprovalParams } from "./v2/FileChangeRequestApprovalParams";
+    \\import type { McpServerElicitationRequestParams } from "./v2/McpServerElicitationRequestParams";
+    \\import type { PermissionsRequestApprovalParams } from "./v2/PermissionsRequestApprovalParams";
+    \\import type { ToolRequestUserInputParams } from "./v2/ToolRequestUserInputParams";
+    \\
+    \\export type ServerRequest =
+    \\  | {
+    \\      method: "item/commandExecution/requestApproval";
+    \\      id: RequestId;
+    \\      params: CommandExecutionRequestApprovalParams;
+    \\    }
+    \\  | {
+    \\      method: "item/fileChange/requestApproval";
+    \\      id: RequestId;
+    \\      params: FileChangeRequestApprovalParams;
+    \\    }
+    \\  | {
+    \\      method: "item/tool/requestUserInput";
+    \\      id: RequestId;
+    \\      params: ToolRequestUserInputParams;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/elicitation/request";
+    \\      id: RequestId;
+    \\      params: McpServerElicitationRequestParams;
+    \\    }
+    \\  | {
+    \\      method: "item/permissions/requestApproval";
+    \\      id: RequestId;
+    \\      params: PermissionsRequestApprovalParams;
+    \\    }
+    \\  | {
+    \\      method: "item/tool/call";
+    \\      id: RequestId;
+    \\      params: DynamicToolCallParams;
+    \\    }
+    \\  | {
+    \\      method: "account/chatgptAuthTokens/refresh";
+    \\      id: RequestId;
+    \\      params: ChatgptAuthTokensRefreshParams;
+    \\    }
+    \\  | {
+    \\      method: "applyPatchApproval";
+    \\      id: RequestId;
+    \\      params: ApplyPatchApprovalParams;
+    \\    }
+    \\  | {
+    \\      method: "execCommandApproval";
+    \\      id: RequestId;
+    \\      params: ExecCommandApprovalParams;
+    \\    };
+    \\
+    ;
+
 const SERVER_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { AccountLoginCompletedNotification } from "./v2/AccountLoginCompletedNotification";
@@ -6266,7 +6582,10 @@ const INDEX_TS =
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
     \\export type { AgentPath } from "./AgentPath";
+    \\export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
     \\export type { AuthMode } from "./AuthMode";
+    \\export type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
+    \\export type { FileChange } from "./FileChange";
     \\export type { ForcedLoginMethod } from "./ForcedLoginMethod";
     \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
     \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
@@ -6285,6 +6604,7 @@ const INDEX_TS =
     \\export type { InputModality } from "./InputModality";
     \\export type { InternalSessionSource } from "./InternalSessionSource";
     \\export type { MessagePhase } from "./MessagePhase";
+    \\export type { ParsedCommand } from "./ParsedCommand";
     \\export type { Personality } from "./Personality";
     \\export type { PlanType } from "./PlanType";
     \\export type { ReasoningEffort } from "./ReasoningEffort";
@@ -6297,6 +6617,7 @@ const INDEX_TS =
     \\export type { ResponseItem } from "./ResponseItem";
     \\export type { ResourceContent } from "./ResourceContent";
     \\export type { ServerNotification } from "./ServerNotification";
+    \\export type { ServerRequest } from "./ServerRequest";
     \\export type { SessionSource } from "./SessionSource";
     \\export type { SubAgentSource } from "./SubAgentSource";
     \\export type { ThreadId } from "./ThreadId";
@@ -6349,7 +6670,9 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { CommandAction } from "./CommandAction";
     \\export type { CommandExecutionOutputDeltaNotification } from "./CommandExecutionOutputDeltaNotification";
+    \\export type { CommandExecutionRequestApprovalParams } from "./CommandExecutionRequestApprovalParams";
     \\export type { ProcessExitedNotification } from "./ProcessExitedNotification";
     \\export type { ProcessKillParams } from "./ProcessKillParams";
     \\export type { ProcessKillResponse } from "./ProcessKillResponse";
@@ -6378,7 +6701,17 @@ const V2_INDEX_TS =
     \\export type { ConfigReadParams } from "./ConfigReadParams";
     \\export type { ConfigValueWriteParams } from "./ConfigValueWriteParams";
     \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
+    \\export type { DynamicToolCallParams } from "./DynamicToolCallParams";
+    \\export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
+    \\export type { FileChangeRequestApprovalParams } from "./FileChangeRequestApprovalParams";
     \\export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";
+    \\export type { NetworkApprovalContext } from "./NetworkApprovalContext";
+    \\export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
+    \\export type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";
+    \\export type { McpElicitationSchema } from "./McpElicitationSchema";
+    \\export type { McpElicitationObjectType } from "./McpElicitationObjectType";
+    \\export type { McpElicitationPrimitiveSchema } from "./McpElicitationPrimitiveSchema";
+    \\export type { McpServerElicitationRequestParams } from "./McpServerElicitationRequestParams";
     \\export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
     \\export type { McpServerOauthLoginParams } from "./McpServerOauthLoginParams";
     \\export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse";
@@ -6536,6 +6869,8 @@ const V2_INDEX_TS =
     \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
     \\export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";
     \\export type { RequestPermissionProfile } from "./RequestPermissionProfile";
+    \\export type { PermissionsRequestApprovalParams } from "./PermissionsRequestApprovalParams";
+    \\export type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";
     \\export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPartAddedNotification";
     \\export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
     \\export type { ReasoningTextDeltaNotification } from "./ReasoningTextDeltaNotification";
@@ -6554,6 +6889,8 @@ const V2_INDEX_TS =
     \\export type { ModelVerification } from "./ModelVerification";
     \\export type { ModelVerificationNotification } from "./ModelVerificationNotification";
     \\export type { NetworkAccess } from "./NetworkAccess";
+    \\export type { NetworkApprovalContext } from "./NetworkApprovalContext";
+    \\export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
     \\export type { PermissionProfileNetworkPermissions } from "./PermissionProfileNetworkPermissions";
@@ -6592,6 +6929,8 @@ const V2_INDEX_TS =
     \\export type { TextElement } from "./TextElement";
     \\export type { TextPosition } from "./TextPosition";
     \\export type { TextRange } from "./TextRange";
+    \\export type { ToolRequestUserInputParams } from "./ToolRequestUserInputParams";
+    \\export type { ToolRequestUserInputQuestion } from "./ToolRequestUserInputQuestion";
     \\export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
@@ -18040,11 +18379,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "InitializeResponse.ts", .contents = INITIALIZE_RESPONSE_TS },
     .{ .name = "ClientRequest.ts", .contents = CLIENT_REQUEST_TS },
     .{ .name = "ClientResponse.ts", .contents = CLIENT_RESPONSE_TS },
+    .{ .name = "ServerRequest.ts", .contents = SERVER_REQUEST_TS },
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
     .{ .name = "AgentPath.ts", .contents = AGENT_PATH_TS },
+    .{ .name = "ApplyPatchApprovalParams.ts", .contents = APPLY_PATCH_APPROVAL_PARAMS_TS },
     .{ .name = "AuthMode.ts", .contents = AUTH_MODE_TS },
+    .{ .name = "ExecCommandApprovalParams.ts", .contents = EXEC_COMMAND_APPROVAL_PARAMS_TS },
+    .{ .name = "FileChange.ts", .contents = FILE_CHANGE_TS },
     .{ .name = "ConversationGitInfo.ts", .contents = CONVERSATION_GIT_INFO_TS },
     .{ .name = "ConversationSummary.ts", .contents = CONVERSATION_SUMMARY_TS },
     .{ .name = "ForcedLoginMethod.ts", .contents = FORCED_LOGIN_METHOD_TS },
@@ -18065,6 +18408,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
     .{ .name = "InternalSessionSource.ts", .contents = INTERNAL_SESSION_SOURCE_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
+    .{ .name = "ParsedCommand.ts", .contents = PARSED_COMMAND_TS },
     .{ .name = "Personality.ts", .contents = PERSONALITY_TS },
     .{ .name = "PlanType.ts", .contents = PLAN_TYPE_TS },
     .{ .name = "ReasoningEffort.ts", .contents = REASONING_EFFORT_TS },
@@ -18282,6 +18626,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecTerminateResponse.ts", .contents = COMMAND_EXEC_TERMINATE_RESPONSE_TS },
     .{ .name = "v2/CommandExecResizeParams.ts", .contents = COMMAND_EXEC_RESIZE_PARAMS_TS },
     .{ .name = "v2/CommandExecResizeResponse.ts", .contents = COMMAND_EXEC_RESIZE_RESPONSE_TS },
+    .{ .name = "v2/CommandAction.ts", .contents = COMMAND_ACTION_TS },
+    .{ .name = "v2/ExecPolicyAmendment.ts", .contents = EXEC_POLICY_AMENDMENT_TS },
+    .{ .name = "v2/NetworkApprovalContext.ts", .contents = NETWORK_APPROVAL_CONTEXT_TS },
+    .{ .name = "v2/NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
+    .{ .name = "v2/CommandExecutionRequestApprovalParams.ts", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_TS },
     .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ProcessTerminalSize.ts", .contents = PROCESS_TERMINAL_SIZE_TS },
     .{ .name = "v2/ProcessOutputStream.ts", .contents = PROCESS_OUTPUT_STREAM_TS },
@@ -18368,6 +18717,19 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AdditionalNetworkPermissions.ts", .contents = ADDITIONAL_NETWORK_PERMISSIONS_TS },
     .{ .name = "v2/AdditionalFileSystemPermissions.ts", .contents = ADDITIONAL_FILE_SYSTEM_PERMISSIONS_TS },
     .{ .name = "v2/RequestPermissionProfile.ts", .contents = REQUEST_PERMISSION_PROFILE_TS },
+    .{ .name = "v2/FileChangeRequestApprovalParams.ts", .contents = FILE_CHANGE_REQUEST_APPROVAL_PARAMS_TS },
+    .{ .name = "v2/NetworkApprovalContext.ts", .contents = NETWORK_APPROVAL_CONTEXT_TS },
+    .{ .name = "v2/NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
+    .{ .name = "v2/NetworkPolicyRuleAction.ts", .contents = NETWORK_POLICY_RULE_ACTION_TS },
+    .{ .name = "v2/ToolRequestUserInputOption.ts", .contents = TOOL_REQUEST_USER_INPUT_OPTION_TS },
+    .{ .name = "v2/ToolRequestUserInputQuestion.ts", .contents = TOOL_REQUEST_USER_INPUT_QUESTION_TS },
+    .{ .name = "v2/ToolRequestUserInputParams.ts", .contents = TOOL_REQUEST_USER_INPUT_PARAMS_TS },
+    .{ .name = "v2/McpElicitationObjectType.ts", .contents = MCP_ELICITATION_OBJECT_TYPE_TS },
+    .{ .name = "v2/McpElicitationPrimitiveSchema.ts", .contents = MCP_ELICITATION_PRIMITIVE_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationSchema.ts", .contents = MCP_ELICITATION_SCHEMA_TS },
+    .{ .name = "v2/McpServerElicitationRequestParams.ts", .contents = MCP_SERVER_ELICITATION_REQUEST_PARAMS_TS },
+    .{ .name = "v2/PermissionsRequestApprovalParams.ts", .contents = PERMISSIONS_REQUEST_APPROVAL_PARAMS_TS },
+    .{ .name = "v2/DynamicToolCallParams.ts", .contents = DYNAMIC_TOOL_CALL_PARAMS_TS },
     .{ .name = "v2/GuardianApprovalReview.ts", .contents = GUARDIAN_APPROVAL_REVIEW_TS },
     .{ .name = "v2/GuardianApprovalReviewAction.ts", .contents = GUARDIAN_APPROVAL_REVIEW_ACTION_TS },
     .{ .name = "v2/ItemGuardianApprovalReviewStartedNotification.ts", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_TS },
