@@ -18384,6 +18384,97 @@ def run_json_schema_smoke(binary: Path) -> None:
             server_request_resolved["properties"]["requestId"]["$ref"]
             == "#/$defs/RequestId"
         )
+        apply_patch_approval_response = json.loads(
+            (out_dir / "ApplyPatchApprovalResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert apply_patch_approval_response["required"] == ["decision"]
+        assert (
+            apply_patch_approval_response["properties"]["decision"]["$ref"]
+            == "#/$defs/ReviewDecision"
+        )
+        assert "ReviewDecision" in apply_patch_approval_response["$defs"]
+        assert (
+            apply_patch_approval_response["$defs"]["ReviewDecision"]["oneOf"][5][
+                "enum"
+            ]
+            == ["timed_out"]
+        )
+        exec_command_approval_response = json.loads(
+            (out_dir / "ExecCommandApprovalResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert exec_command_approval_response["required"] == ["decision"]
+        assert (
+            exec_command_approval_response["properties"]["decision"]["$ref"]
+            == "#/$defs/ReviewDecision"
+        )
+        command_execution_approval_response = json.loads(
+            (out_dir / "CommandExecutionRequestApprovalResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert command_execution_approval_response["required"] == ["decision"]
+        assert (
+            command_execution_approval_response["properties"]["decision"]["$ref"]
+            == "#/$defs/CommandExecutionApprovalDecision"
+        )
+        assert (
+            command_execution_approval_response["$defs"][
+                "CommandExecutionApprovalDecision"
+            ]["oneOf"][1]["enum"]
+            == ["acceptForSession"]
+        )
+        file_change_approval_response = json.loads(
+            (out_dir / "FileChangeRequestApprovalResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert file_change_approval_response["required"] == ["decision"]
+        assert (
+            file_change_approval_response["$defs"]["FileChangeApprovalDecision"][
+                "oneOf"
+            ][3]["enum"]
+            == ["cancel"]
+        )
+        tool_request_user_input_response = json.loads(
+            (out_dir / "ToolRequestUserInputResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert tool_request_user_input_response["required"] == ["answers"]
+        assert (
+            tool_request_user_input_response["properties"]["answers"][
+                "additionalProperties"
+            ]["$ref"]
+            == "#/$defs/ToolRequestUserInputAnswer"
+        )
+        mcp_elicitation_response = json.loads(
+            (out_dir / "McpServerElicitationRequestResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_elicitation_response["required"] == ["action"]
+        assert (
+            mcp_elicitation_response["$defs"]["McpServerElicitationAction"]["enum"]
+            == ["accept", "decline", "cancel"]
+        )
+        permissions_approval_response = json.loads(
+            (out_dir / "PermissionsRequestApprovalResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permissions_approval_response["required"] == ["permissions", "scope"]
+        assert (
+            permissions_approval_response["properties"]["permissions"]["$ref"]
+            == "#/$defs/GrantedPermissionProfile"
+        )
+        assert (
+            permissions_approval_response["$defs"]["PermissionGrantScope"]["enum"]
+            == ["turn", "session"]
+        )
         client_notification = json.loads(
             (out_dir / "ClientNotification.json").read_text(encoding="utf-8")
         )
@@ -21569,6 +21660,49 @@ def run_json_schema_smoke(binary: Path) -> None:
             "RequestPermissionProfile",
         ]:
             assert auto_review_def in bundle["$defs"]
+        for server_request_response_def in [
+            "ApplyPatchApprovalResponse",
+            "CommandExecutionApprovalDecision",
+            "CommandExecutionRequestApprovalResponse",
+            "ExecCommandApprovalResponse",
+            "FileChangeApprovalDecision",
+            "FileChangeRequestApprovalResponse",
+            "GrantedPermissionProfile",
+            "McpServerElicitationAction",
+            "McpServerElicitationRequestResponse",
+            "NetworkPolicyAmendment",
+            "NetworkPolicyRuleAction",
+            "PermissionGrantScope",
+            "PermissionsRequestApprovalResponse",
+            "ReviewDecision",
+            "ToolRequestUserInputAnswer",
+            "ToolRequestUserInputResponse",
+        ]:
+            assert server_request_response_def in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ApplyPatchApprovalResponse"]["properties"]["decision"][
+                "$ref"
+            ]
+            == "#/$defs/ReviewDecision"
+        )
+        assert (
+            bundle["$defs"]["CommandExecutionRequestApprovalResponse"][
+                "properties"
+            ]["decision"]["$ref"]
+            == "#/$defs/CommandExecutionApprovalDecision"
+        )
+        assert (
+            bundle["$defs"]["ToolRequestUserInputResponse"]["properties"][
+                "answers"
+            ]["additionalProperties"]["$ref"]
+            == "#/$defs/ToolRequestUserInputAnswer"
+        )
+        assert (
+            bundle["$defs"]["PermissionsRequestApprovalResponse"]["properties"][
+                "scope"
+            ]["$ref"]
+            == "#/$defs/PermissionGrantScope"
+        )
         assert bundle["$defs"]["GuardianApprovalReview"]["required"] == ["status"]
         assert (
             bundle["$defs"]["ItemGuardianApprovalReviewCompletedNotification"][
@@ -22291,8 +22425,79 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "McpElicitationObjectType": [
                 'export type McpElicitationObjectType = "object";',
             ],
+            "McpElicitationArrayType": [
+                'export type McpElicitationArrayType = "array";',
+            ],
+            "McpElicitationBooleanType": [
+                'export type McpElicitationBooleanType = "boolean";',
+            ],
+            "McpElicitationStringType": [
+                'export type McpElicitationStringType = "string";',
+            ],
+            "McpElicitationNumberType": [
+                'export type McpElicitationNumberType = "number" | "integer";',
+            ],
+            "McpElicitationStringFormat": [
+                '| "date-time"',
+            ],
+            "McpElicitationConstOption": [
+                "const: string;",
+                "title: string;",
+            ],
+            "McpElicitationBooleanSchema": [
+                'import type { McpElicitationBooleanType } from "./McpElicitationBooleanType";',
+                "default?: boolean;",
+            ],
+            "McpElicitationStringSchema": [
+                'import type { McpElicitationStringFormat } from "./McpElicitationStringFormat";',
+                "format?: McpElicitationStringFormat;",
+                "default?: string;",
+            ],
+            "McpElicitationNumberSchema": [
+                'import type { McpElicitationNumberType } from "./McpElicitationNumberType";',
+                "minimum?: number;",
+                "maximum?: number;",
+            ],
+            "McpElicitationUntitledEnumItems": [
+                "enum: string[];",
+            ],
+            "McpElicitationTitledEnumItems": [
+                "anyOf: McpElicitationConstOption[];",
+            ],
+            "McpElicitationUntitledSingleSelectEnumSchema": [
+                "enum: string[];",
+                "default?: string;",
+            ],
+            "McpElicitationTitledSingleSelectEnumSchema": [
+                "oneOf: McpElicitationConstOption[];",
+            ],
+            "McpElicitationSingleSelectEnumSchema": [
+                "McpElicitationUntitledSingleSelectEnumSchema",
+                "McpElicitationTitledSingleSelectEnumSchema",
+            ],
+            "McpElicitationLegacyTitledEnumSchema": [
+                "enumNames?: string[];",
+            ],
+            "McpElicitationUntitledMultiSelectEnumSchema": [
+                "minItems?: bigint;",
+                "items: McpElicitationUntitledEnumItems;",
+            ],
+            "McpElicitationTitledMultiSelectEnumSchema": [
+                "maxItems?: bigint;",
+                "items: McpElicitationTitledEnumItems;",
+            ],
+            "McpElicitationMultiSelectEnumSchema": [
+                "McpElicitationUntitledMultiSelectEnumSchema",
+                "McpElicitationTitledMultiSelectEnumSchema",
+            ],
+            "McpElicitationEnumSchema": [
+                "McpElicitationSingleSelectEnumSchema",
+                "McpElicitationMultiSelectEnumSchema",
+                "McpElicitationLegacyTitledEnumSchema",
+            ],
             "McpElicitationPrimitiveSchema": [
-                "export type McpElicitationPrimitiveSchema = unknown;",
+                'import type { McpElicitationBooleanSchema } from "./McpElicitationBooleanSchema";',
+                "| McpElicitationNumberSchema",
             ],
             "McpServerElicitationAction": [
                 'export type McpServerElicitationAction = "accept" | "decline" | "cancel";',
@@ -24928,6 +25133,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PermissionsRequestApprovalResponse",
             "McpElicitationObjectType",
             "McpElicitationPrimitiveSchema",
+            "McpElicitationArrayType",
+            "McpElicitationBooleanSchema",
+            "McpElicitationBooleanType",
+            "McpElicitationConstOption",
+            "McpElicitationEnumSchema",
+            "McpElicitationLegacyTitledEnumSchema",
+            "McpElicitationMultiSelectEnumSchema",
+            "McpElicitationNumberSchema",
+            "McpElicitationNumberType",
+            "McpElicitationSingleSelectEnumSchema",
+            "McpElicitationStringFormat",
+            "McpElicitationStringSchema",
+            "McpElicitationStringType",
+            "McpElicitationTitledEnumItems",
+            "McpElicitationTitledMultiSelectEnumSchema",
+            "McpElicitationTitledSingleSelectEnumSchema",
+            "McpElicitationUntitledEnumItems",
+            "McpElicitationUntitledMultiSelectEnumSchema",
+            "McpElicitationUntitledSingleSelectEnumSchema",
             "McpServerElicitationAction",
             "McpServerElicitationRequestResponse",
             "ToolRequestUserInputAnswer",
