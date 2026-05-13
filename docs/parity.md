@@ -86,10 +86,10 @@ warning/notice notification artifacts for `WarningNotification`,
 `HookStartedNotification` / `HookCompletedNotification` server-notification
 artifacts, plus turn diff/plan update notification artifacts, item-stream plan,
 command-execution, file-change, reasoning delta, and context-compaction
-notification artifacts, server-request, MCP progress/startup-status, and
-remote-control status notification artifacts, approval auto-review notification
-artifacts, and model reroute/verification notification artifacts, plus thread
-realtime notification artifacts,
+notification artifacts, raw response-item notification artifacts, server-request,
+MCP progress/startup-status, and remote-control status notification artifacts,
+approval auto-review notification artifacts, and model reroute/verification
+notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -147,6 +147,15 @@ included in the top-level `ServerNotification` `"item/plan/delta"`,
 variants. Runtime emission for current item-stream notifications remains
 planned; the legacy file-change output-delta notification is generation-covered
 for source compatibility even though the Rust app server no longer emits it.
+
+Additional app-server raw response-item notification generation coverage:
+generated TypeScript and JSON Schema artifacts now include
+`RawResponseItemCompletedNotification`, exported through `v2/index.ts` and
+included in the top-level `ServerNotification`
+`"rawResponseItem/completed"` union variant. The generated TypeScript surface
+also includes an opaque top-level `ResponseItem` alias so the notification type
+can match the Rust protocol import boundary. Runtime emission and full raw
+response-item schema parity remain planned.
 
 Additional app-server model-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
