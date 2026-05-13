@@ -1135,6 +1135,16 @@ const WEB_SEARCH_ACTION_TS =
     \\
     ;
 
+const V2_WEB_SEARCH_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WebSearchAction =
+    \\  | { type: "search"; query: string | null; queries: string[] | null }
+    \\  | { type: "openPage"; url: string | null }
+    \\  | { type: "findInPage"; url: string | null; pattern: string | null }
+    \\  | { type: "other" };
+    \\
+    ;
+
 const WEB_SEARCH_CONTEXT_SIZE_TS =
     GENERATED_TS_HEADER ++
     \\export type WebSearchContextSize = "low" | "medium" | "high";
@@ -1192,6 +1202,21 @@ const SESSION_SOURCE_TS =
     \\import type { SubAgentSource } from "./SubAgentSource";
     \\
     \\export type SessionSource = "cli" | "vscode" | "exec" | "mcp" | { "custom": string } | { "internal": InternalSessionSource } | { "subagent": SubAgentSource } | "unknown";
+    \\
+    ;
+
+const V2_SESSION_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SubAgentSource } from "../SubAgentSource";
+    \\
+    \\export type SessionSource =
+    \\  | "cli"
+    \\  | "vscode"
+    \\  | "exec"
+    \\  | "appServer"
+    \\  | { custom: string }
+    \\  | { subAgent: SubAgentSource }
+    \\  | "unknown";
     \\
     ;
 
@@ -2551,6 +2576,52 @@ const HOOK_ERROR_TS =
     \\
     ;
 
+const HOOK_ERROR_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface HookErrorInfo {
+    \\  path: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const HOOK_PROMPT_FRAGMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface HookPromptFragment {
+    \\  text: string;
+    \\  hookRunId: string;
+    \\}
+    \\
+    ;
+
+const HOOK_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { HookEventName } from "./HookEventName";
+    \\import type { HookHandlerType } from "./HookHandlerType";
+    \\import type { HookSource } from "./HookSource";
+    \\import type { HookTrustStatus } from "./HookTrustStatus";
+    \\
+    \\export interface HookMetadata {
+    \\  key: string;
+    \\  eventName: HookEventName;
+    \\  handlerType: HookHandlerType;
+    \\  matcher: string | null;
+    \\  command: string | null;
+    \\  timeoutSec: bigint;
+    \\  statusMessage: string | null;
+    \\  sourcePath: AbsolutePathBuf;
+    \\  source: HookSource;
+    \\  pluginId: string | null;
+    \\  displayOrder: bigint;
+    \\  enabled: boolean;
+    \\  isManaged: boolean;
+    \\  currentHash: string;
+    \\  trustStatus: HookTrustStatus;
+    \\}
+    \\
+    ;
+
 const HOOK_TS =
     GENERATED_TS_HEADER ++
     \\import type { HookEventName } from "./HookEventName";
@@ -2677,9 +2748,44 @@ const SKILL_TS =
     \\
     ;
 
+const SKILL_SCOPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type SkillScope = "user" | "repo" | "system" | "admin";
+    \\
+    ;
+
+const SKILL_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { SkillDependencies } from "./SkillDependencies";
+    \\import type { SkillInterface } from "./SkillInterface";
+    \\import type { SkillScope } from "./SkillScope";
+    \\
+    \\export interface SkillMetadata {
+    \\  name: string;
+    \\  description: string;
+    \\  shortDescription?: string;
+    \\  interface?: SkillInterface;
+    \\  dependencies?: SkillDependencies;
+    \\  path: AbsolutePathBuf;
+    \\  scope: SkillScope;
+    \\  enabled: boolean;
+    \\}
+    \\
+    ;
+
 const SKILL_ERROR_TS =
     GENERATED_TS_HEADER ++
     \\export interface SkillError {
+    \\  path: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const SKILL_ERROR_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SkillErrorInfo {
     \\  path: string;
     \\  message: string;
     \\}
@@ -3402,6 +3508,18 @@ const MCP_SERVER_STATUS_LIST_PARAMS_TS =
     \\
     ;
 
+const LIST_MCP_SERVER_STATUS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerStatusDetail } from "./McpServerStatusDetail";
+    \\
+    \\export interface ListMcpServerStatusParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  detail?: McpServerStatusDetail | null;
+    \\}
+    \\
+    ;
+
 const MCP_SERVER_AUTH_STATUS_TS =
     GENERATED_TS_HEADER ++
     \\export type McpServerAuthStatus =
@@ -3431,6 +3549,17 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_TS =
     \\import type { McpServerStatus } from "./McpServerStatus";
     \\
     \\export interface McpServerStatusListResponse {
+    \\  data: McpServerStatus[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const LIST_MCP_SERVER_STATUS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerStatus } from "./McpServerStatus";
+    \\
+    \\export interface ListMcpServerStatusResponse {
     \\  data: McpServerStatus[];
     \\  nextCursor: string | null;
     \\}
@@ -3715,12 +3844,52 @@ const MODEL_REASONING_EFFORT_TS =
     \\
     ;
 
+const REASONING_EFFORT_OPTION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\
+    \\export interface ReasoningEffortOption {
+    \\  reasoningEffort: ReasoningEffort;
+    \\  description: string;
+    \\}
+    \\
+    ;
+
 const MODEL_SERVICE_TIER_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelServiceTier {
     \\  id: string;
     \\  name: string;
     \\  description: string;
+    \\}
+    \\
+    ;
+
+const MODEL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { InputModality } from "../InputModality";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
+    \\import type { ModelServiceTier } from "./ModelServiceTier";
+    \\import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
+    \\import type { ReasoningEffortOption } from "./ReasoningEffortOption";
+    \\
+    \\export interface Model {
+    \\  id: string;
+    \\  model: string;
+    \\  upgrade: string | null;
+    \\  upgradeInfo: ModelUpgradeInfo | null;
+    \\  availabilityNux: ModelAvailabilityNux | null;
+    \\  displayName: string;
+    \\  description: string;
+    \\  hidden: boolean;
+    \\  supportedReasoningEfforts: ReasoningEffortOption[];
+    \\  defaultReasoningEffort: ReasoningEffort;
+    \\  inputModalities: InputModality[];
+    \\  supportsPersonality: boolean;
+    \\  additionalSpeedTiers: string[];
+    \\  serviceTiers: ModelServiceTier[];
+    \\  isDefault: boolean;
     \\}
     \\
     ;
@@ -3754,10 +3923,10 @@ const MODEL_LIST_ITEM_TS =
 
 const MODEL_LIST_RESPONSE_TS =
     GENERATED_TS_HEADER ++
-    \\import type { ModelListItem } from "./ModelListItem";
+    \\import type { Model } from "./Model";
     \\
     \\export interface ModelListResponse {
-    \\  data: ModelListItem[];
+    \\  data: Model[];
     \\  nextCursor: string | null;
     \\}
     \\
@@ -4526,38 +4695,57 @@ const THREAD_START_PARAMS_TS =
 
 const THREAD_START_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { SandboxPolicy } from "./SandboxPolicy";
+    \\import type { Thread } from "./Thread";
+    \\
     \\export interface ThreadStartResponse {
-    \\  thread: unknown;
+    \\  thread: Thread;
     \\  model: string;
     \\  modelProvider: string;
     \\  serviceTier: string | null;
-    \\  cwd: string;
-    \\  instructionSources: string[];
-    \\  approvalPolicy: "untrusted" | "on-failure" | "on-request" | "never";
-    \\  approvalsReviewer: "user" | "auto_review" | "guardian_subagent";
-    \\  sandbox: unknown;
-    \\  reasoningEffort: string | null;
+    \\  cwd: AbsolutePathBuf;
+    \\  instructionSources: AbsolutePathBuf[];
+    \\  approvalPolicy: AskForApproval;
+    \\  approvalsReviewer: ApprovalsReviewer;
+    \\  sandbox: SandboxPolicy;
+    \\  reasoningEffort: ReasoningEffort | null;
     \\}
     \\
     ;
 
 const THREAD_STARTED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Thread } from "./Thread";
+    \\
     \\export interface ThreadStartedNotification {
-    \\  thread: unknown;
+    \\  thread: Thread;
     \\}
+    \\
+    ;
+
+const THREAD_ACTIVE_FLAG_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadActiveFlag =
+    \\  | "waitingOnApproval"
+    \\  | "waitingOnUserInput";
     \\
     ;
 
 const THREAD_STATUS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { ThreadActiveFlag } from "./ThreadActiveFlag";
+    \\
     \\export type ThreadStatus =
     \\  | { type: "notLoaded" }
     \\  | { type: "idle" }
     \\  | { type: "systemError" }
     \\  | {
     \\      type: "active";
-    \\      activeFlags: ("waitingOnApproval" | "waitingOnUserInput")[];
+    \\      activeFlags: ThreadActiveFlag[];
     \\    };
     \\
     ;
@@ -4641,19 +4829,182 @@ const TURN_STATUS_TS =
 
 const TURN_TS =
     GENERATED_TS_HEADER ++
+    \\import type { ThreadItem } from "./ThreadItem";
     \\import type { TurnError } from "./TurnError";
     \\import type { TurnItemsView } from "./TurnItemsView";
     \\import type { TurnStatus } from "./TurnStatus";
     \\
     \\export interface Turn {
     \\  id: string;
-    \\  items: unknown[];
+    \\  items: ThreadItem[];
     \\  itemsView: TurnItemsView;
     \\  status: TurnStatus;
     \\  error: TurnError | null;
     \\  startedAt: number | null;
     \\  completedAt: number | null;
     \\  durationMs: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadSource = "user" | "subagent" | "memory_consolidation";
+    \\
+    ;
+
+const THREAD_START_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ThreadStartSource = "startup" | "clear";
+    \\
+    ;
+
+const THREAD_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { MessagePhase } from "../MessagePhase";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { CollabAgentState } from "./CollabAgentState";
+    \\import type { CollabAgentTool } from "./CollabAgentTool";
+    \\import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
+    \\import type { CommandAction } from "./CommandAction";
+    \\import type { CommandExecutionSource } from "./CommandExecutionSource";
+    \\import type { CommandExecutionStatus } from "./CommandExecutionStatus";
+    \\import type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
+    \\import type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
+    \\import type { FileUpdateChange } from "./FileUpdateChange";
+    \\import type { HookPromptFragment } from "./HookPromptFragment";
+    \\import type { McpToolCallError } from "./McpToolCallError";
+    \\import type { McpToolCallResult } from "./McpToolCallResult";
+    \\import type { McpToolCallStatus } from "./McpToolCallStatus";
+    \\import type { MemoryCitation } from "./MemoryCitation";
+    \\import type { PatchApplyStatus } from "./PatchApplyStatus";
+    \\import type { UserInput } from "./UserInput";
+    \\import type { WebSearchAction } from "./WebSearchAction";
+    \\
+    \\export type ThreadItem =
+    \\  | { type: "userMessage"; id: string; content: UserInput[] }
+    \\  | { type: "hookPrompt"; id: string; fragments: HookPromptFragment[] }
+    \\  | {
+    \\      type: "agentMessage";
+    \\      id: string;
+    \\      text: string;
+    \\      phase: MessagePhase | null;
+    \\      memoryCitation: MemoryCitation | null;
+    \\    }
+    \\  | { type: "plan"; id: string; text: string }
+    \\  | { type: "reasoning"; id: string; summary: string[]; content: string[] }
+    \\  | {
+    \\      type: "commandExecution";
+    \\      id: string;
+    \\      command: string;
+    \\      cwd: AbsolutePathBuf;
+    \\      processId: string | null;
+    \\      source: CommandExecutionSource;
+    \\      status: CommandExecutionStatus;
+    \\      commandActions: CommandAction[];
+    \\      aggregatedOutput: string | null;
+    \\      exitCode: number | null;
+    \\      durationMs: number | null;
+    \\    }
+    \\  | {
+    \\      type: "fileChange";
+    \\      id: string;
+    \\      changes: FileUpdateChange[];
+    \\      status: PatchApplyStatus;
+    \\    }
+    \\  | {
+    \\      type: "mcpToolCall";
+    \\      id: string;
+    \\      server: string;
+    \\      tool: string;
+    \\      status: McpToolCallStatus;
+    \\      arguments: JsonValue;
+    \\      mcpAppResourceUri?: string;
+    \\      result: McpToolCallResult | null;
+    \\      error: McpToolCallError | null;
+    \\      durationMs: number | null;
+    \\    }
+    \\  | {
+    \\      type: "dynamicToolCall";
+    \\      id: string;
+    \\      namespace: string | null;
+    \\      tool: string;
+    \\      arguments: JsonValue;
+    \\      status: DynamicToolCallStatus;
+    \\      contentItems: DynamicToolCallOutputContentItem[] | null;
+    \\      success: boolean | null;
+    \\      durationMs: number | null;
+    \\    }
+    \\  | {
+    \\      type: "collabAgentToolCall";
+    \\      id: string;
+    \\      tool: CollabAgentTool;
+    \\      status: CollabAgentToolCallStatus;
+    \\      senderThreadId: string;
+    \\      receiverThreadIds: string[];
+    \\      prompt: string | null;
+    \\      model: string | null;
+    \\      reasoningEffort: ReasoningEffort | null;
+    \\      agentsStates: Record<string, CollabAgentState | undefined>;
+    \\    }
+    \\  | { type: "webSearch"; id: string; query: string; action: WebSearchAction | null }
+    \\  | { type: "imageView"; id: string; path: AbsolutePathBuf }
+    \\  | {
+    \\      type: "imageGeneration";
+    \\      id: string;
+    \\      status: string;
+    \\      revisedPrompt: string | null;
+    \\      result: string;
+    \\      savedPath?: AbsolutePathBuf;
+    \\    }
+    \\  | { type: "enteredReviewMode"; id: string; review: string }
+    \\  | { type: "exitedReviewMode"; id: string; review: string }
+    \\  | { type: "contextCompaction"; id: string };
+    \\
+    ;
+
+const THREAD_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { GitInfo } from "./GitInfo";
+    \\import type { SessionSource } from "./SessionSource";
+    \\import type { ThreadSource } from "./ThreadSource";
+    \\import type { ThreadStatus } from "./ThreadStatus";
+    \\import type { Turn } from "./Turn";
+    \\
+    \\export interface Thread {
+    \\  id: string;
+    \\  sessionId: string;
+    \\  forkedFromId: string | null;
+    \\  preview: string;
+    \\  ephemeral: boolean;
+    \\  modelProvider: string;
+    \\  createdAt: number;
+    \\  updatedAt: number;
+    \\  status: ThreadStatus;
+    \\  path: string | null;
+    \\  cwd: AbsolutePathBuf;
+    \\  cliVersion: string;
+    \\  source: SessionSource;
+    \\  threadSource: ThreadSource | null;
+    \\  agentNickname: string | null;
+    \\  agentRole: string | null;
+    \\  gitInfo: GitInfo | null;
+    \\  name: string | null;
+    \\  turns: Turn[];
+    \\}
+    \\
+    ;
+
+const TURN_ENVIRONMENT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface TurnEnvironmentParams {
+    \\  environmentId: string;
+    \\  cwd: AbsolutePathBuf;
     \\}
     \\
     ;
@@ -4723,13 +5074,25 @@ const THREAD_TOKEN_USAGE_BREAKDOWN_TS =
     \\
     ;
 
+const TOKEN_USAGE_BREAKDOWN_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TokenUsageBreakdown {
+    \\  totalTokens: number;
+    \\  inputTokens: number;
+    \\  cachedInputTokens: number;
+    \\  outputTokens: number;
+    \\  reasoningOutputTokens: number;
+    \\}
+    \\
+    ;
+
 const THREAD_TOKEN_USAGE_TS =
     GENERATED_TS_HEADER ++
-    \\import type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";
+    \\import type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
     \\
     \\export interface ThreadTokenUsage {
-    \\  total: ThreadTokenUsageBreakdown;
-    \\  last: ThreadTokenUsageBreakdown;
+    \\  total: TokenUsageBreakdown;
+    \\  last: TokenUsageBreakdown;
     \\  modelContextWindow: number | null;
     \\}
     \\
@@ -6245,6 +6608,17 @@ const REVIEW_START_PARAMS_TS =
     \\  threadId: string;
     \\  target: ReviewTarget;
     \\  delivery?: ReviewDelivery | null;
+    \\}
+    \\
+    ;
+
+const REVIEW_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { Turn } from "./Turn";
+    \\
+    \\export interface ReviewStartResponse {
+    \\  turn: Turn;
+    \\  reviewThreadId: string;
     \\}
     \\
     ;
@@ -8507,6 +8881,8 @@ const V2_INDEX_TS =
     \\export type { McpResourceReadResponse } from "./McpResourceReadResponse";
     \\export type { McpServerStatus } from "./McpServerStatus";
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
+    \\export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
+    \\export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
     \\export type { McpServerStatusListParams } from "./McpServerStatusListParams";
     \\export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";
     \\export type { McpServerStartupState } from "./McpServerStartupState";
@@ -8559,11 +8935,14 @@ const V2_INDEX_TS =
     \\export type { Hook } from "./Hook";
     \\export type { HookCompletedNotification } from "./HookCompletedNotification";
     \\export type { HookError } from "./HookError";
+    \\export type { HookErrorInfo } from "./HookErrorInfo";
     \\export type { HookEventName } from "./HookEventName";
     \\export type { HookExecutionMode } from "./HookExecutionMode";
     \\export type { HookHandlerType } from "./HookHandlerType";
+    \\export type { HookMetadata } from "./HookMetadata";
     \\export type { HookOutputEntry } from "./HookOutputEntry";
     \\export type { HookOutputEntryKind } from "./HookOutputEntryKind";
+    \\export type { HookPromptFragment } from "./HookPromptFragment";
     \\export type { HookRunStatus } from "./HookRunStatus";
     \\export type { HookRunSummary } from "./HookRunSummary";
     \\export type { HookScope } from "./HookScope";
@@ -8633,11 +9012,15 @@ const V2_INDEX_TS =
     \\export type { PluginUninstallResponse } from "./PluginUninstallResponse";
     \\export type { ReviewDelivery } from "./ReviewDelivery";
     \\export type { ReviewStartParams } from "./ReviewStartParams";
+    \\export type { ReviewStartResponse } from "./ReviewStartResponse";
     \\export type { ReviewTarget } from "./ReviewTarget";
     \\export type { Skill } from "./Skill";
     \\export type { SkillDependencies } from "./SkillDependencies";
     \\export type { SkillError } from "./SkillError";
+    \\export type { SkillErrorInfo } from "./SkillErrorInfo";
     \\export type { SkillInterface } from "./SkillInterface";
+    \\export type { SkillMetadata } from "./SkillMetadata";
+    \\export type { SkillScope } from "./SkillScope";
     \\export type { SkillSummary } from "./SkillSummary";
     \\export type { SkillToolDependency } from "./SkillToolDependency";
     \\export type { SkillsChangedNotification } from "./SkillsChangedNotification";
@@ -8708,6 +9091,7 @@ const V2_INDEX_TS =
     \\export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
     \\export type { ReasoningTextDeltaNotification } from "./ReasoningTextDeltaNotification";
     \\export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
+    \\export type { Model } from "./Model";
     \\export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
     \\export type { ModelListItem } from "./ModelListItem";
     \\export type { ModelListParams } from "./ModelListParams";
@@ -8730,6 +9114,7 @@ const V2_INDEX_TS =
     \\export type { RateLimitReachedType } from "./RateLimitReachedType";
     \\export type { RateLimitSnapshot } from "./RateLimitSnapshot";
     \\export type { RateLimitWindow } from "./RateLimitWindow";
+    \\export type { ReasoningEffortOption } from "./ReasoningEffortOption";
     \\export type { SandboxPolicy } from "./SandboxPolicy";
     \\export type { SendAddCreditsNudgeEmailParams } from "./SendAddCreditsNudgeEmailParams";
     \\export type { SendAddCreditsNudgeEmailResponse } from "./SendAddCreditsNudgeEmailResponse";
@@ -8756,9 +9141,15 @@ const V2_INDEX_TS =
     \\export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";
     \\export type { ThreadGoalSetResponse } from "./ThreadGoalSetResponse";
     \\export type { ThreadGoalStatus } from "./ThreadGoalStatus";
+    \\export type { Thread } from "./Thread";
+    \\export type { ThreadActiveFlag } from "./ThreadActiveFlag";
+    \\export type { ThreadItem } from "./ThreadItem";
+    \\export type { ThreadSource } from "./ThreadSource";
+    \\export type { ThreadStartSource } from "./ThreadStartSource";
     \\export type { ThreadTokenUsage } from "./ThreadTokenUsage";
     \\export type { ThreadTokenUsageBreakdown } from "./ThreadTokenUsageBreakdown";
     \\export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";
+    \\export type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
     \\export type { TextElement } from "./TextElement";
     \\export type { TextPosition } from "./TextPosition";
     \\export type { TextRange } from "./TextRange";
@@ -8834,6 +9225,7 @@ const V2_INDEX_TS =
     \\export type { Turn } from "./Turn";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
     \\export type { TurnDiffUpdatedNotification } from "./TurnDiffUpdatedNotification";
+    \\export type { TurnEnvironmentParams } from "./TurnEnvironmentParams";
     \\export type { TurnError } from "./TurnError";
     \\export type { TurnInterruptParams } from "./TurnInterruptParams";
     \\export type { TurnInterruptResponse } from "./TurnInterruptResponse";
@@ -8847,8 +9239,10 @@ const V2_INDEX_TS =
     \\export type { TurnStatus } from "./TurnStatus";
     \\export type { TurnSteerParams } from "./TurnSteerParams";
     \\export type { TurnSteerResponse } from "./TurnSteerResponse";
+    \\export type { SessionSource } from "./SessionSource";
     \\export type { UserInput } from "./UserInput";
     \\export type { WarningNotification } from "./WarningNotification";
+    \\export type { WebSearchAction } from "./WebSearchAction";
     \\
     ;
 
@@ -21843,6 +22237,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/HookCompletedNotification.ts", .contents = HOOK_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/HookTrustStatus.ts", .contents = HOOK_TRUST_STATUS_TS },
     .{ .name = "v2/HookError.ts", .contents = HOOK_ERROR_TS },
+    .{ .name = "v2/HookErrorInfo.ts", .contents = HOOK_ERROR_INFO_TS },
+    .{ .name = "v2/HookPromptFragment.ts", .contents = HOOK_PROMPT_FRAGMENT_TS },
+    .{ .name = "v2/HookMetadata.ts", .contents = HOOK_METADATA_TS },
     .{ .name = "v2/Hook.ts", .contents = HOOK_TS },
     .{ .name = "v2/HooksListEntry.ts", .contents = HOOKS_LIST_ENTRY_TS },
     .{ .name = "v2/HooksListResponse.ts", .contents = HOOKS_LIST_RESPONSE_TS },
@@ -21852,7 +22249,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/SkillToolDependency.ts", .contents = SKILL_TOOL_DEPENDENCY_TS },
     .{ .name = "v2/SkillDependencies.ts", .contents = SKILL_DEPENDENCIES_TS },
     .{ .name = "v2/Skill.ts", .contents = SKILL_TS },
+    .{ .name = "v2/SkillScope.ts", .contents = SKILL_SCOPE_TS },
+    .{ .name = "v2/SkillMetadata.ts", .contents = SKILL_METADATA_TS },
     .{ .name = "v2/SkillError.ts", .contents = SKILL_ERROR_TS },
+    .{ .name = "v2/SkillErrorInfo.ts", .contents = SKILL_ERROR_INFO_TS },
     .{ .name = "v2/SkillsListEntry.ts", .contents = SKILLS_LIST_ENTRY_TS },
     .{ .name = "v2/SkillsListResponse.ts", .contents = SKILLS_LIST_RESPONSE_TS },
     .{ .name = "v2/SkillsConfigWriteParams.ts", .contents = SKILLS_CONFIG_WRITE_PARAMS_TS },
@@ -21912,6 +22312,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ExternalAgentConfigImportResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_TS },
     .{ .name = "v2/ExternalAgentConfigImportCompletedNotification.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
+    .{ .name = "v2/ListMcpServerStatusParams.ts", .contents = LIST_MCP_SERVER_STATUS_PARAMS_TS },
+    .{ .name = "v2/ListMcpServerStatusResponse.ts", .contents = LIST_MCP_SERVER_STATUS_RESPONSE_TS },
     .{ .name = "v2/McpServerStatusListParams.ts", .contents = MCP_SERVER_STATUS_LIST_PARAMS_TS },
     .{ .name = "v2/McpServerAuthStatus.ts", .contents = MCP_SERVER_AUTH_STATUS_TS },
     .{ .name = "v2/McpServerStatus.ts", .contents = MCP_SERVER_STATUS_TS },
@@ -21945,7 +22347,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ModelUpgradeInfo.ts", .contents = MODEL_UPGRADE_INFO_TS },
     .{ .name = "v2/ModelAvailabilityNux.ts", .contents = MODEL_AVAILABILITY_NUX_TS },
     .{ .name = "v2/ModelReasoningEffort.ts", .contents = MODEL_REASONING_EFFORT_TS },
+    .{ .name = "v2/ReasoningEffortOption.ts", .contents = REASONING_EFFORT_OPTION_TS },
     .{ .name = "v2/ModelServiceTier.ts", .contents = MODEL_SERVICE_TIER_TS },
+    .{ .name = "v2/Model.ts", .contents = MODEL_TS },
     .{ .name = "v2/ModelListItem.ts", .contents = MODEL_LIST_ITEM_TS },
     .{ .name = "v2/ModelListResponse.ts", .contents = MODEL_LIST_RESPONSE_TS },
     .{ .name = "v2/ModelRerouteReason.ts", .contents = MODEL_REROUTE_REASON_TS },
@@ -22028,6 +22432,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadActiveFlag.ts", .contents = THREAD_ACTIVE_FLAG_TS },
     .{ .name = "v2/ThreadStatus.ts", .contents = THREAD_STATUS_TS },
     .{ .name = "v2/ThreadStatusChangedNotification.ts", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadArchivedNotification.ts", .contents = THREAD_ARCHIVED_NOTIFICATION_TS },
@@ -22036,6 +22441,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalUpdatedNotification.ts", .contents = THREAD_GOAL_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadGoalClearedNotification.ts", .contents = THREAD_GOAL_CLEARED_NOTIFICATION_TS },
+    .{ .name = "v2/TokenUsageBreakdown.ts", .contents = TOKEN_USAGE_BREAKDOWN_TS },
     .{ .name = "v2/ThreadTokenUsageBreakdown.ts", .contents = THREAD_TOKEN_USAGE_BREAKDOWN_TS },
     .{ .name = "v2/ThreadTokenUsage.ts", .contents = THREAD_TOKEN_USAGE_TS },
     .{ .name = "v2/ThreadTokenUsageUpdatedNotification.ts", .contents = THREAD_TOKEN_USAGE_UPDATED_NOTIFICATION_TS },
@@ -22054,6 +22460,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ErrorNotification.ts", .contents = ERROR_NOTIFICATION_TS },
     .{ .name = "v2/TurnItemsView.ts", .contents = TURN_ITEMS_VIEW_TS },
     .{ .name = "v2/TurnStatus.ts", .contents = TURN_STATUS_TS },
+    .{ .name = "v2/ThreadSource.ts", .contents = THREAD_SOURCE_TS },
+    .{ .name = "v2/ThreadStartSource.ts", .contents = THREAD_START_SOURCE_TS },
+    .{ .name = "v2/ThreadItem.ts", .contents = THREAD_ITEM_TS },
+    .{ .name = "v2/Thread.ts", .contents = THREAD_TS },
+    .{ .name = "v2/TurnEnvironmentParams.ts", .contents = TURN_ENVIRONMENT_PARAMS_TS },
     .{ .name = "v2/Turn.ts", .contents = TURN_TS },
     .{ .name = "v2/TurnStartParams.ts", .contents = TURN_START_PARAMS_TS },
     .{ .name = "v2/TurnStartResponse.ts", .contents = TURN_START_RESPONSE_TS },
@@ -22170,6 +22581,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ReviewDelivery.ts", .contents = REVIEW_DELIVERY_TS },
     .{ .name = "v2/ReviewTarget.ts", .contents = REVIEW_TARGET_TS },
     .{ .name = "v2/ReviewStartParams.ts", .contents = REVIEW_START_PARAMS_TS },
+    .{ .name = "v2/ReviewStartResponse.ts", .contents = REVIEW_START_RESPONSE_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
     .{ .name = "v2/ThreadIncrementElicitationParams.ts", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_TS },
@@ -22224,6 +22636,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRealtimeSdpNotification.ts", .contents = THREAD_REALTIME_SDP_NOTIFICATION_TS },
     .{ .name = "v2/ThreadRealtimeErrorNotification.ts", .contents = THREAD_REALTIME_ERROR_NOTIFICATION_TS },
     .{ .name = "v2/ThreadRealtimeClosedNotification.ts", .contents = THREAD_REALTIME_CLOSED_NOTIFICATION_TS },
+    .{ .name = "v2/SessionSource.ts", .contents = V2_SESSION_SOURCE_TS },
+    .{ .name = "v2/WebSearchAction.ts", .contents = V2_WEB_SEARCH_ACTION_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
