@@ -12605,6 +12605,420 @@ const CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const CONFIG_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigReadParams",
+    \\  "type": "object",
+    \\  "required": ["includeLayers"],
+    \\  "properties": {
+    \\    "includeLayers": { "type": "boolean" },
+    \\    "cwd": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONFIG_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigReadResponse",
+    \\  "type": "object",
+    \\  "required": ["config", "origins", "layers"],
+    \\  "properties": {
+    \\    "config": { "$ref": "#/$defs/Config" },
+    \\    "origins": {
+    \\      "type": "object",
+    \\      "additionalProperties": {
+    \\        "anyOf": [
+    \\          { "$ref": "#/$defs/ConfigLayerMetadata" },
+    \\          { "type": "null" }
+    \\        ]
+    \\      }
+    \\    },
+    \\    "layers": {
+    \\      "anyOf": [
+    \\        {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfigLayer" }
+    \\        },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "Config": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ConfigLayer": {
+    \\      "type": "object",
+    \\      "required": ["name", "version", "config", "disabledReason"],
+    \\      "properties": {
+    \\        "name": { "$ref": "#/$defs/ConfigLayerSource" },
+    \\        "version": { "type": "string" },
+    \\        "config": true,
+    \\        "disabledReason": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConfigLayerMetadata": {
+    \\      "type": "object",
+    \\      "required": ["name", "version"],
+    \\      "properties": {
+    \\        "name": { "$ref": "#/$defs/ConfigLayerSource" },
+    \\        "version": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConfigLayerSource": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "domain", "key"],
+    \\          "properties": {
+    \\            "type": { "const": "mdm" },
+    \\            "domain": { "type": "string" },
+    \\            "key": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "system" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "user" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "dotCodexFolder"],
+    \\          "properties": {
+    \\            "type": { "const": "project" },
+    \\            "dotCodexFolder": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "sessionFlags" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "legacyManagedConfigTomlFromFile" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "legacyManagedConfigTomlFromMdm" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONFIG_REQUIREMENTS_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigRequirementsReadResponse",
+    \\  "type": "object",
+    \\  "required": ["requirements"],
+    \\  "properties": {
+    \\    "requirements": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ConfigRequirements" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "AskForApproval": {
+    \\      "oneOf": [
+    \\        { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["granular"],
+    \\          "properties": {
+    \\            "granular": {
+    \\              "type": "object",
+    \\              "required": [
+    \\                "sandbox_approval",
+    \\                "rules",
+    \\                "skill_approval",
+    \\                "request_permissions",
+    \\                "mcp_elicitations"
+    \\              ],
+    \\              "properties": {
+    \\                "sandbox_approval": { "type": "boolean" },
+    \\                "rules": { "type": "boolean" },
+    \\                "skill_approval": { "type": "boolean" },
+    \\                "request_permissions": { "type": "boolean" },
+    \\                "mcp_elicitations": { "type": "boolean" }
+    \\              },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "SandboxMode": {
+    \\      "enum": ["read-only", "workspace-write", "danger-full-access"]
+    \\    },
+    \\    "WebSearchMode": {
+    \\      "enum": ["disabled", "cached", "live"]
+    \\    },
+    \\    "ResidencyRequirement": {
+    \\      "enum": ["us"]
+    \\    },
+    \\    "ConfigRequirements": {
+    \\      "type": "object",
+    \\      "required": [
+    \\        "allowedApprovalPolicies",
+    \\        "allowedSandboxModes",
+    \\        "allowedWebSearchModes",
+    \\        "featureRequirements",
+    \\        "enforceResidency"
+    \\      ],
+    \\      "properties": {
+    \\        "allowedApprovalPolicies": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/AskForApproval" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowedSandboxModes": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/SandboxMode" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowedWebSearchModes": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/WebSearchMode" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "featureRequirements": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "object",
+    \\              "additionalProperties": { "type": "boolean" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "enforceResidency": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ResidencyRequirement" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONFIG_VALUE_WRITE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigValueWriteParams",
+    \\  "type": "object",
+    \\  "required": ["keyPath", "value", "mergeStrategy"],
+    \\  "properties": {
+    \\    "keyPath": { "type": "string" },
+    \\    "value": true,
+    \\    "mergeStrategy": { "$ref": "#/$defs/MergeStrategy" },
+    \\    "filePath": { "type": ["string", "null"] },
+    \\    "expectedVersion": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "MergeStrategy": { "enum": ["replace", "upsert"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONFIG_BATCH_WRITE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigBatchWriteParams",
+    \\  "type": "object",
+    \\  "required": ["edits"],
+    \\  "properties": {
+    \\    "edits": {
+    \\      "type": "array",
+    \\      "items": { "$ref": "#/$defs/ConfigEdit" }
+    \\    },
+    \\    "filePath": { "type": ["string", "null"] },
+    \\    "expectedVersion": { "type": ["string", "null"] },
+    \\    "reloadUserConfig": { "type": "boolean" }
+    \\  },
+    \\  "$defs": {
+    \\    "ConfigEdit": {
+    \\      "type": "object",
+    \\      "required": ["keyPath", "value", "mergeStrategy"],
+    \\      "properties": {
+    \\        "keyPath": { "type": "string" },
+    \\        "value": true,
+    \\        "mergeStrategy": { "$ref": "#/$defs/MergeStrategy" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "MergeStrategy": { "enum": ["replace", "upsert"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONFIG_WRITE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigWriteResponse",
+    \\  "type": "object",
+    \\  "required": ["status", "version", "filePath", "overriddenMetadata"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/WriteStatus" },
+    \\    "version": { "type": "string" },
+    \\    "filePath": { "type": "string" },
+    \\    "overriddenMetadata": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/OverriddenMetadata" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "WriteStatus": { "enum": ["ok", "okOverridden"] },
+    \\    "OverriddenMetadata": {
+    \\      "type": "object",
+    \\      "required": ["message", "overridingLayer", "effectiveValue"],
+    \\      "properties": {
+    \\        "message": { "type": "string" },
+    \\        "overridingLayer": { "$ref": "#/$defs/ConfigLayerMetadata" },
+    \\        "effectiveValue": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConfigLayerMetadata": {
+    \\      "type": "object",
+    \\      "required": ["name", "version"],
+    \\      "properties": {
+    \\        "name": { "$ref": "#/$defs/ConfigLayerSource" },
+    \\        "version": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConfigLayerSource": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "domain", "key"],
+    \\          "properties": {
+    \\            "type": { "const": "mdm" },
+    \\            "domain": { "type": "string" },
+    \\            "key": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "system" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "user" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "dotCodexFolder"],
+    \\          "properties": {
+    \\            "type": { "const": "project" },
+    \\            "dotCodexFolder": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "sessionFlags" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "file"],
+    \\          "properties": {
+    \\            "type": { "const": "legacyManagedConfigTomlFromFile" },
+    \\            "file": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "legacyManagedConfigTomlFromMdm" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const MCP_SERVER_OAUTH_LOGIN_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22056,6 +22470,12 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "SkillsChangedNotification.json", .contents = SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/ConfigReadParams.json", .contents = CONFIG_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/ConfigReadResponse.json", .contents = CONFIG_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/ConfigRequirementsReadResponse.json", .contents = CONFIG_REQUIREMENTS_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/ConfigValueWriteParams.json", .contents = CONFIG_VALUE_WRITE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/ConfigBatchWriteParams.json", .contents = CONFIG_BATCH_WRITE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/ConfigWriteResponse.json", .contents = CONFIG_WRITE_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/McpServerRefreshResponse.json", .contents = MCP_SERVER_REFRESH_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerOauthLoginParams.json", .contents = MCP_SERVER_OAUTH_LOGIN_PARAMS_JSON_SCHEMA },
     .{ .name = "McpServerOauthLoginResponse.json", .contents = MCP_SERVER_OAUTH_LOGIN_RESPONSE_JSON_SCHEMA },
