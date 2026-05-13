@@ -22413,6 +22413,83 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "pluginName: string;",
             ],
             "ConfigReadParams": ["includeLayers: boolean;", "cwd?: string | null;"],
+            "AskForApproval": [
+                '"untrusted"',
+                "mcp_elicitations: boolean;",
+            ],
+            "ApprovalsReviewer": [
+                '"auto_review"',
+                '"guardian_subagent"',
+            ],
+            "AnalyticsConfig": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "enabled: boolean | null;",
+            ],
+            "SandboxMode": [
+                '"read-only"',
+                '"danger-full-access"',
+            ],
+            "SandboxWorkspaceWrite": [
+                "writable_roots: string[];",
+                "network_access: boolean;",
+            ],
+            "ToolsV2": [
+                'import type { WebSearchToolConfig } from "../WebSearchToolConfig";',
+                "view_image: boolean | null;",
+            ],
+            "ProfileV2": [
+                'import type { AskForApproval } from "./AskForApproval";',
+                "approval_policy: AskForApproval | null;",
+                "tools: ToolsV2 | null;",
+            ],
+            "Config": [
+                'import type { ForcedLoginMethod } from "../ForcedLoginMethod";',
+                "profiles: Record<string, ProfileV2 | undefined>;",
+                "analytics: AnalyticsConfig | null;",
+            ],
+            "ConfigLayerSource": [
+                'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
+                'type: "project"; dotCodexFolder: AbsolutePathBuf',
+                'type: "legacyManagedConfigTomlFromMdm"',
+            ],
+            "ConfigLayerMetadata": [
+                'import type { ConfigLayerSource } from "./ConfigLayerSource";',
+                "name: ConfigLayerSource;",
+            ],
+            "ConfigLayer": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "config: JsonValue;",
+                "disabledReason: string | null;",
+            ],
+            "ConfigReadResponse": [
+                'import type { Config } from "./Config";',
+                "origins: Record<string, ConfigLayerMetadata | undefined>;",
+                "layers: ConfigLayer[] | null;",
+            ],
+            "ResidencyRequirement": [
+                'export type ResidencyRequirement = "us";',
+            ],
+            "ConfigRequirements": [
+                'import type { ResidencyRequirement } from "./ResidencyRequirement";',
+                "allowedApprovalPolicies: AskForApproval[] | null;",
+                "enforceResidency: ResidencyRequirement | null;",
+            ],
+            "ConfigRequirementsReadResponse": [
+                'import type { ConfigRequirements } from "./ConfigRequirements";',
+                "requirements: ConfigRequirements | null;",
+            ],
+            "WriteStatus": [
+                'export type WriteStatus = "ok" | "okOverridden";',
+            ],
+            "OverriddenMetadata": [
+                'import type { ConfigLayerMetadata } from "./ConfigLayerMetadata";',
+                "effectiveValue: JsonValue;",
+            ],
+            "ConfigWriteResponse": [
+                'import type { WriteStatus } from "./WriteStatus";',
+                "filePath: AbsolutePathBuf;",
+                "overriddenMetadata: OverriddenMetadata | null;",
+            ],
             "ConfigValueWriteParams": [
                 'import type { JsonValue } from "../serde_json/JsonValue";',
                 "mergeStrategy: MergeStrategy;",
@@ -25433,11 +25510,29 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in v2_index
         )
         for config_export in [
+            "AnalyticsConfig",
+            "ApprovalsReviewer",
+            "AskForApproval",
+            "Config",
             "ConfigBatchWriteParams",
             "ConfigEdit",
+            "ConfigLayer",
+            "ConfigLayerMetadata",
+            "ConfigLayerSource",
             "ConfigReadParams",
+            "ConfigReadResponse",
+            "ConfigRequirements",
+            "ConfigRequirementsReadResponse",
             "ConfigValueWriteParams",
+            "ConfigWriteResponse",
             "MergeStrategy",
+            "OverriddenMetadata",
+            "ProfileV2",
+            "ResidencyRequirement",
+            "SandboxMode",
+            "SandboxWorkspaceWrite",
+            "ToolsV2",
+            "WriteStatus",
         ]:
             assert (
                 f'export type {{ {config_export} }} from "./{config_export}";'
