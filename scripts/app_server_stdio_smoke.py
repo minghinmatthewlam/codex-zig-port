@@ -1167,6 +1167,24 @@ def assert_thread_status_notification(
         assert status["activeFlags"] == []
 
 
+def assert_turn_start_rpc_completed(
+    proc: subprocess.Popen[str], thread_id: str, response_id: str
+) -> dict:
+    response = read_json_line(proc, 5)
+    assert response["id"] == response_id
+    assert response["result"]["turn"]["status"] == "inProgress"
+    assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+    assert read_json_line(proc, 5)["method"] == "turn/started"
+    assert read_json_line(proc, 5)["method"] == "item/started"
+    assert read_json_line(proc, 5)["method"] == "item/completed"
+    assert read_json_line(proc, 5)["method"] == "item/started"
+    assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+    assert read_json_line(proc, 5)["method"] == "item/completed"
+    assert read_json_line(proc, 5)["method"] == "turn/completed"
+    assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+    return response
+
+
 def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
@@ -4831,6 +4849,107 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert_thread_started_notification(
                     read_json_line(proc, 5), fork_after_reviewer["result"]["thread"]
                 )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-personality",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "personality": "maximalist",
+                            "input": [
+                                {"type": "text", "text": "invalid personality"},
+                            ],
+                        },
+                    },
+                )
+                invalid_personality = read_json_line(proc, 5)
+                assert invalid_personality["id"] == "turn-start-invalid-personality"
+                assert invalid_personality["error"]["code"] == -32602
+                assert (
+                    invalid_personality["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 9
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-friendly-personality",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "personality": "friendly",
+                            "input": [
+                                {"type": "text", "text": "use friendly personality"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-friendly-personality"
+                )
+                assert server.request_paths == ["/responses"] * 10
+                friendly_instructions = server.request_bodies[-1]["instructions"]
+                assert "<personality_spec>" in friendly_instructions
+                assert (
+                    "You optimize for team morale and being a supportive teammate"
+                    in friendly_instructions
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sticky-personality",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": "keep friendly personality"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-sticky-personality"
+                )
+                assert server.request_paths == ["/responses"] * 11
+                sticky_personality_instructions = server.request_bodies[-1][
+                    "instructions"
+                ]
+                assert "<personality_spec>" in sticky_personality_instructions
+                assert (
+                    "You optimize for team morale and being a supportive teammate"
+                    in sticky_personality_instructions
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-none-personality",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "personality": "none",
+                            "input": [
+                                {"type": "text", "text": "clear personality"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-none-personality"
+                )
+                assert server.request_paths == ["/responses"] * 12
+                none_personality_instructions = server.request_bodies[-1][
+                    "instructions"
+                ]
+                assert "<personality_spec>" not in none_personality_instructions
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -20795,6 +20914,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "never",
             None,
         ]
+        assert thread_start_params_schema["properties"]["personality"]["enum"] == [
+            "none",
+            "friendly",
+            "pragmatic",
+            None,
+        ]
         thread_start_response_schema = json.loads(
             (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
         )
@@ -20995,6 +21120,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "user",
             "auto_review",
             "guardian_subagent",
+            None,
+        ]
+        assert turn_start_params_schema["properties"]["personality"]["enum"] == [
+            "none",
+            "friendly",
+            "pragmatic",
             None,
         ]
         turn_start_response_schema = json.loads(
@@ -21341,6 +21472,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert thread_resume_params_schema["properties"]["path"]["type"] == [
             "string",
             "null",
+        ]
+        assert thread_resume_params_schema["properties"]["personality"]["enum"] == [
+            "none",
+            "friendly",
+            "pragmatic",
+            None,
         ]
         thread_resume_response_schema = json.loads(
             (out_dir / "ThreadResumeResponse.json").read_text(encoding="utf-8")
@@ -22959,12 +23096,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { ReasoningEffort } from "../ReasoningEffort";' in (
             turn_start_params
         )
+        assert 'import type { Personality } from "../Personality";' in (
+            turn_start_params
+        )
         assert 'import type { ApprovalsReviewer } from "./ApprovalsReviewer";' in (
             turn_start_params
         )
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
@@ -25527,7 +25668,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "export interface ThreadStartParams" in thread_start_params
+        assert 'import type { Personality } from "../Personality";' in thread_start_params
         assert "model?: string | null;" in thread_start_params
+        assert "personality?: Personality | null;" in thread_start_params
         assert (
             'threadSource?: "user" | "subagent" | "memory_consolidation" | null;'
             in thread_start_params
@@ -25699,6 +25842,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
@@ -26097,9 +26241,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "export interface ThreadResumeParams" in thread_resume_params
+        assert 'import type { Personality } from "../Personality";' in thread_resume_params
         assert "threadId: string;" in thread_resume_params
         assert "history?: unknown[] | null;" in thread_resume_params
         assert "path?: string | null;" in thread_resume_params
+        assert "personality?: Personality | null;" in thread_resume_params
         assert "excludeTurns?: boolean;" in thread_resume_params
         thread_resume_response = (
             out_dir / "v2" / "ThreadResumeResponse.ts"
