@@ -22164,17 +22164,41 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 'import type { FileChange } from "./FileChange";',
                 "fileChanges: Record<string, FileChange | undefined>;",
             ],
+            "ApplyPatchApprovalResponse": [
+                'import type { ReviewDecision } from "./ReviewDecision";',
+                "decision: ReviewDecision;",
+            ],
             "ExecCommandApprovalParams": [
                 'import type { ParsedCommand } from "./ParsedCommand";',
                 "parsedCmd: ParsedCommand[];",
+            ],
+            "ExecCommandApprovalResponse": [
+                'import type { ReviewDecision } from "./ReviewDecision";',
+                "decision: ReviewDecision;",
+            ],
+            "ExecPolicyAmendment": [
+                "export type ExecPolicyAmendment = string[];",
             ],
             "FileChange": [
                 'type: "add"; content: string',
                 'type: "update"; unified_diff: string; move_path: string | null',
             ],
+            "NetworkPolicyAmendment": [
+                'import type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";',
+                "action: NetworkPolicyRuleAction;",
+            ],
+            "NetworkPolicyRuleAction": [
+                'export type NetworkPolicyRuleAction = "allow" | "deny";',
+            ],
             "ParsedCommand": [
                 'type: "read"; cmd: string; name: string; path: string',
                 'type: "unknown"; cmd: string',
+            ],
+            "ReviewDecision": [
+                'import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";',
+                "approved_execpolicy_amendment:",
+                "network_policy_amendment:",
+                '| "timed_out"',
             ],
         }.items():
             generated = (out_dir / f"{generated_name}.ts").read_text(
@@ -22214,8 +22238,32 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 'type: "search"; command: string; query: string | null',
                 'type: "unknown"; command: string',
             ],
+            "CommandExecutionApprovalDecision": [
+                'import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";',
+                '| "acceptForSession"',
+                "acceptWithExecpolicyAmendment:",
+                "applyNetworkPolicyAmendment:",
+            ],
+            "CommandExecutionRequestApprovalResponse": [
+                'import type { CommandExecutionApprovalDecision } from "./CommandExecutionApprovalDecision";',
+                "decision: CommandExecutionApprovalDecision;",
+            ],
             "ExecPolicyAmendment": [
                 "export type ExecPolicyAmendment = string[];",
+            ],
+            "FileChangeApprovalDecision": [
+                '| "acceptForSession"',
+                '| "decline"',
+                '| "cancel"',
+            ],
+            "FileChangeRequestApprovalResponse": [
+                'import type { FileChangeApprovalDecision } from "./FileChangeApprovalDecision";',
+                "decision: FileChangeApprovalDecision;",
+            ],
+            "GrantedPermissionProfile": [
+                'import type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";',
+                "network?: AdditionalNetworkPermissions;",
+                "fileSystem?: AdditionalFileSystemPermissions;",
             ],
             "NetworkApprovalContext": [
                 "host: string;",
@@ -22228,6 +22276,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "NetworkPolicyRuleAction": [
                 'export type NetworkPolicyRuleAction = "allow" | "deny";',
             ],
+            "PermissionGrantScope": [
+                'export type PermissionGrantScope = "turn" | "session";',
+            ],
+            "PermissionsRequestApprovalResponse": [
+                'import type { GrantedPermissionProfile } from "./GrantedPermissionProfile";',
+                "permissions: GrantedPermissionProfile;",
+                "strictAutoReview?: boolean;",
+            ],
             "McpElicitationSchema": [
                 "type: McpElicitationObjectType;",
                 "properties: Record<string, McpElicitationPrimitiveSchema | undefined>;",
@@ -22238,13 +22294,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "McpElicitationPrimitiveSchema": [
                 "export type McpElicitationPrimitiveSchema = unknown;",
             ],
+            "McpServerElicitationAction": [
+                'export type McpServerElicitationAction = "accept" | "decline" | "cancel";',
+            ],
+            "McpServerElicitationRequestResponse": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "action: McpServerElicitationAction;",
+                "content: JsonValue | null;",
+            ],
+            "ToolRequestUserInputAnswer": [
+                "answers: string[];",
+            ],
             "ToolRequestUserInputOption": [
                 "label: string;",
                 "description: string;",
             ],
             "ToolRequestUserInputQuestion": [
                 "isSecret: boolean;",
-                "options: ToolRequestUserInputOption[] | null;"
+                "options: ToolRequestUserInputOption[] | null;",
+            ],
+            "ToolRequestUserInputResponse": [
+                'import type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";',
+                "answers: Record<string, ToolRequestUserInputAnswer | undefined>;",
             ],
         }.items():
             generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
@@ -24637,9 +24708,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ServerRequest } from "./ServerRequest";' in index
         for server_request_export in [
             "ApplyPatchApprovalParams",
+            "ApplyPatchApprovalResponse",
             "ExecCommandApprovalParams",
+            "ExecCommandApprovalResponse",
+            "ExecPolicyAmendment",
             "FileChange",
+            "NetworkPolicyAmendment",
+            "NetworkPolicyRuleAction",
             "ParsedCommand",
+            "ReviewDecision",
         ]:
             assert (
                 f'export type {{ {server_request_export} }} from "./{server_request_export}";'
@@ -24832,21 +24909,32 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             )
         for server_request_export in [
             "CommandAction",
+            "CommandExecutionApprovalDecision",
             "CommandExecutionRequestApprovalParams",
+            "CommandExecutionRequestApprovalResponse",
             "DynamicToolCallParams",
             "ExecPolicyAmendment",
+            "FileChangeApprovalDecision",
             "FileChangeRequestApprovalParams",
+            "FileChangeRequestApprovalResponse",
+            "GrantedPermissionProfile",
             "McpElicitationSchema",
             "McpServerElicitationRequestParams",
             "NetworkApprovalContext",
             "NetworkPolicyAmendment",
             "NetworkPolicyRuleAction",
+            "PermissionGrantScope",
             "PermissionsRequestApprovalParams",
+            "PermissionsRequestApprovalResponse",
             "McpElicitationObjectType",
             "McpElicitationPrimitiveSchema",
+            "McpServerElicitationAction",
+            "McpServerElicitationRequestResponse",
+            "ToolRequestUserInputAnswer",
             "ToolRequestUserInputOption",
             "ToolRequestUserInputParams",
             "ToolRequestUserInputQuestion",
+            "ToolRequestUserInputResponse",
         ]:
             assert (
                 f'export type {{ {server_request_export} }} from "./{server_request_export}";'
