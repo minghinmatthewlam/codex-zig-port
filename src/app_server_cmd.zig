@@ -2752,6 +2752,51 @@ const MCP_TOOL_CALL_PROGRESS_NOTIFICATION_TS =
     \\
     ;
 
+const MCP_AUTH_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpAuthStatus =
+    \\  | "unsupported"
+    \\  | "notLoggedIn"
+    \\  | "bearerToken"
+    \\  | "oAuth";
+    \\
+    ;
+
+const MCP_SERVER_REFRESH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpServerRefreshResponse = Record<string, never>;
+    \\
+    ;
+
+const MCP_TOOL_CALL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpToolCallStatus =
+    \\  | "inProgress"
+    \\  | "completed"
+    \\  | "failed";
+    \\
+    ;
+
+const MCP_TOOL_CALL_ERROR_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpToolCallError {
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const MCP_TOOL_CALL_RESULT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\
+    \\export interface McpToolCallResult {
+    \\  content: JsonValue[];
+    \\  structuredContent: JsonValue | null;
+    \\  _meta: JsonValue | null;
+    \\}
+    \\
+    ;
+
 const MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ModelProviderCapabilitiesReadParams {}
@@ -4868,6 +4913,48 @@ const DYNAMIC_TOOL_CALL_PARAMS_TS =
     \\  namespace: string | null;
     \\  tool: string;
     \\  arguments: JsonValue;
+    \\}
+    \\
+    ;
+
+const DYNAMIC_TOOL_CALL_OUTPUT_CONTENT_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\export type DynamicToolCallOutputContentItem =
+    \\  | { type: "inputText"; text: string }
+    \\  | { type: "inputImage"; imageUrl: string };
+    \\
+    ;
+
+const DYNAMIC_TOOL_CALL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
+    \\
+    \\export interface DynamicToolCallResponse {
+    \\  contentItems: DynamicToolCallOutputContentItem[];
+    \\  success: boolean;
+    \\}
+    \\
+    ;
+
+const DYNAMIC_TOOL_CALL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type DynamicToolCallStatus =
+    \\  | "inProgress"
+    \\  | "completed"
+    \\  | "failed";
+    \\
+    ;
+
+const DYNAMIC_TOOL_SPEC_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\
+    \\export interface DynamicToolSpec {
+    \\  namespace?: string;
+    \\  name: string;
+    \\  description: string;
+    \\  inputSchema: JsonValue;
+    \\  deferLoading?: boolean;
     \\}
     \\
     ;
@@ -7339,6 +7426,10 @@ const V2_INDEX_TS =
     \\export type { ConfigValueWriteParams } from "./ConfigValueWriteParams";
     \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
     \\export type { DynamicToolCallParams } from "./DynamicToolCallParams";
+    \\export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
+    \\export type { DynamicToolCallResponse } from "./DynamicToolCallResponse";
+    \\export type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
+    \\export type { DynamicToolSpec } from "./DynamicToolSpec";
     \\export type { CommandExecutionApprovalDecision } from "./CommandExecutionApprovalDecision";
     \\export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
     \\export type { CommandExecutionRequestApprovalResponse } from "./CommandExecutionRequestApprovalResponse";
@@ -7402,7 +7493,12 @@ const V2_INDEX_TS =
     \\export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";
     \\export type { McpServerStartupState } from "./McpServerStartupState";
     \\export type { McpServerStatusUpdatedNotification } from "./McpServerStatusUpdatedNotification";
+    \\export type { McpAuthStatus } from "./McpAuthStatus";
+    \\export type { McpServerRefreshResponse } from "./McpServerRefreshResponse";
+    \\export type { McpToolCallError } from "./McpToolCallError";
     \\export type { McpToolCallProgressNotification } from "./McpToolCallProgressNotification";
+    \\export type { McpToolCallResult } from "./McpToolCallResult";
+    \\export type { McpToolCallStatus } from "./McpToolCallStatus";
     \\export type { McpServerToolCallParams } from "./McpServerToolCallParams";
     \\export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";
     \\export type { CollaborationMode } from "./CollaborationMode";
@@ -7913,6 +8009,141 @@ const EXEC_COMMAND_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_JSON_DEFS =
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "NetworkApprovalProtocol": {
+    \\      "type": "string",
+    \\      "enum": ["http", "https", "socks5Tcp", "socks5Udp"]
+    \\    },
+    \\    "NetworkApprovalContext": {
+    \\      "type": "object",
+    \\      "required": ["host", "protocol"],
+    \\      "properties": {
+    \\        "host": { "type": "string" },
+    \\        "protocol": { "$ref": "#/$defs/NetworkApprovalProtocol" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "NetworkPolicyRuleAction": {
+    \\      "type": "string",
+    \\      "enum": ["allow", "deny"]
+    \\    },
+    \\    "NetworkPolicyAmendment": {
+    \\      "type": "object",
+    \\      "required": ["action", "host"],
+    \\      "properties": {
+    \\        "action": { "$ref": "#/$defs/NetworkPolicyRuleAction" },
+    \\        "host": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExecPolicyAmendment": {
+    \\      "type": "array",
+    \\      "items": { "type": "string" }
+    \\    },
+    \\    "CommandAction": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "ReadCommandAction",
+    \\          "type": "object",
+    \\          "required": ["command", "name", "path", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "read" },
+    \\            "command": { "type": "string" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "ListFilesCommandAction",
+    \\          "type": "object",
+    \\          "required": ["command", "path", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "listFiles" },
+    \\            "command": { "type": "string" },
+    \\            "path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "SearchCommandAction",
+    \\          "type": "object",
+    \\          "required": ["command", "path", "query", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "search" },
+    \\            "command": { "type": "string" },
+    \\            "path": { "type": ["string", "null"] },
+    \\            "query": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UnknownCommandAction",
+    \\          "type": "object",
+    \\          "required": ["command", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "unknown" },
+    \\            "command": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+;
+
+const COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecutionRequestApprovalParams",
+    \\  "type": "object",
+    \\  "required": ["itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "approvalId": { "type": ["string", "null"] },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "networkApprovalContext": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/NetworkApprovalContext" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "command": { "type": ["string", "null"] },
+    \\    "cwd": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "commandActions": {
+    \\      "anyOf": [
+    \\        { "type": "array", "items": { "$ref": "#/$defs/CommandAction" } },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "proposedExecpolicyAmendment": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ExecPolicyAmendment" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "proposedNetworkPolicyAmendments": {
+    \\      "anyOf": [
+    \\        { "type": "array", "items": { "$ref": "#/$defs/NetworkPolicyAmendment" } },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+++ COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const COMMAND_EXECUTION_APPROVAL_DECISION_JSON_DEFS =
     \\    "NetworkPolicyRuleAction": {
     \\      "type": "string",
@@ -7989,6 +8220,24 @@ const COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const FILE_CHANGE_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileChangeRequestApprovalParams",
+    \\  "type": "object",
+    \\  "required": ["itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "grantRoot": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -8006,6 +8255,53 @@ const FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\        { "type": "string", "enum": ["decline"] },
     \\        { "type": "string", "enum": ["cancel"] }
     \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TOOL_REQUEST_USER_INPUT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ToolRequestUserInputParams",
+    \\  "description": "EXPERIMENTAL. Request payload for collecting structured user input from a tool.",
+    \\  "type": "object",
+    \\  "required": ["itemId", "questions", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "questions": { "type": "array", "items": { "$ref": "#/$defs/ToolRequestUserInputQuestion" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ToolRequestUserInputOption": {
+    \\      "type": "object",
+    \\      "required": ["description", "label"],
+    \\      "properties": {
+    \\        "label": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputQuestion": {
+    \\      "type": "object",
+    \\      "required": ["header", "id", "isOther", "isSecret", "options", "question"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "header": { "type": "string" },
+    \\        "question": { "type": "string" },
+    \\        "isOther": { "type": "boolean" },
+    \\        "isSecret": { "type": "boolean" },
+    \\        "options": {
+    \\          "anyOf": [
+    \\            { "type": "array", "items": { "$ref": "#/$defs/ToolRequestUserInputOption" } },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
     \\    }
     \\  },
     \\  "additionalProperties": true
@@ -8042,6 +8338,256 @@ const TOOL_REQUEST_USER_INPUT_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const MCP_ELICITATION_SCHEMA_JSON_DEFS =
+    \\    "McpElicitationObjectType": {
+    \\      "type": "string",
+    \\      "enum": ["object"]
+    \\    },
+    \\    "McpElicitationArrayType": {
+    \\      "type": "string",
+    \\      "enum": ["array"]
+    \\    },
+    \\    "McpElicitationBooleanType": {
+    \\      "type": "string",
+    \\      "enum": ["boolean"]
+    \\    },
+    \\    "McpElicitationStringType": {
+    \\      "type": "string",
+    \\      "enum": ["string"]
+    \\    },
+    \\    "McpElicitationNumberType": {
+    \\      "type": "string",
+    \\      "enum": ["number", "integer"]
+    \\    },
+    \\    "McpElicitationStringFormat": {
+    \\      "type": "string",
+    \\      "enum": ["email", "uri", "date", "date-time"]
+    \\    },
+    \\    "McpElicitationConstOption": {
+    \\      "type": "object",
+    \\      "required": ["const", "title"],
+    \\      "properties": {
+    \\        "const": { "type": "string" },
+    \\        "title": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationBooleanSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationBooleanType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "default": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationStringSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationStringType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "minLength": { "type": "integer", "minimum": 0 },
+    \\        "maxLength": { "type": "integer", "minimum": 0 },
+    \\        "format": { "$ref": "#/$defs/McpElicitationStringFormat" },
+    \\        "default": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationNumberSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationNumberType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "minimum": { "type": "number" },
+    \\        "maximum": { "type": "number" },
+    \\        "default": { "type": "number" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledEnumItems": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationStringType" },
+    \\        "enum": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledEnumItems": {
+    \\      "type": "object",
+    \\      "required": ["anyOf"],
+    \\      "properties": {
+    \\        "anyOf": { "type": "array", "items": { "$ref": "#/$defs/McpElicitationConstOption" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledSingleSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationStringType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "enum": { "type": "array", "items": { "type": "string" } },
+    \\        "default": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledSingleSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["oneOf", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationStringType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "oneOf": { "type": "array", "items": { "$ref": "#/$defs/McpElicitationConstOption" } },
+    \\        "default": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationSingleSelectEnumSchema": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/McpElicitationUntitledSingleSelectEnumSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationTitledSingleSelectEnumSchema" }
+    \\      ]
+    \\    },
+    \\    "McpElicitationLegacyTitledEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationStringType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "enum": { "type": "array", "items": { "type": "string" } },
+    \\        "enumNames": { "type": "array", "items": { "type": "string" } },
+    \\        "default": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledMultiSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["items", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationArrayType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "minItems": { "type": "integer", "minimum": 0 },
+    \\        "maxItems": { "type": "integer", "minimum": 0 },
+    \\        "items": { "$ref": "#/$defs/McpElicitationUntitledEnumItems" },
+    \\        "default": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledMultiSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["items", "type"],
+    \\      "properties": {
+    \\        "type": { "$ref": "#/$defs/McpElicitationArrayType" },
+    \\        "title": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "minItems": { "type": "integer", "minimum": 0 },
+    \\        "maxItems": { "type": "integer", "minimum": 0 },
+    \\        "items": { "$ref": "#/$defs/McpElicitationTitledEnumItems" },
+    \\        "default": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationMultiSelectEnumSchema": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/McpElicitationUntitledMultiSelectEnumSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationTitledMultiSelectEnumSchema" }
+    \\      ]
+    \\    },
+    \\    "McpElicitationEnumSchema": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/McpElicitationSingleSelectEnumSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationMultiSelectEnumSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationLegacyTitledEnumSchema" }
+    \\      ]
+    \\    },
+    \\    "McpElicitationPrimitiveSchema": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/McpElicitationEnumSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationStringSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationNumberSchema" },
+    \\        { "$ref": "#/$defs/McpElicitationBooleanSchema" }
+    \\      ]
+    \\    },
+    \\    "McpElicitationSchema": {
+    \\      "type": "object",
+    \\      "required": ["properties", "type"],
+    \\      "properties": {
+    \\        "$schema": { "type": "string" },
+    \\        "type": { "$ref": "#/$defs/McpElicitationObjectType" },
+    \\        "properties": {
+    \\          "type": "object",
+    \\          "additionalProperties": { "$ref": "#/$defs/McpElicitationPrimitiveSchema" }
+    \\        },
+    \\        "required": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+;
+
+const MCP_SERVER_ELICITATION_REQUEST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerElicitationRequestParams",
+    \\  "type": "object",
+    \\  "required": ["serverName", "threadId", "turnId"],
+    \\  "allOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": ["string", "null"] },
+    \\        "serverName": { "type": "string" }
+    \\      }
+    \\    },
+    \\    {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "FormMcpServerElicitationRequestParams",
+    \\          "type": "object",
+    \\          "required": ["_meta", "message", "mode", "requestedSchema"],
+    \\          "properties": {
+    \\            "mode": { "const": "form" },
+    \\            "_meta": true,
+    \\            "message": { "type": "string" },
+    \\            "requestedSchema": { "$ref": "#/$defs/McpElicitationSchema" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UrlMcpServerElicitationRequestParams",
+    \\          "type": "object",
+    \\          "required": ["_meta", "elicitationId", "message", "mode", "url"],
+    \\          "properties": {
+    \\            "mode": { "const": "url" },
+    \\            "_meta": true,
+    \\            "message": { "type": "string" },
+    \\            "url": { "type": "string" },
+    \\            "elicitationId": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  ],
+    \\  "$defs": {
+++ MCP_ELICITATION_SCHEMA_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const MCP_SERVER_ELICITATION_REQUEST_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -8058,6 +8604,68 @@ const MCP_SERVER_ELICITATION_REQUEST_RESPONSE_JSON_SCHEMA =
     \\      "type": "string",
     \\      "enum": ["accept", "decline", "cancel"]
     \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REQUEST_PERMISSION_PROFILE_JSON_DEFS =
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "FileSystemSandboxEntry": { "type": "object", "additionalProperties": true },
+    \\    "AdditionalNetworkPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "enabled": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AdditionalFileSystemPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1 },
+    \\        "entries": { "type": ["array", "null"], "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RequestPermissionProfile": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "network": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/AdditionalNetworkPermissions" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "fileSystem": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/AdditionalFileSystemPermissions" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+;
+
+const PERMISSIONS_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionsRequestApprovalParams",
+    \\  "type": "object",
+    \\  "required": ["cwd", "itemId", "permissions", "reason", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "cwd": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "permissions": { "$ref": "#/$defs/RequestPermissionProfile" }
+    \\  },
+    \\  "$defs": {
+++ REQUEST_PERMISSION_PROFILE_JSON_DEFS ++
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -8107,6 +8715,25 @@ const PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\      "type": "string",
     \\      "enum": ["turn", "session"]
     \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const DYNAMIC_TOOL_CALL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "DynamicToolCallParams",
+    \\  "type": "object",
+    \\  "required": ["arguments", "callId", "namespace", "threadId", "tool", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "callId": { "type": "string" },
+    \\    "namespace": { "type": ["string", "null"] },
+    \\    "tool": { "type": "string" },
+    \\    "arguments": true
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -15601,6 +16228,45 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ExecPolicyAmendment": {
+    \\      "type": "array",
+    \\      "items": { "type": "string" }
+    \\    },
+    \\    "NetworkApprovalContext": {
+    \\      "type": "object",
+    \\      "required": ["host", "protocol"],
+    \\      "properties": {
+    \\        "host": { "type": "string" },
+    \\        "protocol": { "$ref": "#/$defs/NetworkApprovalProtocol" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandAction": {
+    \\      "oneOf": [
+    \\        { "type": "object", "required": ["command", "name", "path", "type"], "properties": { "type": { "const": "read" }, "command": { "type": "string" }, "name": { "type": "string" }, "path": { "$ref": "#/$defs/AbsolutePathBuf" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["command", "path", "type"], "properties": { "type": { "const": "listFiles" }, "command": { "type": "string" }, "path": { "type": ["string", "null"] } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["command", "path", "query", "type"], "properties": { "type": { "const": "search" }, "command": { "type": "string" }, "path": { "type": ["string", "null"] }, "query": { "type": ["string", "null"] } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["command", "type"], "properties": { "type": { "const": "unknown" }, "command": { "type": "string" } }, "additionalProperties": true }
+    \\      ]
+    \\    },
+    \\    "CommandExecutionRequestApprovalParams": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "approvalId": { "type": ["string", "null"] },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "networkApprovalContext": { "anyOf": [{ "$ref": "#/$defs/NetworkApprovalContext" }, { "type": "null" }] },
+    \\        "command": { "type": ["string", "null"] },
+    \\        "cwd": { "anyOf": [{ "$ref": "#/$defs/AbsolutePathBuf" }, { "type": "null" }] },
+    \\        "commandActions": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/CommandAction" } }, { "type": "null" }] },
+    \\        "proposedExecpolicyAmendment": { "anyOf": [{ "$ref": "#/$defs/ExecPolicyAmendment" }, { "type": "null" }] },
+    \\        "proposedNetworkPolicyAmendments": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/NetworkPolicyAmendment" } }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "CommandExecutionApprovalDecision": {
     \\      "oneOf": [
     \\        { "type": "string", "enum": ["accept"] },
@@ -15658,11 +16324,57 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        { "type": "string", "enum": ["cancel"] }
     \\      ]
     \\    },
+    \\    "FileChangeRequestApprovalParams": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "grantRoot": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "FileChangeRequestApprovalResponse": {
     \\      "type": "object",
     \\      "required": ["decision"],
     \\      "properties": {
     \\        "decision": { "$ref": "#/$defs/FileChangeApprovalDecision" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputOption": {
+    \\      "type": "object",
+    \\      "required": ["description", "label"],
+    \\      "properties": {
+    \\        "label": { "type": "string" },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputQuestion": {
+    \\      "type": "object",
+    \\      "required": ["header", "id", "isOther", "isSecret", "options", "question"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "header": { "type": "string" },
+    \\        "question": { "type": "string" },
+    \\        "isOther": { "type": "boolean" },
+    \\        "isSecret": { "type": "boolean" },
+    \\        "options": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/ToolRequestUserInputOption" } }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputParams": {
+    \\      "description": "EXPERIMENTAL. Request payload for collecting structured user input from a tool.",
+    \\      "type": "object",
+    \\      "required": ["itemId", "questions", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "questions": { "type": "array", "items": { "$ref": "#/$defs/ToolRequestUserInputQuestion" } }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -15687,9 +16399,128 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "McpElicitationObjectType": { "type": "string", "enum": ["object"] },
+    \\    "McpElicitationArrayType": { "type": "string", "enum": ["array"] },
+    \\    "McpElicitationBooleanType": { "type": "string", "enum": ["boolean"] },
+    \\    "McpElicitationStringType": { "type": "string", "enum": ["string"] },
+    \\    "McpElicitationNumberType": { "type": "string", "enum": ["number", "integer"] },
+    \\    "McpElicitationStringFormat": { "type": "string", "enum": ["email", "uri", "date", "date-time"] },
+    \\    "McpElicitationConstOption": {
+    \\      "type": "object",
+    \\      "required": ["const", "title"],
+    \\      "properties": {
+    \\        "const": { "type": "string" },
+    \\        "title": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationBooleanSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationBooleanType" }, "title": { "type": "string" }, "description": { "type": "string" }, "default": { "type": "boolean" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationStringSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationStringType" }, "title": { "type": "string" }, "description": { "type": "string" }, "minLength": { "type": "integer", "minimum": 0 }, "maxLength": { "type": "integer", "minimum": 0 }, "format": { "$ref": "#/$defs/McpElicitationStringFormat" }, "default": { "type": "string" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationNumberSchema": {
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationNumberType" }, "title": { "type": "string" }, "description": { "type": "string" }, "minimum": { "type": "number" }, "maximum": { "type": "number" }, "default": { "type": "number" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledEnumItems": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationStringType" }, "enum": { "type": "array", "items": { "type": "string" } } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledEnumItems": {
+    \\      "type": "object",
+    \\      "required": ["anyOf"],
+    \\      "properties": { "anyOf": { "type": "array", "items": { "$ref": "#/$defs/McpElicitationConstOption" } } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledSingleSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationStringType" }, "title": { "type": "string" }, "description": { "type": "string" }, "enum": { "type": "array", "items": { "type": "string" } }, "default": { "type": "string" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledSingleSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["oneOf", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationStringType" }, "title": { "type": "string" }, "description": { "type": "string" }, "oneOf": { "type": "array", "items": { "$ref": "#/$defs/McpElicitationConstOption" } }, "default": { "type": "string" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationSingleSelectEnumSchema": {
+    \\      "oneOf": [{ "$ref": "#/$defs/McpElicitationUntitledSingleSelectEnumSchema" }, { "$ref": "#/$defs/McpElicitationTitledSingleSelectEnumSchema" }]
+    \\    },
+    \\    "McpElicitationLegacyTitledEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["enum", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationStringType" }, "title": { "type": "string" }, "description": { "type": "string" }, "enum": { "type": "array", "items": { "type": "string" } }, "enumNames": { "type": "array", "items": { "type": "string" } }, "default": { "type": "string" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationUntitledMultiSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["items", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationArrayType" }, "title": { "type": "string" }, "description": { "type": "string" }, "minItems": { "type": "integer", "minimum": 0 }, "maxItems": { "type": "integer", "minimum": 0 }, "items": { "$ref": "#/$defs/McpElicitationUntitledEnumItems" }, "default": { "type": "array", "items": { "type": "string" } } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationTitledMultiSelectEnumSchema": {
+    \\      "type": "object",
+    \\      "required": ["items", "type"],
+    \\      "properties": { "type": { "$ref": "#/$defs/McpElicitationArrayType" }, "title": { "type": "string" }, "description": { "type": "string" }, "minItems": { "type": "integer", "minimum": 0 }, "maxItems": { "type": "integer", "minimum": 0 }, "items": { "$ref": "#/$defs/McpElicitationTitledEnumItems" }, "default": { "type": "array", "items": { "type": "string" } } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpElicitationMultiSelectEnumSchema": {
+    \\      "oneOf": [{ "$ref": "#/$defs/McpElicitationUntitledMultiSelectEnumSchema" }, { "$ref": "#/$defs/McpElicitationTitledMultiSelectEnumSchema" }]
+    \\    },
+    \\    "McpElicitationEnumSchema": {
+    \\      "oneOf": [{ "$ref": "#/$defs/McpElicitationSingleSelectEnumSchema" }, { "$ref": "#/$defs/McpElicitationMultiSelectEnumSchema" }, { "$ref": "#/$defs/McpElicitationLegacyTitledEnumSchema" }]
+    \\    },
+    \\    "McpElicitationPrimitiveSchema": {
+    \\      "oneOf": [{ "$ref": "#/$defs/McpElicitationEnumSchema" }, { "$ref": "#/$defs/McpElicitationStringSchema" }, { "$ref": "#/$defs/McpElicitationNumberSchema" }, { "$ref": "#/$defs/McpElicitationBooleanSchema" }]
+    \\    },
+    \\    "McpElicitationSchema": {
+    \\      "type": "object",
+    \\      "required": ["properties", "type"],
+    \\      "properties": {
+    \\        "$schema": { "type": "string" },
+    \\        "type": { "$ref": "#/$defs/McpElicitationObjectType" },
+    \\        "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/McpElicitationPrimitiveSchema" } },
+    \\        "required": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "McpServerElicitationAction": {
     \\      "type": "string",
     \\      "enum": ["accept", "decline", "cancel"]
+    \\    },
+    \\    "McpServerElicitationRequestParams": {
+    \\      "type": "object",
+    \\      "required": ["serverName", "threadId", "turnId"],
+    \\      "allOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "properties": {
+    \\            "threadId": { "type": "string" },
+    \\            "turnId": { "type": ["string", "null"] },
+    \\            "serverName": { "type": "string" }
+    \\          }
+    \\        },
+    \\        {
+    \\          "oneOf": [
+    \\            { "type": "object", "required": ["_meta", "message", "mode", "requestedSchema"], "properties": { "mode": { "const": "form" }, "_meta": true, "message": { "type": "string" }, "requestedSchema": { "$ref": "#/$defs/McpElicitationSchema" } }, "additionalProperties": true },
+    \\            { "type": "object", "required": ["_meta", "elicitationId", "message", "mode", "url"], "properties": { "mode": { "const": "url" }, "_meta": true, "message": { "type": "string" }, "url": { "type": "string" }, "elicitationId": { "type": "string" } }, "additionalProperties": true }
+    \\          ]
+    \\        }
+    \\      ],
+    \\      "additionalProperties": true
     \\    },
     \\    "McpServerElicitationRequestResponse": {
     \\      "type": "object",
@@ -15698,6 +16529,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "action": { "$ref": "#/$defs/McpServerElicitationAction" },
     \\        "content": true,
     \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "DynamicToolCallParams": {
+    \\      "type": "object",
+    \\      "required": ["arguments", "callId", "namespace", "threadId", "tool", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "callId": { "type": "string" },
+    \\        "namespace": { "type": ["string", "null"] },
+    \\        "tool": { "type": "string" },
+    \\        "arguments": true
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -18488,6 +19332,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "string",
     \\      "enum": ["turn", "session"]
     \\    },
+    \\    "PermissionsRequestApprovalParams": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "itemId", "permissions", "reason", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "cwd": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "permissions": { "$ref": "#/$defs/RequestPermissionProfile" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "PermissionsRequestApprovalResponse": {
     \\      "type": "object",
     \\      "required": ["permissions", "scope"],
@@ -19371,11 +20228,17 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ApplyPatchApprovalResponse.json", .contents = APPLY_PATCH_APPROVAL_RESPONSE_JSON_SCHEMA },
     .{ .name = "ExecCommandApprovalParams.json", .contents = EXEC_COMMAND_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "ExecCommandApprovalResponse.json", .contents = EXEC_COMMAND_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecutionRequestApprovalParams.json", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "CommandExecutionRequestApprovalResponse.json", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FileChangeRequestApprovalParams.json", .contents = FILE_CHANGE_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "FileChangeRequestApprovalResponse.json", .contents = FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ToolRequestUserInputParams.json", .contents = TOOL_REQUEST_USER_INPUT_PARAMS_JSON_SCHEMA },
     .{ .name = "ToolRequestUserInputResponse.json", .contents = TOOL_REQUEST_USER_INPUT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerElicitationRequestParams.json", .contents = MCP_SERVER_ELICITATION_REQUEST_PARAMS_JSON_SCHEMA },
     .{ .name = "McpServerElicitationRequestResponse.json", .contents = MCP_SERVER_ELICITATION_REQUEST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "PermissionsRequestApprovalParams.json", .contents = PERMISSIONS_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "PermissionsRequestApprovalResponse.json", .contents = PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "DynamicToolCallParams.json", .contents = DYNAMIC_TOOL_CALL_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "AuthMode.json", .contents = AUTH_MODE_JSON_SCHEMA },
@@ -19930,7 +20793,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/McpResourceReadResponse.ts", .contents = MCP_RESOURCE_READ_RESPONSE_TS },
     .{ .name = "v2/McpServerToolCallParams.ts", .contents = MCP_SERVER_TOOL_CALL_PARAMS_TS },
     .{ .name = "v2/McpServerToolCallResponse.ts", .contents = MCP_SERVER_TOOL_CALL_RESPONSE_TS },
+    .{ .name = "v2/McpAuthStatus.ts", .contents = MCP_AUTH_STATUS_TS },
+    .{ .name = "v2/McpServerRefreshResponse.ts", .contents = MCP_SERVER_REFRESH_RESPONSE_TS },
+    .{ .name = "v2/McpToolCallError.ts", .contents = MCP_TOOL_CALL_ERROR_TS },
     .{ .name = "v2/McpToolCallProgressNotification.ts", .contents = MCP_TOOL_CALL_PROGRESS_NOTIFICATION_TS },
+    .{ .name = "v2/McpToolCallResult.ts", .contents = MCP_TOOL_CALL_RESULT_TS },
+    .{ .name = "v2/McpToolCallStatus.ts", .contents = MCP_TOOL_CALL_STATUS_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
@@ -20127,6 +20995,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/PermissionGrantScope.ts", .contents = PERMISSION_GRANT_SCOPE_TS },
     .{ .name = "v2/PermissionsRequestApprovalResponse.ts", .contents = PERMISSIONS_REQUEST_APPROVAL_RESPONSE_TS },
     .{ .name = "v2/DynamicToolCallParams.ts", .contents = DYNAMIC_TOOL_CALL_PARAMS_TS },
+    .{ .name = "v2/DynamicToolCallOutputContentItem.ts", .contents = DYNAMIC_TOOL_CALL_OUTPUT_CONTENT_ITEM_TS },
+    .{ .name = "v2/DynamicToolCallResponse.ts", .contents = DYNAMIC_TOOL_CALL_RESPONSE_TS },
+    .{ .name = "v2/DynamicToolCallStatus.ts", .contents = DYNAMIC_TOOL_CALL_STATUS_TS },
+    .{ .name = "v2/DynamicToolSpec.ts", .contents = DYNAMIC_TOOL_SPEC_TS },
     .{ .name = "v2/GuardianApprovalReview.ts", .contents = GUARDIAN_APPROVAL_REVIEW_TS },
     .{ .name = "v2/GuardianApprovalReviewAction.ts", .contents = GUARDIAN_APPROVAL_REVIEW_ACTION_TS },
     .{ .name = "v2/ItemGuardianApprovalReviewStartedNotification.ts", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_TS },
