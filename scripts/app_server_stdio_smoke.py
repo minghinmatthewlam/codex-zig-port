@@ -1171,6 +1171,20 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "server-request-response",
+            "result": {"decision": "approved"},
+        }
+    )
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "server-request-error",
+            "error": {"code": -32000, "message": "rejected by smoke"},
+        }
+    )
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
