@@ -8829,8 +8829,6 @@ const V2_INDEX_TS =
     \\export type { FileChangeRequestApprovalResponse } from "./FileChangeRequestApprovalResponse";
     \\export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";
     \\export type { GrantedPermissionProfile } from "./GrantedPermissionProfile";
-    \\export type { NetworkApprovalContext } from "./NetworkApprovalContext";
-    \\export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
     \\export type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";
     \\export type { McpElicitationSchema } from "./McpElicitationSchema";
     \\export type { McpElicitationArrayType } from "./McpElicitationArrayType";
@@ -22402,8 +22400,6 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecResizeResponse.ts", .contents = COMMAND_EXEC_RESIZE_RESPONSE_TS },
     .{ .name = "v2/CommandAction.ts", .contents = COMMAND_ACTION_TS },
     .{ .name = "v2/ExecPolicyAmendment.ts", .contents = EXEC_POLICY_AMENDMENT_TS },
-    .{ .name = "v2/NetworkApprovalContext.ts", .contents = NETWORK_APPROVAL_CONTEXT_TS },
-    .{ .name = "v2/NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
     .{ .name = "v2/CommandExecutionRequestApprovalParams.ts", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_PARAMS_TS },
     .{ .name = "v2/CommandExecOutputDeltaNotification.ts", .contents = COMMAND_EXEC_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ProcessTerminalSize.ts", .contents = PROCESS_TERMINAL_SIZE_TS },
