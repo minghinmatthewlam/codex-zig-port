@@ -2270,6 +2270,44 @@ const MODEL_LIST_RESPONSE_TS =
     \\
     ;
 
+const MODEL_REROUTE_REASON_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ModelRerouteReason = "highRiskCyberActivity";
+    \\
+    ;
+
+const MODEL_REROUTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModelRerouteReason } from "./ModelRerouteReason";
+    \\
+    \\export interface ModelReroutedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  fromModel: string;
+    \\  toModel: string;
+    \\  reason: ModelRerouteReason;
+    \\}
+    \\
+    ;
+
+const MODEL_VERIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ModelVerification = "trustedAccessForCyber";
+    \\
+    ;
+
+const MODEL_VERIFICATION_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModelVerification } from "./ModelVerification";
+    \\
+    \\export interface ModelVerificationNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  verifications: ModelVerification[];
+    \\}
+    \\
+    ;
+
 const EXPERIMENTAL_FEATURE_LIST_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ExperimentalFeatureListParams {
@@ -3482,6 +3520,85 @@ const AGENT_MESSAGE_DELTA_NOTIFICATION_TS =
     \\  turnId: string;
     \\  itemId: string;
     \\  delta: string;
+    \\}
+    \\
+    ;
+
+const PLAN_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PlanDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\}
+    \\
+    ;
+
+const COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface CommandExecutionOutputDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\}
+    \\
+    ;
+
+const TERMINAL_INTERACTION_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TerminalInteractionNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  processId: string;
+    \\  stdin: string;
+    \\}
+    \\
+    ;
+
+const FILE_CHANGE_OUTPUT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface FileChangeOutputDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\}
+    \\
+    ;
+
+const PATCH_CHANGE_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PatchChangeKind =
+    \\  | { type: "add" }
+    \\  | { type: "delete" }
+    \\  | { type: "update"; move_path: string | null };
+    \\
+    ;
+
+const FILE_UPDATE_CHANGE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PatchChangeKind } from "./PatchChangeKind";
+    \\
+    \\export interface FileUpdateChange {
+    \\  path: string;
+    \\  kind: PatchChangeKind;
+    \\  diff: string;
+    \\}
+    \\
+    ;
+
+const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FileUpdateChange } from "./FileUpdateChange";
+    \\
+    \\export interface FileChangePatchUpdatedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  changes: FileUpdateChange[];
     \\}
     \\
     ;
@@ -5040,11 +5157,14 @@ const SERVER_NOTIFICATION_TS =
     \\import type { AccountUpdatedNotification } from "./v2/AccountUpdatedNotification";
     \\import type { AgentMessageDeltaNotification } from "./v2/AgentMessageDeltaNotification";
     \\import type { AppListUpdatedNotification } from "./v2/AppListUpdatedNotification";
+    \\import type { CommandExecutionOutputDeltaNotification } from "./v2/CommandExecutionOutputDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
     \\import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
     \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
+    \\import type { FileChangeOutputDeltaNotification } from "./v2/FileChangeOutputDeltaNotification";
+    \\import type { FileChangePatchUpdatedNotification } from "./v2/FileChangePatchUpdatedNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
     \\import type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
@@ -5054,9 +5174,13 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
+    \\import type { ModelReroutedNotification } from "./v2/ModelReroutedNotification";
+    \\import type { ModelVerificationNotification } from "./v2/ModelVerificationNotification";
+    \\import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
+    \\import type { TerminalInteractionNotification } from "./v2/TerminalInteractionNotification";
     \\import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
     \\import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
@@ -5212,6 +5336,26 @@ const SERVER_NOTIFICATION_TS =
     \\      params: AgentMessageDeltaNotification;
     \\    }
     \\  | {
+    \\      method: "item/plan/delta";
+    \\      params: PlanDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/commandExecution/outputDelta";
+    \\      params: CommandExecutionOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/commandExecution/terminalInteraction";
+    \\      params: TerminalInteractionNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/fileChange/outputDelta";
+    \\      params: FileChangeOutputDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/fileChange/patchUpdated";
+    \\      params: FileChangePatchUpdatedNotification;
+    \\    }
+    \\  | {
     \\      method: "warning";
     \\      params: WarningNotification;
     \\    }
@@ -5226,6 +5370,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "configWarning";
     \\      params: ConfigWarningNotification;
+    \\    }
+    \\  | {
+    \\      method: "model/rerouted";
+    \\      params: ModelReroutedNotification;
+    \\    }
+    \\  | {
+    \\      method: "model/verification";
+    \\      params: ModelVerificationNotification;
     \\    };
     \\
     ;
@@ -5329,6 +5481,7 @@ const V2_INDEX_TS =
     \\export type { CommandExecTerminateResponse } from "./CommandExecTerminateResponse";
     \\export type { CommandExecWriteParams } from "./CommandExecWriteParams";
     \\export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
+    \\export type { CommandExecutionOutputDeltaNotification } from "./CommandExecutionOutputDeltaNotification";
     \\export type { ProcessExitedNotification } from "./ProcessExitedNotification";
     \\export type { ProcessKillParams } from "./ProcessKillParams";
     \\export type { ProcessKillResponse } from "./ProcessKillResponse";
@@ -5445,6 +5598,9 @@ const V2_INDEX_TS =
     \\export type { FileSystemPath } from "./FileSystemPath";
     \\export type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
     \\export type { FileSystemSpecialPath } from "./FileSystemSpecialPath";
+    \\export type { FileChangeOutputDeltaNotification } from "./FileChangeOutputDeltaNotification";
+    \\export type { FileChangePatchUpdatedNotification } from "./FileChangePatchUpdatedNotification";
+    \\export type { FileUpdateChange } from "./FileUpdateChange";
     \\export type { FsChangedNotification } from "./FsChangedNotification";
     \\export type { FsCopyParams } from "./FsCopyParams";
     \\export type { FsCopyResponse } from "./FsCopyResponse";
@@ -5467,15 +5623,22 @@ const V2_INDEX_TS =
     \\export type { FsWriteFileResponse } from "./FsWriteFileResponse";
     \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
+    \\export type { PatchChangeKind } from "./PatchChangeKind";
+    \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
+    \\export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
     \\export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
     \\export type { ModelListItem } from "./ModelListItem";
     \\export type { ModelListParams } from "./ModelListParams";
     \\export type { ModelListResponse } from "./ModelListResponse";
     \\export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";
     \\export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";
+    \\export type { ModelRerouteReason } from "./ModelRerouteReason";
+    \\export type { ModelReroutedNotification } from "./ModelReroutedNotification";
     \\export type { ModelReasoningEffort } from "./ModelReasoningEffort";
     \\export type { ModelServiceTier } from "./ModelServiceTier";
     \\export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
+    \\export type { ModelVerification } from "./ModelVerification";
+    \\export type { ModelVerificationNotification } from "./ModelVerificationNotification";
     \\export type { NetworkAccess } from "./NetworkAccess";
     \\export type { PermissionProfile } from "./PermissionProfile";
     \\export type { PermissionProfileFileSystemPermissions } from "./PermissionProfileFileSystemPermissions";
@@ -8560,6 +8723,72 @@ const MODEL_LIST_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const MODEL_REROUTE_REASON_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelRerouteReason",
+    \\  "type": "string",
+    \\  "enum": ["highRiskCyberActivity"]
+    \\}
+    \\
+;
+
+const MODEL_REROUTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelReroutedNotification",
+    \\  "type": "object",
+    \\  "required": ["fromModel", "reason", "threadId", "toModel", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "fromModel": { "type": "string" },
+    \\    "toModel": { "type": "string" },
+    \\    "reason": { "$ref": "#/$defs/ModelRerouteReason" }
+    \\  },
+    \\  "$defs": {
+    \\    "ModelRerouteReason": {
+    \\      "type": "string",
+    \\      "enum": ["highRiskCyberActivity"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MODEL_VERIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelVerification",
+    \\  "type": "string",
+    \\  "enum": ["trustedAccessForCyber"]
+    \\}
+    \\
+;
+
+const MODEL_VERIFICATION_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelVerificationNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId", "verifications"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "verifications": { "type": "array", "items": { "$ref": "#/$defs/ModelVerification" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ModelVerification": {
+    \\      "type": "string",
+    \\      "enum": ["trustedAccessForCyber"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10728,6 +10957,214 @@ const AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\    "turnId": { "type": "string" },
     \\    "itemId": { "type": "string" },
     \\    "delta": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLAN_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PlanDeltaNotification",
+    \\  "description": "EXPERIMENTAL - proposed plan streaming deltas for plan items. Clients should not assume concatenated deltas match the completed plan item content.",
+    \\  "type": "object",
+    \\  "required": ["delta", "itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecutionOutputDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["delta", "itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TERMINAL_INTERACTION_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TerminalInteractionNotification",
+    \\  "type": "object",
+    \\  "required": ["itemId", "processId", "stdin", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "processId": { "type": "string" },
+    \\    "stdin": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FILE_CHANGE_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileChangeOutputDeltaNotification",
+    \\  "description": "Deprecated legacy notification for `apply_patch` textual output.\n\nThe server no longer emits this notification.",
+    \\  "type": "object",
+    \\  "required": ["delta", "itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PATCH_CHANGE_KIND_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PatchChangeKind",
+    \\  "oneOf": [
+    \\    {
+    \\      "title": "AddPatchChangeKind",
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "const": "add" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "title": "DeletePatchChangeKind",
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": { "type": { "const": "delete" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "title": "UpdatePatchChangeKind",
+    \\      "type": "object",
+    \\      "required": ["type"],
+    \\      "properties": {
+    \\        "type": { "const": "update" },
+    \\        "move_path": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const FILE_UPDATE_CHANGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileUpdateChange",
+    \\  "type": "object",
+    \\  "required": ["diff", "kind", "path"],
+    \\  "properties": {
+    \\    "path": { "type": "string" },
+    \\    "kind": { "$ref": "#/$defs/PatchChangeKind" },
+    \\    "diff": { "type": "string" }
+    \\  },
+    \\  "$defs": {
+    \\    "PatchChangeKind": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "AddPatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "add" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "DeletePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "delete" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UpdatePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "update" },
+    \\            "move_path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileChangePatchUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["changes", "itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "changes": { "type": "array", "items": { "$ref": "#/$defs/FileUpdateChange" } }
+    \\  },
+    \\  "$defs": {
+    \\    "PatchChangeKind": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "AddPatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "add" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "DeletePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "delete" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UpdatePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "update" },
+    \\            "move_path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "FileUpdateChange": {
+    \\      "type": "object",
+    \\      "required": ["diff", "kind", "path"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "kind": { "$ref": "#/$defs/PatchChangeKind" },
+    \\        "diff": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -12957,6 +13394,36 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ModelRerouteReason": {
+    \\      "type": "string",
+    \\      "enum": ["highRiskCyberActivity"]
+    \\    },
+    \\    "ModelReroutedNotification": {
+    \\      "type": "object",
+    \\      "required": ["fromModel", "reason", "threadId", "toModel", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "fromModel": { "type": "string" },
+    \\        "toModel": { "type": "string" },
+    \\        "reason": { "$ref": "#/$defs/ModelRerouteReason" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ModelVerification": {
+    \\      "type": "string",
+    \\      "enum": ["trustedAccessForCyber"]
+    \\    },
+    \\    "ModelVerificationNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId", "verifications"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "verifications": { "type": "array", "items": { "$ref": "#/$defs/ModelVerification" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ExperimentalFeatureListParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -14712,6 +15179,100 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "PlanDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["delta", "itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecutionOutputDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["delta", "itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TerminalInteractionNotification": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "processId", "stdin", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "processId": { "type": "string" },
+    \\        "stdin": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FileChangeOutputDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["delta", "itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PatchChangeKind": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "AddPatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "add" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "DeletePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "delete" } },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UpdatePatchChangeKind",
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": {
+    \\            "type": { "const": "update" },
+    \\            "move_path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "FileUpdateChange": {
+    \\      "type": "object",
+    \\      "required": ["diff", "kind", "path"],
+    \\      "properties": {
+    \\        "path": { "type": "string" },
+    \\        "kind": { "$ref": "#/$defs/PatchChangeKind" },
+    \\        "diff": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FileChangePatchUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["changes", "itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "changes": { "type": "array", "items": { "$ref": "#/$defs/FileUpdateChange" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -15491,6 +16052,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ModelServiceTier.json", .contents = MODEL_SERVICE_TIER_JSON_SCHEMA },
     .{ .name = "ModelListItem.json", .contents = MODEL_LIST_ITEM_JSON_SCHEMA },
     .{ .name = "ModelListResponse.json", .contents = MODEL_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ModelRerouteReason.json", .contents = MODEL_REROUTE_REASON_JSON_SCHEMA },
+    .{ .name = "ModelReroutedNotification.json", .contents = MODEL_REROUTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ModelVerification.json", .contents = MODEL_VERIFICATION_JSON_SCHEMA },
+    .{ .name = "ModelVerificationNotification.json", .contents = MODEL_VERIFICATION_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ExperimentalFeatureListParams.json", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ExperimentalFeatureStage.json", .contents = EXPERIMENTAL_FEATURE_STAGE_JSON_SCHEMA },
     .{ .name = "ExperimentalFeature.json", .contents = EXPERIMENTAL_FEATURE_JSON_SCHEMA },
@@ -15606,6 +16171,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AgentMessageDeltaNotification.json", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "PlanDeltaNotification.json", .contents = PLAN_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "CommandExecutionOutputDeltaNotification.json", .contents = COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TerminalInteractionNotification.json", .contents = TERMINAL_INTERACTION_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "FileChangeOutputDeltaNotification.json", .contents = FILE_CHANGE_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "PatchChangeKind.json", .contents = PATCH_CHANGE_KIND_JSON_SCHEMA },
+    .{ .name = "FileUpdateChange.json", .contents = FILE_UPDATE_CHANGE_JSON_SCHEMA },
+    .{ .name = "FileChangePatchUpdatedNotification.json", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -15858,6 +16430,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ModelServiceTier.ts", .contents = MODEL_SERVICE_TIER_TS },
     .{ .name = "v2/ModelListItem.ts", .contents = MODEL_LIST_ITEM_TS },
     .{ .name = "v2/ModelListResponse.ts", .contents = MODEL_LIST_RESPONSE_TS },
+    .{ .name = "v2/ModelRerouteReason.ts", .contents = MODEL_REROUTE_REASON_TS },
+    .{ .name = "v2/ModelReroutedNotification.ts", .contents = MODEL_REROUTED_NOTIFICATION_TS },
+    .{ .name = "v2/ModelVerification.ts", .contents = MODEL_VERIFICATION_TS },
+    .{ .name = "v2/ModelVerificationNotification.ts", .contents = MODEL_VERIFICATION_NOTIFICATION_TS },
     .{ .name = "v2/ExperimentalFeatureListParams.ts", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_TS },
     .{ .name = "v2/ExperimentalFeatureStage.ts", .contents = EXPERIMENTAL_FEATURE_STAGE_TS },
     .{ .name = "v2/ExperimentalFeature.ts", .contents = EXPERIMENTAL_FEATURE_TS },
@@ -15971,6 +16547,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/AgentMessageDeltaNotification.ts", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/PlanDeltaNotification.ts", .contents = PLAN_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/CommandExecutionOutputDeltaNotification.ts", .contents = COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/TerminalInteractionNotification.ts", .contents = TERMINAL_INTERACTION_NOTIFICATION_TS },
+    .{ .name = "v2/FileChangeOutputDeltaNotification.ts", .contents = FILE_CHANGE_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/PatchChangeKind.ts", .contents = PATCH_CHANGE_KIND_TS },
+    .{ .name = "v2/FileUpdateChange.ts", .contents = FILE_UPDATE_CHANGE_TS },
+    .{ .name = "v2/FileChangePatchUpdatedNotification.ts", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
