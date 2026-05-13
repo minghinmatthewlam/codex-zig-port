@@ -91,7 +91,8 @@ MCP progress/startup-status, and remote-control status notification artifacts,
 approval auto-review notification artifacts, and model reroute/verification
 notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
-artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
+artifacts, collaboration-mode list and collaboration-agent helper artifacts, and
+model-list catalog artifacts,
 app-list catalog artifacts, marketplace/plugin/config/review client-request
 TypeScript artifacts, config read/write/requirements TypeScript artifacts
 including app-tool config, managed-hook requirements, and network requirements
