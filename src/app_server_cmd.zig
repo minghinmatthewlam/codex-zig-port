@@ -782,6 +782,18 @@ const SETTINGS_TS =
     \\
     ;
 
+const ROOT_COLLABORATION_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModeKind } from "./ModeKind";
+    \\import type { Settings } from "./Settings";
+    \\
+    \\export interface CollaborationMode {
+    \\  mode: ModeKind;
+    \\  settings: Settings;
+    \\}
+    \\
+    ;
+
 const TOOL_TS =
     GENERATED_TS_HEADER ++
     \\import type { JsonValue } from "./serde_json/JsonValue";
@@ -3233,6 +3245,64 @@ const COLLABORATION_MODE_LIST_RESPONSE_TS =
     \\export interface CollaborationModeListResponse {
     \\  data: CollaborationMode[];
     \\}
+    \\
+    ;
+
+const COLLABORATION_MODE_MASK_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ModeKind } from "../ModeKind";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\
+    \\export interface CollaborationModeMask {
+    \\  name: string;
+    \\  mode: ModeKind | null;
+    \\  model: string | null;
+    \\  reasoning_effort: ReasoningEffort | null;
+    \\}
+    \\
+    ;
+
+const COLLAB_AGENT_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CollabAgentStatus =
+    \\  | "pendingInit"
+    \\  | "running"
+    \\  | "interrupted"
+    \\  | "completed"
+    \\  | "errored"
+    \\  | "shutdown"
+    \\  | "notFound";
+    \\
+    ;
+
+const COLLAB_AGENT_STATE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CollabAgentStatus } from "./CollabAgentStatus";
+    \\
+    \\export interface CollabAgentState {
+    \\  status: CollabAgentStatus;
+    \\  message: string | null;
+    \\}
+    \\
+    ;
+
+const COLLAB_AGENT_TOOL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CollabAgentTool =
+    \\  | "spawnAgent"
+    \\  | "sendInput"
+    \\  | "resumeAgent"
+    \\  | "wait"
+    \\  | "closeAgent";
+    \\
+    ;
+
+const COLLAB_AGENT_TOOL_CALL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CollabAgentToolCallStatus =
+    \\  | "inProgress"
+    \\  | "completed"
+    \\  | "failed";
     \\
     ;
 
@@ -7738,6 +7808,7 @@ const INDEX_TS =
     \\export type { ServerRequest } from "./ServerRequest";
     \\export type { SessionSource } from "./SessionSource";
     \\export type { Settings } from "./Settings";
+    \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { SubAgentSource } from "./SubAgentSource";
     \\export type { ThreadId } from "./ThreadId";
     \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
@@ -7916,9 +7987,14 @@ const V2_INDEX_TS =
     \\export type { McpServerToolCallParams } from "./McpServerToolCallParams";
     \\export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";
     \\export type { ManagedHooksRequirements } from "./ManagedHooksRequirements";
+    \\export type { CollabAgentState } from "./CollabAgentState";
+    \\export type { CollabAgentStatus } from "./CollabAgentStatus";
+    \\export type { CollabAgentTool } from "./CollabAgentTool";
+    \\export type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
+    \\export type { CollaborationModeMask } from "./CollaborationModeMask";
     \\export type { ExperimentalFeature } from "./ExperimentalFeature";
     \\export type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";
     \\export type { ExperimentalFeatureEnablementSetParams } from "./ExperimentalFeatureEnablementSetParams";
@@ -21067,6 +21143,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "Resource.ts", .contents = RESOURCE_TS },
     .{ .name = "ResourceTemplate.ts", .contents = RESOURCE_TEMPLATE_TS },
     .{ .name = "Settings.ts", .contents = SETTINGS_TS },
+    .{ .name = "CollaborationMode.ts", .contents = ROOT_COLLABORATION_MODE_TS },
     .{ .name = "Tool.ts", .contents = TOOL_TS },
     .{ .name = "ThreadId.ts", .contents = THREAD_ID_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
@@ -21255,6 +21332,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadResponse.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_TS },
+    .{ .name = "v2/CollabAgentStatus.ts", .contents = COLLAB_AGENT_STATUS_TS },
+    .{ .name = "v2/CollabAgentState.ts", .contents = COLLAB_AGENT_STATE_TS },
+    .{ .name = "v2/CollabAgentTool.ts", .contents = COLLAB_AGENT_TOOL_TS },
+    .{ .name = "v2/CollabAgentToolCallStatus.ts", .contents = COLLAB_AGENT_TOOL_CALL_STATUS_TS },
+    .{ .name = "v2/CollaborationModeMask.ts", .contents = COLLABORATION_MODE_MASK_TS },
     .{ .name = "v2/CollaborationModeListParams.ts", .contents = COLLABORATION_MODE_LIST_PARAMS_TS },
     .{ .name = "v2/CollaborationMode.ts", .contents = COLLABORATION_MODE_TS },
     .{ .name = "v2/CollaborationModeListResponse.ts", .contents = COLLABORATION_MODE_LIST_RESPONSE_TS },
