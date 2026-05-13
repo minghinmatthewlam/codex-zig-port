@@ -44,6 +44,11 @@ const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_P
 const UNIX_MANAGED_CONFIG_SYSTEM_PATH = "/etc/codex/managed_config.toml";
 const UNIX_SYSTEM_CONFIG_PATH = "/etc/codex/config.toml";
 const UNIX_SYSTEM_REQUIREMENTS_PATH = "/etc/codex/requirements.toml";
+const APP_SERVER_COMPACT_PROMPT =
+    \\Summarize this conversation so another coding agent can continue from the compacted context.
+    \\Preserve the user's goal, decisions, constraints, files changed, commands run, verification results, unresolved risks, and exact next steps.
+    \\Be concise but specific. Do not include generic advice.
+;
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -25578,6 +25583,19 @@ fn applyTurnStartRuntimeOverrides(
     }
 }
 
+fn applyLoadedThreadRuntimeConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    try replaceOwnedString(allocator, &cfg.model, thread.model);
+    cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidThreadRuntimeConfig;
+    cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidThreadRuntimeConfig;
+    if (cfg.service_tier) |existing| allocator.free(existing);
+    cfg.service_tier = null;
+    if (thread.service_tier) |value| cfg.service_tier = try allocator.dupe(u8, value);
+}
+
 fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThread, prompt: []const u8) !void {
     if (thread.preview.len == 0) try replaceOwnedString(allocator, &thread.preview, prompt);
     const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
@@ -25850,6 +25868,101 @@ fn injectLoadedThreadItems(
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
 
+fn handleLoadedThreadCompactStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    thread_index: usize,
+) ![]const u8 {
+    var cfg = config.load(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const thread = &state.loaded_threads.items[thread_index];
+    applyLoadedThreadRuntimeConfig(allocator, &cfg, thread) catch |err| switch (err) {
+        error.InvalidThreadRuntimeConfig => return renderJsonRpcError(allocator, id_value, -32600, "thread has invalid runtime config"),
+        else => return err,
+    };
+
+    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load auth", err);
+    };
+    defer credentials.deinit(allocator);
+
+    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    defer allocator.free(turn_id);
+    const item_id = try std.fmt.allocPrint(allocator, "item-{d}", .{thread.transcript.history.items.len});
+    defer allocator.free(item_id);
+
+    const started_at_ms = currentUnixMilliseconds();
+    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+    const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
+    var started_notification_moved = false;
+    errdefer if (!started_notification_moved) allocator.free(started_notification);
+
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, APP_SERVER_COMPACT_PROMPT, .{
+        .prompt_for_approval = false,
+        .include_tools = false,
+    }) catch |err| {
+        const error_message = try std.fmt.allocPrint(allocator, "thread/compact/start failed to run compaction: {s}", .{@errorName(err)});
+        defer allocator.free(error_message);
+        thread.status = .system_error;
+        try refreshLoadedThreadAfterTurn(allocator, thread, APP_SERVER_COMPACT_PROMPT);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+        try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
+        return renderJsonRpcError(allocator, id_value, -32603, error_message);
+    };
+    defer allocator.free(answer);
+
+    const trimmed = std.mem.trim(u8, answer, " \t\r\n");
+    if (trimmed.len == 0) {
+        const error_message = "thread/compact/start failed to produce a compaction summary";
+        thread.status = .system_error;
+        try refreshLoadedThreadAfterTurn(allocator, thread, APP_SERVER_COMPACT_PROMPT);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+        try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
+        return renderJsonRpcError(allocator, id_value, -32603, error_message);
+    }
+    const compacted = try std.fmt.allocPrint(
+        allocator,
+        "Compacted conversation summary:\n\n{s}",
+        .{trimmed},
+    );
+    defer allocator.free(compacted);
+
+    try thread.transcript.replaceWithCompactedSummary(allocator, compacted);
+    try refreshLoadedThreadAfterRollback(allocator, thread);
+    if (thread.path) |path| {
+        try session_store.saveTranscript(allocator, path, &thread.transcript);
+    }
+
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+    const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+    var completed_notification_moved = false;
+    errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+    thread.status = .active;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+    try queueTurnNotification(allocator, state, "turn/started", started_notification);
+    started_notification_moved = true;
+    try queueContextCompactionItemNotification(allocator, state, "item/started", thread.id, turn_id, item_id, "startedAtMs", started_at_ms);
+    try queueContextCompactionItemNotification(allocator, state, "item/completed", thread.id, turn_id, item_id, "completedAtMs", completed_at_ms);
+    try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+    completed_notification_moved = true;
+    thread.status = .idle;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
 fn handleLoadedThreadShellCommand(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -26015,6 +26128,23 @@ fn queueUserMessageItemNotification(
     notification_moved = true;
 }
 
+fn queueContextCompactionItemNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) !void {
+    const notification = try renderContextCompactionItemNotification(allocator, method, thread_id, turn_id, item_id, timestamp_field, timestamp_ms);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, method, notification);
+    notification_moved = true;
+}
+
 fn renderUserMessageItemNotification(
     allocator: std.mem.Allocator,
     method: []const u8,
@@ -26033,6 +26163,33 @@ fn renderUserMessageItemNotification(
     try appendUsize(allocator, &notification, item_index);
     try notification.appendSlice(allocator, "\",\"content\":");
     try notification.appendSlice(allocator, content_json);
+    try notification.appendSlice(allocator, "},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderContextCompactionItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":\"contextCompaction\",\"id\":");
+    try appendJsonString(allocator, &notification, item_id);
     try notification.appendSlice(allocator, "},\"threadId\":");
     try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, ",\"turnId\":");
@@ -26388,7 +26545,19 @@ fn handleThreadMethod(
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/compact/start")) {
-        return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        };
+        return handleLoadedThreadCompactStart(allocator, state, id_value, thread_index);
     }
     if (std.mem.eql(u8, method, "thread/shellCommand")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
