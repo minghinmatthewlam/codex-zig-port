@@ -26430,7 +26430,19 @@ fn handleThreadMethod(
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
     if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) {
-        return renderThreadNotFoundForThreadIdParam(allocator, id_value, method, params_value);
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (findLoadedThread(state, thread_id) == null) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation"))
