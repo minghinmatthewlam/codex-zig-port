@@ -21951,9 +21951,11 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
 fn isJsonRpcResponseEnvelope(object: std.json.ObjectMap) bool {
     const id_value = object.get("id") orelse return false;
     if (!isJsonRpcRequestIdValue(id_value)) return false;
-    if (object.get("result") != null) return true;
-    const error_value = object.get("error") orelse return false;
-    return isJsonRpcErrorValue(error_value);
+    const has_result = object.get("result") != null;
+    const error_value = object.get("error");
+    if (has_result) return error_value == null;
+    const error_object = error_value orelse return false;
+    return isJsonRpcErrorValue(error_object);
 }
 
 fn isJsonRpcRequestIdValue(value: std.json.Value) bool {
