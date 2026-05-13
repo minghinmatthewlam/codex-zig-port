@@ -123,6 +123,9 @@ It also emits the current top-level aggregate JSON Schema artifacts for
 MCP server status JSON Schema generation includes both the Zig-native
 `McpServerStatusList*` names and Rust-compatible `v2/ListMcpServerStatus*`
 aliases.
+Review-start and MCP-refresh JSON Schema generation now includes
+`v2/ReviewStartParams`, `v2/ReviewStartResponse`, and
+`v2/McpServerRefreshResponse`.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
