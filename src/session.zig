@@ -232,8 +232,20 @@ pub const Transcript = struct {
         var replacement = Transcript{};
         errdefer replacement.deinit(allocator);
 
-        if (self.title) |title| try replacement.setTitle(allocator, title);
+        if (self.id) |value| try replacement.setId(allocator, value);
+        if (self.forked_from_id) |value| try replacement.setForkedFromId(allocator, value);
+        if (self.source) |value| try replacement.setSource(allocator, value);
+        if (self.thread_source) |value| try replacement.setThreadSource(allocator, value);
+        if (self.model_provider) |value| try replacement.setModelProvider(allocator, value);
+        if (self.cwd) |value| try replacement.setCwd(allocator, value);
+        if (self.cli_version) |value| try replacement.setCliVersion(allocator, value);
+        if (self.memory_mode) |value| try replacement.setMemoryMode(allocator, value);
+        if (self.git_sha) |value| try replacement.setGitSha(allocator, value);
+        if (self.git_branch) |value| try replacement.setGitBranch(allocator, value);
+        if (self.git_origin_url) |value| try replacement.setGitOriginUrl(allocator, value);
+        if (self.title) |value| try replacement.setTitle(allocator, value);
         try replacement.appendUserMessage(allocator, summary);
+
         self.deinit(allocator);
         self.* = replacement;
     }
@@ -556,11 +568,17 @@ test "replace transcript with compacted summary" {
     defer transcript.deinit(allocator);
 
     try transcript.setTitle(allocator, "demo title");
+    try transcript.setId(allocator, "11111111-1111-4111-8111-111111111111");
+    try transcript.setCwd(allocator, "/tmp/demo");
+    try transcript.setGitBranch(allocator, "main");
     try transcript.appendUserMessage(allocator, "first");
     try transcript.appendAssistantMessage(allocator, "second");
     try transcript.replaceWithCompactedSummary(allocator, "summary");
 
     try std.testing.expectEqualStrings("demo title", transcript.title.?);
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", transcript.id.?);
+    try std.testing.expectEqualStrings("/tmp/demo", transcript.cwd.?);
+    try std.testing.expectEqualStrings("main", transcript.git_branch.?);
     try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, transcript.history.items[0].kind);
     try std.testing.expectEqualStrings("user", transcript.history.items[0].role.?);
