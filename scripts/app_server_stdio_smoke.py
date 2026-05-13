@@ -22421,6 +22421,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 '"auto_review"',
                 '"guardian_subagent"',
             ],
+            "AppToolApproval": [
+                '"auto" | "prompt" | "approve"',
+            ],
+            "AppToolsConfig": [
+                'import type { AppToolApproval } from "./AppToolApproval";',
+                "approval_mode: AppToolApproval | null;",
+            ],
+            "AppsDefaultConfig": [
+                "destructive_enabled: boolean;",
+                "open_world_enabled: boolean;",
+            ],
+            "AppsConfig": [
+                'import type { AppToolsConfig } from "./AppToolsConfig";',
+                "_default: AppsDefaultConfig | null;",
+                "default_tools_approval_mode: AppToolApproval | null;",
+            ],
             "AnalyticsConfig": [
                 'import type { JsonValue } from "../serde_json/JsonValue";',
                 "enabled: boolean | null;",
@@ -22477,6 +22493,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ConfigRequirementsReadResponse": [
                 'import type { ConfigRequirements } from "./ConfigRequirements";',
                 "requirements: ConfigRequirements | null;",
+            ],
+            "ConfiguredHookHandler": [
+                'type: "command";',
+                "timeoutSec: bigint | null;",
+                'type: "prompt"',
+            ],
+            "ConfiguredHookMatcherGroup": [
+                'import type { ConfiguredHookHandler } from "./ConfiguredHookHandler";',
+                "hooks: ConfiguredHookHandler[];",
+            ],
+            "ManagedHooksRequirements": [
+                'import type { ConfiguredHookMatcherGroup } from "./ConfiguredHookMatcherGroup";',
+                "PreToolUse: ConfiguredHookMatcherGroup[];",
+                "UserPromptSubmit: ConfiguredHookMatcherGroup[];",
+            ],
+            "NetworkDomainPermission": [
+                'export type NetworkDomainPermission = "allow" | "deny";',
+            ],
+            "NetworkUnixSocketPermission": [
+                'export type NetworkUnixSocketPermission = "allow" | "none";',
+            ],
+            "NetworkRequirements": [
+                'import type { NetworkDomainPermission } from "./NetworkDomainPermission";',
+                "domains: Record<string, NetworkDomainPermission | undefined> | null;",
+                "allowUnixSockets: string[] | null;",
             ],
             "WriteStatus": [
                 'export type WriteStatus = "ok" | "okOverridden";',
@@ -25511,6 +25552,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         for config_export in [
             "AnalyticsConfig",
+            "AppToolApproval",
+            "AppToolsConfig",
+            "AppsConfig",
+            "AppsDefaultConfig",
             "ApprovalsReviewer",
             "AskForApproval",
             "Config",
@@ -25525,7 +25570,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ConfigRequirementsReadResponse",
             "ConfigValueWriteParams",
             "ConfigWriteResponse",
+            "ConfiguredHookHandler",
+            "ConfiguredHookMatcherGroup",
+            "ManagedHooksRequirements",
             "MergeStrategy",
+            "NetworkDomainPermission",
+            "NetworkRequirements",
+            "NetworkUnixSocketPermission",
             "OverriddenMetadata",
             "ProfileV2",
             "ResidencyRequirement",
