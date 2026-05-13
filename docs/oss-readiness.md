@@ -25,8 +25,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25773190893` passed for
-  `d89ca25b052d09d21fbfe214422d4399ac10b1ba`.
+  Checked push run `25779605349` passed for
+  `143586c Document plugin marketplace JSON schemas`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
