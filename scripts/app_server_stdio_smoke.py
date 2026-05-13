@@ -19111,6 +19111,188 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             == "#/$defs/AppBranding"
         )
+        for plugin_marketplace_schema in [
+            "MarketplaceAddParams",
+            "MarketplaceAddResponse",
+            "MarketplaceRemoveParams",
+            "MarketplaceRemoveResponse",
+            "MarketplaceUpgradeParams",
+            "MarketplaceUpgradeResponse",
+            "PluginInstallParams",
+            "PluginInstallResponse",
+            "PluginListParams",
+            "PluginListResponse",
+            "PluginReadParams",
+            "PluginReadResponse",
+            "PluginSkillReadParams",
+            "PluginSkillReadResponse",
+            "PluginShareSaveParams",
+            "PluginShareSaveResponse",
+            "PluginShareUpdateTargetsParams",
+            "PluginShareUpdateTargetsResponse",
+            "PluginShareListParams",
+            "PluginShareListResponse",
+            "PluginShareDeleteParams",
+            "PluginShareDeleteResponse",
+            "PluginUninstallParams",
+            "PluginUninstallResponse",
+        ]:
+            assert (
+                out_dir / "v2" / f"{plugin_marketplace_schema}.json"
+            ).is_file()
+        marketplace_add_params = json.loads(
+            (out_dir / "v2" / "MarketplaceAddParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marketplace_add_params["required"] == ["source"]
+        assert marketplace_add_params["properties"]["sparsePaths"]["type"] == [
+            "array",
+            "null",
+        ]
+        marketplace_add_response = json.loads(
+            (out_dir / "v2" / "MarketplaceAddResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marketplace_add_response["required"] == [
+            "marketplaceName",
+            "installedRoot",
+            "alreadyAdded",
+        ]
+        marketplace_remove_response = json.loads(
+            (out_dir / "v2" / "MarketplaceRemoveResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marketplace_remove_response["properties"]["installedRoot"]["type"] == [
+            "string",
+            "null",
+        ]
+        marketplace_upgrade_response = json.loads(
+            (out_dir / "v2" / "MarketplaceUpgradeResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marketplace_upgrade_response["required"] == [
+            "selectedMarketplaces",
+            "upgradedRoots",
+            "errors",
+        ]
+        assert (
+            marketplace_upgrade_response["properties"]["errors"]["items"]["$ref"]
+            == "#/$defs/MarketplaceUpgradeErrorInfo"
+        )
+        plugin_list_params = json.loads(
+            (out_dir / "v2" / "PluginListParams.json").read_text(encoding="utf-8")
+        )
+        assert (
+            plugin_list_params["properties"]["marketplaceKinds"]["items"]["$ref"]
+            == "#/$defs/PluginListMarketplaceKind"
+        )
+        assert "shared-with-me" in plugin_list_params["$defs"][
+            "PluginListMarketplaceKind"
+        ]["enum"]
+        plugin_install_response = json.loads(
+            (out_dir / "v2" / "PluginInstallResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_install_response["required"] == [
+            "authPolicy",
+            "appsNeedingAuth",
+        ]
+        assert plugin_install_response["properties"]["authPolicy"]["$ref"] == (
+            "#/$defs/PluginAuthPolicy"
+        )
+        assert (
+            plugin_install_response["properties"]["appsNeedingAuth"]["items"]["$ref"]
+            == "#/$defs/AppSummary"
+        )
+        plugin_list_response = json.loads(
+            (out_dir / "v2" / "PluginListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_list_response["required"] == [
+            "marketplaces",
+            "marketplaceLoadErrors",
+            "featuredPluginIds",
+        ]
+        assert (
+            plugin_list_response["properties"]["marketplaces"]["items"]["$ref"]
+            == "#/$defs/PluginMarketplaceEntry"
+        )
+        assert plugin_list_response["$defs"]["PluginSource"]["oneOf"][1][
+            "properties"
+        ]["type"]["const"] == "git"
+        assert "DISABLED_BY_ADMIN" in plugin_list_response["$defs"][
+            "PluginAvailability"
+        ]["enum"]
+        plugin_read_response = json.loads(
+            (out_dir / "v2" / "PluginReadResponse.json").read_text(encoding="utf-8")
+        )
+        assert plugin_read_response["required"] == ["plugin"]
+        assert plugin_read_response["properties"]["plugin"]["$ref"] == (
+            "#/$defs/PluginDetail"
+        )
+        assert (
+            plugin_read_response["$defs"]["PluginDetail"]["properties"]["skills"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/SkillSummary"
+        )
+        plugin_skill_read_response = json.loads(
+            (out_dir / "v2" / "PluginSkillReadResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_skill_read_response["required"] == ["contents"]
+        assert plugin_skill_read_response["properties"]["contents"]["type"] == [
+            "string",
+            "null",
+        ]
+        plugin_share_save_params = json.loads(
+            (out_dir / "v2" / "PluginShareSaveParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_share_save_params["required"] == ["pluginPath"]
+        assert plugin_share_save_params["properties"]["shareTargets"]["anyOf"][0][
+            "items"
+        ]["$ref"] == "#/$defs/PluginShareTarget"
+        assert plugin_share_save_params["$defs"]["PluginShareDiscoverability"][
+            "enum"
+        ] == ["LISTED", "UNLISTED", "PRIVATE"]
+        plugin_share_update_response = json.loads(
+            (
+                out_dir / "v2" / "PluginShareUpdateTargetsResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert plugin_share_update_response["required"] == ["principals"]
+        assert plugin_share_update_response["properties"]["principals"]["items"][
+            "$ref"
+        ] == "#/$defs/PluginSharePrincipal"
+        plugin_share_list_response = json.loads(
+            (out_dir / "v2" / "PluginShareListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_share_list_response["properties"]["data"]["items"]["$ref"] == (
+            "#/$defs/PluginShareListItem"
+        )
+        plugin_share_delete_response = json.loads(
+            (out_dir / "v2" / "PluginShareDeleteResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_share_delete_response["additionalProperties"] is False
+        plugin_uninstall_response = json.loads(
+            (out_dir / "v2" / "PluginUninstallResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_uninstall_response["additionalProperties"] is False
         remote_status = json.loads(
             (out_dir / "RemoteControlConnectionStatus.json").read_text(
                 encoding="utf-8"
