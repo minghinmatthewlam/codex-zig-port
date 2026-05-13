@@ -604,6 +604,15 @@ import progress notifications remain planned.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
+Additional app-server thread shell-command coverage: `thread/shellCommand`
+now runs non-empty commands for already-loaded threads in the thread cwd with
+the user shell, persists a Rust-shaped `<user_shell_command>` contextual record
+into the loaded transcript, updates the thread preview/turn list, emits active
+and idle `thread/status/changed` plus turn/user-message item lifecycle
+notifications, and preserves invalid/missing thread errors. Full Rust async
+shell progress streaming, cancellation, and active-turn auxiliary injection
+remain planned.
+
 Additional app-server turn-start coverage: `turn/start` now accepts text, URL-backed image, localImage, skill, and mention input for a loaded thread, including turns made only of structured skill/mention items. It preserves text input item arrays, `text_elements`, image URLs, local image paths, and skill/mention name/path pairs in user-message lifecycle notifications, runs the existing Responses turn loop with the thread transcript, forwards URL-backed and readable local images as `input_image` request content, converts missing local images into model-visible error placeholders, injects readable local skill files as Rust-shaped `<skill>` user fragments, updates loaded-thread preview/turns, persists persistent Zig transcripts, returns a Rust-shaped `TurnStartResponse`, emits `turn/started`, text user-message `item/started` / `item/completed`, final assistant-message `item/started`, `item/agentMessage/delta`, `item/completed`, and `turn/completed` notifications, and includes `turn/start`, `turn/started`, `turn/completed`, `item/started`, `item/completed`, `item/agentMessage/delta`, and the current `UserInput` union in generated TypeScript and JSON schemas. `turn/steer` and `turn/interrupt` are also parsed and generated: the current no-active-turn runtime validates loaded-thread ids, steer input, `expectedTurnId`, and `turnId`, returns Rust-shaped no-active-turn errors for loaded synchronous threads, and accepts the Rust startup-interrupt empty `turnId` response. The current Zig implementation is synchronous and flattens model-visible turn input into the stored transcript; full Rust async streaming, plugin/app mention capability injection, chunked deltas and tool/reasoning item lifecycles, real same-turn steering, async interruption, active-turn tracking, and full turn schema parity remain planned.
 
 Additional app-server thread status coverage: `turn/start` now emits
