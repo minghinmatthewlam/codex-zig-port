@@ -198,16 +198,23 @@ artifacts now include the top-level `ServerRequest` union for
 artifacts cover legacy patch and exec approval params, command/file/permission
 approval request params, dynamic tool-call params, request-user-input question
 and option params, network approval/policy helpers, and the MCP elicitation
-request envelope. Approval response artifacts and full MCP elicitation primitive
-schema helper parity remain planned.
+request envelope. JSON Schema parity and runtime handling for these request
+surfaces remain planned.
 
 Additional app-server server-request response generation coverage: generated
-TypeScript artifacts now include legacy `ApplyPatchApprovalResponse`,
-`ExecCommandApprovalResponse`, `ReviewDecision`, root network policy helper
-types, and v2 response helpers for command-execution approvals, file-change
-approvals, request-user-input answers, permissions approvals, and MCP
-elicitations. Full JSON Schema parity for these response artifacts and the full
-MCP elicitation primitive schema helper graph remain planned.
+TypeScript and JSON Schema artifacts now include legacy
+`ApplyPatchApprovalResponse`, `ExecCommandApprovalResponse`, `ReviewDecision`,
+root network policy helper types, and v2 response helpers for command-execution
+approvals, file-change approvals, request-user-input answers, permissions
+approvals, and MCP elicitations. JSON Schema parity for the related request
+params remains planned.
+
+Additional app-server MCP elicitation schema generation coverage: generated
+TypeScript artifacts now include the full v2 `McpElicitation*` primitive helper
+graph used by form-mode `mcpServer/elicitation/request` payloads, including
+string, number, boolean, single-select, multi-select, titled enum, and legacy
+enum schema helpers. Runtime elicitation dispatch and JSON Schema parity remain
+planned.
 
 Additional app-server approval auto-review notification generation coverage:
 generated TypeScript artifacts now include the Guardian review/action helper
