@@ -93,7 +93,9 @@ notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, marketplace/plugin/config/review client-request
-TypeScript artifacts, config read/write/requirements TypeScript artifacts,
+TypeScript artifacts, config read/write/requirements TypeScript artifacts
+including app-tool config, managed-hook requirements, and network requirements
+helpers,
 server-request TypeScript artifacts, plus
 experimental-feature list/enablement artifacts,
 memory-reset response
