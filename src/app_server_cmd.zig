@@ -632,6 +632,17 @@ const JSONRPC_ERROR_TS =
     \\
     ;
 
+const SERVER_REQUEST_RESOLVED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RequestId } from "../RequestId";
+    \\
+    \\export interface ServerRequestResolvedNotification {
+    \\  threadId: string;
+    \\  requestId: RequestId;
+    \\}
+    \\
+    ;
+
 const JSONRPC_MESSAGE_TS =
     GENERATED_TS_HEADER ++
     \\import type { JSONRPCError } from "./JSONRPCError";
@@ -1265,6 +1276,30 @@ const APP_LIST_UPDATED_NOTIFICATION_TS =
     \\
     \\export interface AppListUpdatedNotification {
     \\  data: AppInfo[];
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CONNECTION_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RemoteControlConnectionStatus =
+    \\  | "disabled"
+    \\  | "connecting"
+    \\  | "connected"
+    \\  | "errored";
+    \\
+    ;
+
+const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\
+    \\/**
+    \\ * Current remote-control connection status and environment id exposed to clients.
+    \\ */
+    \\export interface RemoteControlStatusChangedNotification {
+    \\  status: RemoteControlConnectionStatus;
+    \\  environmentId: string | null;
     \\}
     \\
     ;
@@ -2080,6 +2115,28 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_TS =
     \\
     ;
 
+const MCP_SERVER_STARTUP_STATE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpServerStartupState =
+    \\  | "starting"
+    \\  | "ready"
+    \\  | "failed"
+    \\  | "cancelled";
+    \\
+    ;
+
+const MCP_SERVER_STATUS_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpServerStartupState } from "./McpServerStartupState";
+    \\
+    \\export interface McpServerStatusUpdatedNotification {
+    \\  name: string;
+    \\  status: McpServerStartupState;
+    \\  error: string | null;
+    \\}
+    \\
+    ;
+
 const RESOURCE_CONTENT_TS =
     GENERATED_TS_HEADER ++
     \\export type ResourceContent =
@@ -2137,6 +2194,17 @@ const MCP_SERVER_TOOL_CALL_RESPONSE_TS =
     \\  structuredContent?: unknown;
     \\  isError?: boolean;
     \\  _meta?: unknown;
+    \\}
+    \\
+    ;
+
+const MCP_TOOL_CALL_PROGRESS_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpToolCallProgressNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  message: string;
     \\}
     \\
     ;
@@ -3599,6 +3667,53 @@ const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS =
     \\  turnId: string;
     \\  itemId: string;
     \\  changes: FileUpdateChange[];
+    \\}
+    \\
+    ;
+
+const REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ReasoningSummaryTextDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\  summaryIndex: number;
+    \\}
+    \\
+    ;
+
+const REASONING_SUMMARY_PART_ADDED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ReasoningSummaryPartAddedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  summaryIndex: number;
+    \\}
+    \\
+    ;
+
+const REASONING_TEXT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ReasoningTextDeltaNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  delta: string;
+    \\  contentIndex: number;
+    \\}
+    \\
+    ;
+
+const CONTEXT_COMPACTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * Deprecated: Use `ContextCompaction` item type instead.
+    \\ */
+    \\export interface ContextCompactedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
     \\}
     \\
     ;
@@ -5160,6 +5275,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { CommandExecutionOutputDeltaNotification } from "./v2/CommandExecutionOutputDeltaNotification";
     \\import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputDeltaNotification";
     \\import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
+    \\import type { ContextCompactedNotification } from "./v2/ContextCompactedNotification";
     \\import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
     \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
@@ -5174,11 +5290,18 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
+    \\import type { McpServerStatusUpdatedNotification } from "./v2/McpServerStatusUpdatedNotification";
+    \\import type { McpToolCallProgressNotification } from "./v2/McpToolCallProgressNotification";
     \\import type { ModelReroutedNotification } from "./v2/ModelReroutedNotification";
     \\import type { ModelVerificationNotification } from "./v2/ModelVerificationNotification";
     \\import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
+    \\import type { ReasoningSummaryPartAddedNotification } from "./v2/ReasoningSummaryPartAddedNotification";
+    \\import type { ReasoningSummaryTextDeltaNotification } from "./v2/ReasoningSummaryTextDeltaNotification";
+    \\import type { ReasoningTextDeltaNotification } from "./v2/ReasoningTextDeltaNotification";
+    \\import type { RemoteControlStatusChangedNotification } from "./v2/RemoteControlStatusChangedNotification";
+    \\import type { ServerRequestResolvedNotification } from "./v2/ServerRequestResolvedNotification";
     \\import type { SkillsChangedNotification } from "./v2/SkillsChangedNotification";
     \\import type { TerminalInteractionNotification } from "./v2/TerminalInteractionNotification";
     \\import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
@@ -5356,6 +5479,38 @@ const SERVER_NOTIFICATION_TS =
     \\      params: FileChangePatchUpdatedNotification;
     \\    }
     \\  | {
+    \\      method: "serverRequest/resolved";
+    \\      params: ServerRequestResolvedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/mcpToolCall/progress";
+    \\      params: McpToolCallProgressNotification;
+    \\    }
+    \\  | {
+    \\      method: "mcpServer/startupStatus/updated";
+    \\      params: McpServerStatusUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/status/changed";
+    \\      params: RemoteControlStatusChangedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/reasoning/summaryTextDelta";
+    \\      params: ReasoningSummaryTextDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/reasoning/summaryPartAdded";
+    \\      params: ReasoningSummaryPartAddedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/reasoning/textDelta";
+    \\      params: ReasoningTextDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/compacted";
+    \\      params: ContextCompactedNotification;
+    \\    }
+    \\  | {
     \\      method: "warning";
     \\      params: WarningNotification;
     \\    }
@@ -5462,6 +5617,8 @@ const V2_INDEX_TS =
     \\export type { AppsListResponse } from "./AppsListResponse";
     \\export type { AppScreenshot } from "./AppScreenshot";
     \\export type { AppSummary } from "./AppSummary";
+    \\export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\export type { RemoteControlStatusChangedNotification } from "./RemoteControlStatusChangedNotification";
     \\export type { ByteRange } from "./ByteRange";
     \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
     \\export type { CancelLoginAccountResponse } from "./CancelLoginAccountResponse";
@@ -5505,6 +5662,8 @@ const V2_INDEX_TS =
     \\export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
+    \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
+    \\export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";
     \\export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
     \\export type { McpServerOauthLoginParams } from "./McpServerOauthLoginParams";
     \\export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse";
@@ -5530,6 +5689,9 @@ const V2_INDEX_TS =
     \\export type { McpServerStatusDetail } from "./McpServerStatusDetail";
     \\export type { McpServerStatusListParams } from "./McpServerStatusListParams";
     \\export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";
+    \\export type { McpServerStartupState } from "./McpServerStartupState";
+    \\export type { McpServerStatusUpdatedNotification } from "./McpServerStatusUpdatedNotification";
+    \\export type { McpToolCallProgressNotification } from "./McpToolCallProgressNotification";
     \\export type { McpServerToolCallParams } from "./McpServerToolCallParams";
     \\export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";
     \\export type { CollaborationMode } from "./CollaborationMode";
@@ -5625,6 +5787,9 @@ const V2_INDEX_TS =
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
     \\export type { PatchChangeKind } from "./PatchChangeKind";
     \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
+    \\export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPartAddedNotification";
+    \\export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
+    \\export type { ReasoningTextDeltaNotification } from "./ReasoningTextDeltaNotification";
     \\export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
     \\export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
     \\export type { ModelListItem } from "./ModelListItem";
@@ -5861,6 +6026,29 @@ const JSONRPC_ERROR_JSON_SCHEMA =
     \\  "properties": {
     \\    "id": { "$ref": "RequestId.json" },
     \\    "error": { "$ref": "JSONRPCErrorError.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ServerRequestResolvedNotification",
+    \\  "type": "object",
+    \\  "required": ["requestId", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "requestId": { "$ref": "#/$defs/RequestId" }
+    \\  },
+    \\  "$defs": {
+    \\    "RequestId": {
+    \\      "oneOf": [
+    \\        { "type": "string" },
+    \\        { "type": "integer" }
+    \\      ]
+    \\    }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -6635,6 +6823,38 @@ const APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\    }
     \\  },
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlConnectionStatus",
+    \\  "type": "string",
+    \\  "enum": ["disabled", "connecting", "connected", "errored"]
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlStatusChangedNotification",
+    \\  "description": "Current remote-control connection status and environment id exposed to clients.",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\    "environmentId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "RemoteControlConnectionStatus": {
+    \\      "type": "string",
+    \\      "enum": ["disabled", "connecting", "connected", "errored"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -8271,6 +8491,38 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const MCP_SERVER_STARTUP_STATE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStartupState",
+    \\  "type": "string",
+    \\  "enum": ["starting", "ready", "failed", "cancelled"]
+    \\}
+    \\
+;
+
+const MCP_SERVER_STATUS_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerStatusUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["name", "status"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "status": { "$ref": "#/$defs/McpServerStartupState" },
+    \\    "error": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "McpServerStartupState": {
+    \\      "type": "string",
+    \\      "enum": ["starting", "ready", "failed", "cancelled"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const RESOURCE_CONTENT_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -8394,6 +8646,23 @@ const MCP_SERVER_TOOL_CALL_RESPONSE_JSON_SCHEMA =
     \\    "_meta": true
     \\  },
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MCP_TOOL_CALL_PROGRESS_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpToolCallProgressNotification",
+    \\  "type": "object",
+    \\  "required": ["itemId", "message", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -11171,6 +11440,75 @@ const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ReasoningSummaryTextDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["delta", "itemId", "summaryIndex", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" },
+    \\    "summaryIndex": { "type": "integer", "format": "int64" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REASONING_SUMMARY_PART_ADDED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ReasoningSummaryPartAddedNotification",
+    \\  "type": "object",
+    \\  "required": ["itemId", "summaryIndex", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "summaryIndex": { "type": "integer", "format": "int64" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REASONING_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ReasoningTextDeltaNotification",
+    \\  "type": "object",
+    \\  "required": ["contentIndex", "delta", "itemId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "delta": { "type": "string" },
+    \\    "contentIndex": { "type": "integer", "format": "int64" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const CONTEXT_COMPACTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ContextCompactedNotification",
+    \\  "description": "Deprecated: Use `ContextCompaction` item type instead.",
+    \\  "type": "object",
+    \\  "required": ["threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_RESUME_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12572,6 +12910,15 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ServerRequestResolvedNotification": {
+    \\      "type": "object",
+    \\      "required": ["requestId", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "requestId": { "$ref": "#/$defs/RequestId" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ClientInfo": {
     \\      "type": "object",
     \\      "required": ["name", "version"],
@@ -13198,6 +13545,20 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "McpServerStartupState": {
+    \\      "type": "string",
+    \\      "enum": ["starting", "ready", "failed", "cancelled"]
+    \\    },
+    \\    "McpServerStatusUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["name", "status"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/McpServerStartupState" },
+    \\        "error": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ResourceContent": {
     \\      "description": "Contents returned when reading a resource from an MCP server.",
     \\      "anyOf": [
@@ -13265,6 +13626,17 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "_meta": true
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "McpToolCallProgressNotification": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "message", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
     \\    },
     \\    "ModelProviderCapabilitiesReadParams": {
     \\      "type": "object",
@@ -13934,6 +14306,20 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "RemoteControlConnectionStatus": {
+    \\      "type": "string",
+    \\      "enum": ["disabled", "connecting", "connected", "errored"]
+    \\    },
+    \\    "RemoteControlStatusChangedNotification": {
+    \\      "description": "Current remote-control connection status and environment id exposed to clients.",
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\        "environmentId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
     \\    },
     \\    "AddCreditsNudgeCreditType": {
     \\      "enum": ["credits", "usage_limit"],
@@ -15273,6 +15659,51 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ReasoningSummaryTextDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["delta", "itemId", "summaryIndex", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" },
+    \\        "summaryIndex": { "type": "integer", "format": "int64" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ReasoningSummaryPartAddedNotification": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "summaryIndex", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "summaryIndex": { "type": "integer", "format": "int64" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ReasoningTextDeltaNotification": {
+    \\      "type": "object",
+    \\      "required": ["contentIndex", "delta", "itemId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "delta": { "type": "string" },
+    \\        "contentIndex": { "type": "integer", "format": "int64" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ContextCompactedNotification": {
+    \\      "description": "Deprecated: Use `ContextCompaction` item type instead.",
+    \\      "type": "object",
+    \\      "required": ["threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadResumeParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -15934,6 +16365,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCResponse.json", .contents = JSONRPC_RESPONSE_JSON_SCHEMA },
     .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
+    .{ .name = "ServerRequestResolvedNotification.json", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "AuthMode.json", .contents = AUTH_MODE_JSON_SCHEMA },
@@ -15963,6 +16395,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "AppsListParams.json", .contents = APPS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "AppsListResponse.json", .contents = APPS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "AppListUpdatedNotification.json", .contents = APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "RemoteControlConnectionStatus.json", .contents = REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA },
+    .{ .name = "RemoteControlStatusChangedNotification.json", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
     .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
@@ -16035,11 +16469,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "McpServerAuthStatus.json", .contents = MCP_SERVER_AUTH_STATUS_JSON_SCHEMA },
     .{ .name = "McpServerStatus.json", .contents = MCP_SERVER_STATUS_JSON_SCHEMA },
     .{ .name = "McpServerStatusListResponse.json", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerStartupState.json", .contents = MCP_SERVER_STARTUP_STATE_JSON_SCHEMA },
+    .{ .name = "McpServerStatusUpdatedNotification.json", .contents = MCP_SERVER_STATUS_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ResourceContent.json", .contents = RESOURCE_CONTENT_JSON_SCHEMA },
     .{ .name = "McpResourceReadParams.json", .contents = MCP_RESOURCE_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "McpResourceReadResponse.json", .contents = MCP_RESOURCE_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerToolCallParams.json", .contents = MCP_SERVER_TOOL_CALL_PARAMS_JSON_SCHEMA },
     .{ .name = "McpServerToolCallResponse.json", .contents = MCP_SERVER_TOOL_CALL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpToolCallProgressNotification.json", .contents = MCP_TOOL_CALL_PROGRESS_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadParams.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelProviderCapabilitiesReadResponse.json", .contents = MODEL_PROVIDER_CAPABILITIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
@@ -16178,6 +16615,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "PatchChangeKind.json", .contents = PATCH_CHANGE_KIND_JSON_SCHEMA },
     .{ .name = "FileUpdateChange.json", .contents = FILE_UPDATE_CHANGE_JSON_SCHEMA },
     .{ .name = "FileChangePatchUpdatedNotification.json", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ReasoningSummaryTextDeltaNotification.json", .contents = REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ReasoningSummaryPartAddedNotification.json", .contents = REASONING_SUMMARY_PART_ADDED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ReasoningTextDeltaNotification.json", .contents = REASONING_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ContextCompactedNotification.json", .contents = CONTEXT_COMPACTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadResumeParams.json", .contents = THREAD_RESUME_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadResumeResponse.json", .contents = THREAD_RESUME_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadForkParams.json", .contents = THREAD_FORK_PARAMS_JSON_SCHEMA },
@@ -16308,6 +16749,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "SessionSource.ts", .contents = SESSION_SOURCE_TS },
     .{ .name = "SubAgentSource.ts", .contents = SUB_AGENT_SOURCE_TS },
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
+    .{ .name = "v2/ServerRequestResolvedNotification.ts", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_TS },
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
     .{ .name = "v2/GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PARAMS_TS },
     .{ .name = "v2/GetAuthStatusResponse.ts", .contents = GET_AUTH_STATUS_RESPONSE_TS },
@@ -16340,6 +16782,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AppSummary.ts", .contents = APP_SUMMARY_TS },
     .{ .name = "v2/AppsListResponse.ts", .contents = APPS_LIST_RESPONSE_TS },
     .{ .name = "v2/AppListUpdatedNotification.ts", .contents = APP_LIST_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/RemoteControlConnectionStatus.ts", .contents = REMOTE_CONTROL_CONNECTION_STATUS_TS },
+    .{ .name = "v2/RemoteControlStatusChangedNotification.ts", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
@@ -16411,11 +16855,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/McpServerAuthStatus.ts", .contents = MCP_SERVER_AUTH_STATUS_TS },
     .{ .name = "v2/McpServerStatus.ts", .contents = MCP_SERVER_STATUS_TS },
     .{ .name = "v2/McpServerStatusListResponse.ts", .contents = MCP_SERVER_STATUS_LIST_RESPONSE_TS },
+    .{ .name = "v2/McpServerStartupState.ts", .contents = MCP_SERVER_STARTUP_STATE_TS },
+    .{ .name = "v2/McpServerStatusUpdatedNotification.ts", .contents = MCP_SERVER_STATUS_UPDATED_NOTIFICATION_TS },
     .{ .name = "ResourceContent.ts", .contents = RESOURCE_CONTENT_TS },
     .{ .name = "v2/McpResourceReadParams.ts", .contents = MCP_RESOURCE_READ_PARAMS_TS },
     .{ .name = "v2/McpResourceReadResponse.ts", .contents = MCP_RESOURCE_READ_RESPONSE_TS },
     .{ .name = "v2/McpServerToolCallParams.ts", .contents = MCP_SERVER_TOOL_CALL_PARAMS_TS },
     .{ .name = "v2/McpServerToolCallResponse.ts", .contents = MCP_SERVER_TOOL_CALL_RESPONSE_TS },
+    .{ .name = "v2/McpToolCallProgressNotification.ts", .contents = MCP_TOOL_CALL_PROGRESS_NOTIFICATION_TS },
     .{ .name = "v2/CommandExecTerminalSize.ts", .contents = COMMAND_EXEC_TERMINAL_SIZE_TS },
     .{ .name = "v2/CommandExecOutputStream.ts", .contents = COMMAND_EXEC_OUTPUT_STREAM_TS },
     .{ .name = "v2/ModelProviderCapabilitiesReadParams.ts", .contents = MODEL_PROVIDER_CAPABILITIES_READ_PARAMS_TS },
@@ -16554,6 +17001,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/PatchChangeKind.ts", .contents = PATCH_CHANGE_KIND_TS },
     .{ .name = "v2/FileUpdateChange.ts", .contents = FILE_UPDATE_CHANGE_TS },
     .{ .name = "v2/FileChangePatchUpdatedNotification.ts", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/ReasoningSummaryTextDeltaNotification.ts", .contents = REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ReasoningSummaryPartAddedNotification.ts", .contents = REASONING_SUMMARY_PART_ADDED_NOTIFICATION_TS },
+    .{ .name = "v2/ReasoningTextDeltaNotification.ts", .contents = REASONING_TEXT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ContextCompactedNotification.ts", .contents = CONTEXT_COMPACTED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadResumeParams.ts", .contents = THREAD_RESUME_PARAMS_TS },
     .{ .name = "v2/ThreadResumeResponse.ts", .contents = THREAD_RESUME_RESPONSE_TS },
     .{ .name = "v2/ThreadForkParams.ts", .contents = THREAD_FORK_PARAMS_TS },
