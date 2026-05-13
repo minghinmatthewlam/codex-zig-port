@@ -3671,6 +3671,208 @@ const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS =
     \\
     ;
 
+const AUTO_REVIEW_DECISION_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * [UNSTABLE] Source that produced a terminal approval auto-review decision.
+    \\ */
+    \\export type AutoReviewDecisionSource = "agent";
+    \\
+    ;
+
+const GUARDIAN_APPROVAL_REVIEW_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * [UNSTABLE] Lifecycle state for an approval auto-review.
+    \\ */
+    \\export type GuardianApprovalReviewStatus =
+    \\  | "inProgress"
+    \\  | "approved"
+    \\  | "denied"
+    \\  | "timedOut"
+    \\  | "aborted";
+    \\
+    ;
+
+const GUARDIAN_COMMAND_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type GuardianCommandSource = "shell" | "unifiedExec";
+    \\
+    ;
+
+const GUARDIAN_RISK_LEVEL_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * [UNSTABLE] Risk level assigned by approval auto-review.
+    \\ */
+    \\export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
+    \\
+    ;
+
+const GUARDIAN_USER_AUTHORIZATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * [UNSTABLE] Authorization level assigned by approval auto-review.
+    \\ */
+    \\export type GuardianUserAuthorization = "unknown" | "low" | "medium" | "high";
+    \\
+    ;
+
+const NETWORK_APPROVAL_PROTOCOL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NetworkApprovalProtocol =
+    \\  | "http"
+    \\  | "https"
+    \\  | "socks5Tcp"
+    \\  | "socks5Udp";
+    \\
+    ;
+
+const ADDITIONAL_NETWORK_PERMISSIONS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AdditionalNetworkPermissions {
+    \\  enabled: boolean | null;
+    \\}
+    \\
+    ;
+
+const ADDITIONAL_FILE_SYSTEM_PERMISSIONS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { FileSystemSandboxEntry } from "./FileSystemSandboxEntry";
+    \\
+    \\export interface AdditionalFileSystemPermissions {
+    \\  read: AbsolutePathBuf[] | null;
+    \\  write: AbsolutePathBuf[] | null;
+    \\  globScanMaxDepth?: number;
+    \\  entries?: FileSystemSandboxEntry[];
+    \\}
+    \\
+    ;
+
+const REQUEST_PERMISSION_PROFILE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";
+    \\import type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermissions";
+    \\
+    \\export interface RequestPermissionProfile {
+    \\  network: AdditionalNetworkPermissions | null;
+    \\  fileSystem: AdditionalFileSystemPermissions | null;
+    \\}
+    \\
+    ;
+
+const GUARDIAN_APPROVAL_REVIEW_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { GuardianApprovalReviewStatus } from "./GuardianApprovalReviewStatus";
+    \\import type { GuardianRiskLevel } from "./GuardianRiskLevel";
+    \\import type { GuardianUserAuthorization } from "./GuardianUserAuthorization";
+    \\
+    \\/**
+    \\ * [UNSTABLE] Temporary approval auto-review payload used by
+    \\ * `item/autoApprovalReview/*` notifications. This shape is expected to change
+    \\ * soon.
+    \\ */
+    \\export interface GuardianApprovalReview {
+    \\  status: GuardianApprovalReviewStatus;
+    \\  riskLevel: GuardianRiskLevel | null;
+    \\  userAuthorization: GuardianUserAuthorization | null;
+    \\  rationale: string | null;
+    \\}
+    \\
+    ;
+
+const GUARDIAN_APPROVAL_REVIEW_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { GuardianCommandSource } from "./GuardianCommandSource";
+    \\import type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
+    \\import type { RequestPermissionProfile } from "./RequestPermissionProfile";
+    \\
+    \\export type GuardianApprovalReviewAction =
+    \\  | {
+    \\      type: "command";
+    \\      source: GuardianCommandSource;
+    \\      command: string;
+    \\      cwd: AbsolutePathBuf;
+    \\    }
+    \\  | {
+    \\      type: "execve";
+    \\      source: GuardianCommandSource;
+    \\      program: string;
+    \\      argv: string[];
+    \\      cwd: AbsolutePathBuf;
+    \\    }
+    \\  | {
+    \\      type: "applyPatch";
+    \\      cwd: AbsolutePathBuf;
+    \\      files: AbsolutePathBuf[];
+    \\    }
+    \\  | {
+    \\      type: "networkAccess";
+    \\      target: string;
+    \\      host: string;
+    \\      protocol: NetworkApprovalProtocol;
+    \\      port: number;
+    \\    }
+    \\  | {
+    \\      type: "mcpToolCall";
+    \\      server: string;
+    \\      toolName: string;
+    \\      connectorId: string | null;
+    \\      connectorName: string | null;
+    \\      toolTitle: string | null;
+    \\    }
+    \\  | {
+    \\      type: "requestPermissions";
+    \\      reason: string | null;
+    \\      permissions: RequestPermissionProfile;
+    \\    };
+    \\
+    ;
+
+const ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { GuardianApprovalReview } from "./GuardianApprovalReview";
+    \\import type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
+    \\
+    \\/**
+    \\ * [UNSTABLE] Temporary notification payload for approval auto-review. This
+    \\ * shape is expected to change soon.
+    \\ */
+    \\export interface ItemGuardianApprovalReviewStartedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  reviewId: string;
+    \\  targetItemId: string | null;
+    \\  review: GuardianApprovalReview;
+    \\  action: GuardianApprovalReviewAction;
+    \\}
+    \\
+    ;
+
+const ITEM_GUARDIAN_APPROVAL_REVIEW_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AutoReviewDecisionSource } from "./AutoReviewDecisionSource";
+    \\import type { GuardianApprovalReview } from "./GuardianApprovalReview";
+    \\import type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
+    \\
+    \\/**
+    \\ * [UNSTABLE] Temporary notification payload for approval auto-review. This
+    \\ * shape is expected to change soon.
+    \\ */
+    \\export interface ItemGuardianApprovalReviewCompletedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  reviewId: string;
+    \\  targetItemId: string | null;
+    \\  decisionSource: AutoReviewDecisionSource;
+    \\  review: GuardianApprovalReview;
+    \\  action: GuardianApprovalReviewAction;
+    \\}
+    \\
+    ;
+
 const REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface ReasoningSummaryTextDeltaNotification {
@@ -4332,6 +4534,109 @@ const THREAD_REALTIME_STOP_PARAMS_TS =
 const THREAD_REALTIME_STOP_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadRealtimeStopResponse {}
+    \\
+    ;
+
+const THREAD_REALTIME_STARTED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RealtimeConversationVersion } from "../RealtimeConversationVersion";
+    \\
+    \\/**
+    \\ * EXPERIMENTAL - emitted when thread realtime startup is accepted.
+    \\ */
+    \\export interface ThreadRealtimeStartedNotification {
+    \\  threadId: string;
+    \\  realtimeSessionId: string | null;
+    \\  version: RealtimeConversationVersion;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_ITEM_ADDED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.
+    \\ */
+    \\export interface ThreadRealtimeItemAddedNotification {
+    \\  threadId: string;
+    \\  item: unknown;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_TRANSCRIPT_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - flat transcript delta emitted whenever realtime transcript text changes.
+    \\ */
+    \\export interface ThreadRealtimeTranscriptDeltaNotification {
+    \\  threadId: string;
+    \\  role: string;
+    \\  delta: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_TRANSCRIPT_DONE_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - final transcript text emitted when realtime completes a transcript part.
+    \\ */
+    \\export interface ThreadRealtimeTranscriptDoneNotification {
+    \\  threadId: string;
+    \\  role: string;
+    \\  text: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_OUTPUT_AUDIO_DELTA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
+    \\
+    \\/**
+    \\ * EXPERIMENTAL - streamed output audio emitted by thread realtime.
+    \\ */
+    \\export interface ThreadRealtimeOutputAudioDeltaNotification {
+    \\  threadId: string;
+    \\  audio: ThreadRealtimeAudioChunk;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_SDP_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.
+    \\ */
+    \\export interface ThreadRealtimeSdpNotification {
+    \\  threadId: string;
+    \\  sdp: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_ERROR_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - emitted when thread realtime encounters an error.
+    \\ */
+    \\export interface ThreadRealtimeErrorNotification {
+    \\  threadId: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_CLOSED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - emitted when thread realtime transport closes.
+    \\ */
+    \\export interface ThreadRealtimeClosedNotification {
+    \\  threadId: string;
+    \\  reason: string | null;
+    \\}
     \\
     ;
 
@@ -5288,6 +5593,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { HookCompletedNotification } from "./v2/HookCompletedNotification";
     \\import type { HookStartedNotification } from "./v2/HookStartedNotification";
     \\import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
+    \\import type { ItemGuardianApprovalReviewCompletedNotification } from "./v2/ItemGuardianApprovalReviewCompletedNotification";
+    \\import type { ItemGuardianApprovalReviewStartedNotification } from "./v2/ItemGuardianApprovalReviewStartedNotification";
     \\import type { ItemStartedNotification } from "./v2/ItemStartedNotification";
     \\import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";
     \\import type { McpServerStatusUpdatedNotification } from "./v2/McpServerStatusUpdatedNotification";
@@ -5309,6 +5616,14 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
+    \\import type { ThreadRealtimeClosedNotification } from "./v2/ThreadRealtimeClosedNotification";
+    \\import type { ThreadRealtimeErrorNotification } from "./v2/ThreadRealtimeErrorNotification";
+    \\import type { ThreadRealtimeItemAddedNotification } from "./v2/ThreadRealtimeItemAddedNotification";
+    \\import type { ThreadRealtimeOutputAudioDeltaNotification } from "./v2/ThreadRealtimeOutputAudioDeltaNotification";
+    \\import type { ThreadRealtimeSdpNotification } from "./v2/ThreadRealtimeSdpNotification";
+    \\import type { ThreadRealtimeStartedNotification } from "./v2/ThreadRealtimeStartedNotification";
+    \\import type { ThreadRealtimeTranscriptDeltaNotification } from "./v2/ThreadRealtimeTranscriptDeltaNotification";
+    \\import type { ThreadRealtimeTranscriptDoneNotification } from "./v2/ThreadRealtimeTranscriptDoneNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { ThreadStatusChangedNotification } from "./v2/ThreadStatusChangedNotification";
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
@@ -5451,6 +5766,14 @@ const SERVER_NOTIFICATION_TS =
     \\      params: ItemStartedNotification;
     \\    }
     \\  | {
+    \\      method: "item/autoApprovalReview/started";
+    \\      params: ItemGuardianApprovalReviewStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "item/autoApprovalReview/completed";
+    \\      params: ItemGuardianApprovalReviewCompletedNotification;
+    \\    }
+    \\  | {
     \\      method: "item/completed";
     \\      params: ItemCompletedNotification;
     \\    }
@@ -5509,6 +5832,38 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/compacted";
     \\      params: ContextCompactedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/started";
+    \\      params: ThreadRealtimeStartedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/itemAdded";
+    \\      params: ThreadRealtimeItemAddedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/transcript/delta";
+    \\      params: ThreadRealtimeTranscriptDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/transcript/done";
+    \\      params: ThreadRealtimeTranscriptDoneNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/outputAudio/delta";
+    \\      params: ThreadRealtimeOutputAudioDeltaNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/sdp";
+    \\      params: ThreadRealtimeSdpNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/error";
+    \\      params: ThreadRealtimeErrorNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/realtime/closed";
+    \\      params: ThreadRealtimeClosedNotification;
     \\    }
     \\  | {
     \\      method: "warning";
@@ -5783,10 +6138,23 @@ const V2_INDEX_TS =
     \\export type { FsWatchResponse } from "./FsWatchResponse";
     \\export type { FsWriteFileParams } from "./FsWriteFileParams";
     \\export type { FsWriteFileResponse } from "./FsWriteFileResponse";
+    \\export type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";
+    \\export type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermissions";
+    \\export type { AutoReviewDecisionSource } from "./AutoReviewDecisionSource";
+    \\export type { GuardianApprovalReview } from "./GuardianApprovalReview";
+    \\export type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
+    \\export type { GuardianApprovalReviewStatus } from "./GuardianApprovalReviewStatus";
+    \\export type { GuardianCommandSource } from "./GuardianCommandSource";
+    \\export type { GuardianRiskLevel } from "./GuardianRiskLevel";
+    \\export type { GuardianUserAuthorization } from "./GuardianUserAuthorization";
     \\export type { ItemCompletedNotification } from "./ItemCompletedNotification";
+    \\export type { ItemGuardianApprovalReviewCompletedNotification } from "./ItemGuardianApprovalReviewCompletedNotification";
+    \\export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardianApprovalReviewStartedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
+    \\export type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
     \\export type { PatchChangeKind } from "./PatchChangeKind";
     \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
+    \\export type { RequestPermissionProfile } from "./RequestPermissionProfile";
     \\export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPartAddedNotification";
     \\export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
     \\export type { ReasoningTextDeltaNotification } from "./ReasoningTextDeltaNotification";
@@ -5873,6 +6241,14 @@ const V2_INDEX_TS =
     \\export type { ThreadRealtimeStartTransport } from "./ThreadRealtimeStartTransport";
     \\export type { ThreadRealtimeStopParams } from "./ThreadRealtimeStopParams";
     \\export type { ThreadRealtimeStopResponse } from "./ThreadRealtimeStopResponse";
+    \\export type { ThreadRealtimeStartedNotification } from "./ThreadRealtimeStartedNotification";
+    \\export type { ThreadRealtimeItemAddedNotification } from "./ThreadRealtimeItemAddedNotification";
+    \\export type { ThreadRealtimeTranscriptDeltaNotification } from "./ThreadRealtimeTranscriptDeltaNotification";
+    \\export type { ThreadRealtimeTranscriptDoneNotification } from "./ThreadRealtimeTranscriptDoneNotification";
+    \\export type { ThreadRealtimeOutputAudioDeltaNotification } from "./ThreadRealtimeOutputAudioDeltaNotification";
+    \\export type { ThreadRealtimeSdpNotification } from "./ThreadRealtimeSdpNotification";
+    \\export type { ThreadRealtimeErrorNotification } from "./ThreadRealtimeErrorNotification";
+    \\export type { ThreadRealtimeClosedNotification } from "./ThreadRealtimeClosedNotification";
     \\export type { ThreadResumeParams } from "./ThreadResumeParams";
     \\export type { ThreadResumeResponse } from "./ThreadResumeResponse";
     \\export type { ThreadRollbackParams } from "./ThreadRollbackParams";
@@ -11440,6 +11816,204 @@ const FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const GUARDIAN_AUTO_REVIEW_JSON_DEFS =
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "FileSystemSandboxEntry": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AdditionalNetworkPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "enabled": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AdditionalFileSystemPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1 },
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RequestPermissionProfile": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "network": { "anyOf": [{ "$ref": "#/$defs/AdditionalNetworkPermissions" }, { "type": "null" }] },
+    \\        "fileSystem": { "anyOf": [{ "$ref": "#/$defs/AdditionalFileSystemPermissions" }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AutoReviewDecisionSource": {
+    \\      "description": "[UNSTABLE] Source that produced a terminal approval auto-review decision.",
+    \\      "type": "string",
+    \\      "enum": ["agent"]
+    \\    },
+    \\    "GuardianApprovalReviewStatus": {
+    \\      "description": "[UNSTABLE] Lifecycle state for an approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["inProgress", "approved", "denied", "timedOut", "aborted"]
+    \\    },
+    \\    "GuardianCommandSource": {
+    \\      "type": "string",
+    \\      "enum": ["shell", "unifiedExec"]
+    \\    },
+    \\    "GuardianRiskLevel": {
+    \\      "description": "[UNSTABLE] Risk level assigned by approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["low", "medium", "high", "critical"]
+    \\    },
+    \\    "GuardianUserAuthorization": {
+    \\      "description": "[UNSTABLE] Authorization level assigned by approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["unknown", "low", "medium", "high"]
+    \\    },
+    \\    "GuardianApprovalReview": {
+    \\      "description": "[UNSTABLE] Temporary approval auto-review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/GuardianApprovalReviewStatus" },
+    \\        "riskLevel": { "anyOf": [{ "$ref": "#/$defs/GuardianRiskLevel" }, { "type": "null" }] },
+    \\        "userAuthorization": { "anyOf": [{ "$ref": "#/$defs/GuardianUserAuthorization" }, { "type": "null" }] },
+    \\        "rationale": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "NetworkApprovalProtocol": {
+    \\      "type": "string",
+    \\      "enum": ["http", "https", "socks5Tcp", "socks5Udp"]
+    \\    },
+    \\    "GuardianApprovalReviewAction": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "CommandGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["command", "cwd", "source", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "command" },
+    \\            "source": { "$ref": "#/$defs/GuardianCommandSource" },
+    \\            "command": { "type": "string" },
+    \\            "cwd": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "ExecveGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["argv", "cwd", "program", "source", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "execve" },
+    \\            "source": { "$ref": "#/$defs/GuardianCommandSource" },
+    \\            "program": { "type": "string" },
+    \\            "argv": { "type": "array", "items": { "type": "string" } },
+    \\            "cwd": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "ApplyPatchGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["cwd", "files", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "applyPatch" },
+    \\            "cwd": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\            "files": { "type": "array", "items": { "$ref": "#/$defs/AbsolutePathBuf" } }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "NetworkAccessGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["host", "port", "protocol", "target", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "networkAccess" },
+    \\            "target": { "type": "string" },
+    \\            "host": { "type": "string" },
+    \\            "protocol": { "$ref": "#/$defs/NetworkApprovalProtocol" },
+    \\            "port": { "type": "integer", "format": "uint16", "minimum": 0, "maximum": 65535 }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "McpToolCallGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["server", "toolName", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "mcpToolCall" },
+    \\            "server": { "type": "string" },
+    \\            "toolName": { "type": "string" },
+    \\            "connectorId": { "type": ["string", "null"] },
+    \\            "connectorName": { "type": ["string", "null"] },
+    \\            "toolTitle": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "RequestPermissionsGuardianApprovalReviewAction",
+    \\          "type": "object",
+    \\          "required": ["permissions", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "requestPermissions" },
+    \\            "reason": { "type": ["string", "null"] },
+    \\            "permissions": { "$ref": "#/$defs/RequestPermissionProfile" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+;
+
+const ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ItemGuardianApprovalReviewStartedNotification",
+    \\  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
+    \\  "type": "object",
+    \\  "required": ["action", "review", "reviewId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "reviewId": { "type": "string" },
+    \\    "targetItemId": { "type": ["string", "null"] },
+    \\    "review": { "$ref": "#/$defs/GuardianApprovalReview" },
+    \\    "action": { "$ref": "#/$defs/GuardianApprovalReviewAction" }
+    \\  },
+    \\  "$defs": {
+++ GUARDIAN_AUTO_REVIEW_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ITEM_GUARDIAN_APPROVAL_REVIEW_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ItemGuardianApprovalReviewCompletedNotification",
+    \\  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
+    \\  "type": "object",
+    \\  "required": ["action", "decisionSource", "review", "reviewId", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "reviewId": { "type": "string" },
+    \\    "targetItemId": { "type": ["string", "null"] },
+    \\    "decisionSource": { "$ref": "#/$defs/AutoReviewDecisionSource" },
+    \\    "review": { "$ref": "#/$defs/GuardianApprovalReview" },
+    \\    "action": { "$ref": "#/$defs/GuardianApprovalReviewAction" }
+    \\  },
+    \\  "$defs": {
+++ GUARDIAN_AUTO_REVIEW_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12415,6 +12989,10 @@ const REALTIME_VOICES_LIST_JSON_SCHEMA =
     \\    "defaultV2": { "$ref": "#/$defs/RealtimeVoice" }
     \\  },
     \\  "$defs": {
+    \\    "RealtimeConversationVersion": {
+    \\      "type": "string",
+    \\      "enum": ["v1", "v2"]
+    \\    },
     \\    "RealtimeVoice": {
     \\      "type": "string",
     \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
@@ -12792,6 +13370,157 @@ const THREAD_REALTIME_STOP_RESPONSE_JSON_SCHEMA =
     \\  "title": "ThreadRealtimeStopResponse",
     \\  "type": "object",
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_STARTED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeStartedNotification",
+    \\  "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
+    \\  "type": "object",
+    \\  "required": ["threadId", "version"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "realtimeSessionId": { "type": ["string", "null"] },
+    \\    "version": { "$ref": "#/$defs/RealtimeConversationVersion" }
+    \\  },
+    \\  "$defs": {
+    \\    "RealtimeConversationVersion": {
+    \\      "type": "string",
+    \\      "enum": ["v1", "v2"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_ITEM_ADDED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeItemAddedNotification",
+    \\  "description": "EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.",
+    \\  "type": "object",
+    \\  "required": ["item", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "item": true
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_TRANSCRIPT_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeTranscriptDeltaNotification",
+    \\  "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime transcript text changes.",
+    \\  "type": "object",
+    \\  "required": ["delta", "role", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "role": { "type": "string" },
+    \\    "delta": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_TRANSCRIPT_DONE_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeTranscriptDoneNotification",
+    \\  "description": "EXPERIMENTAL - final transcript text emitted when realtime completes a transcript part.",
+    \\  "type": "object",
+    \\  "required": ["role", "text", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "role": { "type": "string" },
+    \\    "text": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_OUTPUT_AUDIO_DELTA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeOutputAudioDeltaNotification",
+    \\  "description": "EXPERIMENTAL - streamed output audio emitted by thread realtime.",
+    \\  "type": "object",
+    \\  "required": ["audio", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "audio": { "$ref": "#/$defs/ThreadRealtimeAudioChunk" }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadRealtimeAudioChunk": {
+    \\      "type": "object",
+    \\      "required": ["data", "numChannels", "sampleRate"],
+    \\      "properties": {
+    \\        "data": { "type": "string" },
+    \\        "sampleRate": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    \\        "numChannels": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\        "samplesPerChannel": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "itemId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_SDP_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeSdpNotification",
+    \\  "description": "EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.",
+    \\  "type": "object",
+    \\  "required": ["sdp", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "sdp": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_ERROR_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeErrorNotification",
+    \\  "description": "EXPERIMENTAL - emitted when thread realtime encounters an error.",
+    \\  "type": "object",
+    \\  "required": ["message", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "message": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_CLOSED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeClosedNotification",
+    \\  "description": "EXPERIMENTAL - emitted when thread realtime transport closes.",
+    \\  "type": "object",
+    \\  "required": ["reason", "threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "reason": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -15659,6 +16388,110 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "AdditionalNetworkPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "enabled": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AdditionalFileSystemPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1 },
+    \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RequestPermissionProfile": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "network": { "anyOf": [{ "$ref": "#/$defs/AdditionalNetworkPermissions" }, { "type": "null" }] },
+    \\        "fileSystem": { "anyOf": [{ "$ref": "#/$defs/AdditionalFileSystemPermissions" }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AutoReviewDecisionSource": {
+    \\      "description": "[UNSTABLE] Source that produced a terminal approval auto-review decision.",
+    \\      "type": "string",
+    \\      "enum": ["agent"]
+    \\    },
+    \\    "GuardianApprovalReviewStatus": {
+    \\      "description": "[UNSTABLE] Lifecycle state for an approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["inProgress", "approved", "denied", "timedOut", "aborted"]
+    \\    },
+    \\    "GuardianCommandSource": {
+    \\      "type": "string",
+    \\      "enum": ["shell", "unifiedExec"]
+    \\    },
+    \\    "GuardianRiskLevel": {
+    \\      "description": "[UNSTABLE] Risk level assigned by approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["low", "medium", "high", "critical"]
+    \\    },
+    \\    "GuardianUserAuthorization": {
+    \\      "description": "[UNSTABLE] Authorization level assigned by approval auto-review.",
+    \\      "type": "string",
+    \\      "enum": ["unknown", "low", "medium", "high"]
+    \\    },
+    \\    "GuardianApprovalReview": {
+    \\      "description": "[UNSTABLE] Temporary approval auto-review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/GuardianApprovalReviewStatus" },
+    \\        "riskLevel": { "anyOf": [{ "$ref": "#/$defs/GuardianRiskLevel" }, { "type": "null" }] },
+    \\        "userAuthorization": { "anyOf": [{ "$ref": "#/$defs/GuardianUserAuthorization" }, { "type": "null" }] },
+    \\        "rationale": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "NetworkApprovalProtocol": {
+    \\      "type": "string",
+    \\      "enum": ["http", "https", "socks5Tcp", "socks5Udp"]
+    \\    },
+    \\    "GuardianApprovalReviewAction": {
+    \\      "oneOf": [
+    \\        { "type": "object", "required": ["command", "cwd", "source", "type"], "properties": { "type": { "const": "command" }, "source": { "$ref": "#/$defs/GuardianCommandSource" }, "command": { "type": "string" }, "cwd": { "$ref": "#/$defs/AbsolutePathBuf" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["argv", "cwd", "program", "source", "type"], "properties": { "type": { "const": "execve" }, "source": { "$ref": "#/$defs/GuardianCommandSource" }, "program": { "type": "string" }, "argv": { "type": "array", "items": { "type": "string" } }, "cwd": { "$ref": "#/$defs/AbsolutePathBuf" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["cwd", "files", "type"], "properties": { "type": { "const": "applyPatch" }, "cwd": { "$ref": "#/$defs/AbsolutePathBuf" }, "files": { "type": "array", "items": { "$ref": "#/$defs/AbsolutePathBuf" } } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["host", "port", "protocol", "target", "type"], "properties": { "type": { "const": "networkAccess" }, "target": { "type": "string" }, "host": { "type": "string" }, "protocol": { "$ref": "#/$defs/NetworkApprovalProtocol" }, "port": { "type": "integer", "format": "uint16", "minimum": 0, "maximum": 65535 } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["server", "toolName", "type"], "properties": { "type": { "const": "mcpToolCall" }, "server": { "type": "string" }, "toolName": { "type": "string" }, "connectorId": { "type": ["string", "null"] }, "connectorName": { "type": ["string", "null"] }, "toolTitle": { "type": ["string", "null"] } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["permissions", "type"], "properties": { "type": { "const": "requestPermissions" }, "reason": { "type": ["string", "null"] }, "permissions": { "$ref": "#/$defs/RequestPermissionProfile" } }, "additionalProperties": true }
+    \\      ]
+    \\    },
+    \\    "ItemGuardianApprovalReviewStartedNotification": {
+    \\      "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
+    \\      "type": "object",
+    \\      "required": ["action", "review", "reviewId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "reviewId": { "type": "string" },
+    \\        "targetItemId": { "type": ["string", "null"] },
+    \\        "review": { "$ref": "#/$defs/GuardianApprovalReview" },
+    \\        "action": { "$ref": "#/$defs/GuardianApprovalReviewAction" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ItemGuardianApprovalReviewCompletedNotification": {
+    \\      "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
+    \\      "type": "object",
+    \\      "required": ["action", "decisionSource", "review", "reviewId", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "reviewId": { "type": "string" },
+    \\        "targetItemId": { "type": ["string", "null"] },
+    \\        "decisionSource": { "$ref": "#/$defs/AutoReviewDecisionSource" },
+    \\        "review": { "$ref": "#/$defs/GuardianApprovalReview" },
+    \\        "action": { "$ref": "#/$defs/GuardianApprovalReviewAction" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ReasoningSummaryTextDeltaNotification": {
     \\      "type": "object",
     \\      "required": ["delta", "itemId", "summaryIndex", "threadId", "turnId"],
@@ -16327,6 +17160,89 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "ThreadRealtimeStopResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadRealtimeStartedNotification": {
+    \\      "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
+    \\      "type": "object",
+    \\      "required": ["threadId", "version"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "realtimeSessionId": { "type": ["string", "null"] },
+    \\        "version": { "$ref": "#/$defs/RealtimeConversationVersion" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeItemAddedNotification": {
+    \\      "description": "EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.",
+    \\      "type": "object",
+    \\      "required": ["item", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "item": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeTranscriptDeltaNotification": {
+    \\      "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime transcript text changes.",
+    \\      "type": "object",
+    \\      "required": ["delta", "role", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "role": { "type": "string" },
+    \\        "delta": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeTranscriptDoneNotification": {
+    \\      "description": "EXPERIMENTAL - final transcript text emitted when realtime completes a transcript part.",
+    \\      "type": "object",
+    \\      "required": ["role", "text", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "role": { "type": "string" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeOutputAudioDeltaNotification": {
+    \\      "description": "EXPERIMENTAL - streamed output audio emitted by thread realtime.",
+    \\      "type": "object",
+    \\      "required": ["audio", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "audio": { "$ref": "#/$defs/ThreadRealtimeAudioChunk" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeSdpNotification": {
+    \\      "description": "EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.",
+    \\      "type": "object",
+    \\      "required": ["sdp", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "sdp": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeErrorNotification": {
+    \\      "description": "EXPERIMENTAL - emitted when thread realtime encounters an error.",
+    \\      "type": "object",
+    \\      "required": ["message", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeClosedNotification": {
+    \\      "description": "EXPERIMENTAL - emitted when thread realtime transport closes.",
+    \\      "type": "object",
+    \\      "required": ["reason", "threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "reason": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
     \\    }
     \\  }
     \\}
@@ -16615,6 +17531,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "PatchChangeKind.json", .contents = PATCH_CHANGE_KIND_JSON_SCHEMA },
     .{ .name = "FileUpdateChange.json", .contents = FILE_UPDATE_CHANGE_JSON_SCHEMA },
     .{ .name = "FileChangePatchUpdatedNotification.json", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ItemGuardianApprovalReviewStartedNotification.json", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ItemGuardianApprovalReviewCompletedNotification.json", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ReasoningSummaryTextDeltaNotification.json", .contents = REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ReasoningSummaryPartAddedNotification.json", .contents = REASONING_SUMMARY_PART_ADDED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ReasoningTextDeltaNotification.json", .contents = REASONING_TEXT_DELTA_NOTIFICATION_JSON_SCHEMA },
@@ -16686,6 +17604,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadRealtimeAppendAudioResponse.json", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeStopParams.json", .contents = THREAD_REALTIME_STOP_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeStopResponse.json", .contents = THREAD_REALTIME_STOP_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeStartedNotification.json", .contents = THREAD_REALTIME_STARTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeItemAddedNotification.json", .contents = THREAD_REALTIME_ITEM_ADDED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeTranscriptDeltaNotification.json", .contents = THREAD_REALTIME_TRANSCRIPT_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeTranscriptDoneNotification.json", .contents = THREAD_REALTIME_TRANSCRIPT_DONE_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeOutputAudioDeltaNotification.json", .contents = THREAD_REALTIME_OUTPUT_AUDIO_DELTA_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeSdpNotification.json", .contents = THREAD_REALTIME_SDP_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeErrorNotification.json", .contents = THREAD_REALTIME_ERROR_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeClosedNotification.json", .contents = THREAD_REALTIME_CLOSED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "codex_app_server_protocol.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
@@ -17001,6 +17927,19 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/PatchChangeKind.ts", .contents = PATCH_CHANGE_KIND_TS },
     .{ .name = "v2/FileUpdateChange.ts", .contents = FILE_UPDATE_CHANGE_TS },
     .{ .name = "v2/FileChangePatchUpdatedNotification.ts", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/AutoReviewDecisionSource.ts", .contents = AUTO_REVIEW_DECISION_SOURCE_TS },
+    .{ .name = "v2/GuardianApprovalReviewStatus.ts", .contents = GUARDIAN_APPROVAL_REVIEW_STATUS_TS },
+    .{ .name = "v2/GuardianCommandSource.ts", .contents = GUARDIAN_COMMAND_SOURCE_TS },
+    .{ .name = "v2/GuardianRiskLevel.ts", .contents = GUARDIAN_RISK_LEVEL_TS },
+    .{ .name = "v2/GuardianUserAuthorization.ts", .contents = GUARDIAN_USER_AUTHORIZATION_TS },
+    .{ .name = "v2/NetworkApprovalProtocol.ts", .contents = NETWORK_APPROVAL_PROTOCOL_TS },
+    .{ .name = "v2/AdditionalNetworkPermissions.ts", .contents = ADDITIONAL_NETWORK_PERMISSIONS_TS },
+    .{ .name = "v2/AdditionalFileSystemPermissions.ts", .contents = ADDITIONAL_FILE_SYSTEM_PERMISSIONS_TS },
+    .{ .name = "v2/RequestPermissionProfile.ts", .contents = REQUEST_PERMISSION_PROFILE_TS },
+    .{ .name = "v2/GuardianApprovalReview.ts", .contents = GUARDIAN_APPROVAL_REVIEW_TS },
+    .{ .name = "v2/GuardianApprovalReviewAction.ts", .contents = GUARDIAN_APPROVAL_REVIEW_ACTION_TS },
+    .{ .name = "v2/ItemGuardianApprovalReviewStartedNotification.ts", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ItemGuardianApprovalReviewCompletedNotification.ts", .contents = ITEM_GUARDIAN_APPROVAL_REVIEW_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/ReasoningSummaryTextDeltaNotification.ts", .contents = REASONING_SUMMARY_TEXT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/ReasoningSummaryPartAddedNotification.ts", .contents = REASONING_SUMMARY_PART_ADDED_NOTIFICATION_TS },
     .{ .name = "v2/ReasoningTextDeltaNotification.ts", .contents = REASONING_TEXT_DELTA_NOTIFICATION_TS },
@@ -17068,6 +18007,14 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRealtimeAppendAudioResponse.ts", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeStopParams.ts", .contents = THREAD_REALTIME_STOP_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeStopResponse.ts", .contents = THREAD_REALTIME_STOP_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeStartedNotification.ts", .contents = THREAD_REALTIME_STARTED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeItemAddedNotification.ts", .contents = THREAD_REALTIME_ITEM_ADDED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeTranscriptDeltaNotification.ts", .contents = THREAD_REALTIME_TRANSCRIPT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeTranscriptDoneNotification.ts", .contents = THREAD_REALTIME_TRANSCRIPT_DONE_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeOutputAudioDeltaNotification.ts", .contents = THREAD_REALTIME_OUTPUT_AUDIO_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeSdpNotification.ts", .contents = THREAD_REALTIME_SDP_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeErrorNotification.ts", .contents = THREAD_REALTIME_ERROR_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadRealtimeClosedNotification.ts", .contents = THREAD_REALTIME_CLOSED_NOTIFICATION_TS },
 };
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
