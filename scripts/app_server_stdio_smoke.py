@@ -1342,6 +1342,54 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert background_clean_loaded["id"] == "thread-background-clean-loaded"
         assert background_clean_loaded["result"] == {}
 
+        realtime_disabled_message = (
+            f"thread {thread_id} does not support realtime conversation"
+        )
+        for request_id, method, params in [
+            (
+                "thread-realtime-stop-loaded-disabled",
+                "thread/realtime/stop",
+                {"threadId": thread_id},
+            ),
+            (
+                "thread-realtime-append-text-loaded-disabled",
+                "thread/realtime/appendText",
+                {"threadId": thread_id, "text": "hello realtime"},
+            ),
+            (
+                "thread-realtime-append-audio-loaded-disabled",
+                "thread/realtime/appendAudio",
+                {
+                    "threadId": thread_id,
+                    "audio": EXPECTED_REALTIME_AUDIO_CHUNK,
+                },
+            ),
+            (
+                "thread-realtime-start-loaded-disabled",
+                "thread/realtime/start",
+                {
+                    "threadId": thread_id,
+                    "outputModality": "audio",
+                    "prompt": "hello",
+                    "realtimeSessionId": "session-1",
+                    "transport": {"type": "webrtc", "sdp": "v=0\\r\\n"},
+                    "voice": "marin",
+                },
+            ),
+        ]:
+            write_line(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+            realtime_disabled = read_line()
+            assert realtime_disabled["id"] == request_id
+            assert realtime_disabled["error"]["code"] == -32600
+            assert realtime_disabled["error"]["message"] == realtime_disabled_message
+
         write_line(
             {
                 "jsonrpc": "2.0",
