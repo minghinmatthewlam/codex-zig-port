@@ -19514,6 +19514,11 @@ def run_json_schema_smoke(binary: Path) -> None:
                 encoding="utf-8"
             )
         )
+        assert (out_dir / "v2" / "ListMcpServerStatusParams.json").read_text(
+            encoding="utf-8"
+        ) == (out_dir / "McpServerStatusListParams.json").read_text(
+            encoding="utf-8"
+        )
         assert mcp_status_params["properties"]["limit"]["minimum"] == 0
         assert (
             mcp_status_params["properties"]["detail"]["anyOf"][0]["$ref"]
@@ -19546,6 +19551,11 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "McpServerStatusListResponse.json").read_text(
                 encoding="utf-8"
             )
+        )
+        assert (out_dir / "v2" / "ListMcpServerStatusResponse.json").read_text(
+            encoding="utf-8"
+        ) == (out_dir / "McpServerStatusListResponse.json").read_text(
+            encoding="utf-8"
         )
         assert mcp_status_response["required"] == ["data", "nextCursor"]
         assert (
