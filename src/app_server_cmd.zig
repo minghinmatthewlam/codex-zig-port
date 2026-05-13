@@ -4305,9 +4305,240 @@ const MCP_ELICITATION_OBJECT_TYPE_TS =
     \\
     ;
 
+const MCP_ELICITATION_ARRAY_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationArrayType = "array";
+    \\
+    ;
+
+const MCP_ELICITATION_BOOLEAN_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationBooleanType = "boolean";
+    \\
+    ;
+
+const MCP_ELICITATION_STRING_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationStringType = "string";
+    \\
+    ;
+
+const MCP_ELICITATION_NUMBER_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationNumberType = "number" | "integer";
+    \\
+    ;
+
+const MCP_ELICITATION_STRING_FORMAT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type McpElicitationStringFormat =
+    \\  | "email"
+    \\  | "uri"
+    \\  | "date"
+    \\  | "date-time";
+    \\
+    ;
+
+const MCP_ELICITATION_CONST_OPTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface McpElicitationConstOption {
+    \\  const: string;
+    \\  title: string;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_BOOLEAN_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationBooleanType } from "./McpElicitationBooleanType";
+    \\
+    \\export interface McpElicitationBooleanSchema {
+    \\  type: McpElicitationBooleanType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  default?: boolean;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_STRING_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationStringFormat } from "./McpElicitationStringFormat";
+    \\import type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\
+    \\export interface McpElicitationStringSchema {
+    \\  type: McpElicitationStringType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  minLength?: number;
+    \\  maxLength?: number;
+    \\  format?: McpElicitationStringFormat;
+    \\  default?: string;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_NUMBER_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationNumberType } from "./McpElicitationNumberType";
+    \\
+    \\export interface McpElicitationNumberSchema {
+    \\  type: McpElicitationNumberType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  minimum?: number;
+    \\  maximum?: number;
+    \\  default?: number;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_UNTITLED_ENUM_ITEMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\
+    \\export interface McpElicitationUntitledEnumItems {
+    \\  type: McpElicitationStringType;
+    \\  enum: string[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_TITLED_ENUM_ITEMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationConstOption } from "./McpElicitationConstOption";
+    \\
+    \\export interface McpElicitationTitledEnumItems {
+    \\  anyOf: McpElicitationConstOption[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_UNTITLED_SINGLE_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\
+    \\export interface McpElicitationUntitledSingleSelectEnumSchema {
+    \\  type: McpElicitationStringType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  enum: string[];
+    \\  default?: string;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_TITLED_SINGLE_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationConstOption } from "./McpElicitationConstOption";
+    \\import type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\
+    \\export interface McpElicitationTitledSingleSelectEnumSchema {
+    \\  type: McpElicitationStringType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  oneOf: McpElicitationConstOption[];
+    \\  default?: string;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_SINGLE_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationTitledSingleSelectEnumSchema } from "./McpElicitationTitledSingleSelectEnumSchema";
+    \\import type { McpElicitationUntitledSingleSelectEnumSchema } from "./McpElicitationUntitledSingleSelectEnumSchema";
+    \\
+    \\export type McpElicitationSingleSelectEnumSchema =
+    \\  | McpElicitationUntitledSingleSelectEnumSchema
+    \\  | McpElicitationTitledSingleSelectEnumSchema;
+    \\
+    ;
+
+const MCP_ELICITATION_LEGACY_TITLED_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\
+    \\export interface McpElicitationLegacyTitledEnumSchema {
+    \\  type: McpElicitationStringType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  enum: string[];
+    \\  enumNames?: string[];
+    \\  default?: string;
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_UNTITLED_MULTI_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationArrayType } from "./McpElicitationArrayType";
+    \\import type { McpElicitationUntitledEnumItems } from "./McpElicitationUntitledEnumItems";
+    \\
+    \\export interface McpElicitationUntitledMultiSelectEnumSchema {
+    \\  type: McpElicitationArrayType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  minItems?: bigint;
+    \\  maxItems?: bigint;
+    \\  items: McpElicitationUntitledEnumItems;
+    \\  default?: string[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_TITLED_MULTI_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationArrayType } from "./McpElicitationArrayType";
+    \\import type { McpElicitationTitledEnumItems } from "./McpElicitationTitledEnumItems";
+    \\
+    \\export interface McpElicitationTitledMultiSelectEnumSchema {
+    \\  type: McpElicitationArrayType;
+    \\  title?: string;
+    \\  description?: string;
+    \\  minItems?: bigint;
+    \\  maxItems?: bigint;
+    \\  items: McpElicitationTitledEnumItems;
+    \\  default?: string[];
+    \\}
+    \\
+    ;
+
+const MCP_ELICITATION_MULTI_SELECT_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationTitledMultiSelectEnumSchema } from "./McpElicitationTitledMultiSelectEnumSchema";
+    \\import type { McpElicitationUntitledMultiSelectEnumSchema } from "./McpElicitationUntitledMultiSelectEnumSchema";
+    \\
+    \\export type McpElicitationMultiSelectEnumSchema =
+    \\  | McpElicitationUntitledMultiSelectEnumSchema
+    \\  | McpElicitationTitledMultiSelectEnumSchema;
+    \\
+    ;
+
+const MCP_ELICITATION_ENUM_SCHEMA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { McpElicitationLegacyTitledEnumSchema } from "./McpElicitationLegacyTitledEnumSchema";
+    \\import type { McpElicitationMultiSelectEnumSchema } from "./McpElicitationMultiSelectEnumSchema";
+    \\import type { McpElicitationSingleSelectEnumSchema } from "./McpElicitationSingleSelectEnumSchema";
+    \\
+    \\export type McpElicitationEnumSchema =
+    \\  | McpElicitationSingleSelectEnumSchema
+    \\  | McpElicitationMultiSelectEnumSchema
+    \\  | McpElicitationLegacyTitledEnumSchema;
+    \\
+    ;
+
 const MCP_ELICITATION_PRIMITIVE_SCHEMA_TS =
     GENERATED_TS_HEADER ++
-    \\export type McpElicitationPrimitiveSchema = unknown;
+    \\import type { McpElicitationBooleanSchema } from "./McpElicitationBooleanSchema";
+    \\import type { McpElicitationEnumSchema } from "./McpElicitationEnumSchema";
+    \\import type { McpElicitationNumberSchema } from "./McpElicitationNumberSchema";
+    \\import type { McpElicitationStringSchema } from "./McpElicitationStringSchema";
+    \\
+    \\export type McpElicitationPrimitiveSchema =
+    \\  | McpElicitationEnumSchema
+    \\  | McpElicitationStringSchema
+    \\  | McpElicitationNumberSchema
+    \\  | McpElicitationBooleanSchema;
     \\
     ;
 
@@ -6885,8 +7116,27 @@ const V2_INDEX_TS =
     \\export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
     \\export type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";
     \\export type { McpElicitationSchema } from "./McpElicitationSchema";
+    \\export type { McpElicitationArrayType } from "./McpElicitationArrayType";
+    \\export type { McpElicitationBooleanSchema } from "./McpElicitationBooleanSchema";
+    \\export type { McpElicitationBooleanType } from "./McpElicitationBooleanType";
+    \\export type { McpElicitationConstOption } from "./McpElicitationConstOption";
+    \\export type { McpElicitationEnumSchema } from "./McpElicitationEnumSchema";
+    \\export type { McpElicitationLegacyTitledEnumSchema } from "./McpElicitationLegacyTitledEnumSchema";
+    \\export type { McpElicitationMultiSelectEnumSchema } from "./McpElicitationMultiSelectEnumSchema";
+    \\export type { McpElicitationNumberSchema } from "./McpElicitationNumberSchema";
+    \\export type { McpElicitationNumberType } from "./McpElicitationNumberType";
     \\export type { McpElicitationObjectType } from "./McpElicitationObjectType";
     \\export type { McpElicitationPrimitiveSchema } from "./McpElicitationPrimitiveSchema";
+    \\export type { McpElicitationSingleSelectEnumSchema } from "./McpElicitationSingleSelectEnumSchema";
+    \\export type { McpElicitationStringFormat } from "./McpElicitationStringFormat";
+    \\export type { McpElicitationStringSchema } from "./McpElicitationStringSchema";
+    \\export type { McpElicitationStringType } from "./McpElicitationStringType";
+    \\export type { McpElicitationTitledEnumItems } from "./McpElicitationTitledEnumItems";
+    \\export type { McpElicitationTitledMultiSelectEnumSchema } from "./McpElicitationTitledMultiSelectEnumSchema";
+    \\export type { McpElicitationTitledSingleSelectEnumSchema } from "./McpElicitationTitledSingleSelectEnumSchema";
+    \\export type { McpElicitationUntitledEnumItems } from "./McpElicitationUntitledEnumItems";
+    \\export type { McpElicitationUntitledMultiSelectEnumSchema } from "./McpElicitationUntitledMultiSelectEnumSchema";
+    \\export type { McpElicitationUntitledSingleSelectEnumSchema } from "./McpElicitationUntitledSingleSelectEnumSchema";
     \\export type { McpServerElicitationAction } from "./McpServerElicitationAction";
     \\export type { McpServerElicitationRequestParams } from "./McpServerElicitationRequestParams";
     \\export type { McpServerElicitationRequestResponse } from "./McpServerElicitationRequestResponse";
@@ -7326,6 +7576,301 @@ const SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA =
     \\        { "type": "string" },
     \\        { "type": "integer" }
     \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REVIEW_DECISION_JSON_DEFS =
+    \\    "NetworkPolicyRuleAction": {
+    \\      "type": "string",
+    \\      "enum": ["allow", "deny"]
+    \\    },
+    \\    "NetworkPolicyAmendment": {
+    \\      "type": "object",
+    \\      "required": ["action", "host"],
+    \\      "properties": {
+    \\        "action": { "$ref": "#/$defs/NetworkPolicyRuleAction" },
+    \\        "host": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ReviewDecision": {
+    \\      "description": "User's decision in response to an ExecApprovalRequest.",
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["approved"] },
+    \\        {
+    \\          "title": "ApprovedExecpolicyAmendmentReviewDecision",
+    \\          "type": "object",
+    \\          "required": ["approved_execpolicy_amendment"],
+    \\          "properties": {
+    \\            "approved_execpolicy_amendment": {
+    \\              "type": "object",
+    \\              "required": ["proposed_execpolicy_amendment"],
+    \\              "properties": {
+    \\                "proposed_execpolicy_amendment": {
+    \\                  "type": "array",
+    \\                  "items": { "type": "string" }
+    \\                }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["approved_for_session"] },
+    \\        {
+    \\          "title": "NetworkPolicyAmendmentReviewDecision",
+    \\          "type": "object",
+    \\          "required": ["network_policy_amendment"],
+    \\          "properties": {
+    \\            "network_policy_amendment": {
+    \\              "type": "object",
+    \\              "required": ["network_policy_amendment"],
+    \\              "properties": {
+    \\                "network_policy_amendment": { "$ref": "#/$defs/NetworkPolicyAmendment" }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["denied"] },
+    \\        { "type": "string", "enum": ["timed_out"] },
+    \\        { "type": "string", "enum": ["abort"] }
+    \\      ]
+    \\    }
+;
+
+const APPLY_PATCH_APPROVAL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ApplyPatchApprovalResponse",
+    \\  "type": "object",
+    \\  "required": ["decision"],
+    \\  "properties": {
+    \\    "decision": { "$ref": "#/$defs/ReviewDecision" }
+    \\  },
+    \\  "$defs": {
+++ REVIEW_DECISION_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const EXEC_COMMAND_APPROVAL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExecCommandApprovalResponse",
+    \\  "type": "object",
+    \\  "required": ["decision"],
+    \\  "properties": {
+    \\    "decision": { "$ref": "#/$defs/ReviewDecision" }
+    \\  },
+    \\  "$defs": {
+++ REVIEW_DECISION_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const COMMAND_EXECUTION_APPROVAL_DECISION_JSON_DEFS =
+    \\    "NetworkPolicyRuleAction": {
+    \\      "type": "string",
+    \\      "enum": ["allow", "deny"]
+    \\    },
+    \\    "NetworkPolicyAmendment": {
+    \\      "type": "object",
+    \\      "required": ["action", "host"],
+    \\      "properties": {
+    \\        "action": { "$ref": "#/$defs/NetworkPolicyRuleAction" },
+    \\        "host": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecutionApprovalDecision": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["accept"] },
+    \\        { "type": "string", "enum": ["acceptForSession"] },
+    \\        {
+    \\          "title": "AcceptWithExecpolicyAmendmentCommandExecutionApprovalDecision",
+    \\          "type": "object",
+    \\          "required": ["acceptWithExecpolicyAmendment"],
+    \\          "properties": {
+    \\            "acceptWithExecpolicyAmendment": {
+    \\              "type": "object",
+    \\              "required": ["execpolicy_amendment"],
+    \\              "properties": {
+    \\                "execpolicy_amendment": {
+    \\                  "type": "array",
+    \\                  "items": { "type": "string" }
+    \\                }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "title": "ApplyNetworkPolicyAmendmentCommandExecutionApprovalDecision",
+    \\          "type": "object",
+    \\          "required": ["applyNetworkPolicyAmendment"],
+    \\          "properties": {
+    \\            "applyNetworkPolicyAmendment": {
+    \\              "type": "object",
+    \\              "required": ["network_policy_amendment"],
+    \\              "properties": {
+    \\                "network_policy_amendment": { "$ref": "#/$defs/NetworkPolicyAmendment" }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["decline"] },
+    \\        { "type": "string", "enum": ["cancel"] }
+    \\      ]
+    \\    }
+;
+
+const COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "CommandExecutionRequestApprovalResponse",
+    \\  "type": "object",
+    \\  "required": ["decision"],
+    \\  "properties": {
+    \\    "decision": { "$ref": "#/$defs/CommandExecutionApprovalDecision" }
+    \\  },
+    \\  "$defs": {
+++ COMMAND_EXECUTION_APPROVAL_DECISION_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "FileChangeRequestApprovalResponse",
+    \\  "type": "object",
+    \\  "required": ["decision"],
+    \\  "properties": {
+    \\    "decision": { "$ref": "#/$defs/FileChangeApprovalDecision" }
+    \\  },
+    \\  "$defs": {
+    \\    "FileChangeApprovalDecision": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["accept"] },
+    \\        { "type": "string", "enum": ["acceptForSession"] },
+    \\        { "type": "string", "enum": ["decline"] },
+    \\        { "type": "string", "enum": ["cancel"] }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TOOL_REQUEST_USER_INPUT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ToolRequestUserInputResponse",
+    \\  "description": "EXPERIMENTAL. Response payload mapping question ids to answers.",
+    \\  "type": "object",
+    \\  "required": ["answers"],
+    \\  "properties": {
+    \\    "answers": {
+    \\      "type": "object",
+    \\      "additionalProperties": { "$ref": "#/$defs/ToolRequestUserInputAnswer" }
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ToolRequestUserInputAnswer": {
+    \\      "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
+    \\      "type": "object",
+    \\      "required": ["answers"],
+    \\      "properties": {
+    \\        "answers": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MCP_SERVER_ELICITATION_REQUEST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerElicitationRequestResponse",
+    \\  "type": "object",
+    \\  "required": ["action"],
+    \\  "properties": {
+    \\    "action": { "$ref": "#/$defs/McpServerElicitationAction" },
+    \\    "content": true,
+    \\    "_meta": true
+    \\  },
+    \\  "$defs": {
+    \\    "McpServerElicitationAction": {
+    \\      "type": "string",
+    \\      "enum": ["accept", "decline", "cancel"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionsRequestApprovalResponse",
+    \\  "type": "object",
+    \\  "required": ["permissions", "scope"],
+    \\  "properties": {
+    \\    "permissions": { "$ref": "#/$defs/GrantedPermissionProfile" },
+    \\    "scope": { "$ref": "#/$defs/PermissionGrantScope" },
+    \\    "strictAutoReview": { "type": "boolean" }
+    \\  },
+    \\  "$defs": {
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "FileSystemSandboxEntry": { "type": "object", "additionalProperties": true },
+    \\    "AdditionalNetworkPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "enabled": { "type": ["boolean", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AdditionalFileSystemPermissions": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1 },
+    \\        "entries": { "type": ["array", "null"], "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "GrantedPermissionProfile": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "network": { "$ref": "#/$defs/AdditionalNetworkPermissions" },
+    \\        "fileSystem": { "$ref": "#/$defs/AdditionalFileSystemPermissions" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PermissionGrantScope": {
+    \\      "type": "string",
+    \\      "enum": ["turn", "session"]
     \\    }
     \\  },
     \\  "additionalProperties": true
@@ -14566,6 +15111,178 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "NetworkPolicyRuleAction": {
+    \\      "type": "string",
+    \\      "enum": ["allow", "deny"]
+    \\    },
+    \\    "NetworkPolicyAmendment": {
+    \\      "type": "object",
+    \\      "required": ["action", "host"],
+    \\      "properties": {
+    \\        "action": { "$ref": "#/$defs/NetworkPolicyRuleAction" },
+    \\        "host": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ReviewDecision": {
+    \\      "description": "User's decision in response to an ExecApprovalRequest.",
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["approved"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["approved_execpolicy_amendment"],
+    \\          "properties": {
+    \\            "approved_execpolicy_amendment": {
+    \\              "type": "object",
+    \\              "required": ["proposed_execpolicy_amendment"],
+    \\              "properties": {
+    \\                "proposed_execpolicy_amendment": {
+    \\                  "type": "array",
+    \\                  "items": { "type": "string" }
+    \\                }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["approved_for_session"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["network_policy_amendment"],
+    \\          "properties": {
+    \\            "network_policy_amendment": {
+    \\              "type": "object",
+    \\              "required": ["network_policy_amendment"],
+    \\              "properties": {
+    \\                "network_policy_amendment": { "$ref": "#/$defs/NetworkPolicyAmendment" }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["denied"] },
+    \\        { "type": "string", "enum": ["timed_out"] },
+    \\        { "type": "string", "enum": ["abort"] }
+    \\      ]
+    \\    },
+    \\    "ApplyPatchApprovalResponse": {
+    \\      "type": "object",
+    \\      "required": ["decision"],
+    \\      "properties": {
+    \\        "decision": { "$ref": "#/$defs/ReviewDecision" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ExecCommandApprovalResponse": {
+    \\      "type": "object",
+    \\      "required": ["decision"],
+    \\      "properties": {
+    \\        "decision": { "$ref": "#/$defs/ReviewDecision" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "CommandExecutionApprovalDecision": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["accept"] },
+    \\        { "type": "string", "enum": ["acceptForSession"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["acceptWithExecpolicyAmendment"],
+    \\          "properties": {
+    \\            "acceptWithExecpolicyAmendment": {
+    \\              "type": "object",
+    \\              "required": ["execpolicy_amendment"],
+    \\              "properties": {
+    \\                "execpolicy_amendment": {
+    \\                  "type": "array",
+    \\                  "items": { "type": "string" }
+    \\                }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["applyNetworkPolicyAmendment"],
+    \\          "properties": {
+    \\            "applyNetworkPolicyAmendment": {
+    \\              "type": "object",
+    \\              "required": ["network_policy_amendment"],
+    \\              "properties": {
+    \\                "network_policy_amendment": { "$ref": "#/$defs/NetworkPolicyAmendment" }
+    \\              },
+    \\              "additionalProperties": true
+    \\            }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        { "type": "string", "enum": ["decline"] },
+    \\        { "type": "string", "enum": ["cancel"] }
+    \\      ]
+    \\    },
+    \\    "CommandExecutionRequestApprovalResponse": {
+    \\      "type": "object",
+    \\      "required": ["decision"],
+    \\      "properties": {
+    \\        "decision": { "$ref": "#/$defs/CommandExecutionApprovalDecision" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "FileChangeApprovalDecision": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["accept"] },
+    \\        { "type": "string", "enum": ["acceptForSession"] },
+    \\        { "type": "string", "enum": ["decline"] },
+    \\        { "type": "string", "enum": ["cancel"] }
+    \\      ]
+    \\    },
+    \\    "FileChangeRequestApprovalResponse": {
+    \\      "type": "object",
+    \\      "required": ["decision"],
+    \\      "properties": {
+    \\        "decision": { "$ref": "#/$defs/FileChangeApprovalDecision" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputAnswer": {
+    \\      "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
+    \\      "type": "object",
+    \\      "required": ["answers"],
+    \\      "properties": {
+    \\        "answers": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ToolRequestUserInputResponse": {
+    \\      "description": "EXPERIMENTAL. Response payload mapping question ids to answers.",
+    \\      "type": "object",
+    \\      "required": ["answers"],
+    \\      "properties": {
+    \\        "answers": {
+    \\          "type": "object",
+    \\          "additionalProperties": { "$ref": "#/$defs/ToolRequestUserInputAnswer" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "McpServerElicitationAction": {
+    \\      "type": "string",
+    \\      "enum": ["accept", "decline", "cancel"]
+    \\    },
+    \\    "McpServerElicitationRequestResponse": {
+    \\      "type": "object",
+    \\      "required": ["action"],
+    \\      "properties": {
+    \\        "action": { "$ref": "#/$defs/McpServerElicitationAction" },
+    \\        "content": true,
+    \\        "_meta": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ClientInfo": {
     \\      "type": "object",
     \\      "required": ["name", "version"],
@@ -17341,6 +18058,28 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "GrantedPermissionProfile": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "network": { "$ref": "#/$defs/AdditionalNetworkPermissions" },
+    \\        "fileSystem": { "$ref": "#/$defs/AdditionalFileSystemPermissions" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PermissionGrantScope": {
+    \\      "type": "string",
+    \\      "enum": ["turn", "session"]
+    \\    },
+    \\    "PermissionsRequestApprovalResponse": {
+    \\      "type": "object",
+    \\      "required": ["permissions", "scope"],
+    \\      "properties": {
+    \\        "permissions": { "$ref": "#/$defs/GrantedPermissionProfile" },
+    \\        "scope": { "$ref": "#/$defs/PermissionGrantScope" },
+    \\        "strictAutoReview": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "AutoReviewDecisionSource": {
     \\      "description": "[UNSTABLE] Source that produced a terminal approval auto-review decision.",
     \\      "type": "string",
@@ -18210,6 +18949,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "ServerRequestResolvedNotification.json", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ApplyPatchApprovalResponse.json", .contents = APPLY_PATCH_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExecCommandApprovalResponse.json", .contents = EXEC_COMMAND_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "CommandExecutionRequestApprovalResponse.json", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "FileChangeRequestApprovalResponse.json", .contents = FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ToolRequestUserInputResponse.json", .contents = TOOL_REQUEST_USER_INPUT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "McpServerElicitationRequestResponse.json", .contents = MCP_SERVER_ELICITATION_REQUEST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "PermissionsRequestApprovalResponse.json", .contents = PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "AuthMode.json", .contents = AUTH_MODE_JSON_SCHEMA },
@@ -18918,9 +19664,28 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ToolRequestUserInputParams.ts", .contents = TOOL_REQUEST_USER_INPUT_PARAMS_TS },
     .{ .name = "v2/ToolRequestUserInputAnswer.ts", .contents = TOOL_REQUEST_USER_INPUT_ANSWER_TS },
     .{ .name = "v2/ToolRequestUserInputResponse.ts", .contents = TOOL_REQUEST_USER_INPUT_RESPONSE_TS },
+    .{ .name = "v2/McpElicitationArrayType.ts", .contents = MCP_ELICITATION_ARRAY_TYPE_TS },
+    .{ .name = "v2/McpElicitationBooleanSchema.ts", .contents = MCP_ELICITATION_BOOLEAN_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationBooleanType.ts", .contents = MCP_ELICITATION_BOOLEAN_TYPE_TS },
+    .{ .name = "v2/McpElicitationConstOption.ts", .contents = MCP_ELICITATION_CONST_OPTION_TS },
+    .{ .name = "v2/McpElicitationEnumSchema.ts", .contents = MCP_ELICITATION_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationLegacyTitledEnumSchema.ts", .contents = MCP_ELICITATION_LEGACY_TITLED_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationMultiSelectEnumSchema.ts", .contents = MCP_ELICITATION_MULTI_SELECT_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationNumberSchema.ts", .contents = MCP_ELICITATION_NUMBER_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationNumberType.ts", .contents = MCP_ELICITATION_NUMBER_TYPE_TS },
     .{ .name = "v2/McpElicitationObjectType.ts", .contents = MCP_ELICITATION_OBJECT_TYPE_TS },
     .{ .name = "v2/McpElicitationPrimitiveSchema.ts", .contents = MCP_ELICITATION_PRIMITIVE_SCHEMA_TS },
     .{ .name = "v2/McpElicitationSchema.ts", .contents = MCP_ELICITATION_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationSingleSelectEnumSchema.ts", .contents = MCP_ELICITATION_SINGLE_SELECT_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationStringFormat.ts", .contents = MCP_ELICITATION_STRING_FORMAT_TS },
+    .{ .name = "v2/McpElicitationStringSchema.ts", .contents = MCP_ELICITATION_STRING_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationStringType.ts", .contents = MCP_ELICITATION_STRING_TYPE_TS },
+    .{ .name = "v2/McpElicitationTitledEnumItems.ts", .contents = MCP_ELICITATION_TITLED_ENUM_ITEMS_TS },
+    .{ .name = "v2/McpElicitationTitledMultiSelectEnumSchema.ts", .contents = MCP_ELICITATION_TITLED_MULTI_SELECT_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationTitledSingleSelectEnumSchema.ts", .contents = MCP_ELICITATION_TITLED_SINGLE_SELECT_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationUntitledEnumItems.ts", .contents = MCP_ELICITATION_UNTITLED_ENUM_ITEMS_TS },
+    .{ .name = "v2/McpElicitationUntitledMultiSelectEnumSchema.ts", .contents = MCP_ELICITATION_UNTITLED_MULTI_SELECT_ENUM_SCHEMA_TS },
+    .{ .name = "v2/McpElicitationUntitledSingleSelectEnumSchema.ts", .contents = MCP_ELICITATION_UNTITLED_SINGLE_SELECT_ENUM_SCHEMA_TS },
     .{ .name = "v2/McpServerElicitationAction.ts", .contents = MCP_SERVER_ELICITATION_ACTION_TS },
     .{ .name = "v2/McpServerElicitationRequestParams.ts", .contents = MCP_SERVER_ELICITATION_REQUEST_PARAMS_TS },
     .{ .name = "v2/McpServerElicitationRequestResponse.ts", .contents = MCP_SERVER_ELICITATION_REQUEST_RESPONSE_TS },
