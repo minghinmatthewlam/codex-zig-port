@@ -85,8 +85,10 @@ warning/notice notification artifacts for `WarningNotification`,
 `WindowsWorldWritableWarningNotification`, hook run summary artifacts, and
 `HookStartedNotification` / `HookCompletedNotification` server-notification
 artifacts, plus turn diff/plan update notification artifacts, item-stream plan,
-command-execution, and file-change notification artifacts, and model
-reroute/verification notification artifacts,
+command-execution, file-change, reasoning delta, and context-compaction
+notification artifacts, server-request, MCP progress/startup-status, and
+remote-control status notification artifacts, and model reroute/verification
+notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -152,6 +154,27 @@ TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
 the top-level `ServerNotification` `"model/rerouted"` and
 `"model/verification"` union variants. Runtime emission for model reroute and
 verification notifications remains planned.
+
+Additional app-server reasoning and compaction notification generation coverage:
+generated TypeScript and JSON Schema artifacts now include
+`ReasoningSummaryTextDeltaNotification`,
+`ReasoningSummaryPartAddedNotification`, `ReasoningTextDeltaNotification`, and
+`ContextCompactedNotification`, exported through `v2/index.ts` and included in
+the top-level `ServerNotification` `"item/reasoning/summaryTextDelta"`,
+`"item/reasoning/summaryPartAdded"`, `"item/reasoning/textDelta"`, and
+`"thread/compacted"` union variants. Runtime emission for reasoning deltas and
+the deprecated compacted notification remains planned.
+
+Additional app-server control/status notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include
+`ServerRequestResolvedNotification`, `McpToolCallProgressNotification`,
+`McpServerStartupState`, `McpServerStatusUpdatedNotification`,
+`RemoteControlConnectionStatus`, and
+`RemoteControlStatusChangedNotification`, exported through `v2/index.ts` and
+included in the top-level `ServerNotification` `"serverRequest/resolved"`,
+`"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
+`"remoteControl/status/changed"` union variants. Runtime emission for these
+control/status notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
