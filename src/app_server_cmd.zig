@@ -2377,6 +2377,268 @@ const CONFIG_READ_PARAMS_TS =
     \\
     ;
 
+const ASK_FOR_APPROVAL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AskForApproval =
+    \\  | "untrusted"
+    \\  | "on-failure"
+    \\  | "on-request"
+    \\  | {
+    \\      granular: {
+    \\        sandbox_approval: boolean;
+    \\        rules: boolean;
+    \\        skill_approval: boolean;
+    \\        request_permissions: boolean;
+    \\        mcp_elicitations: boolean;
+    \\      };
+    \\    }
+    \\  | "never";
+    \\
+    ;
+
+const APPROVALS_REVIEWER_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ApprovalsReviewer =
+    \\  | "user"
+    \\  | "auto_review"
+    \\  | "guardian_subagent";
+    \\
+    ;
+
+const ANALYTICS_CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\
+    \\export interface AnalyticsConfig {
+    \\  enabled: boolean | null;
+    \\  [key: string]: JsonValue | undefined;
+    \\}
+    \\
+    ;
+
+const SANDBOX_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type SandboxMode =
+    \\  | "read-only"
+    \\  | "workspace-write"
+    \\  | "danger-full-access";
+    \\
+    ;
+
+const SANDBOX_WORKSPACE_WRITE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface SandboxWorkspaceWrite {
+    \\  writable_roots: string[];
+    \\  network_access: boolean;
+    \\  exclude_tmpdir_env_var: boolean;
+    \\  exclude_slash_tmp: boolean;
+    \\}
+    \\
+    ;
+
+const TOOLS_V2_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WebSearchToolConfig } from "../WebSearchToolConfig";
+    \\
+    \\export interface ToolsV2 {
+    \\  web_search: WebSearchToolConfig | null;
+    \\  view_image: boolean | null;
+    \\}
+    \\
+    ;
+
+const PROFILE_V2_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ReasoningSummary } from "../ReasoningSummary";
+    \\import type { Verbosity } from "../Verbosity";
+    \\import type { WebSearchMode } from "../WebSearchMode";
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { ToolsV2 } from "./ToolsV2";
+    \\
+    \\export type ProfileV2 = {
+    \\  model: string | null;
+    \\  model_provider: string | null;
+    \\  approval_policy: AskForApproval | null;
+    \\  approvals_reviewer: ApprovalsReviewer | null;
+    \\  service_tier: string | null;
+    \\  model_reasoning_effort: ReasoningEffort | null;
+    \\  model_reasoning_summary: ReasoningSummary | null;
+    \\  model_verbosity: Verbosity | null;
+    \\  web_search: WebSearchMode | null;
+    \\  tools: ToolsV2 | null;
+    \\  chatgpt_base_url: string | null;
+    \\} & ({ [key: string]: JsonValue | undefined });
+    \\
+    ;
+
+const CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ForcedLoginMethod } from "../ForcedLoginMethod";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ReasoningSummary } from "../ReasoningSummary";
+    \\import type { Verbosity } from "../Verbosity";
+    \\import type { WebSearchMode } from "../WebSearchMode";
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { AnalyticsConfig } from "./AnalyticsConfig";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { ProfileV2 } from "./ProfileV2";
+    \\import type { SandboxMode } from "./SandboxMode";
+    \\import type { SandboxWorkspaceWrite } from "./SandboxWorkspaceWrite";
+    \\import type { ToolsV2 } from "./ToolsV2";
+    \\
+    \\export type Config = {
+    \\  model: string | null;
+    \\  review_model: string | null;
+    \\  model_context_window: bigint | null;
+    \\  model_auto_compact_token_limit: bigint | null;
+    \\  model_provider: string | null;
+    \\  approval_policy: AskForApproval | null;
+    \\  approvals_reviewer: ApprovalsReviewer | null;
+    \\  sandbox_mode: SandboxMode | null;
+    \\  sandbox_workspace_write: SandboxWorkspaceWrite | null;
+    \\  forced_chatgpt_workspace_id: string | null;
+    \\  forced_login_method: ForcedLoginMethod | null;
+    \\  web_search: WebSearchMode | null;
+    \\  tools: ToolsV2 | null;
+    \\  profile: string | null;
+    \\  profiles: Record<string, ProfileV2 | undefined>;
+    \\  instructions: string | null;
+    \\  developer_instructions: string | null;
+    \\  compact_prompt: string | null;
+    \\  model_reasoning_effort: ReasoningEffort | null;
+    \\  model_reasoning_summary: ReasoningSummary | null;
+    \\  model_verbosity: Verbosity | null;
+    \\  service_tier: string | null;
+    \\  analytics: AnalyticsConfig | null;
+    \\} & ({ [key: string]: JsonValue | undefined });
+    \\
+    ;
+
+const CONFIG_LAYER_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type ConfigLayerSource =
+    \\  | { type: "mdm"; domain: string; key: string }
+    \\  | { type: "system"; file: AbsolutePathBuf }
+    \\  | { type: "user"; file: AbsolutePathBuf }
+    \\  | { type: "project"; dotCodexFolder: AbsolutePathBuf }
+    \\  | { type: "sessionFlags" }
+    \\  | { type: "legacyManagedConfigTomlFromFile"; file: AbsolutePathBuf }
+    \\  | { type: "legacyManagedConfigTomlFromMdm" };
+    \\
+    ;
+
+const CONFIG_LAYER_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConfigLayerSource } from "./ConfigLayerSource";
+    \\
+    \\export interface ConfigLayerMetadata {
+    \\  name: ConfigLayerSource;
+    \\  version: string;
+    \\}
+    \\
+    ;
+
+const CONFIG_LAYER_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { ConfigLayerSource } from "./ConfigLayerSource";
+    \\
+    \\export interface ConfigLayer {
+    \\  name: ConfigLayerSource;
+    \\  version: string;
+    \\  config: JsonValue;
+    \\  disabledReason: string | null;
+    \\}
+    \\
+    ;
+
+const CONFIG_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { Config } from "./Config";
+    \\import type { ConfigLayer } from "./ConfigLayer";
+    \\import type { ConfigLayerMetadata } from "./ConfigLayerMetadata";
+    \\
+    \\export interface ConfigReadResponse {
+    \\  config: Config;
+    \\  origins: Record<string, ConfigLayerMetadata | undefined>;
+    \\  layers: ConfigLayer[] | null;
+    \\}
+    \\
+    ;
+
+const RESIDENCY_REQUIREMENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ResidencyRequirement = "us";
+    \\
+    ;
+
+const CONFIG_REQUIREMENTS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WebSearchMode } from "../WebSearchMode";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { ResidencyRequirement } from "./ResidencyRequirement";
+    \\import type { SandboxMode } from "./SandboxMode";
+    \\
+    \\export interface ConfigRequirements {
+    \\  allowedApprovalPolicies: AskForApproval[] | null;
+    \\  allowedSandboxModes: SandboxMode[] | null;
+    \\  allowedWebSearchModes: WebSearchMode[] | null;
+    \\  featureRequirements: Record<string, boolean | undefined> | null;
+    \\  enforceResidency: ResidencyRequirement | null;
+    \\}
+    \\
+    ;
+
+const CONFIG_REQUIREMENTS_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConfigRequirements } from "./ConfigRequirements";
+    \\
+    \\export interface ConfigRequirementsReadResponse {
+    \\  requirements: ConfigRequirements | null;
+    \\}
+    \\
+    ;
+
+const WRITE_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WriteStatus = "ok" | "okOverridden";
+    \\
+    ;
+
+const OVERRIDDEN_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { ConfigLayerMetadata } from "./ConfigLayerMetadata";
+    \\
+    \\export interface OverriddenMetadata {
+    \\  message: string;
+    \\  overridingLayer: ConfigLayerMetadata;
+    \\  effectiveValue: JsonValue;
+    \\}
+    \\
+    ;
+
+const CONFIG_WRITE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { OverriddenMetadata } from "./OverriddenMetadata";
+    \\import type { WriteStatus } from "./WriteStatus";
+    \\
+    \\export interface ConfigWriteResponse {
+    \\  status: WriteStatus;
+    \\  version: string;
+    \\  filePath: AbsolutePathBuf;
+    \\  overriddenMetadata: OverriddenMetadata | null;
+    \\}
+    \\
+    ;
+
 const MERGE_STRATEGY_TS =
     GENERATED_TS_HEADER ++
     \\export type MergeStrategy = "replace" | "upsert";
@@ -7373,6 +7635,9 @@ const V2_INDEX_TS =
     \\export type { AppsListResponse } from "./AppsListResponse";
     \\export type { AppScreenshot } from "./AppScreenshot";
     \\export type { AppSummary } from "./AppSummary";
+    \\export type { AnalyticsConfig } from "./AnalyticsConfig";
+    \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\export type { AskForApproval } from "./AskForApproval";
     \\export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
     \\export type { RemoteControlStatusChangedNotification } from "./RemoteControlStatusChangedNotification";
     \\export type { ByteRange } from "./ByteRange";
@@ -7419,11 +7684,19 @@ const V2_INDEX_TS =
     \\export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStartResponse";
     \\export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
     \\export type { ConfigBatchWriteParams } from "./ConfigBatchWriteParams";
+    \\export type { Config } from "./Config";
     \\export type { ConfigEdit } from "./ConfigEdit";
+    \\export type { ConfigLayer } from "./ConfigLayer";
+    \\export type { ConfigLayerMetadata } from "./ConfigLayerMetadata";
+    \\export type { ConfigLayerSource } from "./ConfigLayerSource";
     \\export type { ConfigMcpServerReloadParams } from "./ConfigMcpServerReloadParams";
     \\export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";
     \\export type { ConfigReadParams } from "./ConfigReadParams";
+    \\export type { ConfigReadResponse } from "./ConfigReadResponse";
+    \\export type { ConfigRequirements } from "./ConfigRequirements";
+    \\export type { ConfigRequirementsReadResponse } from "./ConfigRequirementsReadResponse";
     \\export type { ConfigValueWriteParams } from "./ConfigValueWriteParams";
+    \\export type { ConfigWriteResponse } from "./ConfigWriteResponse";
     \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
     \\export type { DynamicToolCallParams } from "./DynamicToolCallParams";
     \\export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
@@ -7482,6 +7755,7 @@ const V2_INDEX_TS =
     \\export type { McpServerMigration } from "./McpServerMigration";
     \\export type { MigrationDetails } from "./MigrationDetails";
     \\export type { PluginsMigration } from "./PluginsMigration";
+    \\export type { ProfileV2 } from "./ProfileV2";
     \\export type { SessionMigration } from "./SessionMigration";
     \\export type { SubagentMigration } from "./SubagentMigration";
     \\export type { McpServerAuthStatus } from "./McpServerAuthStatus";
@@ -7511,6 +7785,10 @@ const V2_INDEX_TS =
     \\export type { ExperimentalFeatureListParams } from "./ExperimentalFeatureListParams";
     \\export type { ExperimentalFeatureListResponse } from "./ExperimentalFeatureListResponse";
     \\export type { ExperimentalFeatureStage } from "./ExperimentalFeatureStage";
+    \\export type { OverriddenMetadata } from "./OverriddenMetadata";
+    \\export type { ResidencyRequirement } from "./ResidencyRequirement";
+    \\export type { SandboxMode } from "./SandboxMode";
+    \\export type { SandboxWorkspaceWrite } from "./SandboxWorkspaceWrite";
     \\export type { FuzzyFileSearchMatch } from "./FuzzyFileSearchMatch";
     \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
     \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
@@ -7518,6 +7796,8 @@ const V2_INDEX_TS =
     \\export type { FuzzyFileSearchSessionCompletedNotification } from "./FuzzyFileSearchSessionCompletedNotification";
     \\export type { FuzzyFileSearchSessionStartParams } from "./FuzzyFileSearchSessionStartParams";
     \\export type { FuzzyFileSearchSessionStartResponse } from "./FuzzyFileSearchSessionStartResponse";
+    \\export type { ToolsV2 } from "./ToolsV2";
+    \\export type { WriteStatus } from "./WriteStatus";
     \\export type { FuzzyFileSearchSessionStopParams } from "./FuzzyFileSearchSessionStopParams";
     \\export type { FuzzyFileSearchSessionStopResponse } from "./FuzzyFileSearchSessionStopResponse";
     \\export type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";
@@ -20759,6 +21039,24 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ConfigMcpServerReloadParams.ts", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_TS },
     .{ .name = "v2/ConfigMcpServerReloadResponse.ts", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_TS },
     .{ .name = "v2/ConfigReadParams.ts", .contents = CONFIG_READ_PARAMS_TS },
+    .{ .name = "v2/AskForApproval.ts", .contents = ASK_FOR_APPROVAL_TS },
+    .{ .name = "v2/ApprovalsReviewer.ts", .contents = APPROVALS_REVIEWER_TS },
+    .{ .name = "v2/AnalyticsConfig.ts", .contents = ANALYTICS_CONFIG_TS },
+    .{ .name = "v2/SandboxMode.ts", .contents = SANDBOX_MODE_TS },
+    .{ .name = "v2/SandboxWorkspaceWrite.ts", .contents = SANDBOX_WORKSPACE_WRITE_TS },
+    .{ .name = "v2/ToolsV2.ts", .contents = TOOLS_V2_TS },
+    .{ .name = "v2/ProfileV2.ts", .contents = PROFILE_V2_TS },
+    .{ .name = "v2/Config.ts", .contents = CONFIG_TS },
+    .{ .name = "v2/ConfigLayerSource.ts", .contents = CONFIG_LAYER_SOURCE_TS },
+    .{ .name = "v2/ConfigLayerMetadata.ts", .contents = CONFIG_LAYER_METADATA_TS },
+    .{ .name = "v2/ConfigLayer.ts", .contents = CONFIG_LAYER_TS },
+    .{ .name = "v2/ConfigReadResponse.ts", .contents = CONFIG_READ_RESPONSE_TS },
+    .{ .name = "v2/ResidencyRequirement.ts", .contents = RESIDENCY_REQUIREMENT_TS },
+    .{ .name = "v2/ConfigRequirements.ts", .contents = CONFIG_REQUIREMENTS_TS },
+    .{ .name = "v2/ConfigRequirementsReadResponse.ts", .contents = CONFIG_REQUIREMENTS_READ_RESPONSE_TS },
+    .{ .name = "v2/WriteStatus.ts", .contents = WRITE_STATUS_TS },
+    .{ .name = "v2/OverriddenMetadata.ts", .contents = OVERRIDDEN_METADATA_TS },
+    .{ .name = "v2/ConfigWriteResponse.ts", .contents = CONFIG_WRITE_RESPONSE_TS },
     .{ .name = "v2/MergeStrategy.ts", .contents = MERGE_STRATEGY_TS },
     .{ .name = "serde_json/JsonValue.ts", .contents = JSON_VALUE_TS },
     .{ .name = "v2/ConfigEdit.ts", .contents = CONFIG_EDIT_TS },
