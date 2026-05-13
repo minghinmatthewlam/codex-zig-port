@@ -18724,11 +18724,91 @@ def run_json_schema_smoke(binary: Path) -> None:
         hook_handler_type = json.loads(
             (out_dir / "HookHandlerType.json").read_text(encoding="utf-8")
         )
-        assert hook_handler_type["enum"] == ["command"]
+        assert hook_handler_type["enum"] == ["command", "prompt", "agent"]
         hook_source = json.loads(
             (out_dir / "HookSource.json").read_text(encoding="utf-8")
         )
-        assert hook_source["enum"] == ["user", "project", "plugin"]
+        assert hook_source["enum"] == [
+            "system",
+            "user",
+            "project",
+            "mdm",
+            "sessionFlags",
+            "plugin",
+            "cloudRequirements",
+            "legacyManagedConfigFile",
+            "legacyManagedConfigMdm",
+            "unknown",
+        ]
+        hook_execution_mode = json.loads(
+            (out_dir / "HookExecutionMode.json").read_text(encoding="utf-8")
+        )
+        assert hook_execution_mode["enum"] == ["sync", "async"]
+        hook_output_entry_kind = json.loads(
+            (out_dir / "HookOutputEntryKind.json").read_text(encoding="utf-8")
+        )
+        assert hook_output_entry_kind["enum"] == [
+            "warning",
+            "stop",
+            "feedback",
+            "context",
+            "error",
+        ]
+        hook_output_entry = json.loads(
+            (out_dir / "HookOutputEntry.json").read_text(encoding="utf-8")
+        )
+        assert hook_output_entry["required"] == ["kind", "text"]
+        assert (
+            hook_output_entry["properties"]["kind"]["$ref"]
+            == "#/$defs/HookOutputEntryKind"
+        )
+        hook_run_status = json.loads(
+            (out_dir / "HookRunStatus.json").read_text(encoding="utf-8")
+        )
+        assert hook_run_status["enum"] == [
+            "running",
+            "completed",
+            "failed",
+            "blocked",
+            "stopped",
+        ]
+        hook_scope = json.loads(
+            (out_dir / "HookScope.json").read_text(encoding="utf-8")
+        )
+        assert hook_scope["enum"] == ["thread", "turn"]
+        hook_run_summary = json.loads(
+            (out_dir / "HookRunSummary.json").read_text(encoding="utf-8")
+        )
+        assert hook_run_summary["required"] == [
+            "displayOrder",
+            "entries",
+            "eventName",
+            "executionMode",
+            "handlerType",
+            "id",
+            "scope",
+            "sourcePath",
+            "startedAt",
+            "status",
+        ]
+        assert (
+            hook_run_summary["properties"]["entries"]["items"]["$ref"]
+            == "#/$defs/HookOutputEntry"
+        )
+        for hook_notification_name in [
+            "HookStartedNotification",
+            "HookCompletedNotification",
+        ]:
+            hook_notification = json.loads(
+                (out_dir / f"{hook_notification_name}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert hook_notification["required"] == ["run", "threadId"]
+            assert (
+                hook_notification["properties"]["run"]["$ref"]
+                == "#/$defs/HookRunSummary"
+            )
         hook_trust_status = json.loads(
             (out_dir / "HookTrustStatus.json").read_text(encoding="utf-8")
         )
@@ -20299,6 +20379,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "HookEventName" in bundle["$defs"]
         assert "HookHandlerType" in bundle["$defs"]
         assert "HookSource" in bundle["$defs"]
+        assert "HookExecutionMode" in bundle["$defs"]
+        assert "HookOutputEntryKind" in bundle["$defs"]
+        assert "HookOutputEntry" in bundle["$defs"]
+        assert "HookRunStatus" in bundle["$defs"]
+        assert "HookScope" in bundle["$defs"]
+        assert "HookRunSummary" in bundle["$defs"]
+        assert "HookStartedNotification" in bundle["$defs"]
+        assert "HookCompletedNotification" in bundle["$defs"]
         assert "HookTrustStatus" in bundle["$defs"]
         assert "HookError" in bundle["$defs"]
         assert "Hook" in bundle["$defs"]
@@ -20675,6 +20763,26 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["Hook"]["properties"]["handlerType"]["$ref"]
             == "#/$defs/HookHandlerType"
+        )
+        assert bundle["$defs"]["HookHandlerType"]["enum"] == [
+            "command",
+            "prompt",
+            "agent",
+        ]
+        assert bundle["$defs"]["HookExecutionMode"]["enum"] == ["sync", "async"]
+        assert (
+            bundle["$defs"]["HookRunSummary"]["properties"]["entries"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/HookOutputEntry"
+        )
+        assert (
+            bundle["$defs"]["HookStartedNotification"]["properties"]["run"]["$ref"]
+            == "#/$defs/HookRunSummary"
+        )
+        assert (
+            bundle["$defs"]["HookCompletedNotification"]["properties"]["run"]["$ref"]
+            == "#/$defs/HookRunSummary"
         )
         assert (
             bundle["$defs"]["Hook"]["properties"]["trustStatus"]["$ref"]
@@ -21398,6 +21506,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { McpServerOauthLoginCompletedNotification } from "./v2/McpServerOauthLoginCompletedNotification";'
             in server_notification
         )
+        for hook_import in [
+            "HookStartedNotification",
+            "HookCompletedNotification",
+        ]:
+            assert (
+                f'import type {{ {hook_import} }} from "./v2/{hook_import}";'
+                in server_notification
+            )
         assert (
             'import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";'
             in server_notification
@@ -21506,8 +21622,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ErrorNotification;" in server_notification
         assert 'method: "turn/started";' in server_notification
         assert "params: TurnStartedNotification;" in server_notification
+        assert 'method: "hook/started";' in server_notification
+        assert "params: HookStartedNotification;" in server_notification
         assert 'method: "turn/completed";' in server_notification
         assert "params: TurnCompletedNotification;" in server_notification
+        assert 'method: "hook/completed";' in server_notification
+        assert "params: HookCompletedNotification;" in server_notification
         assert 'method: "item/started";' in server_notification
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
@@ -22067,11 +22187,66 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         hook_handler_type = (out_dir / "v2" / "HookHandlerType.ts").read_text(
             encoding="utf-8"
         )
-        assert 'export type HookHandlerType = "command";' in hook_handler_type
+        assert '"command" | "prompt" | "agent"' in hook_handler_type
         hook_source = (out_dir / "v2" / "HookSource.ts").read_text(
             encoding="utf-8"
         )
-        assert '"user" | "project" | "plugin"' in hook_source
+        assert '"system"' in hook_source
+        assert '"cloudRequirements"' in hook_source
+        assert '"unknown"' in hook_source
+        hook_execution_mode = (
+            out_dir / "v2" / "HookExecutionMode.ts"
+        ).read_text(encoding="utf-8")
+        assert '"sync" | "async"' in hook_execution_mode
+        hook_output_entry_kind = (
+            out_dir / "v2" / "HookOutputEntryKind.ts"
+        ).read_text(encoding="utf-8")
+        assert '"warning"' in hook_output_entry_kind
+        assert '"error"' in hook_output_entry_kind
+        hook_output_entry = (
+            out_dir / "v2" / "HookOutputEntry.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { HookOutputEntryKind } from "./HookOutputEntryKind";'
+            in hook_output_entry
+        )
+        assert "kind: HookOutputEntryKind;" in hook_output_entry
+        assert "text: string;" in hook_output_entry
+        hook_run_status = (out_dir / "v2" / "HookRunStatus.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"running"' in hook_run_status
+        assert '"stopped"' in hook_run_status
+        hook_scope = (out_dir / "v2" / "HookScope.ts").read_text(
+            encoding="utf-8"
+        )
+        assert '"thread" | "turn"' in hook_scope
+        hook_run_summary = (out_dir / "v2" / "HookRunSummary.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";' in (
+            hook_run_summary
+        )
+        assert 'import type { HookOutputEntry } from "./HookOutputEntry";' in (
+            hook_run_summary
+        )
+        assert "executionMode: HookExecutionMode;" in hook_run_summary
+        assert "entries: HookOutputEntry[];" in hook_run_summary
+        assert "startedAt: bigint;" in hook_run_summary
+        for hook_notification_name in [
+            "HookStartedNotification",
+            "HookCompletedNotification",
+        ]:
+            hook_notification = (
+                out_dir / "v2" / f"{hook_notification_name}.ts"
+            ).read_text(encoding="utf-8")
+            assert 'import type { HookRunSummary } from "./HookRunSummary";' in (
+                hook_notification
+            )
+            assert f"export interface {hook_notification_name}" in hook_notification
+            assert "threadId: string;" in hook_notification
+            assert "turnId: string | null;" in hook_notification
+            assert "run: HookRunSummary;" in hook_notification
         hook_trust_status = (out_dir / "v2" / "HookTrustStatus.ts").read_text(
             encoding="utf-8"
         )
@@ -23397,10 +23572,30 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 in v2_index
             )
         assert 'export type { Hook } from "./Hook";' in v2_index
+        assert (
+            'export type { HookCompletedNotification } from "./HookCompletedNotification";'
+            in v2_index
+        )
         assert 'export type { HookError } from "./HookError";' in v2_index
         assert 'export type { HookEventName } from "./HookEventName";' in v2_index
+        assert (
+            'export type { HookExecutionMode } from "./HookExecutionMode";'
+            in v2_index
+        )
         assert 'export type { HookHandlerType } from "./HookHandlerType";' in v2_index
+        assert 'export type { HookOutputEntry } from "./HookOutputEntry";' in v2_index
+        assert (
+            'export type { HookOutputEntryKind } from "./HookOutputEntryKind";'
+            in v2_index
+        )
+        assert 'export type { HookRunStatus } from "./HookRunStatus";' in v2_index
+        assert 'export type { HookRunSummary } from "./HookRunSummary";' in v2_index
+        assert 'export type { HookScope } from "./HookScope";' in v2_index
         assert 'export type { HookSource } from "./HookSource";' in v2_index
+        assert (
+            'export type { HookStartedNotification } from "./HookStartedNotification";'
+            in v2_index
+        )
         assert 'export type { HookTrustStatus } from "./HookTrustStatus";' in v2_index
         assert (
             'export type { HooksListEntry } from "./HooksListEntry";'
