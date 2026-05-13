@@ -644,6 +644,14 @@ generated TypeScript and JSON schemas include `TurnStartParams.effort`. Rust
 `summary`, collaboration mode, personality, permission-profile, and
 `sandboxPolicy` turn-context overrides remain planned.
 
+Additional app-server turn-start approvals-reviewer override coverage:
+`turn/start` now accepts Rust-compatible `approvalsReviewer` overrides for
+already-loaded threads, rejects invalid reviewer labels before issuing a
+provider request, stores the selected reviewer on the loaded-thread runtime
+state, and preserves it across subsequent thread lifecycle responses. The
+generated TypeScript and JSON schemas include
+`TurnStartParams.approvalsReviewer`.
+
 Additional app-server thread status coverage: `turn/start` now emits
 Rust-shaped `thread/status/changed` notifications for the active state before
 the turn lifecycle notifications and the idle state after turn completion,
