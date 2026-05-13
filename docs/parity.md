@@ -114,6 +114,9 @@ For TypeScript file names, the Zig generator covers the complete Rust-named
 `app-server-protocol/schema/typescript` set observed in the adjacent Rust
 checkout at comparison time; the remaining Zig-only files are compatibility
 aliases or legacy artifacts, not Rust-missing files.
+For JSON Schema file names, the Zig generator now emits `v1/` initialize
+aliases and `v2/` aliases for every implemented flat schema that already
+matches a Rust versioned filename, while preserving flat compatibility outputs.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
