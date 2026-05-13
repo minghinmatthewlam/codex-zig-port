@@ -19889,6 +19889,48 @@ def run_json_schema_smoke(binary: Path) -> None:
             turn_completed_notification_schema["properties"]["turn"]["$ref"]
             == "Turn.json"
         )
+        turn_diff_updated_notification_schema = json.loads(
+            (out_dir / "TurnDiffUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert turn_diff_updated_notification_schema["required"] == [
+            "diff",
+            "threadId",
+            "turnId",
+        ]
+        turn_plan_step_status_schema = json.loads(
+            (out_dir / "TurnPlanStepStatus.json").read_text(encoding="utf-8")
+        )
+        assert turn_plan_step_status_schema["enum"] == [
+            "pending",
+            "inProgress",
+            "completed",
+        ]
+        turn_plan_step_schema = json.loads(
+            (out_dir / "TurnPlanStep.json").read_text(encoding="utf-8")
+        )
+        assert turn_plan_step_schema["required"] == ["status", "step"]
+        assert (
+            turn_plan_step_schema["properties"]["status"]["$ref"]
+            == "#/$defs/TurnPlanStepStatus"
+        )
+        turn_plan_updated_notification_schema = json.loads(
+            (out_dir / "TurnPlanUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert turn_plan_updated_notification_schema["required"] == [
+            "plan",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            turn_plan_updated_notification_schema["properties"]["plan"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/TurnPlanStep"
+        )
         item_started_notification_schema = json.loads(
             (out_dir / "ItemStartedNotification.json").read_text(encoding="utf-8")
         )
@@ -21074,6 +21116,21 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["TurnCompletedNotification"]["properties"]["turn"]["$ref"]
             == "#/$defs/Turn"
         )
+        assert "TurnDiffUpdatedNotification" in bundle["$defs"]
+        assert "TurnPlanStepStatus" in bundle["$defs"]
+        assert "TurnPlanStep" in bundle["$defs"]
+        assert "TurnPlanUpdatedNotification" in bundle["$defs"]
+        assert bundle["$defs"]["TurnDiffUpdatedNotification"]["required"] == [
+            "diff",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            bundle["$defs"]["TurnPlanUpdatedNotification"]["properties"]["plan"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/TurnPlanStep"
+        )
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
@@ -21514,6 +21571,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {hook_import} }} from "./v2/{hook_import}";'
                 in server_notification
             )
+        for turn_update_import in [
+            "TurnDiffUpdatedNotification",
+            "TurnPlanUpdatedNotification",
+        ]:
+            assert (
+                f'import type {{ {turn_update_import} }} from "./v2/{turn_update_import}";'
+                in server_notification
+            )
         assert (
             'import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";'
             in server_notification
@@ -21628,6 +21693,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: TurnCompletedNotification;" in server_notification
         assert 'method: "hook/completed";' in server_notification
         assert "params: HookCompletedNotification;" in server_notification
+        assert 'method: "turn/diff/updated";' in server_notification
+        assert "params: TurnDiffUpdatedNotification;" in server_notification
+        assert 'method: "turn/plan/updated";' in server_notification
+        assert "params: TurnPlanUpdatedNotification;" in server_notification
         assert 'method: "item/started";' in server_notification
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
@@ -22991,6 +23060,39 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in turn_completed_notification
         assert 'import type { Turn } from "./Turn";' in turn_completed_notification
         assert "turn: Turn;" in turn_completed_notification
+        turn_diff_updated_notification = (
+            out_dir / "v2" / "TurnDiffUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface TurnDiffUpdatedNotification"
+            in turn_diff_updated_notification
+        )
+        assert "threadId: string;" in turn_diff_updated_notification
+        assert "turnId: string;" in turn_diff_updated_notification
+        assert "diff: string;" in turn_diff_updated_notification
+        turn_plan_step_status = (
+            out_dir / "v2" / "TurnPlanStepStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert '"pending" | "inProgress" | "completed"' in turn_plan_step_status
+        turn_plan_step = (out_dir / "v2" / "TurnPlanStep.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { TurnPlanStepStatus } from "./TurnPlanStepStatus";' in (
+            turn_plan_step
+        )
+        assert "step: string;" in turn_plan_step
+        assert "status: TurnPlanStepStatus;" in turn_plan_step
+        turn_plan_updated_notification = (
+            out_dir / "v2" / "TurnPlanUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { TurnPlanStep } from "./TurnPlanStep";'
+            in turn_plan_updated_notification
+        )
+        assert "threadId: string;" in turn_plan_updated_notification
+        assert "turnId: string;" in turn_plan_updated_notification
+        assert "explanation: string | null;" in turn_plan_updated_notification
+        assert "plan: TurnPlanStep[];" in turn_plan_updated_notification
         item_started_notification = (
             out_dir / "v2" / "ItemStartedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -23833,6 +23935,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { TurnCompletedNotification } from "./TurnCompletedNotification";'
             in v2_index
         )
+        for turn_update_export in [
+            "TurnDiffUpdatedNotification",
+            "TurnPlanStepStatus",
+            "TurnPlanStep",
+            "TurnPlanUpdatedNotification",
+        ]:
+            assert (
+                f'export type {{ {turn_update_export} }} from "./{turn_update_export}";'
+                in v2_index
+            )
         assert (
             'export type { ItemStartedNotification } from "./ItemStartedNotification";'
             in v2_index
