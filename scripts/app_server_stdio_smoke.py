@@ -22684,6 +22684,32 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "threadId: string;",
                 "delivery?: ReviewDelivery | null;",
             ],
+            "CommandExecutionSource": [
+                '"agent"',
+                '"unifiedExecInteraction"',
+            ],
+            "CommandExecutionStatus": [
+                '"inProgress"',
+                '"declined"',
+            ],
+            "GitInfo": [
+                "sha: string | null;",
+                "originUrl: string | null;",
+            ],
+            "MemoryCitationEntry": [
+                "lineStart: number;",
+                "lineEnd: number;",
+                "note: string;",
+            ],
+            "MemoryCitation": [
+                'import type { MemoryCitationEntry } from "./MemoryCitationEntry";',
+                "entries: MemoryCitationEntry[];",
+                "threadIds: string[];",
+            ],
+            "PatchApplyStatus": [
+                '"completed"',
+                '"declined"',
+            ],
         }.items():
             generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
                 encoding="utf-8"
@@ -25795,6 +25821,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";'
             in v2_index
         )
+        assert 'export type { GitInfo } from "./GitInfo";' in v2_index
         assert (
             'export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";'
             in v2_index
@@ -25867,6 +25894,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "CommandExecutionApprovalDecision",
             "CommandExecutionRequestApprovalParams",
             "CommandExecutionRequestApprovalResponse",
+            "CommandExecutionSource",
+            "CommandExecutionStatus",
             "DynamicToolCallParams",
             "DynamicToolCallOutputContentItem",
             "DynamicToolCallResponse",
@@ -26105,6 +26134,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { MemoryResetResponse } from "./MemoryResetResponse";'
             in v2_index
         )
+        assert 'export type { MemoryCitation } from "./MemoryCitation";' in v2_index
+        assert (
+            'export type { MemoryCitationEntry } from "./MemoryCitationEntry";'
+            in v2_index
+        )
         assert (
             'export type { ModelListItem } from "./ModelListItem";'
             in v2_index
@@ -26271,6 +26305,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "CommandExecutionOutputDeltaNotification",
             "TerminalInteractionNotification",
             "FileChangeOutputDeltaNotification",
+            "PatchApplyStatus",
             "PatchChangeKind",
             "FileUpdateChange",
             "FileChangePatchUpdatedNotification",
