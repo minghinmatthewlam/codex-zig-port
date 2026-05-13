@@ -3413,6 +3413,46 @@ const TURN_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const TURN_DIFF_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface TurnDiffUpdatedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  diff: string;
+    \\}
+    \\
+    ;
+
+const TURN_PLAN_STEP_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type TurnPlanStepStatus = "pending" | "inProgress" | "completed";
+    \\
+    ;
+
+const TURN_PLAN_STEP_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TurnPlanStepStatus } from "./TurnPlanStepStatus";
+    \\
+    \\export interface TurnPlanStep {
+    \\  step: string;
+    \\  status: TurnPlanStepStatus;
+    \\}
+    \\
+    ;
+
+const TURN_PLAN_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { TurnPlanStep } from "./TurnPlanStep";
+    \\
+    \\export interface TurnPlanUpdatedNotification {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  explanation: string | null;
+    \\  plan: TurnPlanStep[];
+    \\}
+    \\
+    ;
+
 const ITEM_STARTED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface ItemStartedNotification {
@@ -5027,6 +5067,8 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
     \\import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
+    \\import type { TurnDiffUpdatedNotification } from "./v2/TurnDiffUpdatedNotification";
+    \\import type { TurnPlanUpdatedNotification } from "./v2/TurnPlanUpdatedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\import type { WarningNotification } from "./v2/WarningNotification";
     \\import type { WindowsSandboxSetupCompletedNotification } from "./v2/WindowsSandboxSetupCompletedNotification";
@@ -5144,6 +5186,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "turn/completed";
     \\      params: TurnCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "turn/diff/updated";
+    \\      params: TurnDiffUpdatedNotification;
+    \\    }
+    \\  | {
+    \\      method: "turn/plan/updated";
+    \\      params: TurnPlanUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "hook/completed";
@@ -5526,10 +5576,14 @@ const V2_INDEX_TS =
     \\export type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
     \\export type { Turn } from "./Turn";
     \\export type { TurnCompletedNotification } from "./TurnCompletedNotification";
+    \\export type { TurnDiffUpdatedNotification } from "./TurnDiffUpdatedNotification";
     \\export type { TurnError } from "./TurnError";
     \\export type { TurnInterruptParams } from "./TurnInterruptParams";
     \\export type { TurnInterruptResponse } from "./TurnInterruptResponse";
     \\export type { TurnItemsView } from "./TurnItemsView";
+    \\export type { TurnPlanStep } from "./TurnPlanStep";
+    \\export type { TurnPlanStepStatus } from "./TurnPlanStepStatus";
+    \\export type { TurnPlanUpdatedNotification } from "./TurnPlanUpdatedNotification";
     \\export type { TurnStartedNotification } from "./TurnStartedNotification";
     \\export type { TurnStartParams } from "./TurnStartParams";
     \\export type { TurnStartResponse } from "./TurnStartResponse";
@@ -10549,6 +10603,86 @@ const TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const TURN_DIFF_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnDiffUpdatedNotification",
+    \\  "description": "Notification that the turn-level unified diff has changed. Contains the latest aggregated diff across all file changes in the turn.",
+    \\  "type": "object",
+    \\  "required": ["diff", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "diff": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_PLAN_STEP_STATUS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnPlanStepStatus",
+    \\  "type": "string",
+    \\  "enum": ["pending", "inProgress", "completed"]
+    \\}
+    \\
+;
+
+const TURN_PLAN_STEP_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnPlanStep",
+    \\  "type": "object",
+    \\  "required": ["status", "step"],
+    \\  "properties": {
+    \\    "step": { "type": "string" },
+    \\    "status": { "$ref": "#/$defs/TurnPlanStepStatus" }
+    \\  },
+    \\  "$defs": {
+    \\    "TurnPlanStepStatus": {
+    \\      "type": "string",
+    \\      "enum": ["pending", "inProgress", "completed"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_PLAN_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnPlanUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["plan", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "explanation": { "type": ["string", "null"] },
+    \\    "plan": { "type": "array", "items": { "$ref": "#/$defs/TurnPlanStep" } }
+    \\  },
+    \\  "$defs": {
+    \\    "TurnPlanStepStatus": {
+    \\      "type": "string",
+    \\      "enum": ["pending", "inProgress", "completed"]
+    \\    },
+    \\    "TurnPlanStep": {
+    \\      "type": "object",
+    \\      "required": ["status", "step"],
+    \\      "properties": {
+    \\        "step": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/TurnPlanStepStatus" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const ITEM_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14511,6 +14645,40 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "TurnDiffUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["diff", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "diff": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnPlanStepStatus": {
+    \\      "type": "string",
+    \\      "enum": ["pending", "inProgress", "completed"]
+    \\    },
+    \\    "TurnPlanStep": {
+    \\      "type": "object",
+    \\      "required": ["status", "step"],
+    \\      "properties": {
+    \\        "step": { "type": "string" },
+    \\        "status": { "$ref": "#/$defs/TurnPlanStepStatus" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnPlanUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["plan", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "explanation": { "type": ["string", "null"] },
+    \\        "plan": { "type": "array", "items": { "$ref": "#/$defs/TurnPlanStep" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ItemStartedNotification": {
     \\      "type": "object",
     \\      "required": ["item", "threadId", "turnId", "startedAtMs"],
@@ -15431,6 +15599,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "TurnInterruptResponse.json", .contents = TURN_INTERRUPT_RESPONSE_JSON_SCHEMA },
     .{ .name = "TurnStartedNotification.json", .contents = TURN_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "TurnCompletedNotification.json", .contents = TURN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TurnDiffUpdatedNotification.json", .contents = TURN_DIFF_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TurnPlanStepStatus.json", .contents = TURN_PLAN_STEP_STATUS_JSON_SCHEMA },
+    .{ .name = "TurnPlanStep.json", .contents = TURN_PLAN_STEP_JSON_SCHEMA },
+    .{ .name = "TurnPlanUpdatedNotification.json", .contents = TURN_PLAN_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AgentMessageDeltaNotification.json", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA },
@@ -15792,6 +15964,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/TurnInterruptResponse.ts", .contents = TURN_INTERRUPT_RESPONSE_TS },
     .{ .name = "v2/TurnStartedNotification.ts", .contents = TURN_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/TurnCompletedNotification.ts", .contents = TURN_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/TurnDiffUpdatedNotification.ts", .contents = TURN_DIFF_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/TurnPlanStepStatus.ts", .contents = TURN_PLAN_STEP_STATUS_TS },
+    .{ .name = "v2/TurnPlanStep.ts", .contents = TURN_PLAN_STEP_TS },
+    .{ .name = "v2/TurnPlanUpdatedNotification.ts", .contents = TURN_PLAN_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/AgentMessageDeltaNotification.ts", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_TS },
