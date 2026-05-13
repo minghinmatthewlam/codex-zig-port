@@ -652,13 +652,14 @@ pub fn buildRequestBodyWithOptions(
     else
         null;
 
+    const reasoning_effort = if (cfg.model_reasoning_effort) |effort| effort.label() else "medium";
     const req = Request{
         .model = cfg.model,
         .instructions = instructions,
         .input = inputs.items,
         .tools = tools_list.items,
         .text = text_controls,
-        .reasoning = .{},
+        .reasoning = .{ .effort = reasoning_effort },
         .service_tier = cfg.service_tier,
         .include = include[0..],
         .prompt_cache_key = cfg.installation_id,
@@ -883,6 +884,47 @@ test "builds chronological request input from owned history" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"update_plan\"") != null);
+}
+
+test "builds request with configured reasoning effort" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .high,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "think harder",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const reasoning = parsed.value.object.get("reasoning").?.object;
+
+    try std.testing.expectEqualStrings("high", reasoning.get("effort").?.string);
+    try std.testing.expectEqualStrings("auto", reasoning.get("summary").?.string);
 }
 
 test "builds input images on latest user message" {

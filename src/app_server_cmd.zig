@@ -5228,6 +5228,7 @@ const USER_INPUT_TS =
 
 const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { UserInput } from "./UserInput";
     \\
     \\export interface TurnStartParams {
@@ -5236,6 +5237,7 @@ const TURN_START_PARAMS_TS =
     \\  model?: string | null;
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
+    \\  effort?: ReasoningEffort | null;
     \\  cwd?: string | null;
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
@@ -16355,6 +16357,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "model": { "type": ["string", "null"] },
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
     \\    "cwd": { "type": ["string", "null"] },
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
@@ -21791,6 +21794,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "model": { "type": ["string", "null"] },
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
     \\        "cwd": { "type": ["string", "null"] },
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
@@ -25581,6 +25585,17 @@ fn applyTurnStartRuntimeOverrides(
         if (cfg.service_tier) |existing| allocator.free(existing);
         cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
     }
+
+    const requested_effort = optionalReasoningEffortParam(params, "effort") catch return error.InvalidTurnContextOverride;
+    if (requested_effort) |effort| {
+        cfg.model_reasoning_effort = effort;
+        try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
+        thread.runtime_overrides.reasoning_effort = true;
+    } else if (thread.reasoning_effort) |value| {
+        cfg.model_reasoning_effort = config.ReasoningEffort.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_reasoning_effort = null;
+    }
 }
 
 fn applyLoadedThreadRuntimeConfig(
@@ -25594,6 +25609,10 @@ fn applyLoadedThreadRuntimeConfig(
     if (cfg.service_tier) |existing| allocator.free(existing);
     cfg.service_tier = null;
     if (thread.service_tier) |value| cfg.service_tier = try allocator.dupe(u8, value);
+    cfg.model_reasoning_effort = if (thread.reasoning_effort) |value|
+        config.ReasoningEffort.parse(value) catch return error.InvalidThreadRuntimeConfig
+    else
+        null;
 }
 
 fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThread, prompt: []const u8) !void {
@@ -28274,6 +28293,13 @@ fn optionalBoolParam(params: ?std.json.ObjectMap, name: []const u8) ?bool {
     const value = object.get(name) orelse return null;
     if (value == .null) return null;
     return value.bool;
+}
+
+fn optionalReasoningEffortParam(params: std.json.ObjectMap, name: []const u8) !?config.ReasoningEffort {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidTurnContextOverride;
+    return config.ReasoningEffort.parse(value.string) catch error.InvalidTurnContextOverride;
 }
 
 fn paramPresent(params: ?std.json.ObjectMap, name: []const u8) bool {
