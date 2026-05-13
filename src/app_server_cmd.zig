@@ -10389,6 +10389,16 @@ const DYNAMIC_TOOL_CALL_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const MCP_SERVER_REFRESH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "McpServerRefreshResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const FILE_CHANGE_JSON_DEFS =
     \\    "ThreadId": { "type": "string" },
     \\    "FileChange": {
@@ -12961,6 +12971,79 @@ const MCP_SERVER_STATUS_LIST_RESPONSE_JSON_SCHEMA =
     \\      },
     \\      "additionalProperties": false
     \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const REVIEW_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ReviewStartParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "target"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "target": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "uncommittedChanges" } },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "branch"],
+    \\          "properties": {
+    \\            "type": { "const": "baseBranch" },
+    \\            "branch": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "sha", "title"],
+    \\          "properties": {
+    \\            "type": { "const": "commit" },
+    \\            "sha": { "type": "string" },
+    \\            "title": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "instructions"],
+    \\          "properties": {
+    \\            "type": { "const": "custom" },
+    \\            "instructions": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "delivery": {
+    \\      "anyOf": [
+    \\        { "enum": ["inline", "detached"] },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const REVIEW_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ReviewStartResponse",
+    \\  "type": "object",
+    \\  "required": ["turn", "reviewThreadId"],
+    \\  "properties": {
+    \\    "turn": true,
+    \\    "reviewThreadId": { "type": "string" }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -21973,6 +22056,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "SkillsChangedNotification.json", .contents = SKILLS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadParams.json", .contents = CONFIG_MCP_SERVER_RELOAD_PARAMS_JSON_SCHEMA },
     .{ .name = "ConfigMcpServerReloadResponse.json", .contents = CONFIG_MCP_SERVER_RELOAD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/McpServerRefreshResponse.json", .contents = MCP_SERVER_REFRESH_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerOauthLoginParams.json", .contents = MCP_SERVER_OAUTH_LOGIN_PARAMS_JSON_SCHEMA },
     .{ .name = "McpServerOauthLoginResponse.json", .contents = MCP_SERVER_OAUTH_LOGIN_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerOauthLoginCompletedNotification.json", .contents = MCP_SERVER_OAUTH_LOGIN_COMPLETED_NOTIFICATION_JSON_SCHEMA },
@@ -22167,6 +22251,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadShellCommandResponse.json", .contents = THREAD_SHELL_COMMAND_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadApproveGuardianDeniedActionParams.json", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadApproveGuardianDeniedActionResponse.json", .contents = THREAD_APPROVE_GUARDIAN_DENIED_ACTION_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/ReviewStartParams.json", .contents = REVIEW_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/ReviewStartResponse.json", .contents = REVIEW_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanParams.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadIncrementElicitationParams.json", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
