@@ -101,8 +101,9 @@ including app-tool config, managed-hook requirements, and network requirements
 helpers,
 server-request TypeScript artifacts, plus
 experimental-feature list/enablement artifacts,
-memory-reset response
-artifacts, git-diff-to-remote and fuzzy-file-search JSON Schema artifacts,
+memory-reset response, memory citation, Git info, command execution
+source/status, and patch-apply status helper artifacts, git-diff-to-remote and
+fuzzy-file-search JSON Schema artifacts,
 hooks-list artifacts, skills list/config artifacts, account
 read/auth/login/refresh/rate-limit/nudge artifacts, filesystem RPC artifacts,
 MCP config reload artifacts, and MCP server status artifacts, in standalone
