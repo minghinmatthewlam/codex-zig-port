@@ -93,7 +93,8 @@ notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, marketplace/plugin/config/review client-request
-TypeScript artifacts, plus experimental-feature list/enablement artifacts,
+TypeScript artifacts, server-request TypeScript artifacts, plus
+experimental-feature list/enablement artifacts,
 memory-reset response
 artifacts, git-diff-to-remote and fuzzy-file-search JSON Schema artifacts,
 hooks-list artifacts, skills list/config artifacts, account
@@ -186,6 +187,19 @@ included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
 `"remoteControl/status/changed"` union variants. Runtime emission for these
 control/status notifications remains planned.
+
+Additional app-server server-request generation coverage: generated TypeScript
+artifacts now include the top-level `ServerRequest` union for
+`"item/commandExecution/requestApproval"`,
+`"item/fileChange/requestApproval"`, `"item/tool/requestUserInput"`,
+`"mcpServer/elicitation/request"`, `"item/permissions/requestApproval"`,
+`"item/tool/call"`, `"account/chatgptAuthTokens/refresh"`,
+`"applyPatchApproval"`, and `"execCommandApproval"`. The request-side helper
+artifacts cover legacy patch and exec approval params, command/file/permission
+approval request params, dynamic tool-call params, request-user-input question
+and option params, network approval/policy helpers, and the MCP elicitation
+request envelope. Approval response artifacts and full MCP elicitation primitive
+schema helper parity remain planned.
 
 Additional app-server approval auto-review notification generation coverage:
 generated TypeScript artifacts now include the Guardian review/action helper
