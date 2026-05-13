@@ -2405,6 +2405,60 @@ const APPROVALS_REVIEWER_TS =
     \\
     ;
 
+const APP_TOOL_APPROVAL_TS =
+    GENERATED_TS_HEADER ++
+    \\export type AppToolApproval = "auto" | "prompt" | "approve";
+    \\
+    ;
+
+const APP_TOOLS_CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppToolApproval } from "./AppToolApproval";
+    \\
+    \\export type AppToolsConfig = {
+    \\  [key: string]:
+    \\    | {
+    \\        enabled: boolean | null;
+    \\        approval_mode: AppToolApproval | null;
+    \\      }
+    \\    | undefined;
+    \\};
+    \\
+    ;
+
+const APPS_DEFAULT_CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppsDefaultConfig {
+    \\  enabled: boolean;
+    \\  destructive_enabled: boolean;
+    \\  open_world_enabled: boolean;
+    \\}
+    \\
+    ;
+
+const APPS_CONFIG_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppToolApproval } from "./AppToolApproval";
+    \\import type { AppToolsConfig } from "./AppToolsConfig";
+    \\import type { AppsDefaultConfig } from "./AppsDefaultConfig";
+    \\
+    \\export type AppsConfig = {
+    \\  _default: AppsDefaultConfig | null;
+    \\} & {
+    \\  [key: string]:
+    \\    | {
+    \\        enabled: boolean;
+    \\        destructive_enabled: boolean | null;
+    \\        open_world_enabled: boolean | null;
+    \\        default_tools_approval_mode: AppToolApproval | null;
+    \\        default_tools_enabled: boolean | null;
+    \\        tools: AppToolsConfig | null;
+    \\      }
+    \\    | undefined;
+    \\};
+    \\
+    ;
+
 const ANALYTICS_CONFIG_TS =
     GENERATED_TS_HEADER ++
     \\import type { JsonValue } from "../serde_json/JsonValue";
@@ -2601,6 +2655,86 @@ const CONFIG_REQUIREMENTS_READ_RESPONSE_TS =
     \\
     \\export interface ConfigRequirementsReadResponse {
     \\  requirements: ConfigRequirements | null;
+    \\}
+    \\
+    ;
+
+const CONFIGURED_HOOK_HANDLER_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ConfiguredHookHandler =
+    \\  | {
+    \\      type: "command";
+    \\      command: string;
+    \\      timeoutSec: bigint | null;
+    \\      async: boolean;
+    \\      statusMessage: string | null;
+    \\    }
+    \\  | { type: "prompt" }
+    \\  | { type: "agent" };
+    \\
+    ;
+
+const CONFIGURED_HOOK_MATCHER_GROUP_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConfiguredHookHandler } from "./ConfiguredHookHandler";
+    \\
+    \\export interface ConfiguredHookMatcherGroup {
+    \\  matcher: string | null;
+    \\  hooks: ConfiguredHookHandler[];
+    \\}
+    \\
+    ;
+
+const MANAGED_HOOKS_REQUIREMENTS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConfiguredHookMatcherGroup } from "./ConfiguredHookMatcherGroup";
+    \\
+    \\export interface ManagedHooksRequirements {
+    \\  managedDir: string | null;
+    \\  windowsManagedDir: string | null;
+    \\  PreToolUse: ConfiguredHookMatcherGroup[];
+    \\  PermissionRequest: ConfiguredHookMatcherGroup[];
+    \\  PostToolUse: ConfiguredHookMatcherGroup[];
+    \\  PreCompact: ConfiguredHookMatcherGroup[];
+    \\  PostCompact: ConfiguredHookMatcherGroup[];
+    \\  SessionStart: ConfiguredHookMatcherGroup[];
+    \\  UserPromptSubmit: ConfiguredHookMatcherGroup[];
+    \\  Stop: ConfiguredHookMatcherGroup[];
+    \\}
+    \\
+    ;
+
+const NETWORK_DOMAIN_PERMISSION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NetworkDomainPermission = "allow" | "deny";
+    \\
+    ;
+
+const NETWORK_UNIX_SOCKET_PERMISSION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type NetworkUnixSocketPermission = "allow" | "none";
+    \\
+    ;
+
+const NETWORK_REQUIREMENTS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { NetworkDomainPermission } from "./NetworkDomainPermission";
+    \\import type { NetworkUnixSocketPermission } from "./NetworkUnixSocketPermission";
+    \\
+    \\export interface NetworkRequirements {
+    \\  enabled: boolean | null;
+    \\  httpPort: number | null;
+    \\  socksPort: number | null;
+    \\  allowUpstreamProxy: boolean | null;
+    \\  dangerouslyAllowNonLoopbackProxy: boolean | null;
+    \\  dangerouslyAllowAllUnixSockets: boolean | null;
+    \\  domains: Record<string, NetworkDomainPermission | undefined> | null;
+    \\  managedAllowedDomainsOnly: boolean | null;
+    \\  allowedDomains: string[] | null;
+    \\  deniedDomains: string[] | null;
+    \\  unixSockets: Record<string, NetworkUnixSocketPermission | undefined> | null;
+    \\  allowUnixSockets: string[] | null;
+    \\  allowLocalBinding: boolean | null;
     \\}
     \\
     ;
@@ -7635,6 +7769,10 @@ const V2_INDEX_TS =
     \\export type { AppsListResponse } from "./AppsListResponse";
     \\export type { AppScreenshot } from "./AppScreenshot";
     \\export type { AppSummary } from "./AppSummary";
+    \\export type { AppToolApproval } from "./AppToolApproval";
+    \\export type { AppToolsConfig } from "./AppToolsConfig";
+    \\export type { AppsConfig } from "./AppsConfig";
+    \\export type { AppsDefaultConfig } from "./AppsDefaultConfig";
     \\export type { AnalyticsConfig } from "./AnalyticsConfig";
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
@@ -7697,6 +7835,8 @@ const V2_INDEX_TS =
     \\export type { ConfigRequirementsReadResponse } from "./ConfigRequirementsReadResponse";
     \\export type { ConfigValueWriteParams } from "./ConfigValueWriteParams";
     \\export type { ConfigWriteResponse } from "./ConfigWriteResponse";
+    \\export type { ConfiguredHookHandler } from "./ConfiguredHookHandler";
+    \\export type { ConfiguredHookMatcherGroup } from "./ConfiguredHookMatcherGroup";
     \\export type { ContextCompactedNotification } from "./ContextCompactedNotification";
     \\export type { DynamicToolCallParams } from "./DynamicToolCallParams";
     \\export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
@@ -7775,6 +7915,7 @@ const V2_INDEX_TS =
     \\export type { McpToolCallStatus } from "./McpToolCallStatus";
     \\export type { McpServerToolCallParams } from "./McpServerToolCallParams";
     \\export type { McpServerToolCallResponse } from "./McpServerToolCallResponse";
+    \\export type { ManagedHooksRequirements } from "./ManagedHooksRequirements";
     \\export type { CollaborationMode } from "./CollaborationMode";
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
@@ -7789,6 +7930,9 @@ const V2_INDEX_TS =
     \\export type { ResidencyRequirement } from "./ResidencyRequirement";
     \\export type { SandboxMode } from "./SandboxMode";
     \\export type { SandboxWorkspaceWrite } from "./SandboxWorkspaceWrite";
+    \\export type { NetworkDomainPermission } from "./NetworkDomainPermission";
+    \\export type { NetworkRequirements } from "./NetworkRequirements";
+    \\export type { NetworkUnixSocketPermission } from "./NetworkUnixSocketPermission";
     \\export type { FuzzyFileSearchMatch } from "./FuzzyFileSearchMatch";
     \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
     \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
@@ -21041,6 +21185,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ConfigReadParams.ts", .contents = CONFIG_READ_PARAMS_TS },
     .{ .name = "v2/AskForApproval.ts", .contents = ASK_FOR_APPROVAL_TS },
     .{ .name = "v2/ApprovalsReviewer.ts", .contents = APPROVALS_REVIEWER_TS },
+    .{ .name = "v2/AppToolApproval.ts", .contents = APP_TOOL_APPROVAL_TS },
+    .{ .name = "v2/AppToolsConfig.ts", .contents = APP_TOOLS_CONFIG_TS },
+    .{ .name = "v2/AppsDefaultConfig.ts", .contents = APPS_DEFAULT_CONFIG_TS },
+    .{ .name = "v2/AppsConfig.ts", .contents = APPS_CONFIG_TS },
     .{ .name = "v2/AnalyticsConfig.ts", .contents = ANALYTICS_CONFIG_TS },
     .{ .name = "v2/SandboxMode.ts", .contents = SANDBOX_MODE_TS },
     .{ .name = "v2/SandboxWorkspaceWrite.ts", .contents = SANDBOX_WORKSPACE_WRITE_TS },
@@ -21054,6 +21202,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ResidencyRequirement.ts", .contents = RESIDENCY_REQUIREMENT_TS },
     .{ .name = "v2/ConfigRequirements.ts", .contents = CONFIG_REQUIREMENTS_TS },
     .{ .name = "v2/ConfigRequirementsReadResponse.ts", .contents = CONFIG_REQUIREMENTS_READ_RESPONSE_TS },
+    .{ .name = "v2/ConfiguredHookHandler.ts", .contents = CONFIGURED_HOOK_HANDLER_TS },
+    .{ .name = "v2/ConfiguredHookMatcherGroup.ts", .contents = CONFIGURED_HOOK_MATCHER_GROUP_TS },
+    .{ .name = "v2/ManagedHooksRequirements.ts", .contents = MANAGED_HOOKS_REQUIREMENTS_TS },
+    .{ .name = "v2/NetworkDomainPermission.ts", .contents = NETWORK_DOMAIN_PERMISSION_TS },
+    .{ .name = "v2/NetworkUnixSocketPermission.ts", .contents = NETWORK_UNIX_SOCKET_PERMISSION_TS },
+    .{ .name = "v2/NetworkRequirements.ts", .contents = NETWORK_REQUIREMENTS_TS },
     .{ .name = "v2/WriteStatus.ts", .contents = WRITE_STATUS_TS },
     .{ .name = "v2/OverriddenMetadata.ts", .contents = OVERRIDDEN_METADATA_TS },
     .{ .name = "v2/ConfigWriteResponse.ts", .contents = CONFIG_WRITE_RESPONSE_TS },
