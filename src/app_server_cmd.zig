@@ -571,9 +571,231 @@ const REQUEST_ID_TS =
     \\
     ;
 
+const CONTENT_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ImageDetail } from "./ImageDetail";
+    \\
+    \\export type ContentItem =
+    \\  | { type: "input_text"; text: string }
+    \\  | { type: "input_image"; image_url: string; detail?: ImageDetail }
+    \\  | { type: "output_text"; text: string };
+    \\
+    ;
+
+const FUNCTION_CALL_OUTPUT_CONTENT_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ImageDetail } from "./ImageDetail";
+    \\
+    \\export type FunctionCallOutputContentItem =
+    \\  | { type: "input_text"; text: string }
+    \\  | { type: "input_image"; image_url: string; detail?: ImageDetail };
+    \\
+    ;
+
+const FUNCTION_CALL_OUTPUT_BODY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { FunctionCallOutputContentItem } from "./FunctionCallOutputContentItem";
+    \\
+    \\export type FunctionCallOutputBody =
+    \\  | string
+    \\  | FunctionCallOutputContentItem[];
+    \\
+    ;
+
+const LOCAL_SHELL_EXEC_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface LocalShellExecAction {
+    \\  command: string[];
+    \\  timeout_ms: bigint | null;
+    \\  working_directory: string | null;
+    \\  env: Record<string, string | undefined> | null;
+    \\  user: string | null;
+    \\}
+    \\
+    ;
+
+const LOCAL_SHELL_ACTION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { LocalShellExecAction } from "./LocalShellExecAction";
+    \\
+    \\export type LocalShellAction = { type: "exec" } & LocalShellExecAction;
+    \\
+    ;
+
+const LOCAL_SHELL_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type LocalShellStatus =
+    \\  | "completed"
+    \\  | "in_progress"
+    \\  | "incomplete";
+    \\
+    ;
+
+const REASONING_ITEM_CONTENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ReasoningItemContent =
+    \\  | { type: "reasoning_text"; text: string }
+    \\  | { type: "text"; text: string };
+    \\
+    ;
+
+const REASONING_ITEM_REASONING_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ReasoningItemReasoningSummary {
+    \\  type: "summary_text";
+    \\  text: string;
+    \\}
+    \\
+    ;
+
 const RESPONSE_ITEM_TS =
     GENERATED_TS_HEADER ++
-    \\export type ResponseItem = unknown;
+    \\import type { ContentItem } from "./ContentItem";
+    \\import type { FunctionCallOutputBody } from "./FunctionCallOutputBody";
+    \\import type { LocalShellAction } from "./LocalShellAction";
+    \\import type { LocalShellStatus } from "./LocalShellStatus";
+    \\import type { MessagePhase } from "./MessagePhase";
+    \\import type { ReasoningItemContent } from "./ReasoningItemContent";
+    \\import type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSummary";
+    \\import type { WebSearchAction } from "./WebSearchAction";
+    \\
+    \\export type ResponseItem =
+    \\  | {
+    \\      type: "message";
+    \\      role: string;
+    \\      content: ContentItem[];
+    \\      phase?: MessagePhase;
+    \\    }
+    \\  | {
+    \\      type: "reasoning";
+    \\      summary: ReasoningItemReasoningSummary[];
+    \\      content?: ReasoningItemContent[];
+    \\      encrypted_content: string | null;
+    \\    }
+    \\  | {
+    \\      type: "local_shell_call";
+    \\      call_id: string | null;
+    \\      status: LocalShellStatus;
+    \\      action: LocalShellAction;
+    \\    }
+    \\  | {
+    \\      type: "function_call";
+    \\      name: string;
+    \\      namespace?: string;
+    \\      arguments: string;
+    \\      call_id: string;
+    \\    }
+    \\  | {
+    \\      type: "tool_search_call";
+    \\      call_id: string | null;
+    \\      status?: string;
+    \\      execution: string;
+    \\      arguments: unknown;
+    \\    }
+    \\  | {
+    \\      type: "function_call_output";
+    \\      call_id: string;
+    \\      output: FunctionCallOutputBody;
+    \\    }
+    \\  | {
+    \\      type: "custom_tool_call";
+    \\      status?: string;
+    \\      call_id: string;
+    \\      name: string;
+    \\      input: string;
+    \\    }
+    \\  | {
+    \\      type: "custom_tool_call_output";
+    \\      call_id: string;
+    \\      name?: string;
+    \\      output: FunctionCallOutputBody;
+    \\    }
+    \\  | {
+    \\      type: "tool_search_output";
+    \\      call_id: string | null;
+    \\      status: string;
+    \\      execution: string;
+    \\      tools: unknown[];
+    \\    }
+    \\  | { type: "web_search_call"; status?: string; action?: WebSearchAction }
+    \\  | {
+    \\      type: "image_generation_call";
+    \\      id: string;
+    \\      status: string;
+    \\      revised_prompt?: string;
+    \\      result: string;
+    \\    }
+    \\  | { type: "compaction"; encrypted_content: string }
+    \\  | { type: "context_compaction"; encrypted_content?: string }
+    \\  | { type: "other" };
+    \\
+    ;
+
+const MODE_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ModeKind = "plan" | "default";
+    \\
+    ;
+
+const RESOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "./serde_json/JsonValue";
+    \\
+    \\export interface Resource {
+    \\  annotations?: JsonValue;
+    \\  description?: string;
+    \\  mimeType?: string;
+    \\  name: string;
+    \\  size?: number;
+    \\  title?: string;
+    \\  uri: string;
+    \\  icons?: JsonValue[];
+    \\  _meta?: JsonValue;
+    \\}
+    \\
+    ;
+
+const RESOURCE_TEMPLATE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "./serde_json/JsonValue";
+    \\
+    \\export interface ResourceTemplate {
+    \\  annotations?: JsonValue;
+    \\  uriTemplate: string;
+    \\  name: string;
+    \\  title?: string;
+    \\  description?: string;
+    \\  mimeType?: string;
+    \\}
+    \\
+    ;
+
+const SETTINGS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ReasoningEffort } from "./ReasoningEffort";
+    \\
+    \\export interface Settings {
+    \\  model: string;
+    \\  reasoning_effort: ReasoningEffort | null;
+    \\  developer_instructions: string | null;
+    \\}
+    \\
+    ;
+
+const TOOL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "./serde_json/JsonValue";
+    \\
+    \\export interface Tool {
+    \\  name: string;
+    \\  title?: string;
+    \\  description?: string;
+    \\  inputSchema: JsonValue;
+    \\  outputSchema?: JsonValue;
+    \\  annotations?: JsonValue;
+    \\  icons?: JsonValue[];
+    \\  _meta?: JsonValue;
+    \\}
     \\
     ;
 
@@ -6981,11 +7203,14 @@ const INDEX_TS =
     \\export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
     \\export type { ApplyPatchApprovalResponse } from "./ApplyPatchApprovalResponse";
     \\export type { AuthMode } from "./AuthMode";
+    \\export type { ContentItem } from "./ContentItem";
     \\export type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
     \\export type { ExecCommandApprovalResponse } from "./ExecCommandApprovalResponse";
     \\export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
     \\export type { FileChange } from "./FileChange";
     \\export type { ForcedLoginMethod } from "./ForcedLoginMethod";
+    \\export type { FunctionCallOutputBody } from "./FunctionCallOutputBody";
+    \\export type { FunctionCallOutputContentItem } from "./FunctionCallOutputContentItem";
     \\export type { FuzzyFileSearchMatchType } from "./FuzzyFileSearchMatchType";
     \\export type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
     \\export type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
@@ -7002,7 +7227,11 @@ const INDEX_TS =
     \\export type { ImageDetail } from "./ImageDetail";
     \\export type { InputModality } from "./InputModality";
     \\export type { InternalSessionSource } from "./InternalSessionSource";
+    \\export type { LocalShellAction } from "./LocalShellAction";
+    \\export type { LocalShellExecAction } from "./LocalShellExecAction";
+    \\export type { LocalShellStatus } from "./LocalShellStatus";
     \\export type { MessagePhase } from "./MessagePhase";
+    \\export type { ModeKind } from "./ModeKind";
     \\export type { ParsedCommand } from "./ParsedCommand";
     \\export type { Personality } from "./Personality";
     \\export type { PlanType } from "./PlanType";
@@ -7016,14 +7245,20 @@ const INDEX_TS =
     \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
+    \\export type { ReasoningItemContent } from "./ReasoningItemContent";
+    \\export type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSummary";
     \\export type { ResponseItem } from "./ResponseItem";
+    \\export type { Resource } from "./Resource";
     \\export type { ResourceContent } from "./ResourceContent";
+    \\export type { ResourceTemplate } from "./ResourceTemplate";
     \\export type { ServerNotification } from "./ServerNotification";
     \\export type { ServerRequest } from "./ServerRequest";
     \\export type { SessionSource } from "./SessionSource";
+    \\export type { Settings } from "./Settings";
     \\export type { SubAgentSource } from "./SubAgentSource";
     \\export type { ThreadId } from "./ThreadId";
     \\export type { ThreadMemoryMode } from "./ThreadMemoryMode";
+    \\export type { Tool } from "./Tool";
     \\export type { Verbosity } from "./Verbosity";
     \\export type { WebSearchAction } from "./WebSearchAction";
     \\export type { WebSearchContextSize } from "./WebSearchContextSize";
@@ -7872,6 +8107,148 @@ const PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\      "type": "string",
     \\      "enum": ["turn", "session"]
     \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const FILE_CHANGE_JSON_DEFS =
+    \\    "ThreadId": { "type": "string" },
+    \\    "FileChange": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "AddFileChange",
+    \\          "type": "object",
+    \\          "required": ["content", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "add" },
+    \\            "content": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "DeleteFileChange",
+    \\          "type": "object",
+    \\          "required": ["content", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "delete" },
+    \\            "content": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UpdateFileChange",
+    \\          "type": "object",
+    \\          "required": ["type", "unified_diff"],
+    \\          "properties": {
+    \\            "type": { "const": "update" },
+    \\            "unified_diff": { "type": "string" },
+    \\            "move_path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+;
+
+const APPLY_PATCH_APPROVAL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ApplyPatchApprovalParams",
+    \\  "type": "object",
+    \\  "required": ["callId", "conversationId", "fileChanges"],
+    \\  "properties": {
+    \\    "callId": { "type": "string" },
+    \\    "conversationId": { "$ref": "#/$defs/ThreadId" },
+    \\    "fileChanges": {
+    \\      "type": "object",
+    \\      "additionalProperties": { "$ref": "#/$defs/FileChange" }
+    \\    },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "grantRoot": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+++ FILE_CHANGE_JSON_DEFS ++
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PARSED_COMMAND_JSON_DEFS =
+    \\    "ThreadId": { "type": "string" },
+    \\    "ParsedCommand": {
+    \\      "oneOf": [
+    \\        {
+    \\          "title": "ReadParsedCommand",
+    \\          "type": "object",
+    \\          "required": ["cmd", "name", "path", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "read" },
+    \\            "cmd": { "type": "string" },
+    \\            "name": { "type": "string" },
+    \\            "path": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "ListFilesParsedCommand",
+    \\          "type": "object",
+    \\          "required": ["cmd", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "list_files" },
+    \\            "cmd": { "type": "string" },
+    \\            "path": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "SearchParsedCommand",
+    \\          "type": "object",
+    \\          "required": ["cmd", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "search" },
+    \\            "cmd": { "type": "string" },
+    \\            "path": { "type": ["string", "null"] },
+    \\            "query": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "title": "UnknownParsedCommand",
+    \\          "type": "object",
+    \\          "required": ["cmd", "type"],
+    \\          "properties": {
+    \\            "type": { "const": "unknown" },
+    \\            "cmd": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    }
+;
+
+const EXEC_COMMAND_APPROVAL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExecCommandApprovalParams",
+    \\  "type": "object",
+    \\  "required": ["callId", "command", "conversationId", "cwd", "parsedCmd"],
+    \\  "properties": {
+    \\    "callId": { "type": "string" },
+    \\    "command": { "type": "array", "items": { "type": "string" } },
+    \\    "conversationId": { "$ref": "#/$defs/ThreadId" },
+    \\    "cwd": { "type": "string" },
+    \\    "parsedCmd": {
+    \\      "type": "array",
+    \\      "items": { "$ref": "#/$defs/ParsedCommand" }
+    \\    },
+    \\    "reason": { "type": ["string", "null"] },
+    \\    "approvalId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+++ PARSED_COMMAND_JSON_DEFS ++
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -15183,6 +15560,47 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "FileChange": {
+    \\      "oneOf": [
+    \\        { "type": "object", "required": ["content", "type"], "properties": { "type": { "const": "add" }, "content": { "type": "string" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["content", "type"], "properties": { "type": { "const": "delete" }, "content": { "type": "string" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["type", "unified_diff"], "properties": { "type": { "const": "update" }, "unified_diff": { "type": "string" }, "move_path": { "type": ["string", "null"] } }, "additionalProperties": true }
+    \\      ]
+    \\    },
+    \\    "ApplyPatchApprovalParams": {
+    \\      "type": "object",
+    \\      "required": ["callId", "conversationId", "fileChanges"],
+    \\      "properties": {
+    \\        "callId": { "type": "string" },
+    \\        "conversationId": { "$ref": "#/$defs/ThreadId" },
+    \\        "fileChanges": { "type": "object", "additionalProperties": { "$ref": "#/$defs/FileChange" } },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "grantRoot": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ParsedCommand": {
+    \\      "oneOf": [
+    \\        { "type": "object", "required": ["cmd", "name", "path", "type"], "properties": { "type": { "const": "read" }, "cmd": { "type": "string" }, "name": { "type": "string" }, "path": { "type": "string" } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["cmd", "type"], "properties": { "type": { "const": "list_files" }, "cmd": { "type": "string" }, "path": { "type": ["string", "null"] } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["cmd", "type"], "properties": { "type": { "const": "search" }, "cmd": { "type": "string" }, "path": { "type": ["string", "null"] }, "query": { "type": ["string", "null"] } }, "additionalProperties": true },
+    \\        { "type": "object", "required": ["cmd", "type"], "properties": { "type": { "const": "unknown" }, "cmd": { "type": "string" } }, "additionalProperties": true }
+    \\      ]
+    \\    },
+    \\    "ExecCommandApprovalParams": {
+    \\      "type": "object",
+    \\      "required": ["callId", "command", "conversationId", "cwd", "parsedCmd"],
+    \\      "properties": {
+    \\        "callId": { "type": "string" },
+    \\        "command": { "type": "array", "items": { "type": "string" } },
+    \\        "conversationId": { "$ref": "#/$defs/ThreadId" },
+    \\        "cwd": { "type": "string" },
+    \\        "parsedCmd": { "type": "array", "items": { "$ref": "#/$defs/ParsedCommand" } },
+    \\        "reason": { "type": ["string", "null"] },
+    \\        "approvalId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "CommandExecutionApprovalDecision": {
     \\      "oneOf": [
     \\        { "type": "string", "enum": ["accept"] },
@@ -18949,7 +19367,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
     .{ .name = "ServerRequestResolvedNotification.json", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ApplyPatchApprovalParams.json", .contents = APPLY_PATCH_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "ApplyPatchApprovalResponse.json", .contents = APPLY_PATCH_APPROVAL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExecCommandApprovalParams.json", .contents = EXEC_COMMAND_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "ExecCommandApprovalResponse.json", .contents = EXEC_COMMAND_APPROVAL_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecutionRequestApprovalResponse.json", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
     .{ .name = "FileChangeRequestApprovalResponse.json", .contents = FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
@@ -19293,6 +19713,14 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
 
 const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RequestId.ts", .contents = REQUEST_ID_TS },
+    .{ .name = "ContentItem.ts", .contents = CONTENT_ITEM_TS },
+    .{ .name = "FunctionCallOutputBody.ts", .contents = FUNCTION_CALL_OUTPUT_BODY_TS },
+    .{ .name = "FunctionCallOutputContentItem.ts", .contents = FUNCTION_CALL_OUTPUT_CONTENT_ITEM_TS },
+    .{ .name = "LocalShellAction.ts", .contents = LOCAL_SHELL_ACTION_TS },
+    .{ .name = "LocalShellExecAction.ts", .contents = LOCAL_SHELL_EXEC_ACTION_TS },
+    .{ .name = "LocalShellStatus.ts", .contents = LOCAL_SHELL_STATUS_TS },
+    .{ .name = "ReasoningItemContent.ts", .contents = REASONING_ITEM_CONTENT_TS },
+    .{ .name = "ReasoningItemReasoningSummary.ts", .contents = REASONING_ITEM_REASONING_SUMMARY_TS },
     .{ .name = "ResponseItem.ts", .contents = RESPONSE_ITEM_TS },
     .{ .name = "JSONRPCMessage.ts", .contents = JSONRPC_MESSAGE_TS },
     .{ .name = "JSONRPCRequest.ts", .contents = JSONRPC_REQUEST_TS },
@@ -19339,6 +19767,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "InputModality.ts", .contents = INPUT_MODALITY_TS },
     .{ .name = "InternalSessionSource.ts", .contents = INTERNAL_SESSION_SOURCE_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
+    .{ .name = "ModeKind.ts", .contents = MODE_KIND_TS },
     .{ .name = "NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
     .{ .name = "NetworkPolicyRuleAction.ts", .contents = NETWORK_POLICY_RULE_ACTION_TS },
     .{ .name = "ParsedCommand.ts", .contents = PARSED_COMMAND_TS },
@@ -19348,6 +19777,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ReasoningSummary.ts", .contents = REASONING_SUMMARY_TS },
     .{ .name = "ReviewDecision.ts", .contents = REVIEW_DECISION_TS },
     .{ .name = "RealtimeConversationVersion.ts", .contents = REALTIME_CONVERSATION_VERSION_TS },
+    .{ .name = "Resource.ts", .contents = RESOURCE_TS },
+    .{ .name = "ResourceTemplate.ts", .contents = RESOURCE_TEMPLATE_TS },
+    .{ .name = "Settings.ts", .contents = SETTINGS_TS },
+    .{ .name = "Tool.ts", .contents = TOOL_TS },
     .{ .name = "ThreadId.ts", .contents = THREAD_ID_TS },
     .{ .name = "ThreadMemoryMode.ts", .contents = THREAD_MEMORY_MODE_TS },
     .{ .name = "Verbosity.ts", .contents = VERBOSITY_TS },
