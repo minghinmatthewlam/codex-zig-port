@@ -4626,14 +4626,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert_thread_status_notification(
                     read_json_line(proc, 5), thread_id, "idle"
                 )
-                assert server.request_paths == [
-                    "/responses",
-                    "/responses",
-                    "/responses",
-                    "/responses",
-                    "/responses",
-                    "/responses",
-                ]
+                assert server.request_paths == ["/responses"] * 6
                 compact_request = server.request_bodies[-1]
                 compact_text = compact_request["input"][-1]["content"][0]["text"]
                 assert compact_text.startswith("Summarize this conversation")
@@ -4665,6 +4658,99 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Compacted conversation summary" in stored_after_compact
                 assert "compact summary" in stored_after_compact
                 assert "recover after provider failure" not in stored_after_compact
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-effort",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "effort": "maximum",
+                            "input": [
+                                {"type": "text", "text": "invalid reasoning effort"},
+                            ],
+                        },
+                    },
+                )
+                invalid_effort = read_json_line(proc, 5)
+                assert invalid_effort["id"] == "turn-start-invalid-effort"
+                assert invalid_effort["error"]["code"] == -32602
+                assert (
+                    invalid_effort["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 6
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-high-effort",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "effort": "high",
+                            "input": [
+                                {"type": "text", "text": "use high effort"},
+                            ],
+                        },
+                    },
+                )
+                high_effort_turn = read_json_line(proc, 5)
+                assert high_effort_turn["id"] == "turn-start-high-effort"
+                assert high_effort_turn["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+                assert server.request_paths == ["/responses"] * 7
+                high_effort_request = server.request_bodies[-1]
+                assert high_effort_request["reasoning"]["effort"] == "high"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sticky-effort",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": "keep high effort"},
+                            ],
+                        },
+                    },
+                )
+                sticky_effort_turn = read_json_line(proc, 5)
+                assert sticky_effort_turn["id"] == "turn-start-sticky-effort"
+                assert sticky_effort_turn["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+                assert server.request_paths == ["/responses"] * 8
+                sticky_effort_request = server.request_bodies[-1]
+                assert sticky_effort_request["reasoning"]["effort"] == "high"
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -20816,6 +20902,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert turn_start_params_schema["required"] == ["threadId", "input"]
         assert turn_start_params_schema["properties"]["input"]["type"] == "array"
+        assert turn_start_params_schema["properties"]["effort"]["enum"] == [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            None,
+        ]
         turn_start_response_schema = json.loads(
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
@@ -22775,8 +22870,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         turn_start_params = (out_dir / "v2" / "TurnStartParams.ts").read_text(
             encoding="utf-8"
         )
+        assert 'import type { ReasoningEffort } from "../ReasoningEffort";' in (
+            turn_start_params
+        )
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
+        assert "effort?: ReasoningEffort | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
         )
@@ -25509,6 +25608,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface TurnStartParams" in turn_start_params
         assert "threadId: string;" in turn_start_params
         assert "input: UserInput[];" in turn_start_params
+        assert "effort?: ReasoningEffort | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
