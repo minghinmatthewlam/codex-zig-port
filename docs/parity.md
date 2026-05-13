@@ -87,8 +87,9 @@ warning/notice notification artifacts for `WarningNotification`,
 artifacts, plus turn diff/plan update notification artifacts, item-stream plan,
 command-execution, file-change, reasoning delta, and context-compaction
 notification artifacts, server-request, MCP progress/startup-status, and
-remote-control status notification artifacts, and model reroute/verification
-notification artifacts,
+remote-control status notification artifacts, approval auto-review notification
+artifacts, and model reroute/verification notification artifacts, plus thread
+realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -175,6 +176,31 @@ included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
 `"remoteControl/status/changed"` union variants. Runtime emission for these
 control/status notifications remains planned.
+
+Additional app-server approval auto-review notification generation coverage:
+generated TypeScript artifacts now include the Guardian review/action helper
+types plus `ItemGuardianApprovalReviewStartedNotification` and
+`ItemGuardianApprovalReviewCompletedNotification`. JSON Schema artifacts include
+the two notification payloads with embedded Guardian review/action definitions,
+and the top-level `ServerNotification` union now covers
+`"item/autoApprovalReview/started"` and
+`"item/autoApprovalReview/completed"`. Runtime emission for approval
+auto-review notifications remains planned.
+
+Additional app-server realtime notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include
+`ThreadRealtimeStartedNotification`, `ThreadRealtimeItemAddedNotification`,
+`ThreadRealtimeTranscriptDeltaNotification`,
+`ThreadRealtimeTranscriptDoneNotification`,
+`ThreadRealtimeOutputAudioDeltaNotification`, `ThreadRealtimeSdpNotification`,
+`ThreadRealtimeErrorNotification`, and `ThreadRealtimeClosedNotification`,
+exported through `v2/index.ts` and included in the top-level
+`ServerNotification` `"thread/realtime/started"`,
+`"thread/realtime/itemAdded"`, `"thread/realtime/transcript/delta"`,
+`"thread/realtime/transcript/done"`, `"thread/realtime/outputAudio/delta"`,
+`"thread/realtime/sdp"`, `"thread/realtime/error"`, and
+`"thread/realtime/closed"` union variants. Runtime emission for realtime
+notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
