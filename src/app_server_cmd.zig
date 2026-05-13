@@ -571,6 +571,12 @@ const REQUEST_ID_TS =
     \\
     ;
 
+const RESPONSE_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ResponseItem = unknown;
+    \\
+    ;
+
 const JSONRPC_REQUEST_TS =
     GENERATED_TS_HEADER ++
     \\import type { RequestId } from "./RequestId";
@@ -3581,6 +3587,18 @@ const ITEM_COMPLETED_NOTIFICATION_TS =
     \\
     ;
 
+const RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ResponseItem } from "../ResponseItem";
+    \\
+    \\export type RawResponseItemCompletedNotification = {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  item: ResponseItem;
+    \\};
+    \\
+    ;
+
 const AGENT_MESSAGE_DELTA_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface AgentMessageDeltaNotification {
@@ -5604,6 +5622,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
     \\import type { ProcessOutputDeltaNotification } from "./v2/ProcessOutputDeltaNotification";
+    \\import type { RawResponseItemCompletedNotification } from "./v2/RawResponseItemCompletedNotification";
     \\import type { ReasoningSummaryPartAddedNotification } from "./v2/ReasoningSummaryPartAddedNotification";
     \\import type { ReasoningSummaryTextDeltaNotification } from "./v2/ReasoningSummaryTextDeltaNotification";
     \\import type { ReasoningTextDeltaNotification } from "./v2/ReasoningTextDeltaNotification";
@@ -5778,6 +5797,10 @@ const SERVER_NOTIFICATION_TS =
     \\      params: ItemCompletedNotification;
     \\    }
     \\  | {
+    \\      method: "rawResponseItem/completed";
+    \\      params: RawResponseItemCompletedNotification;
+    \\    }
+    \\  | {
     \\      method: "item/agentMessage/delta";
     \\      params: AgentMessageDeltaNotification;
     \\    }
@@ -5939,6 +5962,7 @@ const INDEX_TS =
     \\export type { RealtimeOutputModality } from "./RealtimeOutputModality";
     \\export type { RealtimeVoice } from "./RealtimeVoice";
     \\export type { RealtimeVoicesList } from "./RealtimeVoicesList";
+    \\export type { ResponseItem } from "./ResponseItem";
     \\export type { ResourceContent } from "./ResourceContent";
     \\export type { ServerNotification } from "./ServerNotification";
     \\export type { SessionSource } from "./SessionSource";
@@ -6154,6 +6178,7 @@ const V2_INDEX_TS =
     \\export type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
     \\export type { PatchChangeKind } from "./PatchChangeKind";
     \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
+    \\export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";
     \\export type { RequestPermissionProfile } from "./RequestPermissionProfile";
     \\export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPartAddedNotification";
     \\export type { ReasoningSummaryTextDeltaNotification } from "./ReasoningSummaryTextDeltaNotification";
@@ -11591,6 +11616,22 @@ const ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RawResponseItemCompletedNotification",
+    \\  "type": "object",
+    \\  "required": ["item", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "item": true,
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -16283,6 +16324,16 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "RawResponseItemCompletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["item", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "item": true,
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "AgentMessageDeltaNotification": {
     \\      "type": "object",
     \\      "required": ["threadId", "turnId", "itemId", "delta"],
@@ -17523,6 +17574,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "TurnPlanUpdatedNotification.json", .contents = TURN_PLAN_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "RawResponseItemCompletedNotification.json", .contents = RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AgentMessageDeltaNotification.json", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "PlanDeltaNotification.json", .contents = PLAN_DELTA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "CommandExecutionOutputDeltaNotification.json", .contents = COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_JSON_SCHEMA },
@@ -17618,6 +17670,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
 
 const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RequestId.ts", .contents = REQUEST_ID_TS },
+    .{ .name = "ResponseItem.ts", .contents = RESPONSE_ITEM_TS },
     .{ .name = "JSONRPCMessage.ts", .contents = JSONRPC_MESSAGE_TS },
     .{ .name = "JSONRPCRequest.ts", .contents = JSONRPC_REQUEST_TS },
     .{ .name = "JSONRPCNotification.ts", .contents = JSONRPC_NOTIFICATION_TS },
@@ -17919,6 +17972,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/TurnPlanUpdatedNotification.ts", .contents = TURN_PLAN_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/RawResponseItemCompletedNotification.ts", .contents = RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/AgentMessageDeltaNotification.ts", .contents = AGENT_MESSAGE_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/PlanDeltaNotification.ts", .contents = PLAN_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/CommandExecutionOutputDeltaNotification.ts", .contents = COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_TS },
