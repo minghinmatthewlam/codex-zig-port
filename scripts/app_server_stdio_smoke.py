@@ -25670,7 +25670,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {app_export} }} from "./{app_export}";'
                 in v2_index
             )
-        for client_request_export in [
+        for v2_export in [
             "MarketplaceAddParams",
             "MarketplaceAddResponse",
             "MarketplaceInterface",
@@ -25720,7 +25720,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "SkillSummary",
         ]:
             assert (
-                f'export type {{ {client_request_export} }} from "./{client_request_export}";'
+                f'export type {{ {v2_export} }} from "./{v2_export}";'
                 in v2_index
             )
         for remote_control_export in [
