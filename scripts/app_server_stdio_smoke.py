@@ -21709,6 +21709,59 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "initialized"' in client_notification
 
+        server_request = (out_dir / "ServerRequest.ts").read_text(encoding="utf-8")
+        for server_request_import in [
+            'import type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";',
+            'import type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";',
+            'import type { CommandExecutionRequestApprovalParams } from "./v2/CommandExecutionRequestApprovalParams";',
+            'import type { DynamicToolCallParams } from "./v2/DynamicToolCallParams";',
+            'import type { FileChangeRequestApprovalParams } from "./v2/FileChangeRequestApprovalParams";',
+            'import type { McpServerElicitationRequestParams } from "./v2/McpServerElicitationRequestParams";',
+            'import type { PermissionsRequestApprovalParams } from "./v2/PermissionsRequestApprovalParams";',
+            'import type { ToolRequestUserInputParams } from "./v2/ToolRequestUserInputParams";',
+        ]:
+            assert server_request_import in server_request
+        for server_request_method in [
+            'method: "item/commandExecution/requestApproval";',
+            'method: "item/fileChange/requestApproval";',
+            'method: "item/tool/requestUserInput";',
+            'method: "mcpServer/elicitation/request";',
+            'method: "item/permissions/requestApproval";',
+            'method: "item/tool/call";',
+            'method: "account/chatgptAuthTokens/refresh";',
+            'method: "applyPatchApproval";',
+            'method: "execCommandApproval";',
+        ]:
+            assert server_request_method in server_request
+
+        apply_patch_approval = (
+            out_dir / "ApplyPatchApprovalParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { FileChange } from "./FileChange";' in apply_patch_approval
+        assert "conversationId: ThreadId;" in apply_patch_approval
+        assert "fileChanges: Record<string, FileChange | undefined>;" in (
+            apply_patch_approval
+        )
+        exec_command_approval = (
+            out_dir / "ExecCommandApprovalParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ParsedCommand } from "./ParsedCommand";' in (
+            exec_command_approval
+        )
+        assert "approvalId: string | null;" in exec_command_approval
+        assert "parsedCmd: ParsedCommand[];" in exec_command_approval
+
+        file_change = (out_dir / "FileChange.ts").read_text(encoding="utf-8")
+        assert 'type: "add"; content: string' in file_change
+        assert 'type: "update"; unified_diff: string; move_path: string | null' in (
+            file_change
+        )
+        parsed_command = (out_dir / "ParsedCommand.ts").read_text(encoding="utf-8")
+        assert 'type: "read"; cmd: string; name: string; path: string' in (
+            parsed_command
+        )
+        assert 'type: "unknown"; cmd: string' in parsed_command
+
         client_info = (out_dir / "ClientInfo.ts").read_text(encoding="utf-8")
         assert "export type ClientInfo" in client_info
         assert "title: string | null" in client_info
@@ -21780,6 +21833,89 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in web_search_tool_config
         )
         assert "allowed_domains: string[] | null;" in web_search_tool_config
+
+        command_execution_approval = (
+            out_dir / "v2" / "CommandExecutionRequestApprovalParams.ts"
+        ).read_text(encoding="utf-8")
+        for approval_import in [
+            'import type { CommandAction } from "./CommandAction";',
+            'import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";',
+            'import type { NetworkApprovalContext } from "./NetworkApprovalContext";',
+            'import type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";',
+        ]:
+            assert approval_import in command_execution_approval
+        assert "approvalId?: string | null;" in command_execution_approval
+        assert "commandActions?: CommandAction[] | null;" in (
+            command_execution_approval
+        )
+        assert "proposedNetworkPolicyAmendments?: NetworkPolicyAmendment[] | null;" in (
+            command_execution_approval
+        )
+        command_action = (out_dir / "v2" / "CommandAction.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'type: "read"; command: string; name: string; path: AbsolutePathBuf' in (
+            command_action
+        )
+        assert 'type: "search"; command: string; query: string | null' in (
+            command_action
+        )
+        exec_policy_amendment = (
+            out_dir / "v2" / "ExecPolicyAmendment.ts"
+        ).read_text(encoding="utf-8")
+        assert "export type ExecPolicyAmendment = string[];" in exec_policy_amendment
+        network_policy_amendment = (
+            out_dir / "v2" / "NetworkPolicyAmendment.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { NetworkPolicyRuleAction } from "./NetworkPolicyRuleAction";' in (
+            network_policy_amendment
+        )
+        assert "action: NetworkPolicyRuleAction;" in network_policy_amendment
+
+        tool_input_question = (
+            out_dir / "v2" / "ToolRequestUserInputQuestion.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ToolRequestUserInputOption } from "./ToolRequestUserInputOption";'
+            in tool_input_question
+        )
+        assert "isSecret: boolean;" in tool_input_question
+        tool_input_option = (
+            out_dir / "v2" / "ToolRequestUserInputOption.ts"
+        ).read_text(encoding="utf-8")
+        assert "label: string;" in tool_input_option
+        assert "description: string;" in tool_input_option
+        tool_input_params = (
+            out_dir / "v2" / "ToolRequestUserInputParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "questions: ToolRequestUserInputQuestion[];" in tool_input_params
+
+        mcp_elicitation_schema = (
+            out_dir / "v2" / "McpElicitationSchema.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { McpElicitationObjectType } from "./McpElicitationObjectType";'
+            in mcp_elicitation_schema
+        )
+        assert (
+            "properties: Record<string, McpElicitationPrimitiveSchema | undefined>;"
+            in mcp_elicitation_schema
+        )
+        mcp_elicitation_request = (
+            out_dir / "v2" / "McpServerElicitationRequestParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'mode: "form";' in mcp_elicitation_request
+        assert "requestedSchema: McpElicitationSchema;" in mcp_elicitation_request
+        assert 'mode: "url";' in mcp_elicitation_request
+        assert "elicitationId: string;" in mcp_elicitation_request
+
+        permissions_request = (
+            out_dir / "v2" / "PermissionsRequestApprovalParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { RequestPermissionProfile } from "./RequestPermissionProfile";' in (
+            permissions_request
+        )
+        assert "permissions: RequestPermissionProfile;" in permissions_request
         user_input = (out_dir / "v2" / "UserInput.ts").read_text(encoding="utf-8")
         assert 'type: "text";' in user_input
         assert "text_elements: TextElement[];" in user_input
@@ -22102,6 +22238,128 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "export type JsonValue" in json_value
         assert "{ [key: string]: JsonValue | undefined }" in json_value
+        server_request = (out_dir / "ServerRequest.ts").read_text(encoding="utf-8")
+        for import_name, import_path in [
+            ("ApplyPatchApprovalParams", "./ApplyPatchApprovalParams"),
+            ("ExecCommandApprovalParams", "./ExecCommandApprovalParams"),
+            ("RequestId", "./RequestId"),
+            (
+                "ChatgptAuthTokensRefreshParams",
+                "./v2/ChatgptAuthTokensRefreshParams",
+            ),
+            (
+                "CommandExecutionRequestApprovalParams",
+                "./v2/CommandExecutionRequestApprovalParams",
+            ),
+            ("DynamicToolCallParams", "./v2/DynamicToolCallParams"),
+            (
+                "FileChangeRequestApprovalParams",
+                "./v2/FileChangeRequestApprovalParams",
+            ),
+            (
+                "McpServerElicitationRequestParams",
+                "./v2/McpServerElicitationRequestParams",
+            ),
+            (
+                "PermissionsRequestApprovalParams",
+                "./v2/PermissionsRequestApprovalParams",
+            ),
+            ("ToolRequestUserInputParams", "./v2/ToolRequestUserInputParams"),
+        ]:
+            assert (
+                f'import type {{ {import_name} }} from "{import_path}";'
+                in server_request
+            )
+        for method, params_type in [
+            (
+                "item/commandExecution/requestApproval",
+                "CommandExecutionRequestApprovalParams",
+            ),
+            ("item/fileChange/requestApproval", "FileChangeRequestApprovalParams"),
+            ("item/tool/requestUserInput", "ToolRequestUserInputParams"),
+            (
+                "mcpServer/elicitation/request",
+                "McpServerElicitationRequestParams",
+            ),
+            (
+                "item/permissions/requestApproval",
+                "PermissionsRequestApprovalParams",
+            ),
+            ("item/tool/call", "DynamicToolCallParams"),
+            (
+                "account/chatgptAuthTokens/refresh",
+                "ChatgptAuthTokensRefreshParams",
+            ),
+            ("applyPatchApproval", "ApplyPatchApprovalParams"),
+            ("execCommandApproval", "ExecCommandApprovalParams"),
+        ]:
+            assert f'method: "{method}";' in server_request
+            assert f"params: {params_type};" in server_request
+        for generated_name, snippets in {
+            "ApplyPatchApprovalParams": [
+                'import type { FileChange } from "./FileChange";',
+                "fileChanges: Record<string, FileChange | undefined>;",
+            ],
+            "ExecCommandApprovalParams": [
+                'import type { ParsedCommand } from "./ParsedCommand";',
+                "parsedCmd: ParsedCommand[];",
+            ],
+            "FileChange": [
+                'type: "add"; content: string',
+                'type: "update"; unified_diff: string; move_path: string | null',
+            ],
+            "ParsedCommand": [
+                'type: "read"; cmd: string; name: string; path: string',
+                'type: "unknown"; cmd: string',
+            ],
+        }.items():
+            generated = (out_dir / f"{generated_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            for snippet in snippets:
+                assert snippet in generated
+        for generated_name, snippets in {
+            "CommandExecutionRequestApprovalParams": [
+                "threadId: string;",
+                "proposedNetworkPolicyAmendments?: NetworkPolicyAmendment[] | null;",
+            ],
+            "FileChangeRequestApprovalParams": [
+                "grantRoot?: string | null;",
+            ],
+            "ToolRequestUserInputParams": [
+                "questions: ToolRequestUserInputQuestion[];",
+            ],
+            "McpServerElicitationRequestParams": [
+                'mode: "form";',
+                "requestedSchema: McpElicitationSchema;",
+                'mode: "url";',
+                "elicitationId: string;",
+            ],
+            "PermissionsRequestApprovalParams": [
+                "cwd: AbsolutePathBuf;",
+                "permissions: RequestPermissionProfile;",
+            ],
+            "DynamicToolCallParams": [
+                "namespace: string | null;",
+                "arguments: JsonValue;",
+            ],
+            "CommandAction": [
+                'type: "read"; command: string; name: string; path: AbsolutePathBuf',
+                'type: "unknown"; command: string',
+            ],
+            "McpElicitationSchema": [
+                "type: McpElicitationObjectType;",
+                "properties: Record<string, McpElicitationPrimitiveSchema | undefined>;",
+            ],
+            "ToolRequestUserInputQuestion": [
+                "options: ToolRequestUserInputOption[] | null;"
+            ],
+        }.items():
+            generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            for snippet in snippets:
+                assert snippet in generated
         server_notification = (out_dir / "ServerNotification.ts").read_text(
             encoding="utf-8"
         )
@@ -24484,6 +24742,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ResponseItem } from "./ResponseItem";' in index
         assert 'export type { ResourceContent } from "./ResourceContent";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
+        assert 'export type { ServerRequest } from "./ServerRequest";' in index
+        for server_request_export in [
+            "ApplyPatchApprovalParams",
+            "ExecCommandApprovalParams",
+            "FileChange",
+            "ParsedCommand",
+        ]:
+            assert (
+                f'export type {{ {server_request_export} }} from "./{server_request_export}";'
+                in index
+            )
         assert 'export type { SessionSource } from "./SessionSource";' in index
         assert 'export type { SubAgentSource } from "./SubAgentSource";' in index
         assert 'export type { ThreadId } from "./ThreadId";' in index
@@ -24667,6 +24936,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert (
                 f'export type {{ {config_export} }} from "./{config_export}";'
+                in v2_index
+            )
+        for server_request_export in [
+            "CommandAction",
+            "CommandExecutionRequestApprovalParams",
+            "DynamicToolCallParams",
+            "ExecPolicyAmendment",
+            "FileChangeRequestApprovalParams",
+            "McpElicitationSchema",
+            "McpServerElicitationRequestParams",
+            "NetworkApprovalContext",
+            "NetworkPolicyAmendment",
+            "NetworkPolicyRuleAction",
+            "PermissionsRequestApprovalParams",
+            "McpElicitationObjectType",
+            "McpElicitationPrimitiveSchema",
+            "ToolRequestUserInputOption",
+            "ToolRequestUserInputParams",
+            "ToolRequestUserInputQuestion",
+        ]:
+            assert (
+                f'export type {{ {server_request_export} }} from "./{server_request_export}";'
                 in v2_index
             )
         assert (
