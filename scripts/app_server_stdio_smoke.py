@@ -1199,6 +1199,12 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert initialize["result"]["serverInfo"]["name"] == "codex-zig-app-server"
     assert isinstance(initialize["result"]["capabilities"], dict)
 
+    write_line({"jsonrpc": "2.0", "id": "bad-client-error", "error": "rejected"})
+    bad_client_error = read_line()
+    assert bad_client_error["id"] == "bad-client-error"
+    assert bad_client_error["error"]["code"] == -32600
+    assert "Invalid Request" in bad_client_error["error"]["message"]
+
     write_line({"jsonrpc": "2.0", "id": "missing", "method": "codex/unknown"})
     missing = read_line()
     assert missing["id"] == "missing"
