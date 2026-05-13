@@ -22036,6 +22036,178 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "codex_app_server_protocol.v2.schemas.json", .contents = APP_SERVER_PROTOCOL_SCHEMA_BUNDLE },
 };
 
+const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
+    "v1/InitializeParams.json",
+    "v1/InitializeResponse.json",
+    "v2/AccountLoginCompletedNotification.json",
+    "v2/AccountRateLimitsUpdatedNotification.json",
+    "v2/AccountUpdatedNotification.json",
+    "v2/AgentMessageDeltaNotification.json",
+    "v2/AppListUpdatedNotification.json",
+    "v2/AppsListParams.json",
+    "v2/AppsListResponse.json",
+    "v2/CancelLoginAccountParams.json",
+    "v2/CancelLoginAccountResponse.json",
+    "v2/CommandExecOutputDeltaNotification.json",
+    "v2/CommandExecParams.json",
+    "v2/CommandExecResizeParams.json",
+    "v2/CommandExecResizeResponse.json",
+    "v2/CommandExecResponse.json",
+    "v2/CommandExecTerminateParams.json",
+    "v2/CommandExecTerminateResponse.json",
+    "v2/CommandExecWriteParams.json",
+    "v2/CommandExecWriteResponse.json",
+    "v2/CommandExecutionOutputDeltaNotification.json",
+    "v2/ConfigWarningNotification.json",
+    "v2/ContextCompactedNotification.json",
+    "v2/DeprecationNoticeNotification.json",
+    "v2/ErrorNotification.json",
+    "v2/ExperimentalFeatureEnablementSetParams.json",
+    "v2/ExperimentalFeatureEnablementSetResponse.json",
+    "v2/ExperimentalFeatureListParams.json",
+    "v2/ExperimentalFeatureListResponse.json",
+    "v2/ExternalAgentConfigDetectParams.json",
+    "v2/ExternalAgentConfigDetectResponse.json",
+    "v2/ExternalAgentConfigImportCompletedNotification.json",
+    "v2/ExternalAgentConfigImportParams.json",
+    "v2/ExternalAgentConfigImportResponse.json",
+    "v2/FeedbackUploadParams.json",
+    "v2/FeedbackUploadResponse.json",
+    "v2/FileChangeOutputDeltaNotification.json",
+    "v2/FileChangePatchUpdatedNotification.json",
+    "v2/FsChangedNotification.json",
+    "v2/FsCopyParams.json",
+    "v2/FsCopyResponse.json",
+    "v2/FsCreateDirectoryParams.json",
+    "v2/FsCreateDirectoryResponse.json",
+    "v2/FsGetMetadataParams.json",
+    "v2/FsGetMetadataResponse.json",
+    "v2/FsReadDirectoryParams.json",
+    "v2/FsReadDirectoryResponse.json",
+    "v2/FsReadFileParams.json",
+    "v2/FsReadFileResponse.json",
+    "v2/FsRemoveParams.json",
+    "v2/FsRemoveResponse.json",
+    "v2/FsUnwatchParams.json",
+    "v2/FsUnwatchResponse.json",
+    "v2/FsWatchParams.json",
+    "v2/FsWatchResponse.json",
+    "v2/FsWriteFileParams.json",
+    "v2/FsWriteFileResponse.json",
+    "v2/GetAccountParams.json",
+    "v2/GetAccountRateLimitsResponse.json",
+    "v2/GetAccountResponse.json",
+    "v2/GuardianWarningNotification.json",
+    "v2/HookCompletedNotification.json",
+    "v2/HookStartedNotification.json",
+    "v2/HooksListParams.json",
+    "v2/HooksListResponse.json",
+    "v2/ItemCompletedNotification.json",
+    "v2/ItemGuardianApprovalReviewCompletedNotification.json",
+    "v2/ItemGuardianApprovalReviewStartedNotification.json",
+    "v2/ItemStartedNotification.json",
+    "v2/LoginAccountParams.json",
+    "v2/LoginAccountResponse.json",
+    "v2/LogoutAccountResponse.json",
+    "v2/McpResourceReadParams.json",
+    "v2/McpResourceReadResponse.json",
+    "v2/McpServerOauthLoginCompletedNotification.json",
+    "v2/McpServerOauthLoginParams.json",
+    "v2/McpServerOauthLoginResponse.json",
+    "v2/McpServerStatusUpdatedNotification.json",
+    "v2/McpServerToolCallParams.json",
+    "v2/McpServerToolCallResponse.json",
+    "v2/McpToolCallProgressNotification.json",
+    "v2/ModelListParams.json",
+    "v2/ModelListResponse.json",
+    "v2/ModelProviderCapabilitiesReadParams.json",
+    "v2/ModelProviderCapabilitiesReadResponse.json",
+    "v2/ModelReroutedNotification.json",
+    "v2/ModelVerificationNotification.json",
+    "v2/PlanDeltaNotification.json",
+    "v2/ProcessExitedNotification.json",
+    "v2/ProcessOutputDeltaNotification.json",
+    "v2/RawResponseItemCompletedNotification.json",
+    "v2/ReasoningSummaryPartAddedNotification.json",
+    "v2/ReasoningSummaryTextDeltaNotification.json",
+    "v2/ReasoningTextDeltaNotification.json",
+    "v2/RemoteControlStatusChangedNotification.json",
+    "v2/SendAddCreditsNudgeEmailParams.json",
+    "v2/SendAddCreditsNudgeEmailResponse.json",
+    "v2/ServerRequestResolvedNotification.json",
+    "v2/SkillsChangedNotification.json",
+    "v2/SkillsConfigWriteParams.json",
+    "v2/SkillsConfigWriteResponse.json",
+    "v2/SkillsListParams.json",
+    "v2/SkillsListResponse.json",
+    "v2/TerminalInteractionNotification.json",
+    "v2/ThreadApproveGuardianDeniedActionParams.json",
+    "v2/ThreadApproveGuardianDeniedActionResponse.json",
+    "v2/ThreadArchiveParams.json",
+    "v2/ThreadArchiveResponse.json",
+    "v2/ThreadArchivedNotification.json",
+    "v2/ThreadClosedNotification.json",
+    "v2/ThreadCompactStartParams.json",
+    "v2/ThreadCompactStartResponse.json",
+    "v2/ThreadForkParams.json",
+    "v2/ThreadForkResponse.json",
+    "v2/ThreadGoalClearedNotification.json",
+    "v2/ThreadGoalUpdatedNotification.json",
+    "v2/ThreadInjectItemsParams.json",
+    "v2/ThreadInjectItemsResponse.json",
+    "v2/ThreadListParams.json",
+    "v2/ThreadListResponse.json",
+    "v2/ThreadLoadedListParams.json",
+    "v2/ThreadLoadedListResponse.json",
+    "v2/ThreadMetadataUpdateParams.json",
+    "v2/ThreadMetadataUpdateResponse.json",
+    "v2/ThreadNameUpdatedNotification.json",
+    "v2/ThreadReadParams.json",
+    "v2/ThreadReadResponse.json",
+    "v2/ThreadRealtimeClosedNotification.json",
+    "v2/ThreadRealtimeErrorNotification.json",
+    "v2/ThreadRealtimeItemAddedNotification.json",
+    "v2/ThreadRealtimeOutputAudioDeltaNotification.json",
+    "v2/ThreadRealtimeSdpNotification.json",
+    "v2/ThreadRealtimeStartedNotification.json",
+    "v2/ThreadRealtimeTranscriptDeltaNotification.json",
+    "v2/ThreadRealtimeTranscriptDoneNotification.json",
+    "v2/ThreadResumeParams.json",
+    "v2/ThreadResumeResponse.json",
+    "v2/ThreadRollbackParams.json",
+    "v2/ThreadRollbackResponse.json",
+    "v2/ThreadSetNameParams.json",
+    "v2/ThreadSetNameResponse.json",
+    "v2/ThreadShellCommandParams.json",
+    "v2/ThreadShellCommandResponse.json",
+    "v2/ThreadStartParams.json",
+    "v2/ThreadStartResponse.json",
+    "v2/ThreadStartedNotification.json",
+    "v2/ThreadStatusChangedNotification.json",
+    "v2/ThreadTokenUsageUpdatedNotification.json",
+    "v2/ThreadUnarchiveParams.json",
+    "v2/ThreadUnarchiveResponse.json",
+    "v2/ThreadUnarchivedNotification.json",
+    "v2/ThreadUnsubscribeParams.json",
+    "v2/ThreadUnsubscribeResponse.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/TurnDiffUpdatedNotification.json",
+    "v2/TurnInterruptParams.json",
+    "v2/TurnInterruptResponse.json",
+    "v2/TurnPlanUpdatedNotification.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnSteerParams.json",
+    "v2/TurnSteerResponse.json",
+    "v2/WarningNotification.json",
+    "v2/WindowsSandboxReadinessResponse.json",
+    "v2/WindowsSandboxSetupCompletedNotification.json",
+    "v2/WindowsSandboxSetupStartParams.json",
+    "v2/WindowsSandboxSetupStartResponse.json",
+    "v2/WindowsWorldWritableWarningNotification.json",
+};
+
 const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "RequestId.ts", .contents = REQUEST_ID_TS },
     .{ .name = "ContentItem.ts", .contents = CONTENT_ITEM_TS },
@@ -22652,6 +22824,7 @@ fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier:
 fn writeAppServerJsonSchemas(allocator: std.mem.Allocator, out_dir: []const u8, experimental: bool) !void {
     _ = experimental;
     try writeSchemaFiles(allocator, out_dir, &APP_SERVER_JSON_SCHEMA_FILES);
+    try writeVersionedJsonSchemaAliases(allocator, out_dir);
 }
 
 fn writeRolloutLineJsonSchema(allocator: std.mem.Allocator, out_dir: []const u8) !void {
@@ -22665,8 +22838,27 @@ fn writeSchemaFiles(allocator: std.mem.Allocator, out_dir: []const u8, files: []
     for (files) |file| {
         const schema_path = try std.fs.path.join(allocator, &.{ out_dir, file.name });
         defer allocator.free(schema_path);
+        if (std.fs.path.dirname(schema_path)) |parent_dir| {
+            try std.Io.Dir.cwd().createDirPath(io, parent_dir);
+        }
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = file.contents });
     }
+}
+
+fn writeVersionedJsonSchemaAliases(allocator: std.mem.Allocator, out_dir: []const u8) !void {
+    for (APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES) |versioned_name| {
+        const basename = std.fs.path.basename(versioned_name);
+        const source = findSchemaFile(&APP_SERVER_JSON_SCHEMA_FILES, basename) orelse return error.MissingAppServerJsonSchemaAliasSource;
+        const files = [_]SchemaFile{.{ .name = versioned_name, .contents = source.contents }};
+        try writeSchemaFiles(allocator, out_dir, &files);
+    }
+}
+
+fn findSchemaFile(files: []const SchemaFile, name: []const u8) ?SchemaFile {
+    for (files) |file| {
+        if (std.mem.eql(u8, file.name, name)) return file;
+    }
+    return null;
 }
 
 fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
