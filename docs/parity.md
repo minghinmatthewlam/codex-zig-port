@@ -120,6 +120,9 @@ matches a Rust versioned filename, while preserving flat compatibility outputs.
 It also emits the current top-level aggregate JSON Schema artifacts for
 `ClientRequest`, `ServerRequest`, `ServerNotification`, and
 `DynamicToolCallResponse`.
+MCP server status JSON Schema generation includes both the Zig-native
+`McpServerStatusList*` names and Rust-compatible `v2/ListMcpServerStatus*`
+aliases.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
