@@ -1658,6 +1658,345 @@ const PLUGIN_UNINSTALL_PARAMS_TS =
     \\
     ;
 
+const MARKETPLACE_ADD_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface MarketplaceAddResponse {
+    \\  marketplaceName: string;
+    \\  installedRoot: AbsolutePathBuf;
+    \\  alreadyAdded: boolean;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_INTERFACE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MarketplaceInterface {
+    \\  displayName: string | null;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_LOAD_ERROR_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface MarketplaceLoadErrorInfo {
+    \\  marketplacePath: AbsolutePathBuf;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_REMOVE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface MarketplaceRemoveResponse {
+    \\  marketplaceName: string;
+    \\  installedRoot: AbsolutePathBuf | null;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_UPGRADE_ERROR_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MarketplaceUpgradeErrorInfo {
+    \\  marketplaceName: string;
+    \\  message: string;
+    \\}
+    \\
+    ;
+
+const MARKETPLACE_UPGRADE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { MarketplaceUpgradeErrorInfo } from "./MarketplaceUpgradeErrorInfo";
+    \\
+    \\export interface MarketplaceUpgradeResponse {
+    \\  selectedMarketplaces: string[];
+    \\  upgradedRoots: AbsolutePathBuf[];
+    \\  errors: MarketplaceUpgradeErrorInfo[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_AUTH_POLICY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginAuthPolicy = "ON_INSTALL" | "ON_USE";
+    \\
+    ;
+
+const PLUGIN_AVAILABILITY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginAvailability = "AVAILABLE" | "DISABLED_BY_ADMIN";
+    \\
+    ;
+
+const PLUGIN_HOOK_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { HookEventName } from "./HookEventName";
+    \\
+    \\export interface PluginHookSummary {
+    \\  key: string;
+    \\  eventName: HookEventName;
+    \\}
+    \\
+    ;
+
+const PLUGIN_INSTALL_POLICY_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginInstallPolicy =
+    \\  | "NOT_AVAILABLE"
+    \\  | "AVAILABLE"
+    \\  | "INSTALLED_BY_DEFAULT";
+    \\
+    ;
+
+const PLUGIN_INSTALL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppSummary } from "./AppSummary";
+    \\import type { PluginAuthPolicy } from "./PluginAuthPolicy";
+    \\
+    \\export interface PluginInstallResponse {
+    \\  authPolicy: PluginAuthPolicy;
+    \\  appsNeedingAuth: AppSummary[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_INTERFACE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface PluginInterface {
+    \\  displayName: string | null;
+    \\  shortDescription: string | null;
+    \\  longDescription: string | null;
+    \\  developerName: string | null;
+    \\  category: string | null;
+    \\  capabilities: string[];
+    \\  websiteUrl: string | null;
+    \\  privacyPolicyUrl: string | null;
+    \\  termsOfServiceUrl: string | null;
+    \\  defaultPrompt: string[] | null;
+    \\  brandColor: string | null;
+    \\  composerIcon: AbsolutePathBuf | null;
+    \\  composerIconUrl: string | null;
+    \\  logo: AbsolutePathBuf | null;
+    \\  logoUrl: string | null;
+    \\  screenshots: AbsolutePathBuf[];
+    \\  screenshotUrls: string[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_PRINCIPAL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginSharePrincipalType } from "./PluginSharePrincipalType";
+    \\
+    \\export interface PluginSharePrincipal {
+    \\  principalType: PluginSharePrincipalType;
+    \\  principalId: string;
+    \\  name: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_CONTEXT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginSharePrincipal } from "./PluginSharePrincipal";
+    \\
+    \\export interface PluginShareContext {
+    \\  remotePluginId: string;
+    \\  shareUrl: string | null;
+    \\  creatorAccountUserId: string | null;
+    \\  creatorName: string | null;
+    \\  shareTargets: PluginSharePrincipal[] | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type PluginSource =
+    \\  | { type: "local"; path: AbsolutePathBuf }
+    \\  | {
+    \\      type: "git";
+    \\      url: string;
+    \\      path: string | null;
+    \\      refName: string | null;
+    \\      sha: string | null;
+    \\    }
+    \\  | { type: "remote" };
+    \\
+    ;
+
+const PLUGIN_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginAuthPolicy } from "./PluginAuthPolicy";
+    \\import type { PluginAvailability } from "./PluginAvailability";
+    \\import type { PluginInstallPolicy } from "./PluginInstallPolicy";
+    \\import type { PluginInterface } from "./PluginInterface";
+    \\import type { PluginShareContext } from "./PluginShareContext";
+    \\import type { PluginSource } from "./PluginSource";
+    \\
+    \\export interface PluginSummary {
+    \\  id: string;
+    \\  name: string;
+    \\  shareContext: PluginShareContext | null;
+    \\  source: PluginSource;
+    \\  installed: boolean;
+    \\  enabled: boolean;
+    \\  installPolicy: PluginInstallPolicy;
+    \\  authPolicy: PluginAuthPolicy;
+    \\  availability: PluginAvailability;
+    \\  interface: PluginInterface | null;
+    \\  keywords: string[];
+    \\}
+    \\
+    ;
+
+const SKILL_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { SkillInterface } from "./SkillInterface";
+    \\
+    \\export interface SkillSummary {
+    \\  name: string;
+    \\  description: string;
+    \\  shortDescription: string | null;
+    \\  interface: SkillInterface | null;
+    \\  path: AbsolutePathBuf | null;
+    \\  enabled: boolean;
+    \\}
+    \\
+    ;
+
+const PLUGIN_DETAIL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { AppSummary } from "./AppSummary";
+    \\import type { PluginHookSummary } from "./PluginHookSummary";
+    \\import type { PluginSummary } from "./PluginSummary";
+    \\import type { SkillSummary } from "./SkillSummary";
+    \\
+    \\export interface PluginDetail {
+    \\  marketplaceName: string;
+    \\  marketplacePath: AbsolutePathBuf | null;
+    \\  summary: PluginSummary;
+    \\  description: string | null;
+    \\  skills: SkillSummary[];
+    \\  hooks: PluginHookSummary[];
+    \\  apps: AppSummary[];
+    \\  mcpServers: string[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_MARKETPLACE_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { MarketplaceInterface } from "./MarketplaceInterface";
+    \\import type { PluginSummary } from "./PluginSummary";
+    \\
+    \\export interface PluginMarketplaceEntry {
+    \\  name: string;
+    \\  path: AbsolutePathBuf | null;
+    \\  interface: MarketplaceInterface | null;
+    \\  plugins: PluginSummary[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";
+    \\import type { PluginMarketplaceEntry } from "./PluginMarketplaceEntry";
+    \\
+    \\export interface PluginListResponse {
+    \\  marketplaces: PluginMarketplaceEntry[];
+    \\  marketplaceLoadErrors: MarketplaceLoadErrorInfo[];
+    \\  featuredPluginIds: string[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginDetail } from "./PluginDetail";
+    \\
+    \\export interface PluginReadResponse {
+    \\  plugin: PluginDetail;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_DELETE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginShareDeleteResponse = Record<string, never>;
+    \\
+    ;
+
+const PLUGIN_SHARE_LIST_ITEM_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { PluginSummary } from "./PluginSummary";
+    \\
+    \\export interface PluginShareListItem {
+    \\  plugin: PluginSummary;
+    \\  shareUrl: string;
+    \\  localPluginPath: AbsolutePathBuf | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginShareListItem } from "./PluginShareListItem";
+    \\
+    \\export interface PluginShareListResponse {
+    \\  data: PluginShareListItem[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_SAVE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginShareSaveResponse {
+    \\  remotePluginId: string;
+    \\  shareUrl: string;
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_UPDATE_TARGETS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PluginSharePrincipal } from "./PluginSharePrincipal";
+    \\
+    \\export interface PluginShareUpdateTargetsResponse {
+    \\  principals: PluginSharePrincipal[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_SKILL_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginSkillReadResponse {
+    \\  contents: string | null;
+    \\}
+    \\
+    ;
+
+const PLUGIN_UNINSTALL_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PluginUninstallResponse = Record<string, never>;
+    \\
+    ;
+
 const APP_BRANDING_TS =
     GENERATED_TS_HEADER ++
     \\export interface AppBranding {
@@ -4816,6 +5155,64 @@ const ADDITIONAL_FILE_SYSTEM_PERMISSIONS_TS =
     \\
     ;
 
+const ADDITIONAL_PERMISSION_PROFILE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";
+    \\import type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermissions";
+    \\
+    \\export interface AdditionalPermissionProfile {
+    \\  network: AdditionalNetworkPermissions | null;
+    \\  fileSystem: AdditionalFileSystemPermissions | null;
+    \\}
+    \\
+    ;
+
+const ACTIVE_PERMISSION_PROFILE_MODIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type ActivePermissionProfileModification = {
+    \\  type: "additionalWritableRoot";
+    \\  path: AbsolutePathBuf;
+    \\};
+    \\
+    ;
+
+const ACTIVE_PERMISSION_PROFILE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ActivePermissionProfileModification } from "./ActivePermissionProfileModification";
+    \\
+    \\export interface ActivePermissionProfile {
+    \\  id: string;
+    \\  extends: string | null;
+    \\  modifications: ActivePermissionProfileModification[];
+    \\}
+    \\
+    ;
+
+const PERMISSION_PROFILE_MODIFICATION_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type PermissionProfileModificationParams = {
+    \\  type: "additionalWritableRoot";
+    \\  path: AbsolutePathBuf;
+    \\};
+    \\
+    ;
+
+const PERMISSION_PROFILE_SELECTION_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PermissionProfileModificationParams } from "./PermissionProfileModificationParams";
+    \\
+    \\export type PermissionProfileSelectionParams = {
+    \\  type: "profile";
+    \\  id: string;
+    \\  modifications?: PermissionProfileModificationParams[] | null;
+    \\};
+    \\
+    ;
+
 const REQUEST_PERMISSION_PROFILE_TS =
     GENERATED_TS_HEADER ++
     \\import type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";
@@ -6875,6 +7272,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
+    \\import type { MarketplaceAddResponse } from "./v2/MarketplaceAddResponse";
+    \\import type { MarketplaceRemoveResponse } from "./v2/MarketplaceRemoveResponse";
+    \\import type { MarketplaceUpgradeResponse } from "./v2/MarketplaceUpgradeResponse";
     \\import type { McpResourceReadResponse } from "./v2/McpResourceReadResponse";
     \\import type { McpServerOauthLoginResponse } from "./v2/McpServerOauthLoginResponse";
     \\import type { McpServerStatusListResponse } from "./v2/McpServerStatusListResponse";
@@ -6886,6 +7286,15 @@ const CLIENT_RESPONSE_TS =
     \\import type { ProcessResizePtyResponse } from "./v2/ProcessResizePtyResponse";
     \\import type { ProcessSpawnResponse } from "./v2/ProcessSpawnResponse";
     \\import type { ProcessWriteStdinResponse } from "./v2/ProcessWriteStdinResponse";
+    \\import type { PluginInstallResponse } from "./v2/PluginInstallResponse";
+    \\import type { PluginListResponse } from "./v2/PluginListResponse";
+    \\import type { PluginReadResponse } from "./v2/PluginReadResponse";
+    \\import type { PluginShareDeleteResponse } from "./v2/PluginShareDeleteResponse";
+    \\import type { PluginShareListResponse } from "./v2/PluginShareListResponse";
+    \\import type { PluginShareSaveResponse } from "./v2/PluginShareSaveResponse";
+    \\import type { PluginShareUpdateTargetsResponse } from "./v2/PluginShareUpdateTargetsResponse";
+    \\import type { PluginSkillReadResponse } from "./v2/PluginSkillReadResponse";
+    \\import type { PluginUninstallResponse } from "./v2/PluginUninstallResponse";
     \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
     \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
@@ -6986,6 +7395,66 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "skills/config/write";
     \\      result: SkillsConfigWriteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "marketplace/add";
+    \\      result: MarketplaceAddResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "marketplace/remove";
+    \\      result: MarketplaceRemoveResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "marketplace/upgrade";
+    \\      result: MarketplaceUpgradeResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/list";
+    \\      result: PluginListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/read";
+    \\      result: PluginReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/skill/read";
+    \\      result: PluginSkillReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/share/save";
+    \\      result: PluginShareSaveResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/share/updateTargets";
+    \\      result: PluginShareUpdateTargetsResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/share/list";
+    \\      result: PluginShareListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/share/delete";
+    \\      result: PluginShareDeleteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/install";
+    \\      result: PluginInstallResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/uninstall";
+    \\      result: PluginUninstallResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -8051,23 +8520,50 @@ const V2_INDEX_TS =
     \\export type { LoginAccountResponse } from "./LoginAccountResponse";
     \\export type { LogoutAccountResponse } from "./LogoutAccountResponse";
     \\export type { MarketplaceAddParams } from "./MarketplaceAddParams";
+    \\export type { MarketplaceAddResponse } from "./MarketplaceAddResponse";
+    \\export type { MarketplaceInterface } from "./MarketplaceInterface";
+    \\export type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";
     \\export type { MarketplaceRemoveParams } from "./MarketplaceRemoveParams";
+    \\export type { MarketplaceRemoveResponse } from "./MarketplaceRemoveResponse";
     \\export type { MarketplaceUpgradeParams } from "./MarketplaceUpgradeParams";
+    \\export type { MarketplaceUpgradeErrorInfo } from "./MarketplaceUpgradeErrorInfo";
+    \\export type { MarketplaceUpgradeResponse } from "./MarketplaceUpgradeResponse";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { MergeStrategy } from "./MergeStrategy";
+    \\export type { PluginAuthPolicy } from "./PluginAuthPolicy";
+    \\export type { PluginAvailability } from "./PluginAvailability";
+    \\export type { PluginDetail } from "./PluginDetail";
+    \\export type { PluginHookSummary } from "./PluginHookSummary";
     \\export type { PluginInstallParams } from "./PluginInstallParams";
+    \\export type { PluginInstallPolicy } from "./PluginInstallPolicy";
+    \\export type { PluginInstallResponse } from "./PluginInstallResponse";
+    \\export type { PluginInterface } from "./PluginInterface";
     \\export type { PluginListMarketplaceKind } from "./PluginListMarketplaceKind";
     \\export type { PluginListParams } from "./PluginListParams";
+    \\export type { PluginListResponse } from "./PluginListResponse";
+    \\export type { PluginMarketplaceEntry } from "./PluginMarketplaceEntry";
     \\export type { PluginReadParams } from "./PluginReadParams";
+    \\export type { PluginReadResponse } from "./PluginReadResponse";
     \\export type { PluginShareDeleteParams } from "./PluginShareDeleteParams";
+    \\export type { PluginShareDeleteResponse } from "./PluginShareDeleteResponse";
+    \\export type { PluginShareContext } from "./PluginShareContext";
     \\export type { PluginShareDiscoverability } from "./PluginShareDiscoverability";
+    \\export type { PluginShareListItem } from "./PluginShareListItem";
     \\export type { PluginShareListParams } from "./PluginShareListParams";
+    \\export type { PluginShareListResponse } from "./PluginShareListResponse";
+    \\export type { PluginSharePrincipal } from "./PluginSharePrincipal";
     \\export type { PluginSharePrincipalType } from "./PluginSharePrincipalType";
     \\export type { PluginShareSaveParams } from "./PluginShareSaveParams";
+    \\export type { PluginShareSaveResponse } from "./PluginShareSaveResponse";
     \\export type { PluginShareTarget } from "./PluginShareTarget";
     \\export type { PluginShareUpdateTargetsParams } from "./PluginShareUpdateTargetsParams";
+    \\export type { PluginShareUpdateTargetsResponse } from "./PluginShareUpdateTargetsResponse";
     \\export type { PluginSkillReadParams } from "./PluginSkillReadParams";
+    \\export type { PluginSkillReadResponse } from "./PluginSkillReadResponse";
+    \\export type { PluginSource } from "./PluginSource";
+    \\export type { PluginSummary } from "./PluginSummary";
     \\export type { PluginUninstallParams } from "./PluginUninstallParams";
+    \\export type { PluginUninstallResponse } from "./PluginUninstallResponse";
     \\export type { ReviewDelivery } from "./ReviewDelivery";
     \\export type { ReviewStartParams } from "./ReviewStartParams";
     \\export type { ReviewTarget } from "./ReviewTarget";
@@ -8075,6 +8571,7 @@ const V2_INDEX_TS =
     \\export type { SkillDependencies } from "./SkillDependencies";
     \\export type { SkillError } from "./SkillError";
     \\export type { SkillInterface } from "./SkillInterface";
+    \\export type { SkillSummary } from "./SkillSummary";
     \\export type { SkillToolDependency } from "./SkillToolDependency";
     \\export type { SkillsChangedNotification } from "./SkillsChangedNotification";
     \\export type { SkillsConfigWriteParams } from "./SkillsConfigWriteParams";
@@ -8111,7 +8608,10 @@ const V2_INDEX_TS =
     \\export type { FsWriteFileParams } from "./FsWriteFileParams";
     \\export type { FsWriteFileResponse } from "./FsWriteFileResponse";
     \\export type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";
+    \\export type { AdditionalPermissionProfile } from "./AdditionalPermissionProfile";
     \\export type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermissions";
+    \\export type { ActivePermissionProfile } from "./ActivePermissionProfile";
+    \\export type { ActivePermissionProfileModification } from "./ActivePermissionProfileModification";
     \\export type { AutoReviewDecisionSource } from "./AutoReviewDecisionSource";
     \\export type { GuardianApprovalReview } from "./GuardianApprovalReview";
     \\export type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
@@ -8126,6 +8626,8 @@ const V2_INDEX_TS =
     \\export type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
     \\export type { PatchChangeKind } from "./PatchChangeKind";
     \\export type { PermissionGrantScope } from "./PermissionGrantScope";
+    \\export type { PermissionProfileModificationParams } from "./PermissionProfileModificationParams";
+    \\export type { PermissionProfileSelectionParams } from "./PermissionProfileSelectionParams";
     \\export type { PlanDeltaNotification } from "./PlanDeltaNotification";
     \\export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";
     \\export type { RequestPermissionProfile } from "./RequestPermissionProfile";
@@ -21185,21 +21687,49 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/AppsListParams.ts", .contents = APPS_LIST_PARAMS_TS },
     .{ .name = "v2/MarketplaceAddParams.ts", .contents = MARKETPLACE_ADD_PARAMS_TS },
+    .{ .name = "v2/MarketplaceAddResponse.ts", .contents = MARKETPLACE_ADD_RESPONSE_TS },
+    .{ .name = "v2/MarketplaceInterface.ts", .contents = MARKETPLACE_INTERFACE_TS },
+    .{ .name = "v2/MarketplaceLoadErrorInfo.ts", .contents = MARKETPLACE_LOAD_ERROR_INFO_TS },
     .{ .name = "v2/MarketplaceRemoveParams.ts", .contents = MARKETPLACE_REMOVE_PARAMS_TS },
+    .{ .name = "v2/MarketplaceRemoveResponse.ts", .contents = MARKETPLACE_REMOVE_RESPONSE_TS },
     .{ .name = "v2/MarketplaceUpgradeParams.ts", .contents = MARKETPLACE_UPGRADE_PARAMS_TS },
+    .{ .name = "v2/MarketplaceUpgradeErrorInfo.ts", .contents = MARKETPLACE_UPGRADE_ERROR_INFO_TS },
+    .{ .name = "v2/MarketplaceUpgradeResponse.ts", .contents = MARKETPLACE_UPGRADE_RESPONSE_TS },
+    .{ .name = "v2/PluginAuthPolicy.ts", .contents = PLUGIN_AUTH_POLICY_TS },
+    .{ .name = "v2/PluginAvailability.ts", .contents = PLUGIN_AVAILABILITY_TS },
+    .{ .name = "v2/PluginHookSummary.ts", .contents = PLUGIN_HOOK_SUMMARY_TS },
+    .{ .name = "v2/PluginInstallPolicy.ts", .contents = PLUGIN_INSTALL_POLICY_TS },
+    .{ .name = "v2/PluginInstallResponse.ts", .contents = PLUGIN_INSTALL_RESPONSE_TS },
+    .{ .name = "v2/PluginInterface.ts", .contents = PLUGIN_INTERFACE_TS },
     .{ .name = "v2/PluginListMarketplaceKind.ts", .contents = PLUGIN_LIST_MARKETPLACE_KIND_TS },
     .{ .name = "v2/PluginListParams.ts", .contents = PLUGIN_LIST_PARAMS_TS },
+    .{ .name = "v2/PluginListResponse.ts", .contents = PLUGIN_LIST_RESPONSE_TS },
+    .{ .name = "v2/PluginMarketplaceEntry.ts", .contents = PLUGIN_MARKETPLACE_ENTRY_TS },
+    .{ .name = "v2/PluginDetail.ts", .contents = PLUGIN_DETAIL_TS },
     .{ .name = "v2/PluginReadParams.ts", .contents = PLUGIN_READ_PARAMS_TS },
+    .{ .name = "v2/PluginReadResponse.ts", .contents = PLUGIN_READ_RESPONSE_TS },
     .{ .name = "v2/PluginSkillReadParams.ts", .contents = PLUGIN_SKILL_READ_PARAMS_TS },
+    .{ .name = "v2/PluginSkillReadResponse.ts", .contents = PLUGIN_SKILL_READ_RESPONSE_TS },
+    .{ .name = "v2/PluginShareContext.ts", .contents = PLUGIN_SHARE_CONTEXT_TS },
     .{ .name = "v2/PluginShareDiscoverability.ts", .contents = PLUGIN_SHARE_DISCOVERABILITY_TS },
+    .{ .name = "v2/PluginSharePrincipal.ts", .contents = PLUGIN_SHARE_PRINCIPAL_TS },
     .{ .name = "v2/PluginSharePrincipalType.ts", .contents = PLUGIN_SHARE_PRINCIPAL_TYPE_TS },
     .{ .name = "v2/PluginShareTarget.ts", .contents = PLUGIN_SHARE_TARGET_TS },
     .{ .name = "v2/PluginShareSaveParams.ts", .contents = PLUGIN_SHARE_SAVE_PARAMS_TS },
+    .{ .name = "v2/PluginShareSaveResponse.ts", .contents = PLUGIN_SHARE_SAVE_RESPONSE_TS },
     .{ .name = "v2/PluginShareUpdateTargetsParams.ts", .contents = PLUGIN_SHARE_UPDATE_TARGETS_PARAMS_TS },
+    .{ .name = "v2/PluginShareUpdateTargetsResponse.ts", .contents = PLUGIN_SHARE_UPDATE_TARGETS_RESPONSE_TS },
     .{ .name = "v2/PluginShareListParams.ts", .contents = PLUGIN_SHARE_LIST_PARAMS_TS },
+    .{ .name = "v2/PluginShareListItem.ts", .contents = PLUGIN_SHARE_LIST_ITEM_TS },
+    .{ .name = "v2/PluginShareListResponse.ts", .contents = PLUGIN_SHARE_LIST_RESPONSE_TS },
     .{ .name = "v2/PluginShareDeleteParams.ts", .contents = PLUGIN_SHARE_DELETE_PARAMS_TS },
+    .{ .name = "v2/PluginShareDeleteResponse.ts", .contents = PLUGIN_SHARE_DELETE_RESPONSE_TS },
     .{ .name = "v2/PluginInstallParams.ts", .contents = PLUGIN_INSTALL_PARAMS_TS },
+    .{ .name = "v2/PluginSource.ts", .contents = PLUGIN_SOURCE_TS },
+    .{ .name = "v2/PluginSummary.ts", .contents = PLUGIN_SUMMARY_TS },
     .{ .name = "v2/PluginUninstallParams.ts", .contents = PLUGIN_UNINSTALL_PARAMS_TS },
+    .{ .name = "v2/PluginUninstallResponse.ts", .contents = PLUGIN_UNINSTALL_RESPONSE_TS },
+    .{ .name = "v2/SkillSummary.ts", .contents = SKILL_SUMMARY_TS },
     .{ .name = "v2/AppBranding.ts", .contents = APP_BRANDING_TS },
     .{ .name = "v2/AppReview.ts", .contents = APP_REVIEW_TS },
     .{ .name = "v2/AppScreenshot.ts", .contents = APP_SCREENSHOT_TS },
@@ -21485,6 +22015,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/NetworkApprovalProtocol.ts", .contents = NETWORK_APPROVAL_PROTOCOL_TS },
     .{ .name = "v2/AdditionalNetworkPermissions.ts", .contents = ADDITIONAL_NETWORK_PERMISSIONS_TS },
     .{ .name = "v2/AdditionalFileSystemPermissions.ts", .contents = ADDITIONAL_FILE_SYSTEM_PERMISSIONS_TS },
+    .{ .name = "v2/AdditionalPermissionProfile.ts", .contents = ADDITIONAL_PERMISSION_PROFILE_TS },
+    .{ .name = "v2/ActivePermissionProfileModification.ts", .contents = ACTIVE_PERMISSION_PROFILE_MODIFICATION_TS },
+    .{ .name = "v2/ActivePermissionProfile.ts", .contents = ACTIVE_PERMISSION_PROFILE_TS },
+    .{ .name = "v2/PermissionProfileModificationParams.ts", .contents = PERMISSION_PROFILE_MODIFICATION_PARAMS_TS },
+    .{ .name = "v2/PermissionProfileSelectionParams.ts", .contents = PERMISSION_PROFILE_SELECTION_PARAMS_TS },
     .{ .name = "v2/RequestPermissionProfile.ts", .contents = REQUEST_PERMISSION_PROFILE_TS },
     .{ .name = "v2/FileChangeRequestApprovalParams.ts", .contents = FILE_CHANGE_REQUEST_APPROVAL_PARAMS_TS },
     .{ .name = "v2/NetworkApprovalContext.ts", .contents = NETWORK_APPROVAL_CONTEXT_TS },
