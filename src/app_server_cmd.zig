@@ -1201,6 +1201,16 @@ const CONVERSATION_GIT_INFO_TS =
     \\
     ;
 
+const GIT_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface GitInfo {
+    \\  sha: string | null;
+    \\  branch: string | null;
+    \\  originUrl: string | null;
+    \\}
+    \\
+    ;
+
 const CONVERSATION_SUMMARY_TS =
     GENERATED_TS_HEADER ++
     \\import type { ConversationGitInfo } from "./ConversationGitInfo";
@@ -2165,6 +2175,28 @@ const SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_TS =
 const MEMORY_RESET_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\export interface MemoryResetResponse {}
+    \\
+    ;
+
+const MEMORY_CITATION_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface MemoryCitationEntry {
+    \\  path: string;
+    \\  lineStart: number;
+    \\  lineEnd: number;
+    \\  note: string;
+    \\}
+    \\
+    ;
+
+const MEMORY_CITATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { MemoryCitationEntry } from "./MemoryCitationEntry";
+    \\
+    \\export interface MemoryCitation {
+    \\  entries: MemoryCitationEntry[];
+    \\  threadIds: string[];
+    \\}
     \\
     ;
 
@@ -5051,6 +5083,16 @@ const PATCH_CHANGE_KIND_TS =
     \\
     ;
 
+const PATCH_APPLY_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PatchApplyStatus =
+    \\  | "inProgress"
+    \\  | "completed"
+    \\  | "failed"
+    \\  | "declined";
+    \\
+    ;
+
 const FILE_UPDATE_CHANGE_TS =
     GENERATED_TS_HEADER ++
     \\import type { PatchChangeKind } from "./PatchChangeKind";
@@ -5315,6 +5357,26 @@ const COMMAND_EXECUTION_APPROVAL_DECISION_TS =
     \\    }
     \\  | "decline"
     \\  | "cancel";
+    \\
+    ;
+
+const COMMAND_EXECUTION_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecutionSource =
+    \\  | "agent"
+    \\  | "userShell"
+    \\  | "unifiedExecStartup"
+    \\  | "unifiedExecInteraction";
+    \\
+    ;
+
+const COMMAND_EXECUTION_STATUS_TS =
+    GENERATED_TS_HEADER ++
+    \\export type CommandExecutionStatus =
+    \\  | "inProgress"
+    \\  | "completed"
+    \\  | "failed"
+    \\  | "declined";
     \\
     ;
 
@@ -8384,6 +8446,8 @@ const V2_INDEX_TS =
     \\export type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
     \\export type { DynamicToolSpec } from "./DynamicToolSpec";
     \\export type { CommandExecutionApprovalDecision } from "./CommandExecutionApprovalDecision";
+    \\export type { CommandExecutionSource } from "./CommandExecutionSource";
+    \\export type { CommandExecutionStatus } from "./CommandExecutionStatus";
     \\export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
     \\export type { CommandExecutionRequestApprovalResponse } from "./CommandExecutionRequestApprovalResponse";
     \\export type { FileChangeApprovalDecision } from "./FileChangeApprovalDecision";
@@ -8509,6 +8573,7 @@ const V2_INDEX_TS =
     \\export type { HooksListEntry } from "./HooksListEntry";
     \\export type { HooksListParams } from "./HooksListParams";
     \\export type { HooksListResponse } from "./HooksListResponse";
+    \\export type { GitInfo } from "./GitInfo";
     \\export type { GitDiffToRemoteParams } from "./GitDiffToRemoteParams";
     \\export type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\export type { GetAccountParams } from "./GetAccountParams";
@@ -8528,6 +8593,8 @@ const V2_INDEX_TS =
     \\export type { MarketplaceUpgradeParams } from "./MarketplaceUpgradeParams";
     \\export type { MarketplaceUpgradeErrorInfo } from "./MarketplaceUpgradeErrorInfo";
     \\export type { MarketplaceUpgradeResponse } from "./MarketplaceUpgradeResponse";
+    \\export type { MemoryCitation } from "./MemoryCitation";
+    \\export type { MemoryCitationEntry } from "./MemoryCitationEntry";
     \\export type { MemoryResetResponse } from "./MemoryResetResponse";
     \\export type { MergeStrategy } from "./MergeStrategy";
     \\export type { PluginAuthPolicy } from "./PluginAuthPolicy";
@@ -8624,6 +8691,7 @@ const V2_INDEX_TS =
     \\export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardianApprovalReviewStartedNotification";
     \\export type { ItemStartedNotification } from "./ItemStartedNotification";
     \\export type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
+    \\export type { PatchApplyStatus } from "./PatchApplyStatus";
     \\export type { PatchChangeKind } from "./PatchChangeKind";
     \\export type { PermissionGrantScope } from "./PermissionGrantScope";
     \\export type { PermissionProfileModificationParams } from "./PermissionProfileModificationParams";
@@ -21663,6 +21731,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/index.ts", .contents = V2_INDEX_TS },
     .{ .name = "v2/ServerRequestResolvedNotification.ts", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_TS },
     .{ .name = "v2/MemoryResetResponse.ts", .contents = MEMORY_RESET_RESPONSE_TS },
+    .{ .name = "v2/MemoryCitationEntry.ts", .contents = MEMORY_CITATION_ENTRY_TS },
+    .{ .name = "v2/MemoryCitation.ts", .contents = MEMORY_CITATION_TS },
     .{ .name = "v2/GetAuthStatusParams.ts", .contents = GET_AUTH_STATUS_PARAMS_TS },
     .{ .name = "v2/GetAuthStatusResponse.ts", .contents = GET_AUTH_STATUS_RESPONSE_TS },
     .{ .name = "v2/Account.ts", .contents = ACCOUNT_TS },
@@ -21744,6 +21814,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailResponse.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_RESPONSE_TS },
+    .{ .name = "v2/GitInfo.ts", .contents = GIT_INFO_TS },
     .{ .name = "v2/GitDiffToRemoteParams.ts", .contents = GIT_DIFF_TO_REMOTE_PARAMS_TS },
     .{ .name = "v2/GitDiffToRemoteResponse.ts", .contents = GIT_DIFF_TO_REMOTE_RESPONSE_TS },
     .{ .name = "v2/FuzzyFileSearchParams.ts", .contents = FUZZY_FILE_SEARCH_PARAMS_TS },
@@ -22004,6 +22075,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CommandExecutionOutputDeltaNotification.ts", .contents = COMMAND_EXECUTION_OUTPUT_DELTA_NOTIFICATION_TS },
     .{ .name = "v2/TerminalInteractionNotification.ts", .contents = TERMINAL_INTERACTION_NOTIFICATION_TS },
     .{ .name = "v2/FileChangeOutputDeltaNotification.ts", .contents = FILE_CHANGE_OUTPUT_DELTA_NOTIFICATION_TS },
+    .{ .name = "v2/PatchApplyStatus.ts", .contents = PATCH_APPLY_STATUS_TS },
     .{ .name = "v2/PatchChangeKind.ts", .contents = PATCH_CHANGE_KIND_TS },
     .{ .name = "v2/FileUpdateChange.ts", .contents = FILE_UPDATE_CHANGE_TS },
     .{ .name = "v2/FileChangePatchUpdatedNotification.ts", .contents = FILE_CHANGE_PATCH_UPDATED_NOTIFICATION_TS },
@@ -22026,6 +22098,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
     .{ .name = "v2/NetworkPolicyRuleAction.ts", .contents = NETWORK_POLICY_RULE_ACTION_TS },
     .{ .name = "v2/CommandExecutionApprovalDecision.ts", .contents = COMMAND_EXECUTION_APPROVAL_DECISION_TS },
+    .{ .name = "v2/CommandExecutionSource.ts", .contents = COMMAND_EXECUTION_SOURCE_TS },
+    .{ .name = "v2/CommandExecutionStatus.ts", .contents = COMMAND_EXECUTION_STATUS_TS },
     .{ .name = "v2/CommandExecutionRequestApprovalResponse.ts", .contents = COMMAND_EXECUTION_REQUEST_APPROVAL_RESPONSE_TS },
     .{ .name = "v2/FileChangeApprovalDecision.ts", .contents = FILE_CHANGE_APPROVAL_DECISION_TS },
     .{ .name = "v2/FileChangeRequestApprovalResponse.ts", .contents = FILE_CHANGE_REQUEST_APPROVAL_RESPONSE_TS },
