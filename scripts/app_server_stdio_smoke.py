@@ -20119,6 +20119,43 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/FileUpdateChange"
         )
+        auto_review_started_schema = json.loads(
+            (
+                out_dir / "ItemGuardianApprovalReviewStartedNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert auto_review_started_schema["required"] == [
+            "action",
+            "review",
+            "reviewId",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            auto_review_started_schema["properties"]["review"]["$ref"]
+            == "#/$defs/GuardianApprovalReview"
+        )
+        assert (
+            auto_review_started_schema["properties"]["action"]["$ref"]
+            == "#/$defs/GuardianApprovalReviewAction"
+        )
+        auto_review_completed_schema = json.loads(
+            (
+                out_dir / "ItemGuardianApprovalReviewCompletedNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert auto_review_completed_schema["required"] == [
+            "action",
+            "decisionSource",
+            "review",
+            "reviewId",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            auto_review_completed_schema["properties"]["decisionSource"]["$ref"]
+            == "#/$defs/AutoReviewDecisionSource"
+        )
         reasoning_summary_text_delta_schema = json.loads(
             (out_dir / "ReasoningSummaryTextDeltaNotification.json").read_text(
                 encoding="utf-8"
@@ -20571,6 +20608,64 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_realtime_append_audio_response["additionalProperties"] is False
+        thread_realtime_started = json.loads(
+            (out_dir / "ThreadRealtimeStartedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_started["required"] == ["threadId", "version"]
+        assert (
+            thread_realtime_started["properties"]["version"]["$ref"]
+            == "#/$defs/RealtimeConversationVersion"
+        )
+        thread_realtime_item_added = json.loads(
+            (out_dir / "ThreadRealtimeItemAddedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_item_added["required"] == ["item", "threadId"]
+        assert thread_realtime_item_added["properties"]["item"] is True
+        thread_realtime_transcript_delta = json.loads(
+            (out_dir / "ThreadRealtimeTranscriptDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_transcript_delta["required"] == [
+            "delta",
+            "role",
+            "threadId",
+        ]
+        thread_realtime_transcript_done = json.loads(
+            (out_dir / "ThreadRealtimeTranscriptDoneNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_transcript_done["required"] == [
+            "role",
+            "text",
+            "threadId",
+        ]
+        thread_realtime_output_audio_delta = json.loads(
+            (out_dir / "ThreadRealtimeOutputAudioDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_output_audio_delta["required"] == ["audio", "threadId"]
+        assert (
+            thread_realtime_output_audio_delta["properties"]["audio"]["$ref"]
+            == "#/$defs/ThreadRealtimeAudioChunk"
+        )
+        for realtime_notification_name, required in [
+            ("ThreadRealtimeSdpNotification", ["sdp", "threadId"]),
+            ("ThreadRealtimeErrorNotification", ["message", "threadId"]),
+            ("ThreadRealtimeClosedNotification", ["reason", "threadId"]),
+        ]:
+            realtime_notification = json.loads(
+                (out_dir / f"{realtime_notification_name}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert realtime_notification["required"] == required
 
         bundle = json.loads(
             (out_dir / "codex_app_server_protocol.schemas.json").read_text(encoding="utf-8")
@@ -20767,6 +20862,17 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
         assert "ThreadRealtimeAudioChunk" in bundle["$defs"]
         assert "ThreadRealtimeAppendAudioResponse" in bundle["$defs"]
+        for realtime_notification_def in [
+            "ThreadRealtimeStartedNotification",
+            "ThreadRealtimeItemAddedNotification",
+            "ThreadRealtimeTranscriptDeltaNotification",
+            "ThreadRealtimeTranscriptDoneNotification",
+            "ThreadRealtimeOutputAudioDeltaNotification",
+            "ThreadRealtimeSdpNotification",
+            "ThreadRealtimeErrorNotification",
+            "ThreadRealtimeClosedNotification",
+        ]:
+            assert realtime_notification_def in bundle["$defs"]
         assert "FsReadFileParams" in bundle["$defs"]
         assert "FsReadFileResponse" in bundle["$defs"]
         assert "FsWriteFileParams" in bundle["$defs"]
@@ -21426,6 +21532,29 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["FileUpdateChange"]["properties"]["kind"]["$ref"]
             == "#/$defs/PatchChangeKind"
         )
+        for auto_review_def in [
+            "AdditionalFileSystemPermissions",
+            "AdditionalNetworkPermissions",
+            "AutoReviewDecisionSource",
+            "GuardianApprovalReview",
+            "GuardianApprovalReviewAction",
+            "GuardianApprovalReviewStatus",
+            "GuardianCommandSource",
+            "GuardianRiskLevel",
+            "GuardianUserAuthorization",
+            "ItemGuardianApprovalReviewStartedNotification",
+            "ItemGuardianApprovalReviewCompletedNotification",
+            "NetworkApprovalProtocol",
+            "RequestPermissionProfile",
+        ]:
+            assert auto_review_def in bundle["$defs"]
+        assert bundle["$defs"]["GuardianApprovalReview"]["required"] == ["status"]
+        assert (
+            bundle["$defs"]["ItemGuardianApprovalReviewCompletedNotification"][
+                "properties"
+            ]["decisionSource"]["$ref"]
+            == "#/$defs/AutoReviewDecisionSource"
+        )
         for reasoning_def in [
             "ReasoningSummaryTextDeltaNotification",
             "ReasoningSummaryPartAddedNotification",
@@ -21913,6 +22042,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {item_stream_import} }} from "./v2/{item_stream_import}";'
                 in server_notification
             )
+        for auto_review_import in [
+            "ItemGuardianApprovalReviewStartedNotification",
+            "ItemGuardianApprovalReviewCompletedNotification",
+        ]:
+            assert (
+                f'import type {{ {auto_review_import} }} from "./v2/{auto_review_import}";'
+                in server_notification
+            )
         for status_import in [
             "McpServerStatusUpdatedNotification",
             "McpToolCallProgressNotification",
@@ -21941,6 +22078,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert (
                 f'import type {{ {control_status_import} }} from "./v2/{control_status_import}";'
+                in server_notification
+            )
+        for realtime_notification_import in [
+            "ThreadRealtimeClosedNotification",
+            "ThreadRealtimeErrorNotification",
+            "ThreadRealtimeItemAddedNotification",
+            "ThreadRealtimeOutputAudioDeltaNotification",
+            "ThreadRealtimeSdpNotification",
+            "ThreadRealtimeStartedNotification",
+            "ThreadRealtimeTranscriptDeltaNotification",
+            "ThreadRealtimeTranscriptDoneNotification",
+        ]:
+            assert (
+                f'import type {{ {realtime_notification_import} }} from "./v2/{realtime_notification_import}";'
                 in server_notification
             )
         for model_notification_import in [
@@ -22095,6 +22246,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             assert f'method: "{method}";' in server_notification
             assert f"params: {params_type};" in server_notification
         for method, params_type in [
+            (
+                "item/autoApprovalReview/started",
+                "ItemGuardianApprovalReviewStartedNotification",
+            ),
+            (
+                "item/autoApprovalReview/completed",
+                "ItemGuardianApprovalReviewCompletedNotification",
+            ),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
+        for method, params_type in [
             ("serverRequest/resolved", "ServerRequestResolvedNotification"),
             ("item/mcpToolCall/progress", "McpToolCallProgressNotification"),
             (
@@ -22119,6 +22282,27 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ),
             ("item/reasoning/textDelta", "ReasoningTextDeltaNotification"),
             ("thread/compacted", "ContextCompactedNotification"),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
+        for method, params_type in [
+            ("thread/realtime/started", "ThreadRealtimeStartedNotification"),
+            ("thread/realtime/itemAdded", "ThreadRealtimeItemAddedNotification"),
+            (
+                "thread/realtime/transcript/delta",
+                "ThreadRealtimeTranscriptDeltaNotification",
+            ),
+            (
+                "thread/realtime/transcript/done",
+                "ThreadRealtimeTranscriptDoneNotification",
+            ),
+            (
+                "thread/realtime/outputAudio/delta",
+                "ThreadRealtimeOutputAudioDeltaNotification",
+            ),
+            ("thread/realtime/sdp", "ThreadRealtimeSdpNotification"),
+            ("thread/realtime/error", "ThreadRealtimeErrorNotification"),
+            ("thread/realtime/closed", "ThreadRealtimeClosedNotification"),
         ]:
             assert f'method: "{method}";' in server_notification
             assert f"params: {params_type};" in server_notification
@@ -23664,6 +23848,42 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "turnId: string;" in file_change_patch_updated_notification
         assert "itemId: string;" in file_change_patch_updated_notification
         assert "changes: FileUpdateChange[];" in file_change_patch_updated_notification
+        auto_review_source = (
+            out_dir / "v2" / "AutoReviewDecisionSource.ts"
+        ).read_text(encoding="utf-8")
+        assert '"agent"' in auto_review_source
+        guardian_review = (out_dir / "v2" / "GuardianApprovalReview.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { GuardianApprovalReviewStatus } from "./GuardianApprovalReviewStatus";' in (
+            guardian_review
+        )
+        assert "status: GuardianApprovalReviewStatus;" in guardian_review
+        assert "riskLevel: GuardianRiskLevel | null;" in guardian_review
+        guardian_action = (
+            out_dir / "v2" / "GuardianApprovalReviewAction.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "command";' in guardian_action
+        assert 'type: "networkAccess";' in guardian_action
+        assert "permissions: RequestPermissionProfile;" in guardian_action
+        auto_review_started = (
+            out_dir / "v2" / "ItemGuardianApprovalReviewStartedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ItemGuardianApprovalReviewStartedNotification" in (
+            auto_review_started
+        )
+        assert "reviewId: string;" in auto_review_started
+        assert "targetItemId: string | null;" in auto_review_started
+        assert "review: GuardianApprovalReview;" in auto_review_started
+        assert "action: GuardianApprovalReviewAction;" in auto_review_started
+        auto_review_completed = (
+            out_dir / "v2" / "ItemGuardianApprovalReviewCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { AutoReviewDecisionSource } from "./AutoReviewDecisionSource";'
+            in auto_review_completed
+        )
+        assert "decisionSource: AutoReviewDecisionSource;" in auto_review_completed
         reasoning_summary_text_delta = (
             out_dir / "v2" / "ReasoningSummaryTextDeltaNotification.ts"
         ).read_text(encoding="utf-8")
@@ -24049,6 +24269,55 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadRealtimeAppendAudioResponse {}"
             in thread_realtime_append_audio_response
         )
+        thread_realtime_started_notification = (
+            out_dir / "v2" / "ThreadRealtimeStartedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { RealtimeConversationVersion } from "../RealtimeConversationVersion";'
+            in thread_realtime_started_notification
+        )
+        assert "realtimeSessionId: string | null;" in (
+            thread_realtime_started_notification
+        )
+        assert "version: RealtimeConversationVersion;" in (
+            thread_realtime_started_notification
+        )
+        thread_realtime_item_added_notification = (
+            out_dir / "v2" / "ThreadRealtimeItemAddedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "item: unknown;" in thread_realtime_item_added_notification
+        thread_realtime_transcript_delta_notification = (
+            out_dir / "v2" / "ThreadRealtimeTranscriptDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "role: string;" in thread_realtime_transcript_delta_notification
+        assert "delta: string;" in thread_realtime_transcript_delta_notification
+        thread_realtime_transcript_done_notification = (
+            out_dir / "v2" / "ThreadRealtimeTranscriptDoneNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "role: string;" in thread_realtime_transcript_done_notification
+        assert "text: string;" in thread_realtime_transcript_done_notification
+        thread_realtime_output_audio_delta_notification = (
+            out_dir / "v2" / "ThreadRealtimeOutputAudioDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";'
+            in thread_realtime_output_audio_delta_notification
+        )
+        assert "audio: ThreadRealtimeAudioChunk;" in (
+            thread_realtime_output_audio_delta_notification
+        )
+        thread_realtime_sdp_notification = (
+            out_dir / "v2" / "ThreadRealtimeSdpNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "sdp: string;" in thread_realtime_sdp_notification
+        thread_realtime_error_notification = (
+            out_dir / "v2" / "ThreadRealtimeErrorNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "message: string;" in thread_realtime_error_notification
+        thread_realtime_closed_notification = (
+            out_dir / "v2" / "ThreadRealtimeClosedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "reason: string | null;" in thread_realtime_closed_notification
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
@@ -24590,6 +24859,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {item_stream_export} }} from "./{item_stream_export}";'
                 in v2_index
             )
+        for auto_review_export in [
+            "AdditionalFileSystemPermissions",
+            "AdditionalNetworkPermissions",
+            "AutoReviewDecisionSource",
+            "GuardianApprovalReview",
+            "GuardianApprovalReviewAction",
+            "GuardianApprovalReviewStatus",
+            "GuardianCommandSource",
+            "GuardianRiskLevel",
+            "GuardianUserAuthorization",
+            "ItemGuardianApprovalReviewCompletedNotification",
+            "ItemGuardianApprovalReviewStartedNotification",
+            "NetworkApprovalProtocol",
+            "RequestPermissionProfile",
+        ]:
+            assert (
+                f'export type {{ {auto_review_export} }} from "./{auto_review_export}";'
+                in v2_index
+            )
         for reasoning_export in [
             "ContextCompactedNotification",
             "ReasoningSummaryPartAddedNotification",
@@ -24722,6 +25010,20 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ThreadRealtimeAppendAudioResponse } from "./ThreadRealtimeAppendAudioResponse";'
             in v2_index
         )
+        for realtime_notification_export in [
+            "ThreadRealtimeStartedNotification",
+            "ThreadRealtimeItemAddedNotification",
+            "ThreadRealtimeTranscriptDeltaNotification",
+            "ThreadRealtimeTranscriptDoneNotification",
+            "ThreadRealtimeOutputAudioDeltaNotification",
+            "ThreadRealtimeSdpNotification",
+            "ThreadRealtimeErrorNotification",
+            "ThreadRealtimeClosedNotification",
+        ]:
+            assert (
+                f'export type {{ {realtime_notification_export} }} from "./{realtime_notification_export}";'
+                in v2_index
+            )
         assert (
             'export type { CommandExecOutputDeltaNotification } from "./CommandExecOutputDeltaNotification";'
             in v2_index
