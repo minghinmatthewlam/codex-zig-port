@@ -201,6 +201,14 @@ and option params, network approval/policy helpers, and the MCP elicitation
 request envelope. Approval response artifacts and full MCP elicitation primitive
 schema helper parity remain planned.
 
+Additional app-server server-request response generation coverage: generated
+TypeScript artifacts now include legacy `ApplyPatchApprovalResponse`,
+`ExecCommandApprovalResponse`, `ReviewDecision`, root network policy helper
+types, and v2 response helpers for command-execution approvals, file-change
+approvals, request-user-input answers, permissions approvals, and MCP
+elicitations. Full JSON Schema parity for these response artifacts and the full
+MCP elicitation primitive schema helper graph remain planned.
+
 Additional app-server approval auto-review notification generation coverage:
 generated TypeScript artifacts now include the Guardian review/action helper
 types plus `ItemGuardianApprovalReviewStartedNotification` and
