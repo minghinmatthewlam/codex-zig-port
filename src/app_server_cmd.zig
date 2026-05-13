@@ -119,6 +119,7 @@ const LoadedThread = struct {
     approvals_reviewer: []const u8,
     sandbox_mode: []const u8,
     reasoning_effort: ?[]const u8,
+    personality: ?[]const u8,
     runtime_overrides: LoadedThreadRuntimeOverrides,
     ephemeral: bool,
     path: ?[]const u8,
@@ -154,6 +155,7 @@ const LoadedThread = struct {
         allocator.free(self.approvals_reviewer);
         allocator.free(self.sandbox_mode);
         if (self.reasoning_effort) |value| allocator.free(value);
+        if (self.personality) |value| allocator.free(value);
         if (self.path) |value| allocator.free(value);
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
@@ -179,6 +181,7 @@ const LoadedThreadRuntimeOverrides = struct {
     approvals_reviewer: bool = false,
     sandbox_mode: bool = false,
     reasoning_effort: bool = false,
+    personality: bool = false,
 };
 
 const LoadedThreadGoal = struct {
@@ -4679,6 +4682,8 @@ const THREAD_LOADED_LIST_RESPONSE_TS =
 
 const THREAD_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Personality } from "../Personality";
+    \\
     \\export interface ThreadStartParams {
     \\  model?: string | null;
     \\  modelProvider?: string | null;
@@ -4691,7 +4696,7 @@ const THREAD_START_PARAMS_TS =
     \\  serviceName?: string | null;
     \\  baseInstructions?: string | null;
     \\  developerInstructions?: string | null;
-    \\  personality?: string | null;
+    \\  personality?: Personality | null;
     \\  ephemeral?: boolean | null;
     \\  sessionStartSource?: "startup" | "clear" | null;
     \\  threadSource?: "user" | "subagent" | "memory_consolidation" | null;
@@ -5229,6 +5234,7 @@ const USER_INPUT_TS =
 
 const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Personality } from "../Personality";
     \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\import type { UserInput } from "./UserInput";
@@ -5240,6 +5246,7 @@ const TURN_START_PARAMS_TS =
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
     \\  effort?: ReasoningEffort | null;
+    \\  personality?: Personality | null;
     \\  cwd?: string | null;
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
     \\  approvalsReviewer?: ApprovalsReviewer | null;
@@ -6417,6 +6424,8 @@ const CONTEXT_COMPACTED_NOTIFICATION_TS =
 
 const THREAD_RESUME_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Personality } from "../Personality";
+    \\
     \\export interface ThreadResumeParams {
     \\  threadId: string;
     \\  history?: unknown[] | null;
@@ -6431,7 +6440,7 @@ const THREAD_RESUME_PARAMS_TS =
     \\  config?: Record<string, unknown> | null;
     \\  baseInstructions?: string | null;
     \\  developerInstructions?: string | null;
-    \\  personality?: string | null;
+    \\  personality?: Personality | null;
     \\  excludeTurns?: boolean;
     \\  persistExtendedHistory?: boolean;
     \\}
@@ -15939,7 +15948,7 @@ const THREAD_START_PARAMS_JSON_SCHEMA =
     \\    "serviceName": { "type": ["string", "null"] },
     \\    "baseInstructions": { "type": ["string", "null"] },
     \\    "developerInstructions": { "type": ["string", "null"] },
-    \\    "personality": { "type": ["string", "null"] },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "ephemeral": { "type": ["boolean", "null"] },
     \\    "sessionStartSource": { "enum": ["startup", "clear", null] },
     \\    "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
@@ -16361,6 +16370,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
     \\    "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "cwd": { "type": ["string", "null"] },
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
@@ -17427,7 +17437,7 @@ const THREAD_RESUME_PARAMS_JSON_SCHEMA =
     \\    "config": { "type": ["object", "null"] },
     \\    "baseInstructions": { "type": ["string", "null"] },
     \\    "developerInstructions": { "type": ["string", "null"] },
-    \\    "personality": { "type": ["string", "null"] },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "excludeTurns": { "type": "boolean" },
     \\    "persistExtendedHistory": { "type": "boolean" }
     \\  },
@@ -21499,7 +21509,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "serviceName": { "type": ["string", "null"] },
     \\        "baseInstructions": { "type": ["string", "null"] },
     \\        "developerInstructions": { "type": ["string", "null"] },
-    \\        "personality": { "type": ["string", "null"] },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "ephemeral": { "type": ["boolean", "null"] },
     \\        "sessionStartSource": { "enum": ["startup", "clear", null] },
     \\        "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] }
@@ -21799,6 +21809,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
     \\        "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "cwd": { "type": ["string", "null"] },
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
@@ -22355,7 +22366,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "config": { "type": ["object", "null"] },
     \\        "baseInstructions": { "type": ["string", "null"] },
     \\        "developerInstructions": { "type": ["string", "null"] },
-    \\        "personality": { "type": ["string", "null"] },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "excludeTurns": { "type": "boolean" },
     \\        "persistExtendedHistory": { "type": "boolean" }
     \\      },
@@ -25607,6 +25618,17 @@ fn applyTurnStartRuntimeOverrides(
     } else {
         cfg.model_reasoning_effort = null;
     }
+
+    const requested_personality = optionalPersonalityParam(params, "personality") catch return error.InvalidTurnContextOverride;
+    if (requested_personality) |personality| {
+        cfg.personality = personality;
+        try replaceOptionalOwnedString(allocator, &thread.personality, personality.label());
+        thread.runtime_overrides.personality = true;
+    } else if (thread.personality) |value| {
+        cfg.personality = config.Personality.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.personality = null;
+    }
 }
 
 fn applyLoadedThreadRuntimeConfig(
@@ -25622,6 +25644,10 @@ fn applyLoadedThreadRuntimeConfig(
     if (thread.service_tier) |value| cfg.service_tier = try allocator.dupe(u8, value);
     cfg.model_reasoning_effort = if (thread.reasoning_effort) |value|
         config.ReasoningEffort.parse(value) catch return error.InvalidThreadRuntimeConfig
+    else
+        null;
+    cfg.personality = if (thread.personality) |value|
+        config.Personality.parse(value) catch return error.InvalidThreadRuntimeConfig
     else
         null;
 }
@@ -27669,6 +27695,9 @@ fn createLoadedThreadFromStartParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const personality = try threadPersonality(allocator, cfg, params);
+    errdefer if (personality) |value| allocator.free(value);
+
     const ephemeral = optionalBoolParam(params, "ephemeral") orelse false;
     const path = if (ephemeral)
         null
@@ -27705,6 +27734,7 @@ fn createLoadedThreadFromStartParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider"),
@@ -27712,6 +27742,7 @@ fn createLoadedThreadFromStartParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = ephemeral,
         .path = path,
@@ -27786,6 +27817,9 @@ fn createLoadedThreadFromHistoryParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const personality = try threadPersonality(allocator, cfg, params);
+    errdefer if (personality) |value| allocator.free(value);
+
     const path = try session_store.createSessionPathForId(allocator, cfg.codex_home, thread_id);
     errdefer allocator.free(path);
 
@@ -27809,6 +27843,7 @@ fn createLoadedThreadFromHistoryParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider"),
@@ -27816,6 +27851,7 @@ fn createLoadedThreadFromHistoryParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = false,
         .path = path,
@@ -27912,6 +27948,9 @@ fn createLoadedThreadFromResumeParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const personality = try threadPersonality(allocator, cfg, params);
+    errdefer if (personality) |value| allocator.free(value);
+
     const now = currentUnixSeconds();
     return .{
         .id = thread_id,
@@ -27926,6 +27965,7 @@ fn createLoadedThreadFromResumeParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
@@ -27933,6 +27973,7 @@ fn createLoadedThreadFromResumeParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = false,
         .path = path_copy,
@@ -28032,6 +28073,12 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const personality = if (source.personality) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (personality) |value| allocator.free(value);
+
     const ephemeral = optionalBoolParam(params, "ephemeral") orelse false;
     const path = if (ephemeral)
         null
@@ -28067,6 +28114,7 @@ fn createLoadedThreadFromForkParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model") or source.runtime_overrides.model,
             .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
@@ -28075,6 +28123,7 @@ fn createLoadedThreadFromForkParams(
             .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
             .sandbox_mode = paramPresent(params, "sandbox") or source.runtime_overrides.sandbox_mode,
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
+            .personality = source.runtime_overrides.personality,
         },
         .ephemeral = ephemeral,
         .path = path,
@@ -28123,6 +28172,19 @@ fn lifecycleServiceTier(
         return try allocator.dupe(u8, value.string);
     }
     if (default_value) |value| return try allocator.dupe(u8, value);
+    return null;
+}
+
+fn threadPersonality(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: ?std.json.ObjectMap,
+) !?[]const u8 {
+    if (params) |object| {
+        const requested = try optionalPersonalityParam(object, "personality");
+        if (requested) |personality| return try allocator.dupe(u8, personality.label());
+    }
+    if (cfg.personality) |personality| return try allocator.dupe(u8, personality.label());
     return null;
 }
 
@@ -28315,6 +28377,13 @@ fn optionalReasoningEffortParam(params: std.json.ObjectMap, name: []const u8) !?
     if (value == .null) return null;
     if (value != .string) return error.InvalidTurnContextOverride;
     return config.ReasoningEffort.parse(value.string) catch error.InvalidTurnContextOverride;
+}
+
+fn optionalPersonalityParam(params: std.json.ObjectMap, name: []const u8) !?config.Personality {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidTurnContextOverride;
+    return config.Personality.parse(value.string) catch error.InvalidTurnContextOverride;
 }
 
 fn optionalApprovalsReviewerParam(params: std.json.ObjectMap, name: []const u8) !?[]const u8 {
@@ -30185,6 +30254,11 @@ fn validateThreadStartParams(params_value: ?std.json.Value) ?[]const u8 {
             if (value != .null and value != .string) return name ++ " must be a string or null";
         }
     }
+    if (object.get("personality")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
+            return "personality must be none, friendly, pragmatic, or null";
+        }
+    }
     if (object.get("approvalPolicy")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "untrusted", "on-failure", "on-request", "never" })) {
             return "approvalPolicy must be a supported approval policy or null";
@@ -30218,9 +30292,14 @@ fn validateThreadResumeParams(params_value: ?std.json.Value) ?[]const u8 {
     const thread_id = object.get("threadId") orelse return "threadId must be a string";
     if (thread_id != .string) return "threadId must be a string";
 
-    inline for (&.{ "path", "model", "modelProvider", "serviceTier", "cwd", "baseInstructions", "developerInstructions", "personality" }) |name| {
+    inline for (&.{ "path", "model", "modelProvider", "serviceTier", "cwd", "baseInstructions", "developerInstructions" }) |name| {
         if (object.get(name)) |value| {
             if (value != .null and value != .string) return name ++ " must be a string or null";
+        }
+    }
+    if (object.get("personality")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
+            return "personality must be none, friendly, pragmatic, or null";
         }
     }
     if (object.get("history")) |value| {
@@ -40026,6 +40105,13 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
                 try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
             } else {
                 clearOptionalOwnedString(allocator, &thread.reasoning_effort);
+            }
+        }
+        if (!thread.runtime_overrides.personality) {
+            if (cfg.personality) |personality| {
+                try replaceOptionalOwnedString(allocator, &thread.personality, personality.label());
+            } else {
+                clearOptionalOwnedString(allocator, &thread.personality);
             }
         }
         thread.updated_at = currentUnixSeconds();
