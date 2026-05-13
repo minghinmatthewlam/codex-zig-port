@@ -21856,6 +21856,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const object = parsed.value.object;
     const id_value = object.get("id");
     const method_value = object.get("method") orelse {
+        if (id_value != null and (object.get("result") != null or object.get("error") != null)) {
+            return null;
+        }
         return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
     };
     if (method_value != .string) {
