@@ -21856,7 +21856,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const object = parsed.value.object;
     const id_value = object.get("id");
     const method_value = object.get("method") orelse {
-        if (id_value != null and (object.get("result") != null or object.get("error") != null)) {
+        if (isJsonRpcResponseEnvelope(object)) {
             return null;
         }
         return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
@@ -21946,6 +21946,30 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const message = try std.fmt.allocPrint(allocator, "unsupported app-server method: {s}", .{method});
     defer allocator.free(message);
     return try renderJsonRpcError(allocator, id_value, -32601, message);
+}
+
+fn isJsonRpcResponseEnvelope(object: std.json.ObjectMap) bool {
+    const id_value = object.get("id") orelse return false;
+    if (!isJsonRpcRequestIdValue(id_value)) return false;
+    if (object.get("result") != null) return true;
+    const error_value = object.get("error") orelse return false;
+    return isJsonRpcErrorValue(error_value);
+}
+
+fn isJsonRpcRequestIdValue(value: std.json.Value) bool {
+    return switch (value) {
+        .string, .integer => true,
+        else => false,
+    };
+}
+
+fn isJsonRpcErrorValue(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const object = value.object;
+    const code_value = object.get("code") orelse return false;
+    if (code_value != .integer) return false;
+    const message_value = object.get("message") orelse return false;
+    return message_value == .string;
 }
 
 fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
