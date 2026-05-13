@@ -200,17 +200,23 @@ artifacts cover legacy patch and exec approval params, command/file/permission
 approval request params, dynamic tool-call params, request-user-input question
 and option params, network approval/policy helpers, and the MCP elicitation
 request envelope. JSON Schema generation now includes the legacy
-`ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files. JSON
-Schema parity for the v2 request params and runtime handling for these request
-surfaces remain planned.
+`ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files plus
+the v2 command/file/permission approval, dynamic tool-call, request-user-input,
+and MCP elicitation request param helper files. Runtime handling for these
+request surfaces remains planned.
+
+Additional app-server dynamic/MCP helper generation coverage: generated
+TypeScript artifacts now include dynamic tool-call output, response, status,
+and tool-spec helpers plus MCP auth, refresh, call status, call error, and call
+result helpers, all exported through `v2/index.ts`. Runtime dynamic-tool and
+MCP lifecycle behavior remains planned.
 
 Additional app-server server-request response generation coverage: generated
 TypeScript and JSON Schema artifacts now include legacy
 `ApplyPatchApprovalResponse`, `ExecCommandApprovalResponse`, `ReviewDecision`,
 root network policy helper types, and v2 response helpers for command-execution
 approvals, file-change approvals, request-user-input answers, permissions
-approvals, and MCP elicitations. JSON Schema parity for the related request
-params remains planned except for legacy patch and exec approval params.
+approvals, and MCP elicitations.
 
 Additional app-server MCP elicitation schema generation coverage: generated
 TypeScript artifacts now include the full v2 `McpElicitation*` primitive helper
