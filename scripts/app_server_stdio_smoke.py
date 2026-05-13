@@ -23448,6 +23448,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             collaboration_mode_response
         )
         assert "data: CollaborationMode[];" in collaboration_mode_response
+        for generated_name, snippets in {
+            "CollabAgentStatus": [
+                '"pendingInit"',
+                '"notFound"',
+            ],
+            "CollabAgentState": [
+                'import type { CollabAgentStatus } from "./CollabAgentStatus";',
+                "message: string | null;",
+            ],
+            "CollabAgentTool": [
+                '"spawnAgent"',
+                '"closeAgent"',
+            ],
+            "CollabAgentToolCallStatus": [
+                '"inProgress"',
+                '"failed"',
+            ],
+            "CollaborationModeMask": [
+                'import type { ModeKind } from "../ModeKind";',
+                "mode: ModeKind | null;",
+                "reasoning_effort: ReasoningEffort | null;",
+            ],
+        }.items():
+            generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            for snippet in snippets:
+                assert snippet in generated
         model_list_params = (out_dir / "v2" / "ModelListParams.ts").read_text(
             encoding="utf-8"
         )
@@ -24738,6 +24766,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "model: string;",
                 "reasoning_effort: ReasoningEffort | null;",
             ],
+            "CollaborationMode": [
+                'import type { ModeKind } from "./ModeKind";',
+                "mode: ModeKind;",
+                "settings: Settings;",
+            ],
             "Tool": [
                 "inputSchema: JsonValue;",
                 "icons?: JsonValue[];",
@@ -25354,6 +25387,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "Resource",
             "ResourceTemplate",
             "Settings",
+            "CollaborationMode",
             "Tool",
         ]:
             assert (
@@ -25478,6 +25512,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";'
             in v2_index
         )
+        for collab_export in [
+            "CollabAgentState",
+            "CollabAgentStatus",
+            "CollabAgentTool",
+            "CollabAgentToolCallStatus",
+            "CollaborationModeMask",
+        ]:
+            assert (
+                f'export type {{ {collab_export} }} from "./{collab_export}";'
+                in v2_index
+            )
         assert (
             'export type { CollaborationMode } from "./CollaborationMode";'
             in v2_index
