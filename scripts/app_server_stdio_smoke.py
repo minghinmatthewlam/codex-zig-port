@@ -18374,6 +18374,16 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert request["title"] == "JSONRPCRequest"
         assert request["required"] == ["id", "method"]
         assert request["properties"]["id"]["$ref"] == "RequestId.json"
+        server_request_resolved = json.loads(
+            (out_dir / "ServerRequestResolvedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert server_request_resolved["required"] == ["requestId", "threadId"]
+        assert (
+            server_request_resolved["properties"]["requestId"]["$ref"]
+            == "#/$defs/RequestId"
+        )
         client_notification = json.loads(
             (out_dir / "ClientNotification.json").read_text(encoding="utf-8")
         )
@@ -18636,6 +18646,27 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "$ref"
             ]
             == "#/$defs/AppBranding"
+        )
+        remote_status = json.loads(
+            (out_dir / "RemoteControlConnectionStatus.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_status["enum"] == [
+            "disabled",
+            "connecting",
+            "connected",
+            "errored",
+        ]
+        remote_status_changed = json.loads(
+            (out_dir / "RemoteControlStatusChangedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_status_changed["required"] == ["status"]
+        assert (
+            remote_status_changed["properties"]["status"]["$ref"]
+            == "#/$defs/RemoteControlConnectionStatus"
         )
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
@@ -19076,6 +19107,25 @@ def run_json_schema_smoke(binary: Path) -> None:
             mcp_status_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/McpServerStatus"
         )
+        mcp_startup_state = json.loads(
+            (out_dir / "McpServerStartupState.json").read_text(encoding="utf-8")
+        )
+        assert mcp_startup_state["enum"] == [
+            "starting",
+            "ready",
+            "failed",
+            "cancelled",
+        ]
+        mcp_status_updated = json.loads(
+            (out_dir / "McpServerStatusUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_status_updated["required"] == ["name", "status"]
+        assert (
+            mcp_status_updated["properties"]["status"]["$ref"]
+            == "#/$defs/McpServerStartupState"
+        )
         resource_content = json.loads(
             (out_dir / "ResourceContent.json").read_text(encoding="utf-8")
         )
@@ -19115,6 +19165,17 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert mcp_tool_call_response["required"] == ["content"]
         assert mcp_tool_call_response["properties"]["content"]["items"] is True
         assert mcp_tool_call_response["properties"]["structuredContent"] is True
+        mcp_tool_call_progress = json.loads(
+            (out_dir / "McpToolCallProgressNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_tool_call_progress["required"] == [
+            "itemId",
+            "message",
+            "threadId",
+            "turnId",
+        ]
         model_provider_capabilities_params = json.loads(
             (out_dir / "ModelProviderCapabilitiesReadParams.json").read_text(
                 encoding="utf-8"
@@ -20058,6 +20119,61 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/FileUpdateChange"
         )
+        reasoning_summary_text_delta_schema = json.loads(
+            (out_dir / "ReasoningSummaryTextDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert reasoning_summary_text_delta_schema["required"] == [
+            "delta",
+            "itemId",
+            "summaryIndex",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            reasoning_summary_text_delta_schema["properties"]["summaryIndex"][
+                "format"
+            ]
+            == "int64"
+        )
+        reasoning_summary_part_added_schema = json.loads(
+            (out_dir / "ReasoningSummaryPartAddedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert reasoning_summary_part_added_schema["required"] == [
+            "itemId",
+            "summaryIndex",
+            "threadId",
+            "turnId",
+        ]
+        reasoning_text_delta_schema = json.loads(
+            (out_dir / "ReasoningTextDeltaNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert reasoning_text_delta_schema["required"] == [
+            "contentIndex",
+            "delta",
+            "itemId",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            reasoning_text_delta_schema["properties"]["contentIndex"]["format"]
+            == "int64"
+        )
+        context_compacted_notification_schema = json.loads(
+            (out_dir / "ContextCompactedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert context_compacted_notification_schema["required"] == [
+            "threadId",
+            "turnId",
+        ]
+        assert "Deprecated" in context_compacted_notification_schema["description"]
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -20462,6 +20578,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["title"] == "codex_app_server_protocol.schemas"
         assert "JSONRPCMessage" in bundle["$defs"]
         assert "ClientNotification" in bundle["$defs"]
+        assert "ServerRequestResolvedNotification" in bundle["$defs"]
+        assert bundle["$defs"]["ServerRequestResolvedNotification"]["required"] == [
+            "requestId",
+            "threadId",
+        ]
         assert "ClientInfo" in bundle["$defs"]
         assert "InitializeCapabilities" in bundle["$defs"]
         assert "InitializeResponse" in bundle["$defs"]
@@ -20502,6 +20623,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "AppSummary" in bundle["$defs"]
         assert "AppsListResponse" in bundle["$defs"]
         assert "AppListUpdatedNotification" in bundle["$defs"]
+        assert "RemoteControlConnectionStatus" in bundle["$defs"]
+        assert "RemoteControlStatusChangedNotification" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -20563,6 +20686,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "McpServerAuthStatus" in bundle["$defs"]
         assert "McpServerStatus" in bundle["$defs"]
         assert "McpServerStatusListResponse" in bundle["$defs"]
+        assert "McpServerStartupState" in bundle["$defs"]
+        assert "McpServerStatusUpdatedNotification" in bundle["$defs"]
+        assert "McpToolCallProgressNotification" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadParams" in bundle["$defs"]
         assert "ModelProviderCapabilitiesReadResponse" in bundle["$defs"]
         assert "CollaborationModeListParams" in bundle["$defs"]
@@ -20831,6 +20957,18 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/AppInfo"
         )
+        assert bundle["$defs"]["RemoteControlConnectionStatus"]["enum"] == [
+            "disabled",
+            "connecting",
+            "connected",
+            "errored",
+        ]
+        assert (
+            bundle["$defs"]["RemoteControlStatusChangedNotification"]["properties"][
+                "status"
+            ]["$ref"]
+            == "#/$defs/RemoteControlConnectionStatus"
+        )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -21076,6 +21214,24 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/McpServerStatus"
         )
+        assert bundle["$defs"]["McpServerStartupState"]["enum"] == [
+            "starting",
+            "ready",
+            "failed",
+            "cancelled",
+        ]
+        assert (
+            bundle["$defs"]["McpServerStatusUpdatedNotification"]["properties"][
+                "status"
+            ]["$ref"]
+            == "#/$defs/McpServerStartupState"
+        )
+        assert bundle["$defs"]["McpToolCallProgressNotification"]["required"] == [
+            "itemId",
+            "message",
+            "threadId",
+            "turnId",
+        ]
         assert bundle["$defs"]["ResourceContent"]["anyOf"][0]["required"] == [
             "uri",
             "text",
@@ -21270,6 +21426,26 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["FileUpdateChange"]["properties"]["kind"]["$ref"]
             == "#/$defs/PatchChangeKind"
         )
+        for reasoning_def in [
+            "ReasoningSummaryTextDeltaNotification",
+            "ReasoningSummaryPartAddedNotification",
+            "ReasoningTextDeltaNotification",
+            "ContextCompactedNotification",
+        ]:
+            assert reasoning_def in bundle["$defs"]
+        assert bundle["$defs"]["ReasoningSummaryTextDeltaNotification"][
+            "required"
+        ] == [
+            "delta",
+            "itemId",
+            "summaryIndex",
+            "threadId",
+            "turnId",
+        ]
+        assert bundle["$defs"]["ContextCompactedNotification"]["required"] == [
+            "threadId",
+            "turnId",
+        ]
         assert "ThreadArchivedNotification" in bundle["$defs"]
         assert "ThreadUnarchivedNotification" in bundle["$defs"]
         assert "ThreadClosedNotification" in bundle["$defs"]
@@ -21367,6 +21543,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         request_id = (out_dir / "RequestId.ts").read_text(encoding="utf-8")
         assert request_id.startswith("// GENERATED CODE! DO NOT MODIFY BY HAND!")
         assert "export type RequestId = string | number;" in request_id
+        server_request_resolved = (
+            out_dir / "v2" / "ServerRequestResolvedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { RequestId } from "../RequestId";' in (
+            server_request_resolved
+        )
+        assert "export interface ServerRequestResolvedNotification" in (
+            server_request_resolved
+        )
+        assert "threadId: string;" in server_request_resolved
+        assert "requestId: RequestId;" in server_request_resolved
         client_notification = (out_dir / "ClientNotification.ts").read_text(
             encoding="utf-8"
         )
@@ -21726,6 +21913,36 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {item_stream_import} }} from "./v2/{item_stream_import}";'
                 in server_notification
             )
+        for status_import in [
+            "McpServerStatusUpdatedNotification",
+            "McpToolCallProgressNotification",
+            "RemoteControlStatusChangedNotification",
+            "ServerRequestResolvedNotification",
+        ]:
+            assert (
+                f'import type {{ {status_import} }} from "./v2/{status_import}";'
+                in server_notification
+            )
+        for reasoning_import in [
+            "ContextCompactedNotification",
+            "ReasoningSummaryPartAddedNotification",
+            "ReasoningSummaryTextDeltaNotification",
+            "ReasoningTextDeltaNotification",
+        ]:
+            assert (
+                f'import type {{ {reasoning_import} }} from "./v2/{reasoning_import}";'
+                in server_notification
+            )
+        for control_status_import in [
+            "McpServerStatusUpdatedNotification",
+            "McpToolCallProgressNotification",
+            "RemoteControlStatusChangedNotification",
+            "ServerRequestResolvedNotification",
+        ]:
+            assert (
+                f'import type {{ {control_status_import} }} from "./v2/{control_status_import}";'
+                in server_notification
+            )
         for model_notification_import in [
             "ModelReroutedNotification",
             "ModelVerificationNotification",
@@ -21874,6 +22091,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ),
             ("item/fileChange/outputDelta", "FileChangeOutputDeltaNotification"),
             ("item/fileChange/patchUpdated", "FileChangePatchUpdatedNotification"),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
+        for method, params_type in [
+            ("serverRequest/resolved", "ServerRequestResolvedNotification"),
+            ("item/mcpToolCall/progress", "McpToolCallProgressNotification"),
+            (
+                "mcpServer/startupStatus/updated",
+                "McpServerStatusUpdatedNotification",
+            ),
+            (
+                "remoteControl/status/changed",
+                "RemoteControlStatusChangedNotification",
+            ),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
+        for method, params_type in [
+            (
+                "item/reasoning/summaryTextDelta",
+                "ReasoningSummaryTextDeltaNotification",
+            ),
+            (
+                "item/reasoning/summaryPartAdded",
+                "ReasoningSummaryPartAddedNotification",
+            ),
+            ("item/reasoning/textDelta", "ReasoningTextDeltaNotification"),
+            ("thread/compacted", "ContextCompactedNotification"),
         ]:
             assert f'method: "{method}";' in server_notification
             assert f"params: {params_type};" in server_notification
@@ -22204,6 +22449,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert 'import type { AppInfo } from "./AppInfo";' in app_list_updated
         assert "data: AppInfo[];" in app_list_updated
+        remote_status = (
+            out_dir / "v2" / "RemoteControlConnectionStatus.ts"
+        ).read_text(encoding="utf-8")
+        assert 'export type RemoteControlConnectionStatus =' in remote_status
+        assert '"disabled"' in remote_status
+        assert '"errored"' in remote_status
+        remote_status_changed = (
+            out_dir / "v2" / "RemoteControlStatusChangedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";'
+            in remote_status_changed
+        )
+        assert "status: RemoteControlConnectionStatus;" in remote_status_changed
+        assert "environmentId: string | null;" in remote_status_changed
         memory_reset_response = (
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
@@ -22747,6 +23007,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: McpServerStatus[];" in mcp_status_response
         assert "nextCursor: string | null;" in mcp_status_response
+        mcp_startup_state = (
+            out_dir / "v2" / "McpServerStartupState.ts"
+        ).read_text(encoding="utf-8")
+        assert 'export type McpServerStartupState =' in mcp_startup_state
+        assert '"starting"' in mcp_startup_state
+        assert '"cancelled"' in mcp_startup_state
+        mcp_status_updated = (
+            out_dir / "v2" / "McpServerStatusUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { McpServerStartupState } from "./McpServerStartupState";'
+            in mcp_status_updated
+        )
+        assert "name: string;" in mcp_status_updated
+        assert "status: McpServerStartupState;" in mcp_status_updated
+        assert "error: string | null;" in mcp_status_updated
         resource_content = (out_dir / "ResourceContent.ts").read_text(
             encoding="utf-8"
         )
@@ -22780,6 +23056,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "content: unknown[];" in mcp_tool_call_response
         assert "structuredContent?: unknown;" in mcp_tool_call_response
         assert "isError?: boolean;" in mcp_tool_call_response
+        mcp_tool_call_progress = (
+            out_dir / "v2" / "McpToolCallProgressNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface McpToolCallProgressNotification" in (
+            mcp_tool_call_progress
+        )
+        assert "threadId: string;" in mcp_tool_call_progress
+        assert "turnId: string;" in mcp_tool_call_progress
+        assert "itemId: string;" in mcp_tool_call_progress
+        assert "message: string;" in mcp_tool_call_progress
         experimental_feature_list_params = (
             out_dir / "v2" / "ExperimentalFeatureListParams.ts"
         ).read_text(encoding="utf-8")
@@ -23378,6 +23664,51 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "turnId: string;" in file_change_patch_updated_notification
         assert "itemId: string;" in file_change_patch_updated_notification
         assert "changes: FileUpdateChange[];" in file_change_patch_updated_notification
+        reasoning_summary_text_delta = (
+            out_dir / "v2" / "ReasoningSummaryTextDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ReasoningSummaryTextDeltaNotification"
+            in reasoning_summary_text_delta
+        )
+        assert "threadId: string;" in reasoning_summary_text_delta
+        assert "turnId: string;" in reasoning_summary_text_delta
+        assert "itemId: string;" in reasoning_summary_text_delta
+        assert "delta: string;" in reasoning_summary_text_delta
+        assert "summaryIndex: number;" in reasoning_summary_text_delta
+        reasoning_summary_part_added = (
+            out_dir / "v2" / "ReasoningSummaryPartAddedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ReasoningSummaryPartAddedNotification"
+            in reasoning_summary_part_added
+        )
+        assert "threadId: string;" in reasoning_summary_part_added
+        assert "turnId: string;" in reasoning_summary_part_added
+        assert "itemId: string;" in reasoning_summary_part_added
+        assert "summaryIndex: number;" in reasoning_summary_part_added
+        reasoning_text_delta = (
+            out_dir / "v2" / "ReasoningTextDeltaNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ReasoningTextDeltaNotification" in (
+            reasoning_text_delta
+        )
+        assert "threadId: string;" in reasoning_text_delta
+        assert "turnId: string;" in reasoning_text_delta
+        assert "itemId: string;" in reasoning_text_delta
+        assert "delta: string;" in reasoning_text_delta
+        assert "contentIndex: number;" in reasoning_text_delta
+        context_compacted_notification = (
+            out_dir / "v2" / "ContextCompactedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "Deprecated: Use `ContextCompaction` item type instead." in (
+            context_compacted_notification
+        )
+        assert "export interface ContextCompactedNotification" in (
+            context_compacted_notification
+        )
+        assert "threadId: string;" in context_compacted_notification
+        assert "turnId: string;" in context_compacted_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -23818,6 +24149,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {app_export} }} from "./{app_export}";'
                 in v2_index
             )
+        for remote_control_export in [
+            "RemoteControlConnectionStatus",
+            "RemoteControlStatusChangedNotification",
+        ]:
+            assert (
+                f'export type {{ {remote_control_export} }} from "./{remote_control_export}";'
+                in v2_index
+            )
         assert 'export type { CommandExecParams } from "./CommandExecParams";' in v2_index
         assert (
             'export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";'
@@ -23897,6 +24236,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";'
             in v2_index
         )
         assert (
@@ -24048,6 +24391,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { McpServerStatusListResponse } from "./McpServerStatusListResponse";'
             in v2_index
         )
+        for mcp_notification_export in [
+            "McpServerStartupState",
+            "McpServerStatusUpdatedNotification",
+            "McpToolCallProgressNotification",
+        ]:
+            assert (
+                f'export type {{ {mcp_notification_export} }} from "./{mcp_notification_export}";'
+                in v2_index
+            )
         assert (
             'export type { McpResourceReadParams } from "./McpResourceReadParams";'
             in v2_index
@@ -24236,6 +24588,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert (
                 f'export type {{ {item_stream_export} }} from "./{item_stream_export}";'
+                in v2_index
+            )
+        for reasoning_export in [
+            "ContextCompactedNotification",
+            "ReasoningSummaryPartAddedNotification",
+            "ReasoningSummaryTextDeltaNotification",
+            "ReasoningTextDeltaNotification",
+        ]:
+            assert (
+                f'export type {{ {reasoning_export} }} from "./{reasoning_export}";'
                 in v2_index
             )
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
