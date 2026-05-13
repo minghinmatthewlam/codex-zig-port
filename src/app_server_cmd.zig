@@ -176,6 +176,7 @@ const LoadedThreadRuntimeOverrides = struct {
     model_provider: bool = false,
     service_tier: bool = false,
     approval_policy: bool = false,
+    approvals_reviewer: bool = false,
     sandbox_mode: bool = false,
     reasoning_effort: bool = false,
 };
@@ -5229,6 +5230,7 @@ const USER_INPUT_TS =
 const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\import type { UserInput } from "./UserInput";
     \\
     \\export interface TurnStartParams {
@@ -5240,6 +5242,7 @@ const TURN_START_PARAMS_TS =
     \\  effort?: ReasoningEffort | null;
     \\  cwd?: string | null;
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
+    \\  approvalsReviewer?: ApprovalsReviewer | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
     \\  outputSchema?: unknown | null;
     \\}
@@ -16360,6 +16363,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
     \\    "cwd": { "type": ["string", "null"] },
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
     \\    "outputSchema": true
     \\  },
@@ -21797,6 +21801,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
     \\        "cwd": { "type": ["string", "null"] },
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
     \\        "outputSchema": true
     \\      },
@@ -25558,6 +25563,12 @@ fn applyTurnStartRuntimeOverrides(
         thread.runtime_overrides.approval_policy = true;
     }
 
+    const requested_reviewer = optionalApprovalsReviewerParam(params, "approvalsReviewer") catch return error.InvalidTurnContextOverride;
+    if (requested_reviewer) |approvals_reviewer| {
+        try replaceOwnedString(allocator, &thread.approvals_reviewer, approvals_reviewer);
+        thread.runtime_overrides.approvals_reviewer = true;
+    }
+
     const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
     cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
     if (optionalStringParam(params, "sandbox")) |sandbox| {
@@ -27699,6 +27710,7 @@ fn createLoadedThreadFromStartParams(
             .model_provider = paramPresent(params, "modelProvider"),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
+            .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
         },
         .ephemeral = ephemeral,
@@ -27802,6 +27814,7 @@ fn createLoadedThreadFromHistoryParams(
             .model_provider = paramPresent(params, "modelProvider"),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
+            .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
         },
         .ephemeral = false,
@@ -27918,6 +27931,7 @@ fn createLoadedThreadFromResumeParams(
             .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
+            .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
         },
         .ephemeral = false,
@@ -28058,6 +28072,7 @@ fn createLoadedThreadFromForkParams(
             .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
             .service_tier = paramPresent(params, "serviceTier") or source.runtime_overrides.service_tier,
             .approval_policy = paramPresent(params, "approvalPolicy") or source.runtime_overrides.approval_policy,
+            .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
             .sandbox_mode = paramPresent(params, "sandbox") or source.runtime_overrides.sandbox_mode,
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
         },
@@ -28300,6 +28315,14 @@ fn optionalReasoningEffortParam(params: std.json.ObjectMap, name: []const u8) !?
     if (value == .null) return null;
     if (value != .string) return error.InvalidTurnContextOverride;
     return config.ReasoningEffort.parse(value.string) catch error.InvalidTurnContextOverride;
+}
+
+fn optionalApprovalsReviewerParam(params: std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidTurnContextOverride;
+    const reviewer = ApprovalsReviewer.parse(value.string) catch return error.InvalidTurnContextOverride;
+    return reviewer.label();
 }
 
 fn paramPresent(params: ?std.json.ObjectMap, name: []const u8) bool {
