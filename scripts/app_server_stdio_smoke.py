@@ -18384,6 +18384,50 @@ def run_json_schema_smoke(binary: Path) -> None:
             server_request_resolved["properties"]["requestId"]["$ref"]
             == "#/$defs/RequestId"
         )
+        apply_patch_approval_params = json.loads(
+            (out_dir / "ApplyPatchApprovalParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert apply_patch_approval_params["required"] == [
+            "callId",
+            "conversationId",
+            "fileChanges",
+        ]
+        assert (
+            apply_patch_approval_params["properties"]["fileChanges"][
+                "additionalProperties"
+            ]["$ref"]
+            == "#/$defs/FileChange"
+        )
+        assert (
+            apply_patch_approval_params["$defs"]["FileChange"]["oneOf"][2][
+                "properties"
+            ]["type"]["const"]
+            == "update"
+        )
+        exec_command_approval_params = json.loads(
+            (out_dir / "ExecCommandApprovalParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert exec_command_approval_params["required"] == [
+            "callId",
+            "command",
+            "conversationId",
+            "cwd",
+            "parsedCmd",
+        ]
+        assert (
+            exec_command_approval_params["properties"]["parsedCmd"]["items"]["$ref"]
+            == "#/$defs/ParsedCommand"
+        )
+        assert (
+            exec_command_approval_params["$defs"]["ParsedCommand"]["oneOf"][1][
+                "properties"
+            ]["type"]["const"]
+            == "list_files"
+        )
         apply_patch_approval_response = json.loads(
             (out_dir / "ApplyPatchApprovalResponse.json").read_text(
                 encoding="utf-8"
@@ -21660,25 +21704,41 @@ def run_json_schema_smoke(binary: Path) -> None:
             "RequestPermissionProfile",
         ]:
             assert auto_review_def in bundle["$defs"]
-        for server_request_response_def in [
+        for server_request_schema_def in [
+            "ApplyPatchApprovalParams",
             "ApplyPatchApprovalResponse",
             "CommandExecutionApprovalDecision",
             "CommandExecutionRequestApprovalResponse",
+            "ExecCommandApprovalParams",
             "ExecCommandApprovalResponse",
             "FileChangeApprovalDecision",
             "FileChangeRequestApprovalResponse",
+            "FileChange",
             "GrantedPermissionProfile",
             "McpServerElicitationAction",
             "McpServerElicitationRequestResponse",
             "NetworkPolicyAmendment",
             "NetworkPolicyRuleAction",
+            "ParsedCommand",
             "PermissionGrantScope",
             "PermissionsRequestApprovalResponse",
             "ReviewDecision",
             "ToolRequestUserInputAnswer",
             "ToolRequestUserInputResponse",
         ]:
-            assert server_request_response_def in bundle["$defs"]
+            assert server_request_schema_def in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ApplyPatchApprovalParams"]["properties"][
+                "fileChanges"
+            ]["additionalProperties"]["$ref"]
+            == "#/$defs/FileChange"
+        )
+        assert (
+            bundle["$defs"]["ExecCommandApprovalParams"]["properties"][
+                "parsedCmd"
+            ]["items"]["$ref"]
+            == "#/$defs/ParsedCommand"
+        )
         assert (
             bundle["$defs"]["ApplyPatchApprovalResponse"]["properties"]["decision"][
                 "$ref"
@@ -24317,7 +24377,82 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "turnId: string;" in item_completed_notification
         assert "completedAtMs: number;" in item_completed_notification
         response_item = (out_dir / "ResponseItem.ts").read_text(encoding="utf-8")
-        assert "export type ResponseItem = unknown;" in response_item
+        for import_name in [
+            "ContentItem",
+            "FunctionCallOutputBody",
+            "LocalShellAction",
+            "LocalShellStatus",
+            "ReasoningItemContent",
+            "ReasoningItemReasoningSummary",
+            "WebSearchAction",
+        ]:
+            assert f"import type {{ {import_name} }}" in response_item
+        for snippet in [
+            'type: "message";',
+            "content: ContentItem[];",
+            'type: "reasoning";',
+            "summary: ReasoningItemReasoningSummary[];",
+            'type: "local_shell_call";',
+            "action: LocalShellAction;",
+            'type: "function_call";',
+            "output: FunctionCallOutputBody;",
+            'type: "web_search_call";',
+            'type: "context_compaction";',
+        ]:
+            assert snippet in response_item
+        for generated_name, snippets in {
+            "ContentItem": [
+                'type: "input_text"; text: string',
+                "detail?: ImageDetail",
+            ],
+            "FunctionCallOutputBody": [
+                "FunctionCallOutputContentItem[]",
+            ],
+            "FunctionCallOutputContentItem": [
+                'type: "input_image"; image_url: string',
+            ],
+            "LocalShellAction": [
+                'export type LocalShellAction = { type: "exec" } & LocalShellExecAction;',
+            ],
+            "LocalShellExecAction": [
+                "command: string[];",
+                "timeout_ms: bigint | null;",
+            ],
+            "LocalShellStatus": [
+                'export type LocalShellStatus =',
+                '| "in_progress"',
+            ],
+            "ReasoningItemContent": [
+                'type: "reasoning_text"; text: string',
+            ],
+            "ReasoningItemReasoningSummary": [
+                'type: "summary_text";',
+            ],
+            "ModeKind": [
+                'export type ModeKind = "plan" | "default";',
+            ],
+            "Resource": [
+                "uri: string;",
+                "annotations?: JsonValue;",
+            ],
+            "ResourceTemplate": [
+                "uriTemplate: string;",
+                "mimeType?: string;",
+            ],
+            "Settings": [
+                "model: string;",
+                "reasoning_effort: ReasoningEffort | null;",
+            ],
+            "Tool": [
+                "inputSchema: JsonValue;",
+                "icons?: JsonValue[];",
+            ],
+        }.items():
+            generated = (out_dir / f"{generated_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            for snippet in snippets:
+                assert snippet in generated
         raw_response_item_completed_notification = (
             out_dir / "v2" / "RawResponseItemCompletedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -24911,6 +25046,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ResourceContent } from "./ResourceContent";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export type { ServerRequest } from "./ServerRequest";' in index
+        for response_item_export in [
+            "ContentItem",
+            "FunctionCallOutputBody",
+            "FunctionCallOutputContentItem",
+            "LocalShellAction",
+            "LocalShellExecAction",
+            "LocalShellStatus",
+            "ModeKind",
+            "ReasoningItemContent",
+            "ReasoningItemReasoningSummary",
+            "Resource",
+            "ResourceTemplate",
+            "Settings",
+            "Tool",
+        ]:
+            assert (
+                f'export type {{ {response_item_export} }} from "./{response_item_export}";'
+                in index
+            )
         for server_request_export in [
             "ApplyPatchApprovalParams",
             "ApplyPatchApprovalResponse",
