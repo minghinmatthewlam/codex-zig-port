@@ -4752,6 +4752,86 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 sticky_effort_request = server.request_bodies[-1]
                 assert sticky_effort_request["reasoning"]["effort"] == "high"
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-reviewer",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalsReviewer": "robot",
+                            "input": [
+                                {"type": "text", "text": "invalid reviewer"},
+                            ],
+                        },
+                    },
+                )
+                invalid_reviewer = read_json_line(proc, 5)
+                assert invalid_reviewer["id"] == "turn-start-invalid-reviewer"
+                assert invalid_reviewer["error"]["code"] == -32602
+                assert (
+                    invalid_reviewer["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 8
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-guardian-reviewer",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalsReviewer": "guardian_subagent",
+                            "input": [
+                                {"type": "text", "text": "use guardian reviewer"},
+                            ],
+                        },
+                    },
+                )
+                reviewer_turn = read_json_line(proc, 5)
+                assert reviewer_turn["id"] == "turn-start-guardian-reviewer"
+                assert reviewer_turn["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+                assert server.request_paths == ["/responses"] * 9
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-reviewer",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_reviewer = read_json_line(proc, 5)
+                assert fork_after_reviewer["id"] == "thread-fork-after-reviewer"
+                assert (
+                    fork_after_reviewer["result"]["approvalsReviewer"]
+                    == "guardian_subagent"
+                )
+                assert_thread_started_notification(
+                    read_json_line(proc, 5), fork_after_reviewer["result"]["thread"]
+                )
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -20911,6 +20991,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "xhigh",
             None,
         ]
+        assert turn_start_params_schema["properties"]["approvalsReviewer"]["enum"] == [
+            "user",
+            "auto_review",
+            "guardian_subagent",
+            None,
+        ]
         turn_start_response_schema = json.loads(
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
@@ -22873,9 +22959,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { ReasoningEffort } from "../ReasoningEffort";' in (
             turn_start_params
         )
+        assert 'import type { ApprovalsReviewer } from "./ApprovalsReviewer";' in (
+            turn_start_params
+        )
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
         )
@@ -25609,6 +25699,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
