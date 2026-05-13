@@ -22433,17 +22433,125 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "configRequirements/read";' in client_request
         for generated_name, snippets in {
             "MarketplaceAddParams": ["source: string;", "sparsePaths?: string[] | null;"],
+            "MarketplaceAddResponse": [
+                'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
+                "installedRoot: AbsolutePathBuf;",
+                "alreadyAdded: boolean;",
+            ],
+            "MarketplaceInterface": ["displayName: string | null;"],
+            "MarketplaceLoadErrorInfo": [
+                "marketplacePath: AbsolutePathBuf;",
+                "message: string;",
+            ],
+            "MarketplaceRemoveResponse": [
+                "marketplaceName: string;",
+                "installedRoot: AbsolutePathBuf | null;",
+            ],
+            "MarketplaceUpgradeErrorInfo": [
+                "marketplaceName: string;",
+                "message: string;",
+            ],
+            "MarketplaceUpgradeResponse": [
+                'import type { MarketplaceUpgradeErrorInfo } from "./MarketplaceUpgradeErrorInfo";',
+                "selectedMarketplaces: string[];",
+                "errors: MarketplaceUpgradeErrorInfo[];",
+            ],
+            "PluginAuthPolicy": ['"ON_INSTALL" | "ON_USE"'],
+            "PluginAvailability": ['"AVAILABLE" | "DISABLED_BY_ADMIN"'],
+            "PluginHookSummary": [
+                'import type { HookEventName } from "./HookEventName";',
+                "eventName: HookEventName;",
+            ],
+            "PluginInstallPolicy": [
+                '"NOT_AVAILABLE"',
+                '"INSTALLED_BY_DEFAULT"',
+            ],
+            "PluginInstallResponse": [
+                'import type { AppSummary } from "./AppSummary";',
+                "authPolicy: PluginAuthPolicy;",
+                "appsNeedingAuth: AppSummary[];",
+            ],
+            "PluginInterface": [
+                "capabilities: string[];",
+                "composerIcon: AbsolutePathBuf | null;",
+                "screenshotUrls: string[];",
+            ],
             "PluginListParams": [
                 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
                 "marketplaceKinds?: PluginListMarketplaceKind[] | null;",
+            ],
+            "PluginSharePrincipal": [
+                'import type { PluginSharePrincipalType } from "./PluginSharePrincipalType";',
+                "principalId: string;",
+            ],
+            "PluginShareContext": [
+                'import type { PluginSharePrincipal } from "./PluginSharePrincipal";',
+                "remotePluginId: string;",
+                "shareTargets: PluginSharePrincipal[] | null;",
+            ],
+            "PluginSource": [
+                'type: "local"; path: AbsolutePathBuf',
+                'type: "git";',
+                'type: "remote"',
+            ],
+            "PluginSummary": [
+                'import type { PluginInstallPolicy } from "./PluginInstallPolicy";',
+                "shareContext: PluginShareContext | null;",
+                "availability: PluginAvailability;",
+            ],
+            "SkillSummary": [
+                'import type { SkillInterface } from "./SkillInterface";',
+                "shortDescription: string | null;",
+                "path: AbsolutePathBuf | null;",
+            ],
+            "PluginDetail": [
+                'import type { SkillSummary } from "./SkillSummary";',
+                "summary: PluginSummary;",
+                "mcpServers: string[];",
+            ],
+            "PluginMarketplaceEntry": [
+                'import type { MarketplaceInterface } from "./MarketplaceInterface";',
+                "plugins: PluginSummary[];",
+            ],
+            "PluginListResponse": [
+                'import type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";',
+                "marketplaces: PluginMarketplaceEntry[];",
+                "featuredPluginIds: string[];",
+            ],
+            "PluginReadResponse": [
+                'import type { PluginDetail } from "./PluginDetail";',
+                "plugin: PluginDetail;",
             ],
             "PluginShareSaveParams": [
                 "pluginPath: AbsolutePathBuf;",
                 "shareTargets?: PluginShareTarget[] | null;",
             ],
+            "PluginShareSaveResponse": [
+                "remotePluginId: string;",
+                "shareUrl: string;",
+            ],
+            "PluginShareListItem": [
+                'import type { PluginSummary } from "./PluginSummary";',
+                "localPluginPath: AbsolutePathBuf | null;",
+            ],
+            "PluginShareListResponse": [
+                'import type { PluginShareListItem } from "./PluginShareListItem";',
+                "data: PluginShareListItem[];",
+            ],
+            "PluginShareDeleteResponse": [
+                "export type PluginShareDeleteResponse = Record<string, never>;",
+            ],
+            "PluginShareUpdateTargetsResponse": [
+                'import type { PluginSharePrincipal } from "./PluginSharePrincipal";',
+                "principals: PluginSharePrincipal[];",
+            ],
+            "PluginSkillReadResponse": ["contents: string | null;"],
             "PluginInstallParams": [
                 "marketplacePath?: AbsolutePathBuf | null;",
                 "pluginName: string;",
+            ],
+            "PluginUninstallResponse": [
+                "export type PluginUninstallResponse = Record<string, never>;",
             ],
             "ConfigReadParams": ["includeLayers: boolean;", "cwd?: string | null;"],
             "AskForApproval": [
@@ -23318,6 +23426,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: SendAddCreditsNudgeEmailResponse;" in client_response
         assert 'method: "app/list";' in client_response
         assert "result: AppsListResponse;" in client_response
+        for method, response_type in [
+            ("marketplace/add", "MarketplaceAddResponse"),
+            ("marketplace/remove", "MarketplaceRemoveResponse"),
+            ("marketplace/upgrade", "MarketplaceUpgradeResponse"),
+            ("plugin/list", "PluginListResponse"),
+            ("plugin/read", "PluginReadResponse"),
+            ("plugin/skill/read", "PluginSkillReadResponse"),
+            ("plugin/share/save", "PluginShareSaveResponse"),
+            ("plugin/share/updateTargets", "PluginShareUpdateTargetsResponse"),
+            ("plugin/share/list", "PluginShareListResponse"),
+            ("plugin/share/delete", "PluginShareDeleteResponse"),
+            ("plugin/install", "PluginInstallResponse"),
+            ("plugin/uninstall", "PluginUninstallResponse"),
+        ]:
+            assert (
+                f'import type {{ {response_type} }} from "./v2/{response_type}";'
+                in client_response
+            )
+            assert f'method: "{method}";' in client_response
+            assert f"result: {response_type};" in client_response
         for method, response_type in [
             ("fs/readFile", "FsReadFileResponse"),
             ("fs/writeFile", "FsWriteFileResponse"),
@@ -24263,6 +24391,45 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "PermissionProfileFileSystemPermissions.ts"
         ).read_text(encoding="utf-8")
         assert "globScanMaxDepth?: number;" in permission_profile_file_system
+        additional_permission_profile = (
+            out_dir / "v2" / "AdditionalPermissionProfile.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPermissions";'
+            in additional_permission_profile
+        )
+        assert (
+            "network: AdditionalNetworkPermissions | null;"
+            in additional_permission_profile
+        )
+        active_permission_profile_modification = (
+            out_dir / "v2" / "ActivePermissionProfileModification.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "additionalWritableRoot";' in active_permission_profile_modification
+        assert "path: AbsolutePathBuf;" in active_permission_profile_modification
+        active_permission_profile = (
+            out_dir / "v2" / "ActivePermissionProfile.ts"
+        ).read_text(encoding="utf-8")
+        assert "id: string;" in active_permission_profile
+        assert "extends: string | null;" in active_permission_profile
+        assert "modifications: ActivePermissionProfileModification[];" in (
+            active_permission_profile
+        )
+        permission_profile_modification_params = (
+            out_dir / "v2" / "PermissionProfileModificationParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "additionalWritableRoot";' in (
+            permission_profile_modification_params
+        )
+        assert "path: AbsolutePathBuf;" in permission_profile_modification_params
+        permission_profile_selection_params = (
+            out_dir / "v2" / "PermissionProfileSelectionParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'type: "profile";' in permission_profile_selection_params
+        assert "id: string;" in permission_profile_selection_params
+        assert "modifications?: PermissionProfileModificationParams[] | null;" in (
+            permission_profile_selection_params
+        )
         filesystem_entry = (out_dir / "v2" / "FileSystemSandboxEntry.ts").read_text(
             encoding="utf-8"
         )
@@ -25505,24 +25672,52 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             )
         for client_request_export in [
             "MarketplaceAddParams",
+            "MarketplaceAddResponse",
+            "MarketplaceInterface",
+            "MarketplaceLoadErrorInfo",
             "MarketplaceRemoveParams",
+            "MarketplaceRemoveResponse",
             "MarketplaceUpgradeParams",
+            "MarketplaceUpgradeErrorInfo",
+            "MarketplaceUpgradeResponse",
+            "PluginAuthPolicy",
+            "PluginAvailability",
+            "PluginDetail",
+            "PluginHookSummary",
             "PluginInstallParams",
+            "PluginInstallPolicy",
+            "PluginInstallResponse",
+            "PluginInterface",
             "PluginListMarketplaceKind",
             "PluginListParams",
+            "PluginListResponse",
+            "PluginMarketplaceEntry",
             "PluginReadParams",
+            "PluginReadResponse",
             "PluginShareDeleteParams",
+            "PluginShareDeleteResponse",
+            "PluginShareContext",
             "PluginShareDiscoverability",
+            "PluginShareListItem",
             "PluginShareListParams",
+            "PluginShareListResponse",
+            "PluginSharePrincipal",
             "PluginSharePrincipalType",
             "PluginShareSaveParams",
+            "PluginShareSaveResponse",
             "PluginShareTarget",
             "PluginShareUpdateTargetsParams",
+            "PluginShareUpdateTargetsResponse",
             "PluginSkillReadParams",
+            "PluginSkillReadResponse",
+            "PluginSource",
+            "PluginSummary",
             "PluginUninstallParams",
+            "PluginUninstallResponse",
             "ReviewDelivery",
             "ReviewStartParams",
             "ReviewTarget",
+            "SkillSummary",
         ]:
             assert (
                 f'export type {{ {client_request_export} }} from "./{client_request_export}";'
@@ -26085,7 +26280,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 in v2_index
             )
         for auto_review_export in [
+            "ActivePermissionProfile",
+            "ActivePermissionProfileModification",
             "AdditionalFileSystemPermissions",
+            "AdditionalPermissionProfile",
             "AdditionalNetworkPermissions",
             "AutoReviewDecisionSource",
             "GuardianApprovalReview",
@@ -26097,6 +26295,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ItemGuardianApprovalReviewCompletedNotification",
             "ItemGuardianApprovalReviewStartedNotification",
             "NetworkApprovalProtocol",
+            "PermissionProfileModificationParams",
+            "PermissionProfileSelectionParams",
             "RequestPermissionProfile",
         ]:
             assert (
