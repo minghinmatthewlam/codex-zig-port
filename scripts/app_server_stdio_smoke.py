@@ -18428,6 +18428,132 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["type"]["const"]
             == "list_files"
         )
+        command_execution_approval_params = json.loads(
+            (out_dir / "CommandExecutionRequestApprovalParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert command_execution_approval_params["required"] == [
+            "itemId",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            command_execution_approval_params["properties"][
+                "networkApprovalContext"
+            ]["anyOf"][0]["$ref"]
+            == "#/$defs/NetworkApprovalContext"
+        )
+        assert (
+            command_execution_approval_params["properties"]["commandActions"][
+                "anyOf"
+            ][0]["items"]["$ref"]
+            == "#/$defs/CommandAction"
+        )
+        assert (
+            command_execution_approval_params["$defs"]["CommandAction"]["oneOf"][1][
+                "properties"
+            ]["type"]["const"]
+            == "listFiles"
+        )
+        file_change_approval_params = json.loads(
+            (out_dir / "FileChangeRequestApprovalParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert file_change_approval_params["required"] == [
+            "itemId",
+            "threadId",
+            "turnId",
+        ]
+        assert file_change_approval_params["properties"]["grantRoot"]["type"] == [
+            "string",
+            "null",
+        ]
+        tool_request_user_input_params = json.loads(
+            (out_dir / "ToolRequestUserInputParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert tool_request_user_input_params["required"] == [
+            "itemId",
+            "questions",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            tool_request_user_input_params["properties"]["questions"]["items"]["$ref"]
+            == "#/$defs/ToolRequestUserInputQuestion"
+        )
+        assert (
+            tool_request_user_input_params["$defs"]["ToolRequestUserInputQuestion"][
+                "properties"
+            ]["options"]["anyOf"][0]["items"]["$ref"]
+            == "#/$defs/ToolRequestUserInputOption"
+        )
+        mcp_elicitation_params = json.loads(
+            (out_dir / "McpServerElicitationRequestParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert mcp_elicitation_params["required"] == [
+            "serverName",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            mcp_elicitation_params["allOf"][1]["oneOf"][0]["properties"]["mode"][
+                "const"
+            ]
+            == "form"
+        )
+        assert (
+            mcp_elicitation_params["allOf"][1]["oneOf"][0]["properties"][
+                "requestedSchema"
+            ]["$ref"]
+            == "#/$defs/McpElicitationSchema"
+        )
+        assert (
+            mcp_elicitation_params["$defs"]["McpElicitationPrimitiveSchema"][
+                "oneOf"
+            ][0]["$ref"]
+            == "#/$defs/McpElicitationEnumSchema"
+        )
+        permissions_approval_params = json.loads(
+            (out_dir / "PermissionsRequestApprovalParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permissions_approval_params["required"] == [
+            "cwd",
+            "itemId",
+            "permissions",
+            "reason",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            permissions_approval_params["properties"]["permissions"]["$ref"]
+            == "#/$defs/RequestPermissionProfile"
+        )
+        assert (
+            permissions_approval_params["$defs"]["RequestPermissionProfile"][
+                "properties"
+            ]["network"]["anyOf"][0]["$ref"]
+            == "#/$defs/AdditionalNetworkPermissions"
+        )
+        dynamic_tool_call_params = json.loads(
+            (out_dir / "DynamicToolCallParams.json").read_text(encoding="utf-8")
+        )
+        assert dynamic_tool_call_params["required"] == [
+            "arguments",
+            "callId",
+            "namespace",
+            "threadId",
+            "tool",
+            "turnId",
+        ]
+        assert dynamic_tool_call_params["properties"]["arguments"] is True
         apply_patch_approval_response = json.loads(
             (out_dir / "ApplyPatchApprovalResponse.json").read_text(
                 encoding="utf-8"
@@ -18519,6 +18645,20 @@ def run_json_schema_smoke(binary: Path) -> None:
             permissions_approval_response["$defs"]["PermissionGrantScope"]["enum"]
             == ["turn", "session"]
         )
+        schema_bundle = json.loads(
+            (out_dir / "codex_app_server_protocol.schemas.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for bundled_def in [
+            "CommandExecutionRequestApprovalParams",
+            "FileChangeRequestApprovalParams",
+            "ToolRequestUserInputParams",
+            "McpServerElicitationRequestParams",
+            "PermissionsRequestApprovalParams",
+            "DynamicToolCallParams",
+        ]:
+            assert bundled_def in schema_bundle["$defs"]
         client_notification = json.loads(
             (out_dir / "ClientNotification.json").read_text(encoding="utf-8")
         )
@@ -22427,6 +22567,24 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 "namespace: string | null;",
                 "arguments: JsonValue;",
             ],
+            "DynamicToolCallOutputContentItem": [
+                'type: "inputText"; text: string',
+                'type: "inputImage"; imageUrl: string',
+            ],
+            "DynamicToolCallResponse": [
+                'import type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";',
+                "contentItems: DynamicToolCallOutputContentItem[];",
+                "success: boolean;",
+            ],
+            "DynamicToolCallStatus": [
+                '"inProgress"',
+                '"failed"',
+            ],
+            "DynamicToolSpec": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "inputSchema: JsonValue;",
+                "deferLoading?: boolean;",
+            ],
             "CommandAction": [
                 'type: "read"; command: string; name: string; path: AbsolutePathBuf',
                 'type: "search"; command: string; query: string | null',
@@ -22581,6 +22739,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ToolRequestUserInputResponse": [
                 'import type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";',
                 "answers: Record<string, ToolRequestUserInputAnswer | undefined>;",
+            ],
+            "McpAuthStatus": [
+                '"notLoggedIn"',
+                '"oAuth"',
+            ],
+            "McpServerRefreshResponse": [
+                "export type McpServerRefreshResponse = Record<string, never>;",
+            ],
+            "McpToolCallStatus": [
+                '"inProgress"',
+                '"failed"',
+            ],
+            "McpToolCallError": [
+                "message: string;",
+            ],
+            "McpToolCallResult": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "content: JsonValue[];",
+                "structuredContent: JsonValue | null;",
             ],
         }.items():
             generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
@@ -25272,6 +25449,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "CommandExecutionRequestApprovalParams",
             "CommandExecutionRequestApprovalResponse",
             "DynamicToolCallParams",
+            "DynamicToolCallOutputContentItem",
+            "DynamicToolCallResponse",
+            "DynamicToolCallStatus",
+            "DynamicToolSpec",
             "ExecPolicyAmendment",
             "FileChangeApprovalDecision",
             "FileChangeRequestApprovalParams",
@@ -25472,9 +25653,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in v2_index
         )
         for mcp_notification_export in [
+            "McpAuthStatus",
+            "McpServerRefreshResponse",
             "McpServerStartupState",
             "McpServerStatusUpdatedNotification",
+            "McpToolCallError",
             "McpToolCallProgressNotification",
+            "McpToolCallResult",
+            "McpToolCallStatus",
         ]:
             assert (
                 f'export type {{ {mcp_notification_export} }} from "./{mcp_notification_export}";'
