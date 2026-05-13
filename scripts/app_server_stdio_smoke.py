@@ -4578,6 +4578,94 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "/responses",
                 ]
 
+                server.response_payloads.append(
+                    b'data: {"type":"response.output_text.delta","delta":"compact summary"}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-compact-loaded",
+                        "method": "thread/compact/start",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                compact_loaded = read_json_line(proc, 5)
+                assert compact_loaded["id"] == "thread-compact-loaded"
+                assert compact_loaded["result"] == {}
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                compact_started = read_json_line(proc, 5)
+                assert compact_started["method"] == "turn/started"
+                assert compact_started["params"]["threadId"] == thread_id
+                compact_turn_id = compact_started["params"]["turn"]["id"]
+                assert compact_started["params"]["turn"]["status"] == "inProgress"
+                compact_item_started = read_json_line(proc, 5)
+                assert compact_item_started["method"] == "item/started"
+                assert compact_item_started["params"]["threadId"] == thread_id
+                assert compact_item_started["params"]["turnId"] == compact_turn_id
+                assert isinstance(compact_item_started["params"]["startedAtMs"], int)
+                context_item = compact_item_started["params"]["item"]
+                assert context_item["type"] == "contextCompaction"
+                assert context_item["id"].startswith("item-")
+                compact_item_completed = read_json_line(proc, 5)
+                assert compact_item_completed["method"] == "item/completed"
+                assert compact_item_completed["params"]["threadId"] == thread_id
+                assert compact_item_completed["params"]["turnId"] == compact_turn_id
+                assert isinstance(
+                    compact_item_completed["params"]["completedAtMs"], int
+                )
+                assert compact_item_completed["params"]["item"] == context_item
+                compact_completed = read_json_line(proc, 5)
+                assert compact_completed["method"] == "turn/completed"
+                assert compact_completed["params"]["threadId"] == thread_id
+                assert compact_completed["params"]["turn"]["id"] == compact_turn_id
+                assert compact_completed["params"]["turn"]["status"] == "completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+                assert server.request_paths == [
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                ]
+                compact_request = server.request_bodies[-1]
+                compact_text = compact_request["input"][-1]["content"][0]["text"]
+                assert compact_text.startswith("Summarize this conversation")
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-compact",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_compact = read_json_line(proc, 5)
+                assert read_after_compact["id"] == "thread-read-after-compact"
+                compacted_thread = read_after_compact["result"]["thread"]
+                assert compacted_thread["status"] == {"type": "idle"}
+                assert compacted_thread["preview"].startswith(
+                    "Compacted conversation summary:"
+                )
+                assert len(compacted_thread["turns"]) == 1
+                compacted_item = compacted_thread["turns"][0]["items"][0]
+                assert compacted_item["type"] == "userMessage"
+                assert (
+                    compacted_item["content"][0]["text"]
+                    == "Compacted conversation summary:\n\ncompact summary"
+                )
+                stored_after_compact = rollout_path.read_text(encoding="utf-8")
+                assert "Compacted conversation summary" in stored_after_compact
+                assert "compact summary" in stored_after_compact
+                assert "recover after provider failure" not in stored_after_compact
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
