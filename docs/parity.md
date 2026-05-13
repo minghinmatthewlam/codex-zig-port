@@ -84,7 +84,9 @@ warning/notice notification artifacts for `WarningNotification`,
 `ConfigWarningNotification` with `TextPosition` / `TextRange` helpers, plus
 `WindowsWorldWritableWarningNotification`, hook run summary artifacts, and
 `HookStartedNotification` / `HookCompletedNotification` server-notification
-artifacts, plus turn diff/plan update notification artifacts,
+artifacts, plus turn diff/plan update notification artifacts, item-stream plan,
+command-execution, and file-change notification artifacts, and model
+reroute/verification notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -129,6 +131,27 @@ exported through `v2/index.ts` and included in the top-level
 `ServerNotification` `"turn/diff/updated"` and `"turn/plan/updated"` union
 variants. Runtime emission for turn diff and plan update notifications remains
 planned.
+
+Additional app-server item-stream notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include `PlanDeltaNotification`,
+`CommandExecutionOutputDeltaNotification`, `TerminalInteractionNotification`,
+`FileChangeOutputDeltaNotification`, `PatchChangeKind`, `FileUpdateChange`, and
+`FileChangePatchUpdatedNotification`, exported through `v2/index.ts` and
+included in the top-level `ServerNotification` `"item/plan/delta"`,
+`"item/commandExecution/outputDelta"`,
+`"item/commandExecution/terminalInteraction"`,
+`"item/fileChange/outputDelta"`, and `"item/fileChange/patchUpdated"` union
+variants. Runtime emission for current item-stream notifications remains
+planned; the legacy file-change output-delta notification is generation-covered
+for source compatibility even though the Rust app server no longer emits it.
+
+Additional app-server model-notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
+`ModelReroutedNotification`, `ModelVerification`, and
+`ModelVerificationNotification`, exported through `v2/index.ts` and included in
+the top-level `ServerNotification` `"model/rerouted"` and
+`"model/verification"` union variants. Runtime emission for model reroute and
+verification notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
