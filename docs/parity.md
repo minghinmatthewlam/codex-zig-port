@@ -92,7 +92,8 @@ approval auto-review notification artifacts, and model reroute/verification
 notification artifacts, plus thread realtime notification artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
-app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
+app-list catalog artifacts, marketplace/plugin/config/review client-request
+TypeScript artifacts, plus experimental-feature list/enablement artifacts,
 memory-reset response
 artifacts, git-diff-to-remote and fuzzy-file-search JSON Schema artifacts,
 hooks-list artifacts, skills list/config artifacts, account
@@ -471,6 +472,16 @@ Additional app-server conversation-summary coverage: legacy `getConversationSumm
 Additional app-server fuzzy-file-search generation coverage: `fuzzyFileSearch`, `fuzzyFileSearch/sessionStart`, `fuzzyFileSearch/sessionUpdate`, `fuzzyFileSearch/sessionStop`, `fuzzyFileSearch/sessionUpdated`, and `fuzzyFileSearch/sessionCompleted` are included in current TypeScript and JSON schema generation with direct result files, session params/responses, match type/item shapes, and session notification payloads until broader legacy desktop utility RPC generation parity lands.
 
 Additional app-server MCP reload generation coverage: `config/mcpServer/reload` is included in current TypeScript and JSON schema generation with optional empty-object params and an empty Rust-shaped response object until broader MCP status protocol generation parity lands.
+
+Additional app-server ClientRequest TypeScript union coverage: generated
+TypeScript now includes the Rust-side `ClientRequest` methods for
+`marketplace/add`, `marketplace/remove`, `marketplace/upgrade`, `plugin/list`,
+`plugin/read`, `plugin/skill/read`, `plugin/share/save`,
+`plugin/share/updateTargets`, `plugin/share/list`, `plugin/share/delete`,
+`plugin/install`, `plugin/uninstall`, `review/start`, `config/read`,
+`config/value/write`, `config/batchWrite`, and `configRequirements/read`, plus
+their current param helper artifacts and `serde_json/JsonValue`. Standalone JSON
+Schema files for these newly typed request params remain planned.
 
 Additional app-server external-agent config coverage: `externalAgentConfig/detect`
 now validates `includeHome` and nullable/array `cwds` params, detects
