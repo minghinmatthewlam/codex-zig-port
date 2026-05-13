@@ -82,7 +82,9 @@ server-notification `"thread/closed"` variant, plus diagnostic
 warning/notice notification artifacts for `WarningNotification`,
 `GuardianWarningNotification`, `DeprecationNoticeNotification`, and
 `ConfigWarningNotification` with `TextPosition` / `TextRange` helpers, plus
-`WindowsWorldWritableWarningNotification`,
+`WindowsWorldWritableWarningNotification`, hook run summary artifacts, and
+`HookStartedNotification` / `HookCompletedNotification` server-notification
+artifacts,
 model-provider capabilities read artifacts, thread token-usage notification
 artifacts, collaboration-mode list artifacts, and model-list catalog artifacts,
 app-list catalog artifacts, plus experimental-feature list/enablement artifacts,
@@ -111,6 +113,14 @@ the top-level `ServerNotification` `"warning"`, `"guardianWarning"`,
 `"deprecationNotice"`, `"configWarning"`, and
 `"windows/worldWritableWarning"` union variants. Runtime emission for those
 warning and notice notifications remains planned.
+
+Additional app-server hook-notification generation coverage: generated
+TypeScript and JSON Schema artifacts now include `HookExecutionMode`,
+`HookOutputEntryKind`, `HookOutputEntry`, `HookRunStatus`, `HookScope`,
+`HookRunSummary`, `HookStartedNotification`, and `HookCompletedNotification`.
+They are exported through `v2/index.ts` and included in the top-level
+`ServerNotification` `"hook/started"` and `"hook/completed"` union variants.
+Runtime emission for hook lifecycle notifications remains planned.
 
 Additional app-server account generation coverage: `account/read`,
 `getAuthStatus`, `account/login/start`, `account/login/cancel`,
