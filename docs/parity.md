@@ -131,6 +131,9 @@ Config JSON Schema generation now includes the `v2/ConfigRead*`,
 `v2/ConfigBatchWriteParams`, and `v2/ConfigRequirementsReadResponse`
 artifacts, with opaque config values where full config-manager schema parity is
 still planned.
+Marketplace and plugin JSON Schema generation now includes the remaining
+`v2/Marketplace*` and `v2/Plugin*` request/response artifacts, including plugin
+list/read/install/share shapes and marketplace add/remove/upgrade shapes.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
