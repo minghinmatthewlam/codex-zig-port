@@ -18706,6 +18706,49 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert client_notification["oneOf"][0]["properties"]["method"]["const"] == (
             "initialized"
         )
+        client_request = json.loads(
+            (out_dir / "ClientRequest.json").read_text(encoding="utf-8")
+        )
+        assert client_request["title"] == "ClientRequest"
+        assert client_request["oneOf"][0]["properties"]["method"]["const"] == (
+            "initialize"
+        )
+        assert client_request["oneOf"][0]["properties"]["params"]["$ref"] == (
+            "v1/InitializeParams.json"
+        )
+        assert client_request["oneOf"][2]["properties"]["method"]["const"] == (
+            "thread/start"
+        )
+        server_request = json.loads(
+            (out_dir / "ServerRequest.json").read_text(encoding="utf-8")
+        )
+        assert server_request["title"] == "ServerRequest"
+        assert server_request["oneOf"][0]["properties"]["method"]["const"] == (
+            "item/tool/call"
+        )
+        assert server_request["oneOf"][0]["properties"]["params"]["$ref"] == (
+            "DynamicToolCallParams.json"
+        )
+        server_notification = json.loads(
+            (out_dir / "ServerNotification.json").read_text(encoding="utf-8")
+        )
+        assert server_notification["title"] == "ServerNotification"
+        assert server_notification["oneOf"][0]["properties"]["method"]["const"] == (
+            "error"
+        )
+        assert server_notification["oneOf"][1]["properties"]["params"]["$ref"] == (
+            "v2/ThreadStartedNotification.json"
+        )
+        dynamic_tool_call_response = json.loads(
+            (out_dir / "DynamicToolCallResponse.json").read_text(encoding="utf-8")
+        )
+        assert dynamic_tool_call_response["required"] == [
+            "contentItems",
+            "success",
+        ]
+        assert dynamic_tool_call_response["properties"]["contentItems"]["items"][
+            "oneOf"
+        ][0]["properties"]["type"]["const"] == "inputText"
 
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
         assert (out_dir / "v1" / "InitializeParams.json").read_text(
