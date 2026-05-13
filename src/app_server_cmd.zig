@@ -11313,6 +11313,705 @@ const APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const MARKETPLACE_ADD_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceAddParams",
+    \\  "type": "object",
+    \\  "required": ["source"],
+    \\  "properties": {
+    \\    "source": { "type": "string" },
+    \\    "refName": { "type": ["string", "null"] },
+    \\    "sparsePaths": { "type": ["array", "null"], "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MARKETPLACE_REMOVE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceRemoveParams",
+    \\  "type": "object",
+    \\  "required": ["marketplaceName"],
+    \\  "properties": {
+    \\    "marketplaceName": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MARKETPLACE_UPGRADE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceUpgradeParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "marketplaceName": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const MARKETPLACE_ADD_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceAddResponse",
+    \\  "type": "object",
+    \\  "required": ["marketplaceName", "installedRoot", "alreadyAdded"],
+    \\  "properties": {
+    \\    "marketplaceName": { "type": "string" },
+    \\    "installedRoot": { "type": "string" },
+    \\    "alreadyAdded": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MARKETPLACE_REMOVE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceRemoveResponse",
+    \\  "type": "object",
+    \\  "required": ["marketplaceName", "installedRoot"],
+    \\  "properties": {
+    \\    "marketplaceName": { "type": "string" },
+    \\    "installedRoot": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const MARKETPLACE_UPGRADE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "MarketplaceUpgradeResponse",
+    \\  "type": "object",
+    \\  "required": ["selectedMarketplaces", "upgradedRoots", "errors"],
+    \\  "properties": {
+    \\    "selectedMarketplaces": { "type": "array", "items": { "type": "string" } },
+    \\    "upgradedRoots": { "type": "array", "items": { "type": "string" } },
+    \\    "errors": { "type": "array", "items": { "$ref": "#/$defs/MarketplaceUpgradeErrorInfo" } }
+    \\  },
+    \\  "$defs": {
+    \\    "MarketplaceUpgradeErrorInfo": {
+    \\      "type": "object",
+    \\      "required": ["marketplaceName", "message"],
+    \\      "properties": {
+    \\        "marketplaceName": { "type": "string" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SCHEMA_COMMON_DEFS_JSON =
+    \\    "AbsolutePathBuf": { "type": "string" },
+    \\    "AppSummary": {
+    \\      "type": "object",
+    \\      "required": ["id", "name", "needsAuth"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "needsAuth": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "HookEventName": {
+    \\      "type": "string",
+    \\      "enum": [
+    \\        "preToolUse",
+    \\        "permissionRequest",
+    \\        "postToolUse",
+    \\        "preCompact",
+    \\        "postCompact",
+    \\        "sessionStart",
+    \\        "userPromptSubmit",
+    \\        "stop"
+    \\      ]
+    \\    },
+    \\    "MarketplaceInterface": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "displayName": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "MarketplaceLoadErrorInfo": {
+    \\      "type": "object",
+    \\      "required": ["marketplacePath", "message"],
+    \\      "properties": {
+    \\        "marketplacePath": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "message": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginAuthPolicy": { "type": "string", "enum": ["ON_INSTALL", "ON_USE"] },
+    \\    "PluginAvailability": { "type": "string", "enum": ["AVAILABLE", "DISABLED_BY_ADMIN"] },
+    \\    "PluginHookSummary": {
+    \\      "type": "object",
+    \\      "required": ["key", "eventName"],
+    \\      "properties": {
+    \\        "key": { "type": "string" },
+    \\        "eventName": { "$ref": "#/$defs/HookEventName" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginInstallPolicy": {
+    \\      "type": "string",
+    \\      "enum": ["NOT_AVAILABLE", "AVAILABLE", "INSTALLED_BY_DEFAULT"]
+    \\    },
+    \\    "PluginInterface": {
+    \\      "type": "object",
+    \\      "required": [
+    \\        "displayName",
+    \\        "shortDescription",
+    \\        "longDescription",
+    \\        "developerName",
+    \\        "category",
+    \\        "capabilities",
+    \\        "websiteUrl",
+    \\        "privacyPolicyUrl",
+    \\        "termsOfServiceUrl",
+    \\        "defaultPrompt",
+    \\        "brandColor",
+    \\        "composerIcon",
+    \\        "composerIconUrl",
+    \\        "logo",
+    \\        "logoUrl",
+    \\        "screenshots",
+    \\        "screenshotUrls"
+    \\      ],
+    \\      "properties": {
+    \\        "displayName": { "type": ["string", "null"] },
+    \\        "shortDescription": { "type": ["string", "null"] },
+    \\        "longDescription": { "type": ["string", "null"] },
+    \\        "developerName": { "type": ["string", "null"] },
+    \\        "category": { "type": ["string", "null"] },
+    \\        "capabilities": { "type": "array", "items": { "type": "string" } },
+    \\        "websiteUrl": { "type": ["string", "null"] },
+    \\        "privacyPolicyUrl": { "type": ["string", "null"] },
+    \\        "termsOfServiceUrl": { "type": ["string", "null"] },
+    \\        "defaultPrompt": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\        "brandColor": { "type": ["string", "null"] },
+    \\        "composerIcon": { "type": ["string", "null"] },
+    \\        "composerIconUrl": { "type": ["string", "null"] },
+    \\        "logo": { "type": ["string", "null"] },
+    \\        "logoUrl": { "type": ["string", "null"] },
+    \\        "screenshots": { "type": "array", "items": { "type": "string" } },
+    \\        "screenshotUrls": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginSharePrincipalType": { "type": "string", "enum": ["user", "group", "workspace"] },
+    \\    "PluginSharePrincipal": {
+    \\      "type": "object",
+    \\      "required": ["principalType", "principalId", "name"],
+    \\      "properties": {
+    \\        "principalType": { "$ref": "#/$defs/PluginSharePrincipalType" },
+    \\        "principalId": { "type": "string" },
+    \\        "name": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginShareContext": {
+    \\      "type": "object",
+    \\      "required": [
+    \\        "remotePluginId",
+    \\        "shareUrl",
+    \\        "creatorAccountUserId",
+    \\        "creatorName",
+    \\        "shareTargets"
+    \\      ],
+    \\      "properties": {
+    \\        "remotePluginId": { "type": "string" },
+    \\        "shareUrl": { "type": ["string", "null"] },
+    \\        "creatorAccountUserId": { "type": ["string", "null"] },
+    \\        "creatorName": { "type": ["string", "null"] },
+    \\        "shareTargets": {
+    \\          "anyOf": [
+    \\            { "type": "array", "items": { "$ref": "#/$defs/PluginSharePrincipal" } },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginShareTarget": {
+    \\      "type": "object",
+    \\      "required": ["principalType", "principalId"],
+    \\      "properties": {
+    \\        "principalType": { "$ref": "#/$defs/PluginSharePrincipalType" },
+    \\        "principalId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginSource": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "local" },
+    \\            "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "url", "path", "refName", "sha"],
+    \\          "properties": {
+    \\            "type": { "const": "git" },
+    \\            "url": { "type": "string" },
+    \\            "path": { "type": ["string", "null"] },
+    \\            "refName": { "type": ["string", "null"] },
+    \\            "sha": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": true
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "remote" } },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "PluginSummary": {
+    \\      "type": "object",
+    \\      "required": [
+    \\        "id",
+    \\        "name",
+    \\        "shareContext",
+    \\        "source",
+    \\        "installed",
+    \\        "enabled",
+    \\        "installPolicy",
+    \\        "authPolicy",
+    \\        "availability",
+    \\        "interface",
+    \\        "keywords"
+    \\      ],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "shareContext": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/PluginShareContext" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "source": { "$ref": "#/$defs/PluginSource" },
+    \\        "installed": { "type": "boolean" },
+    \\        "enabled": { "type": "boolean" },
+    \\        "installPolicy": { "$ref": "#/$defs/PluginInstallPolicy" },
+    \\        "authPolicy": { "$ref": "#/$defs/PluginAuthPolicy" },
+    \\        "availability": { "$ref": "#/$defs/PluginAvailability" },
+    \\        "interface": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/PluginInterface" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "keywords": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "SkillInterface": {
+    \\      "type": "object",
+    \\      "additionalProperties": true
+    \\    },
+    \\    "SkillSummary": {
+    \\      "type": "object",
+    \\      "required": ["name", "description", "shortDescription", "interface", "path", "enabled"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": "string" },
+    \\        "shortDescription": { "type": ["string", "null"] },
+    \\        "interface": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SkillInterface" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "path": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginDetail": {
+    \\      "type": "object",
+    \\      "required": ["marketplaceName", "summary", "skills", "hooks", "apps", "mcpServers"],
+    \\      "properties": {
+    \\        "marketplaceName": { "type": "string" },
+    \\        "marketplacePath": { "type": ["string", "null"] },
+    \\        "summary": { "$ref": "#/$defs/PluginSummary" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "skills": { "type": "array", "items": { "$ref": "#/$defs/SkillSummary" } },
+    \\        "hooks": { "type": "array", "items": { "$ref": "#/$defs/PluginHookSummary" } },
+    \\        "apps": { "type": "array", "items": { "$ref": "#/$defs/AppSummary" } },
+    \\        "mcpServers": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginMarketplaceEntry": {
+    \\      "type": "object",
+    \\      "required": ["name", "path", "interface", "plugins"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "path": { "type": ["string", "null"] },
+    \\        "interface": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/MarketplaceInterface" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "plugins": { "type": "array", "items": { "$ref": "#/$defs/PluginSummary" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PluginShareListItem": {
+    \\      "type": "object",
+    \\      "required": ["plugin", "shareUrl", "localPluginPath"],
+    \\      "properties": {
+    \\        "plugin": { "$ref": "#/$defs/PluginSummary" },
+    \\        "shareUrl": { "type": "string" },
+    \\        "localPluginPath": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\
+;
+
+const PLUGIN_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cwds": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\    "marketplaceKinds": {
+    \\      "type": ["array", "null"],
+    \\      "items": { "$ref": "#/$defs/PluginListMarketplaceKind" }
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "PluginListMarketplaceKind": {
+    \\      "type": "string",
+    \\      "enum": ["local", "workspace-directory", "shared-with-me"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginReadParams",
+    \\  "type": "object",
+    \\  "required": ["pluginName"],
+    \\  "properties": {
+    \\    "marketplacePath": { "type": ["string", "null"] },
+    \\    "remoteMarketplaceName": { "type": ["string", "null"] },
+    \\    "pluginName": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_SKILL_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginSkillReadParams",
+    \\  "type": "object",
+    \\  "required": ["remoteMarketplaceName", "remotePluginId", "skillName"],
+    \\  "properties": {
+    \\    "remoteMarketplaceName": { "type": "string" },
+    \\    "remotePluginId": { "type": "string" },
+    \\    "skillName": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_INSTALL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginInstallParams",
+    \\  "type": "object",
+    \\  "required": ["pluginName"],
+    \\  "properties": {
+    \\    "marketplacePath": { "type": ["string", "null"] },
+    \\    "remoteMarketplaceName": { "type": ["string", "null"] },
+    \\    "pluginName": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_UNINSTALL_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginUninstallParams",
+    \\  "type": "object",
+    \\  "required": ["pluginId"],
+    \\  "properties": {
+    \\    "pluginId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_SAVE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareSaveParams",
+    \\  "type": "object",
+    \\  "required": ["pluginPath"],
+    \\  "properties": {
+    \\    "pluginPath": { "type": "string" },
+    \\    "remotePluginId": { "type": ["string", "null"] },
+    \\    "discoverability": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/PluginShareDiscoverability" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "shareTargets": {
+    \\      "anyOf": [
+    \\        { "type": "array", "items": { "$ref": "#/$defs/PluginShareTarget" } },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "PluginShareDiscoverability": { "type": "string", "enum": ["LISTED", "UNLISTED", "PRIVATE"] },
+    \\    "PluginSharePrincipalType": { "type": "string", "enum": ["user", "group", "workspace"] },
+    \\    "PluginShareTarget": {
+    \\      "type": "object",
+    \\      "required": ["principalType", "principalId"],
+    \\      "properties": {
+    \\        "principalType": { "$ref": "#/$defs/PluginSharePrincipalType" },
+    \\        "principalId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_UPDATE_TARGETS_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareUpdateTargetsParams",
+    \\  "type": "object",
+    \\  "required": ["remotePluginId", "shareTargets"],
+    \\  "properties": {
+    \\    "remotePluginId": { "type": "string" },
+    \\    "shareTargets": { "type": "array", "items": { "$ref": "#/$defs/PluginShareTarget" } }
+    \\  },
+    \\  "$defs": {
+    \\    "PluginSharePrincipalType": { "type": "string", "enum": ["user", "group", "workspace"] },
+    \\    "PluginShareTarget": {
+    \\      "type": "object",
+    \\      "required": ["principalType", "principalId"],
+    \\      "properties": {
+    \\        "principalType": { "$ref": "#/$defs/PluginSharePrincipalType" },
+    \\        "principalId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareListParams",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_DELETE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareDeleteParams",
+    \\  "type": "object",
+    \\  "required": ["remotePluginId"],
+    \\  "properties": {
+    \\    "remotePluginId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PLUGIN_INSTALL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginInstallResponse",
+    \\  "type": "object",
+    \\  "required": ["authPolicy", "appsNeedingAuth"],
+    \\  "properties": {
+    \\    "authPolicy": { "$ref": "#/$defs/PluginAuthPolicy" },
+    \\    "appsNeedingAuth": { "type": "array", "items": { "$ref": "#/$defs/AppSummary" } }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginListResponse",
+    \\  "type": "object",
+    \\  "required": ["marketplaces", "marketplaceLoadErrors", "featuredPluginIds"],
+    \\  "properties": {
+    \\    "marketplaces": { "type": "array", "items": { "$ref": "#/$defs/PluginMarketplaceEntry" } },
+    \\    "marketplaceLoadErrors": { "type": "array", "items": { "$ref": "#/$defs/MarketplaceLoadErrorInfo" } },
+    \\    "featuredPluginIds": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginReadResponse",
+    \\  "type": "object",
+    \\  "required": ["plugin"],
+    \\  "properties": {
+    \\    "plugin": { "$ref": "#/$defs/PluginDetail" }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SKILL_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginSkillReadResponse",
+    \\  "type": "object",
+    \\  "required": ["contents"],
+    \\  "properties": {
+    \\    "contents": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_SAVE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareSaveResponse",
+    \\  "type": "object",
+    \\  "required": ["remotePluginId", "shareUrl"],
+    \\  "properties": {
+    \\    "remotePluginId": { "type": "string" },
+    \\    "shareUrl": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_UPDATE_TARGETS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareUpdateTargetsResponse",
+    \\  "type": "object",
+    \\  "required": ["principals"],
+    \\  "properties": {
+    \\    "principals": { "type": "array", "items": { "$ref": "#/$defs/PluginSharePrincipal" } }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareListResponse",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/PluginShareListItem" } }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_DELETE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareDeleteResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_UNINSTALL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginUninstallResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22418,6 +23117,30 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "AppsListParams.json", .contents = APPS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "AppsListResponse.json", .contents = APPS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "AppListUpdatedNotification.json", .contents = APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceAddParams.json", .contents = MARKETPLACE_ADD_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceAddResponse.json", .contents = MARKETPLACE_ADD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceRemoveParams.json", .contents = MARKETPLACE_REMOVE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceRemoveResponse.json", .contents = MARKETPLACE_REMOVE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceUpgradeParams.json", .contents = MARKETPLACE_UPGRADE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/MarketplaceUpgradeResponse.json", .contents = MARKETPLACE_UPGRADE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginInstallParams.json", .contents = PLUGIN_INSTALL_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginInstallResponse.json", .contents = PLUGIN_INSTALL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginListParams.json", .contents = PLUGIN_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginListResponse.json", .contents = PLUGIN_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginReadParams.json", .contents = PLUGIN_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginReadResponse.json", .contents = PLUGIN_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginSkillReadParams.json", .contents = PLUGIN_SKILL_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginSkillReadResponse.json", .contents = PLUGIN_SKILL_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareSaveParams.json", .contents = PLUGIN_SHARE_SAVE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareSaveResponse.json", .contents = PLUGIN_SHARE_SAVE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareUpdateTargetsParams.json", .contents = PLUGIN_SHARE_UPDATE_TARGETS_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareUpdateTargetsResponse.json", .contents = PLUGIN_SHARE_UPDATE_TARGETS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareListParams.json", .contents = PLUGIN_SHARE_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareListResponse.json", .contents = PLUGIN_SHARE_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareDeleteParams.json", .contents = PLUGIN_SHARE_DELETE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareDeleteResponse.json", .contents = PLUGIN_SHARE_DELETE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginUninstallParams.json", .contents = PLUGIN_UNINSTALL_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginUninstallResponse.json", .contents = PLUGIN_UNINSTALL_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlConnectionStatus.json", .contents = REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA },
     .{ .name = "RemoteControlStatusChangedNotification.json", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
