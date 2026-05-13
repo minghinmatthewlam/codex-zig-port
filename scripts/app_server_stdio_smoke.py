@@ -19439,6 +19439,115 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert mcp_reload_response["additionalProperties"] is False
+        config_read_params = json.loads(
+            (out_dir / "v2" / "ConfigReadParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_read_params["required"] == ["includeLayers"]
+        assert config_read_params["properties"]["includeLayers"]["type"] == "boolean"
+        assert config_read_params["properties"]["cwd"]["type"] == ["string", "null"]
+        config_read_response = json.loads(
+            (out_dir / "v2" / "ConfigReadResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_read_response["required"] == ["config", "origins", "layers"]
+        assert config_read_response["properties"]["config"]["$ref"] == (
+            "#/$defs/Config"
+        )
+        assert (
+            config_read_response["properties"]["origins"]["additionalProperties"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/ConfigLayerMetadata"
+        )
+        assert (
+            config_read_response["properties"]["layers"]["anyOf"][0]["items"][
+                "$ref"
+            ]
+            == "#/$defs/ConfigLayer"
+        )
+        assert (
+            config_read_response["$defs"]["ConfigLayerSource"]["oneOf"][3][
+                "properties"
+            ]["type"]["const"]
+            == "project"
+        )
+        config_requirements_response = json.loads(
+            (
+                out_dir / "v2" / "ConfigRequirementsReadResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert config_requirements_response["required"] == ["requirements"]
+        assert (
+            config_requirements_response["properties"]["requirements"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/ConfigRequirements"
+        )
+        assert (
+            config_requirements_response["$defs"]["ConfigRequirements"]["properties"][
+                "allowedSandboxModes"
+            ]["anyOf"][0]["items"]["$ref"]
+            == "#/$defs/SandboxMode"
+        )
+        assert config_requirements_response["$defs"]["ResidencyRequirement"][
+            "enum"
+        ] == ["us"]
+        config_value_write_params = json.loads(
+            (out_dir / "v2" / "ConfigValueWriteParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_value_write_params["required"] == [
+            "keyPath",
+            "value",
+            "mergeStrategy",
+        ]
+        assert config_value_write_params["properties"]["value"] is True
+        assert config_value_write_params["$defs"]["MergeStrategy"]["enum"] == [
+            "replace",
+            "upsert",
+        ]
+        config_batch_write_params = json.loads(
+            (out_dir / "v2" / "ConfigBatchWriteParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_batch_write_params["required"] == ["edits"]
+        assert (
+            config_batch_write_params["properties"]["edits"]["items"]["$ref"]
+            == "#/$defs/ConfigEdit"
+        )
+        assert (
+            config_batch_write_params["$defs"]["ConfigEdit"]["properties"]["value"]
+            is True
+        )
+        config_write_response = json.loads(
+            (out_dir / "v2" / "ConfigWriteResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config_write_response["required"] == [
+            "status",
+            "version",
+            "filePath",
+            "overriddenMetadata",
+        ]
+        assert config_write_response["properties"]["status"]["$ref"] == (
+            "#/$defs/WriteStatus"
+        )
+        assert (
+            config_write_response["properties"]["overriddenMetadata"]["anyOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/OverriddenMetadata"
+        )
+        assert config_write_response["$defs"]["WriteStatus"]["enum"] == [
+            "ok",
+            "okOverridden",
+        ]
         mcp_oauth_params = json.loads(
             (out_dir / "McpServerOauthLoginParams.json").read_text(
                 encoding="utf-8"
