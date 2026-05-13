@@ -20048,6 +20048,20 @@ def run_json_schema_smoke(binary: Path) -> None:
             "turnId",
             "completedAtMs",
         ]
+        raw_response_item_completed_notification_schema = json.loads(
+            (out_dir / "RawResponseItemCompletedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert raw_response_item_completed_notification_schema["required"] == [
+            "item",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            raw_response_item_completed_notification_schema["properties"]["item"]
+            is True
+        )
         agent_message_delta_notification_schema = json.loads(
             (out_dir / "AgentMessageDeltaNotification.json").read_text(encoding="utf-8")
         )
@@ -21511,6 +21525,13 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
+        assert "RawResponseItemCompletedNotification" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["RawResponseItemCompletedNotification"]["properties"][
+                "item"
+            ]
+            is True
+        )
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
         for item_stream_def in [
             "PlanDeltaNotification",
@@ -22036,6 +22057,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "FileChangeOutputDeltaNotification",
             "FileChangePatchUpdatedNotification",
             "PlanDeltaNotification",
+            "RawResponseItemCompletedNotification",
             "TerminalInteractionNotification",
         ]:
             assert (
@@ -22228,6 +22250,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
         assert "params: ItemCompletedNotification;" in server_notification
+        assert 'method: "rawResponseItem/completed";' in server_notification
+        assert "params: RawResponseItemCompletedNotification;" in server_notification
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
         for method, params_type in [
@@ -23781,6 +23805,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in item_completed_notification
         assert "turnId: string;" in item_completed_notification
         assert "completedAtMs: number;" in item_completed_notification
+        response_item = (out_dir / "ResponseItem.ts").read_text(encoding="utf-8")
+        assert "export type ResponseItem = unknown;" in response_item
+        raw_response_item_completed_notification = (
+            out_dir / "v2" / "RawResponseItemCompletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ResponseItem } from "../ResponseItem";'
+            in raw_response_item_completed_notification
+        )
+        assert (
+            "export type RawResponseItemCompletedNotification"
+            in raw_response_item_completed_notification
+        )
+        assert "threadId: string;" in raw_response_item_completed_notification
+        assert "turnId: string;" in raw_response_item_completed_notification
+        assert "item: ResponseItem;" in raw_response_item_completed_notification
         agent_message_delta_notification = (
             out_dir / "v2" / "AgentMessageDeltaNotification.ts"
         ).read_text(encoding="utf-8")
@@ -24356,6 +24396,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { RealtimeOutputModality } from "./RealtimeOutputModality";' in index
         assert 'export type { RealtimeVoice } from "./RealtimeVoice";' in index
         assert 'export type { RealtimeVoicesList } from "./RealtimeVoicesList";' in index
+        assert 'export type { ResponseItem } from "./ResponseItem";' in index
         assert 'export type { ResourceContent } from "./ResourceContent";' in index
         assert 'export type { ServerNotification } from "./ServerNotification";' in index
         assert 'export type { SessionSource } from "./SessionSource";' in index
@@ -24840,6 +24881,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ItemCompletedNotification } from "./ItemCompletedNotification";'
+            in v2_index
+        )
+        assert (
+            'export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";'
             in v2_index
         )
         assert (
