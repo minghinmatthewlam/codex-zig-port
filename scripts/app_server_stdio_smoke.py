@@ -18763,9 +18763,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         account_response = json.loads(
             (out_dir / "GetAccountResponse.json").read_text(encoding="utf-8")
         )
-        assert (out_dir / "v2" / "GetAccountResponse.json").read_text(
-            encoding="utf-8"
-        ) == (out_dir / "GetAccountResponse.json").read_text(encoding="utf-8")
+        account_response_v2 = json.loads(
+            (out_dir / "v2" / "GetAccountResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert account_response_v2["properties"]["account"]["anyOf"][0]["$ref"] == (
+            "../Account.json"
+        )
         assert account_response["required"] == ["account", "requiresOpenaiAuth"]
         assert account_response["properties"]["account"]["anyOf"][0]["$ref"] == (
             "Account.json"

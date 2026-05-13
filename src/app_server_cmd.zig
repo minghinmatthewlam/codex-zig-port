@@ -22849,7 +22849,9 @@ fn writeVersionedJsonSchemaAliases(allocator: std.mem.Allocator, out_dir: []cons
     for (APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES) |versioned_name| {
         const basename = std.fs.path.basename(versioned_name);
         const source = findSchemaFile(&APP_SERVER_JSON_SCHEMA_FILES, basename) orelse return error.MissingAppServerJsonSchemaAliasSource;
-        const files = [_]SchemaFile{.{ .name = versioned_name, .contents = source.contents }};
+        const rewritten = try rewriteVersionedJsonSchemaRefs(allocator, source.contents);
+        defer allocator.free(rewritten);
+        const files = [_]SchemaFile{.{ .name = versioned_name, .contents = rewritten }};
         try writeSchemaFiles(allocator, out_dir, &files);
     }
 }
@@ -22859,6 +22861,37 @@ fn findSchemaFile(files: []const SchemaFile, name: []const u8) ?SchemaFile {
         if (std.mem.eql(u8, file.name, name)) return file;
     }
     return null;
+}
+
+fn rewriteVersionedJsonSchemaRefs(allocator: std.mem.Allocator, contents: []const u8) ![]const u8 {
+    const ref_prefix = "\"$ref\": \"";
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, contents, index, ref_prefix)) |pos| {
+        const value_start = pos + ref_prefix.len;
+        const value_end = std.mem.indexOfScalarPos(u8, contents, value_start, '"') orelse return error.InvalidJsonSchemaRef;
+        const value = contents[value_start..value_end];
+        try out.appendSlice(allocator, contents[index..value_start]);
+        if (shouldPrefixVersionedJsonSchemaRef(value)) {
+            try out.appendSlice(allocator, "../");
+        }
+        try out.appendSlice(allocator, value);
+        index = value_end;
+    }
+
+    try out.appendSlice(allocator, contents[index..]);
+    return out.toOwnedSlice(allocator);
+}
+
+fn shouldPrefixVersionedJsonSchemaRef(value: []const u8) bool {
+    if (value.len == 0) return false;
+    if (value[0] == '#') return false;
+    if (std.mem.startsWith(u8, value, "../")) return false;
+    if (std.mem.startsWith(u8, value, "http://")) return false;
+    if (std.mem.startsWith(u8, value, "https://")) return false;
+    return true;
 }
 
 fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
