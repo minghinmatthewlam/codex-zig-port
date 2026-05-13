@@ -18473,6 +18473,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert proc.returncode == 0, proc.stderr
 
+        generated_schema_files = sorted(out_dir.rglob("*.json"))
+        assert generated_schema_files
+        for schema_file in generated_schema_files:
+            json.loads(schema_file.read_text(encoding="utf-8"))
+
         request_id = json.loads((out_dir / "RequestId.json").read_text(encoding="utf-8"))
         assert request_id["title"] == "RequestId"
         assert request_id["oneOf"][0]["type"] == "string"
