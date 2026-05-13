@@ -3243,6 +3243,81 @@ def exercise_json_rpc(write_line, read_line) -> None:
         in thread_realtime_append_audio_missing["error"]["message"]
     )
 
+    with tempfile.TemporaryDirectory(prefix="codex-zig-thread-shell-", dir="/tmp") as shell_cwd:
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-shell-start",
+                "method": "thread/start",
+                "params": {
+                    "cwd": shell_cwd,
+                    "model": "gpt-test",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "approvalsReviewer": "user",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            }
+        )
+        thread_shell_start = read_line()
+        assert thread_shell_start["id"] == "thread-shell-start"
+        shell_thread = thread_shell_start["result"]["thread"]
+        shell_thread_id = shell_thread["id"]
+        assert_thread_started_notification(read_line(), shell_thread)
+
+        shell_output_path = Path(shell_cwd) / "shell-command-output.txt"
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-shell-loaded",
+                "method": "thread/shellCommand",
+                "params": {
+                    "threadId": shell_thread_id,
+                    "command": (
+                        "printf shell-file > shell-command-output.txt; "
+                        "printf shell-out; printf shell-err >&2"
+                    ),
+                },
+            }
+        )
+        thread_shell_loaded = read_line()
+        assert thread_shell_loaded["id"] == "thread-shell-loaded"
+        assert thread_shell_loaded["result"] == {}
+        assert shell_output_path.read_text(encoding="utf-8") == "shell-file"
+        shell_status_active = read_line()
+        assert shell_status_active["method"] == "thread/status/changed"
+        assert shell_status_active["params"]["threadId"] == shell_thread_id
+        assert shell_status_active["params"]["status"] == {
+            "type": "active",
+            "activeFlags": [],
+        }
+        shell_turn_started = read_line()
+        assert shell_turn_started["method"] == "turn/started"
+        assert shell_turn_started["params"]["threadId"] == shell_thread_id
+        shell_turn_id = shell_turn_started["params"]["turn"]["id"]
+        shell_item_started = read_line()
+        assert shell_item_started["method"] == "item/started"
+        shell_item = shell_item_started["params"]["item"]
+        assert shell_item["type"] == "userMessage"
+        shell_record = shell_item["content"][0]["text"]
+        assert "<user_shell_command>" in shell_record
+        assert "printf shell-file > shell-command-output.txt" in shell_record
+        assert "Exit code: 0" in shell_record
+        assert "shell-out" in shell_record
+        assert "shell-err" in shell_record
+        shell_item_completed = read_line()
+        assert shell_item_completed["method"] == "item/completed"
+        assert shell_item_completed["params"]["item"] == shell_item
+        shell_turn_completed = read_line()
+        assert shell_turn_completed["method"] == "turn/completed"
+        assert shell_turn_completed["params"]["turn"]["id"] == shell_turn_id
+        assert shell_turn_completed["params"]["turn"]["status"] == "completed"
+        shell_status_idle = read_line()
+        assert shell_status_idle["method"] == "thread/status/changed"
+        assert shell_status_idle["params"]["threadId"] == shell_thread_id
+        assert shell_status_idle["params"]["status"] == {"type": "idle"}
+
 
 def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
     proc = subprocess.Popen(
