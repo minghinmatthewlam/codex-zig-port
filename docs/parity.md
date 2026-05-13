@@ -155,9 +155,10 @@ generated TypeScript and JSON Schema artifacts now include
 `RawResponseItemCompletedNotification`, exported through `v2/index.ts` and
 included in the top-level `ServerNotification`
 `"rawResponseItem/completed"` union variant. The generated TypeScript surface
-also includes an opaque top-level `ResponseItem` alias so the notification type
-can match the Rust protocol import boundary. Runtime emission and full raw
-response-item schema parity remain planned.
+also includes the top-level `ResponseItem` union and helper artifacts for
+content items, function-call outputs, local shell calls, reasoning items,
+resources, settings, and tools. Runtime emission and JSON Schema parity for the
+full raw response-item graph remain planned.
 
 Additional app-server model-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
@@ -198,7 +199,9 @@ artifacts now include the top-level `ServerRequest` union for
 artifacts cover legacy patch and exec approval params, command/file/permission
 approval request params, dynamic tool-call params, request-user-input question
 and option params, network approval/policy helpers, and the MCP elicitation
-request envelope. JSON Schema parity and runtime handling for these request
+request envelope. JSON Schema generation now includes the legacy
+`ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files. JSON
+Schema parity for the v2 request params and runtime handling for these request
 surfaces remain planned.
 
 Additional app-server server-request response generation coverage: generated
@@ -207,7 +210,7 @@ TypeScript and JSON Schema artifacts now include legacy
 root network policy helper types, and v2 response helpers for command-execution
 approvals, file-change approvals, request-user-input answers, permissions
 approvals, and MCP elicitations. JSON Schema parity for the related request
-params remains planned.
+params remains planned except for legacy patch and exec approval params.
 
 Additional app-server MCP elicitation schema generation coverage: generated
 TypeScript artifacts now include the full v2 `McpElicitation*` primitive helper
