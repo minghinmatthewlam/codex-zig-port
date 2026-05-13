@@ -9307,6 +9307,58 @@ const CLIENT_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const CLIENT_REQUEST_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ClientRequest",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "initialize" },
+    \\        "params": { "$ref": "v1/InitializeParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": { "method": { "const": "memory/reset" } },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/start" },
+    \\        "params": { "$ref": "v2/ThreadStartParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "command/exec" },
+    \\        "params": { "$ref": "v2/CommandExecParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "type": "string" },
+    \\        "params": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
 const JSONRPC_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9349,6 +9401,102 @@ const JSONRPC_ERROR_JSON_SCHEMA =
     \\    "error": { "$ref": "JSONRPCErrorError.json" }
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const SERVER_REQUEST_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ServerRequest",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["id", "method", "params"],
+    \\      "properties": {
+    \\        "id": { "$ref": "RequestId.json" },
+    \\        "method": { "const": "item/tool/call" },
+    \\        "params": { "$ref": "DynamicToolCallParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["id", "method", "params"],
+    \\      "properties": {
+    \\        "id": { "$ref": "RequestId.json" },
+    \\        "method": { "const": "applyPatchApproval" },
+    \\        "params": { "$ref": "ApplyPatchApprovalParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["id", "method", "params"],
+    \\      "properties": {
+    \\        "id": { "$ref": "RequestId.json" },
+    \\        "method": { "const": "execCommandApproval" },
+    \\        "params": { "$ref": "ExecCommandApprovalParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["id", "method"],
+    \\      "properties": {
+    \\        "id": { "$ref": "RequestId.json" },
+    \\        "method": { "type": "string" },
+    \\        "params": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const SERVER_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ServerNotification",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "error" },
+    \\        "params": { "$ref": "v2/ErrorNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/started" },
+    \\        "params": { "$ref": "v2/ThreadStartedNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "turn/completed" },
+    \\        "params": { "$ref": "v2/TurnCompletedNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "type": "string" },
+    \\        "params": true
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
     \\}
     \\
 ;
@@ -10198,6 +10346,45 @@ const DYNAMIC_TOOL_CALL_PARAMS_JSON_SCHEMA =
     \\    "arguments": true
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const DYNAMIC_TOOL_CALL_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "DynamicToolCallResponse",
+    \\  "type": "object",
+    \\  "required": ["contentItems", "success"],
+    \\  "properties": {
+    \\    "contentItems": {
+    \\      "type": "array",
+    \\      "items": {
+    \\        "oneOf": [
+    \\          {
+    \\            "type": "object",
+    \\            "required": ["type", "text"],
+    \\            "properties": {
+    \\              "type": { "const": "inputText" },
+    \\              "text": { "type": "string" }
+    \\            },
+    \\            "additionalProperties": false
+    \\          },
+    \\          {
+    \\            "type": "object",
+    \\            "required": ["type", "imageUrl"],
+    \\            "properties": {
+    \\              "type": { "const": "inputImage" },
+    \\              "imageUrl": { "type": "string" }
+    \\            },
+    \\            "additionalProperties": false
+    \\          }
+    \\        ]
+    \\      }
+    \\    },
+    \\    "success": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -21682,9 +21869,12 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "JSONRPCRequest.json", .contents = JSONRPC_REQUEST_JSON_SCHEMA },
     .{ .name = "JSONRPCNotification.json", .contents = JSONRPC_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ClientNotification.json", .contents = CLIENT_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ClientRequest.json", .contents = CLIENT_REQUEST_JSON_SCHEMA },
     .{ .name = "JSONRPCResponse.json", .contents = JSONRPC_RESPONSE_JSON_SCHEMA },
     .{ .name = "JSONRPCError.json", .contents = JSONRPC_ERROR_JSON_SCHEMA },
     .{ .name = "JSONRPCErrorError.json", .contents = JSONRPC_ERROR_ERROR_JSON_SCHEMA },
+    .{ .name = "ServerRequest.json", .contents = SERVER_REQUEST_JSON_SCHEMA },
+    .{ .name = "ServerNotification.json", .contents = SERVER_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ServerRequestResolvedNotification.json", .contents = SERVER_REQUEST_RESOLVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ApplyPatchApprovalParams.json", .contents = APPLY_PATCH_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "ApplyPatchApprovalResponse.json", .contents = APPLY_PATCH_APPROVAL_RESPONSE_JSON_SCHEMA },
@@ -21701,6 +21891,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "PermissionsRequestApprovalParams.json", .contents = PERMISSIONS_REQUEST_APPROVAL_PARAMS_JSON_SCHEMA },
     .{ .name = "PermissionsRequestApprovalResponse.json", .contents = PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA },
     .{ .name = "DynamicToolCallParams.json", .contents = DYNAMIC_TOOL_CALL_PARAMS_JSON_SCHEMA },
+    .{ .name = "DynamicToolCallResponse.json", .contents = DYNAMIC_TOOL_CALL_RESPONSE_JSON_SCHEMA },
     .{ .name = "InitializeParams.json", .contents = INITIALIZE_PARAMS_JSON_SCHEMA },
     .{ .name = "InitializeResponse.json", .contents = INITIALIZE_RESPONSE_JSON_SCHEMA },
     .{ .name = "AuthMode.json", .contents = AUTH_MODE_JSON_SCHEMA },
