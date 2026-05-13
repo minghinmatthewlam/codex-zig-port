@@ -21832,6 +21832,28 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";'
             in client_request
         )
+        for import_name in [
+            "ConfigBatchWriteParams",
+            "ConfigReadParams",
+            "ConfigValueWriteParams",
+            "MarketplaceAddParams",
+            "MarketplaceRemoveParams",
+            "MarketplaceUpgradeParams",
+            "PluginInstallParams",
+            "PluginListParams",
+            "PluginReadParams",
+            "PluginShareDeleteParams",
+            "PluginShareListParams",
+            "PluginShareSaveParams",
+            "PluginShareUpdateTargetsParams",
+            "PluginSkillReadParams",
+            "PluginUninstallParams",
+            "ReviewStartParams",
+        ]:
+            assert (
+                f'import type {{ {import_name} }} from "./v2/{import_name}";'
+                in client_request
+            )
         assert (
             'import type { FeedbackUploadParams } from "./v2/FeedbackUploadParams";'
             in client_request
@@ -21875,6 +21897,22 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: SkillsListParams | null;" in client_request
         assert 'method: "skills/config/write";' in client_request
         assert "params: SkillsConfigWriteParams;" in client_request
+        for method, params_type in [
+            ("marketplace/add", "MarketplaceAddParams"),
+            ("marketplace/remove", "MarketplaceRemoveParams"),
+            ("marketplace/upgrade", "MarketplaceUpgradeParams"),
+            ("plugin/list", "PluginListParams"),
+            ("plugin/read", "PluginReadParams"),
+            ("plugin/skill/read", "PluginSkillReadParams"),
+            ("plugin/share/save", "PluginShareSaveParams"),
+            ("plugin/share/updateTargets", "PluginShareUpdateTargetsParams"),
+            ("plugin/share/list", "PluginShareListParams"),
+            ("plugin/share/delete", "PluginShareDeleteParams"),
+            ("plugin/install", "PluginInstallParams"),
+            ("plugin/uninstall", "PluginUninstallParams"),
+        ]:
+            assert f'method: "{method}";' in client_request
+            assert f"params: {params_type};" in client_request
         assert 'method: "account/read";' in client_request
         assert "params?: GetAccountParams | null;" in client_request
         assert 'method: "getAuthStatus";' in client_request
@@ -21959,6 +21997,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: TurnSteerParams;" in client_request
         assert 'method: "turn/interrupt";' in client_request
         assert "params: TurnInterruptParams;" in client_request
+        assert 'method: "review/start";' in client_request
+        assert "params: ReviewStartParams;" in client_request
         assert 'method: "thread/resume";' in client_request
         assert "params: ThreadResumeParams;" in client_request
         assert 'method: "thread/fork";' in client_request
@@ -22017,6 +22057,51 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRealtimeAppendTextParams;" in client_request
         assert 'method: "thread/realtime/appendAudio";' in client_request
         assert "params: ThreadRealtimeAppendAudioParams;" in client_request
+        assert 'method: "config/read";' in client_request
+        assert "params: ConfigReadParams;" in client_request
+        assert 'method: "config/value/write";' in client_request
+        assert "params: ConfigValueWriteParams;" in client_request
+        assert 'method: "config/batchWrite";' in client_request
+        assert "params: ConfigBatchWriteParams;" in client_request
+        assert 'method: "configRequirements/read";' in client_request
+        for generated_name, snippets in {
+            "MarketplaceAddParams": ["source: string;", "sparsePaths?: string[] | null;"],
+            "PluginListParams": [
+                'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
+                "marketplaceKinds?: PluginListMarketplaceKind[] | null;",
+            ],
+            "PluginShareSaveParams": [
+                "pluginPath: AbsolutePathBuf;",
+                "shareTargets?: PluginShareTarget[] | null;",
+            ],
+            "PluginInstallParams": [
+                "marketplacePath?: AbsolutePathBuf | null;",
+                "pluginName: string;",
+            ],
+            "ConfigReadParams": ["includeLayers: boolean;", "cwd?: string | null;"],
+            "ConfigValueWriteParams": [
+                'import type { JsonValue } from "../serde_json/JsonValue";',
+                "mergeStrategy: MergeStrategy;",
+            ],
+            "ConfigBatchWriteParams": [
+                "edits: ConfigEdit[];",
+                "reloadUserConfig?: boolean;",
+            ],
+            "ReviewStartParams": [
+                "threadId: string;",
+                "delivery?: ReviewDelivery | null;",
+            ],
+        }.items():
+            generated = (out_dir / "v2" / f"{generated_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            for snippet in snippets:
+                assert snippet in generated
+        json_value = (out_dir / "serde_json" / "JsonValue.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export type JsonValue" in json_value
+        assert "{ [key: string]: JsonValue | undefined }" in json_value
         server_notification = (out_dir / "ServerNotification.ts").read_text(
             encoding="utf-8"
         )
@@ -24459,6 +24544,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'export type {{ {app_export} }} from "./{app_export}";'
                 in v2_index
             )
+        for client_request_export in [
+            "MarketplaceAddParams",
+            "MarketplaceRemoveParams",
+            "MarketplaceUpgradeParams",
+            "PluginInstallParams",
+            "PluginListMarketplaceKind",
+            "PluginListParams",
+            "PluginReadParams",
+            "PluginShareDeleteParams",
+            "PluginShareDiscoverability",
+            "PluginShareListParams",
+            "PluginSharePrincipalType",
+            "PluginShareSaveParams",
+            "PluginShareTarget",
+            "PluginShareUpdateTargetsParams",
+            "PluginSkillReadParams",
+            "PluginUninstallParams",
+            "ReviewDelivery",
+            "ReviewStartParams",
+            "ReviewTarget",
+        ]:
+            assert (
+                f'export type {{ {client_request_export} }} from "./{client_request_export}";'
+                in v2_index
+            )
         for remote_control_export in [
             "RemoteControlConnectionStatus",
             "RemoteControlStatusChangedNotification",
@@ -24548,6 +24658,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ConfigMcpServerReloadResponse } from "./ConfigMcpServerReloadResponse";'
             in v2_index
         )
+        for config_export in [
+            "ConfigBatchWriteParams",
+            "ConfigEdit",
+            "ConfigReadParams",
+            "ConfigValueWriteParams",
+            "MergeStrategy",
+        ]:
+            assert (
+                f'export type {{ {config_export} }} from "./{config_export}";'
+                in v2_index
+            )
         assert (
             'export type { ServerRequestResolvedNotification } from "./ServerRequestResolvedNotification";'
             in v2_index
