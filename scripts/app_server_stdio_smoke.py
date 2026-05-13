@@ -19220,6 +19220,44 @@ def run_json_schema_smoke(binary: Path) -> None:
             model_list_response["properties"]["data"]["items"]["$ref"]
             == "#/$defs/ModelListItem"
         )
+        model_reroute_reason = json.loads(
+            (out_dir / "ModelRerouteReason.json").read_text(encoding="utf-8")
+        )
+        assert model_reroute_reason["enum"] == ["highRiskCyberActivity"]
+        model_rerouted_notification = json.loads(
+            (out_dir / "ModelReroutedNotification.json").read_text(encoding="utf-8")
+        )
+        assert model_rerouted_notification["required"] == [
+            "fromModel",
+            "reason",
+            "threadId",
+            "toModel",
+            "turnId",
+        ]
+        assert (
+            model_rerouted_notification["properties"]["reason"]["$ref"]
+            == "#/$defs/ModelRerouteReason"
+        )
+        model_verification = json.loads(
+            (out_dir / "ModelVerification.json").read_text(encoding="utf-8")
+        )
+        assert model_verification["enum"] == ["trustedAccessForCyber"]
+        model_verification_notification = json.loads(
+            (out_dir / "ModelVerificationNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert model_verification_notification["required"] == [
+            "threadId",
+            "turnId",
+            "verifications",
+        ]
+        assert (
+            model_verification_notification["properties"]["verifications"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/ModelVerification"
+        )
         experimental_feature_list_params = json.loads(
             (out_dir / "ExperimentalFeatureListParams.json").read_text(
                 encoding="utf-8"
@@ -19958,6 +19996,68 @@ def run_json_schema_smoke(binary: Path) -> None:
             "itemId",
             "delta",
         ]
+        for delta_notification_name in [
+            "PlanDeltaNotification",
+            "CommandExecutionOutputDeltaNotification",
+            "FileChangeOutputDeltaNotification",
+        ]:
+            delta_notification_schema = json.loads(
+                (out_dir / f"{delta_notification_name}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert delta_notification_schema["required"] == [
+                "delta",
+                "itemId",
+                "threadId",
+                "turnId",
+            ]
+        terminal_interaction_notification_schema = json.loads(
+            (out_dir / "TerminalInteractionNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert terminal_interaction_notification_schema["required"] == [
+            "itemId",
+            "processId",
+            "stdin",
+            "threadId",
+            "turnId",
+        ]
+        patch_change_kind_schema = json.loads(
+            (out_dir / "PatchChangeKind.json").read_text(encoding="utf-8")
+        )
+        assert patch_change_kind_schema["oneOf"][0]["properties"]["type"][
+            "const"
+        ] == "add"
+        assert patch_change_kind_schema["oneOf"][2]["properties"]["type"][
+            "const"
+        ] == "update"
+        file_update_change_schema = json.loads(
+            (out_dir / "FileUpdateChange.json").read_text(encoding="utf-8")
+        )
+        assert file_update_change_schema["required"] == ["diff", "kind", "path"]
+        assert (
+            file_update_change_schema["properties"]["kind"]["$ref"]
+            == "#/$defs/PatchChangeKind"
+        )
+        file_change_patch_updated_notification_schema = json.loads(
+            (out_dir / "FileChangePatchUpdatedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert file_change_patch_updated_notification_schema["required"] == [
+            "changes",
+            "itemId",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            file_change_patch_updated_notification_schema["properties"]["changes"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/FileUpdateChange"
+        )
         thread_resume_params_schema = json.loads(
             (out_dir / "ThreadResumeParams.json").read_text(encoding="utf-8")
         )
@@ -20475,6 +20575,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ModelAvailabilityNux" in bundle["$defs"]
         assert "ModelReasoningEffort" in bundle["$defs"]
         assert "ModelServiceTier" in bundle["$defs"]
+        assert "ModelRerouteReason" in bundle["$defs"]
+        assert "ModelReroutedNotification" in bundle["$defs"]
+        assert "ModelVerification" in bundle["$defs"]
+        assert "ModelVerificationNotification" in bundle["$defs"]
         assert "ExperimentalFeatureListParams" in bundle["$defs"]
         assert "ExperimentalFeatureStage" in bundle["$defs"]
         assert "ExperimentalFeature" in bundle["$defs"]
@@ -20768,6 +20872,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ModelListItem"]["properties"]["serviceTiers"][
             "items"
         ]["$ref"] == "#/$defs/ModelServiceTier"
+        assert (
+            bundle["$defs"]["ModelReroutedNotification"]["properties"]["reason"][
+                "$ref"
+            ]
+            == "#/$defs/ModelRerouteReason"
+        )
+        assert (
+            bundle["$defs"]["ModelVerificationNotification"]["properties"][
+                "verifications"
+            ]["items"]["$ref"]
+            == "#/$defs/ModelVerification"
+        )
         assert (
             bundle["$defs"]["MemoryResetResponse"]["additionalProperties"] is False
         )
@@ -21134,6 +21250,26 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ItemStartedNotification" in bundle["$defs"]
         assert "ItemCompletedNotification" in bundle["$defs"]
         assert "AgentMessageDeltaNotification" in bundle["$defs"]
+        for item_stream_def in [
+            "PlanDeltaNotification",
+            "CommandExecutionOutputDeltaNotification",
+            "TerminalInteractionNotification",
+            "FileChangeOutputDeltaNotification",
+            "PatchChangeKind",
+            "FileUpdateChange",
+            "FileChangePatchUpdatedNotification",
+        ]:
+            assert item_stream_def in bundle["$defs"]
+        assert (
+            bundle["$defs"]["FileChangePatchUpdatedNotification"]["properties"][
+                "changes"
+            ]["items"]["$ref"]
+            == "#/$defs/FileUpdateChange"
+        )
+        assert (
+            bundle["$defs"]["FileUpdateChange"]["properties"]["kind"]["$ref"]
+            == "#/$defs/PatchChangeKind"
+        )
         assert "ThreadArchivedNotification" in bundle["$defs"]
         assert "ThreadUnarchivedNotification" in bundle["$defs"]
         assert "ThreadClosedNotification" in bundle["$defs"]
@@ -21579,6 +21715,25 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {turn_update_import} }} from "./v2/{turn_update_import}";'
                 in server_notification
             )
+        for item_stream_import in [
+            "CommandExecutionOutputDeltaNotification",
+            "FileChangeOutputDeltaNotification",
+            "FileChangePatchUpdatedNotification",
+            "PlanDeltaNotification",
+            "TerminalInteractionNotification",
+        ]:
+            assert (
+                f'import type {{ {item_stream_import} }} from "./v2/{item_stream_import}";'
+                in server_notification
+            )
+        for model_notification_import in [
+            "ModelReroutedNotification",
+            "ModelVerificationNotification",
+        ]:
+            assert (
+                f'import type {{ {model_notification_import} }} from "./v2/{model_notification_import}";'
+                in server_notification
+            )
         assert (
             'import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";'
             in server_notification
@@ -21697,12 +21852,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: TurnDiffUpdatedNotification;" in server_notification
         assert 'method: "turn/plan/updated";' in server_notification
         assert "params: TurnPlanUpdatedNotification;" in server_notification
+        assert 'method: "model/rerouted";' in server_notification
+        assert "params: ModelReroutedNotification;" in server_notification
+        assert 'method: "model/verification";' in server_notification
+        assert "params: ModelVerificationNotification;" in server_notification
         assert 'method: "item/started";' in server_notification
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
         assert "params: ItemCompletedNotification;" in server_notification
         assert 'method: "item/agentMessage/delta";' in server_notification
         assert "params: AgentMessageDeltaNotification;" in server_notification
+        for method, params_type in [
+            ("item/plan/delta", "PlanDeltaNotification"),
+            (
+                "item/commandExecution/outputDelta",
+                "CommandExecutionOutputDeltaNotification",
+            ),
+            (
+                "item/commandExecution/terminalInteraction",
+                "TerminalInteractionNotification",
+            ),
+            ("item/fileChange/outputDelta", "FileChangeOutputDeltaNotification"),
+            ("item/fileChange/patchUpdated", "FileChangePatchUpdatedNotification"),
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert f"params: {params_type};" in server_notification
         client_response = (out_dir / "ClientResponse.ts").read_text(encoding="utf-8")
         assert (
             'import type { AppsListResponse } from "./v2/AppsListResponse";'
@@ -21980,6 +22154,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: ModelListItem[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
+        model_reroute_reason = (
+            out_dir / "v2" / "ModelRerouteReason.ts"
+        ).read_text(encoding="utf-8")
+        assert '"highRiskCyberActivity"' in model_reroute_reason
+        model_rerouted_notification = (
+            out_dir / "v2" / "ModelReroutedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ModelRerouteReason } from "./ModelRerouteReason";'
+            in model_rerouted_notification
+        )
+        assert "fromModel: string;" in model_rerouted_notification
+        assert "toModel: string;" in model_rerouted_notification
+        assert "reason: ModelRerouteReason;" in model_rerouted_notification
+        model_verification = (
+            out_dir / "v2" / "ModelVerification.ts"
+        ).read_text(encoding="utf-8")
+        assert '"trustedAccessForCyber"' in model_verification
+        model_verification_notification = (
+            out_dir / "v2" / "ModelVerificationNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ModelVerification } from "./ModelVerification";'
+            in model_verification_notification
+        )
+        assert "verifications: ModelVerification[];" in (
+            model_verification_notification
+        )
         apps_list_params = (out_dir / "v2" / "AppsListParams.ts").read_text(
             encoding="utf-8"
         )
@@ -23120,6 +23322,62 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "turnId: string;" in agent_message_delta_notification
         assert "itemId: string;" in agent_message_delta_notification
         assert "delta: string;" in agent_message_delta_notification
+        for delta_notification_name in [
+            "PlanDeltaNotification",
+            "CommandExecutionOutputDeltaNotification",
+            "FileChangeOutputDeltaNotification",
+        ]:
+            delta_notification = (
+                out_dir / "v2" / f"{delta_notification_name}.ts"
+            ).read_text(encoding="utf-8")
+            assert f"export interface {delta_notification_name}" in delta_notification
+            assert "threadId: string;" in delta_notification
+            assert "turnId: string;" in delta_notification
+            assert "itemId: string;" in delta_notification
+            assert "delta: string;" in delta_notification
+        terminal_interaction_notification = (
+            out_dir / "v2" / "TerminalInteractionNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface TerminalInteractionNotification"
+            in terminal_interaction_notification
+        )
+        assert "threadId: string;" in terminal_interaction_notification
+        assert "turnId: string;" in terminal_interaction_notification
+        assert "itemId: string;" in terminal_interaction_notification
+        assert "processId: string;" in terminal_interaction_notification
+        assert "stdin: string;" in terminal_interaction_notification
+        patch_change_kind = (out_dir / "v2" / "PatchChangeKind.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'type: "add"' in patch_change_kind
+        assert 'type: "delete"' in patch_change_kind
+        assert 'type: "update"; move_path: string | null' in patch_change_kind
+        file_update_change = (out_dir / "v2" / "FileUpdateChange.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { PatchChangeKind } from "./PatchChangeKind";' in (
+            file_update_change
+        )
+        assert "export interface FileUpdateChange" in file_update_change
+        assert "path: string;" in file_update_change
+        assert "kind: PatchChangeKind;" in file_update_change
+        assert "diff: string;" in file_update_change
+        file_change_patch_updated_notification = (
+            out_dir / "v2" / "FileChangePatchUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { FileUpdateChange } from "./FileUpdateChange";'
+            in file_change_patch_updated_notification
+        )
+        assert (
+            "export interface FileChangePatchUpdatedNotification"
+            in file_change_patch_updated_notification
+        )
+        assert "threadId: string;" in file_change_patch_updated_notification
+        assert "turnId: string;" in file_change_patch_updated_notification
+        assert "itemId: string;" in file_change_patch_updated_notification
+        assert "changes: FileUpdateChange[];" in file_change_patch_updated_notification
         thread_resume_params = (out_dir / "v2" / "ThreadResumeParams.ts").read_text(
             encoding="utf-8"
         )
@@ -23826,6 +24084,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { ModelListResponse } from "./ModelListResponse";'
             in v2_index
         )
+        for model_notification_export in [
+            "ModelRerouteReason",
+            "ModelReroutedNotification",
+            "ModelVerification",
+            "ModelVerificationNotification",
+        ]:
+            assert (
+                f'export type {{ {model_notification_export} }} from "./{model_notification_export}";'
+                in v2_index
+            )
         assert (
             'export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";'
             in v2_index
@@ -23957,6 +24225,19 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";'
             in v2_index
         )
+        for item_stream_export in [
+            "PlanDeltaNotification",
+            "CommandExecutionOutputDeltaNotification",
+            "TerminalInteractionNotification",
+            "FileChangeOutputDeltaNotification",
+            "PatchChangeKind",
+            "FileUpdateChange",
+            "FileChangePatchUpdatedNotification",
+        ]:
+            assert (
+                f'export type {{ {item_stream_export} }} from "./{item_stream_export}";'
+                in v2_index
+            )
         assert 'export type { ThreadResumeParams } from "./ThreadResumeParams";' in v2_index
         assert 'export type { ThreadResumeResponse } from "./ThreadResumeResponse";' in v2_index
         assert 'export type { ThreadForkParams } from "./ThreadForkParams";' in v2_index
