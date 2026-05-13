@@ -18412,6 +18412,14 @@ def run_json_schema_smoke(binary: Path) -> None:
                 encoding="utf-8"
             )
         )
+        server_request_resolved_v2_path = (
+            out_dir / "v2" / "ServerRequestResolvedNotification.json"
+        )
+        assert server_request_resolved_v2_path.read_text(
+            encoding="utf-8"
+        ) == (out_dir / "ServerRequestResolvedNotification.json").read_text(
+            encoding="utf-8"
+        )
         assert server_request_resolved["required"] == ["requestId", "threadId"]
         assert (
             server_request_resolved["properties"]["requestId"]["$ref"]
@@ -18700,6 +18708,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
 
         initialize = json.loads((out_dir / "InitializeParams.json").read_text(encoding="utf-8"))
+        assert (out_dir / "v1" / "InitializeParams.json").read_text(
+            encoding="utf-8"
+        ) == (out_dir / "InitializeParams.json").read_text(encoding="utf-8")
         assert initialize["title"] == "InitializeParams"
         assert initialize["required"] == ["clientInfo"]
         assert initialize["properties"]["clientInfo"]["$ref"] == "#/$defs/ClientInfo"
@@ -18752,6 +18763,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         account_response = json.loads(
             (out_dir / "GetAccountResponse.json").read_text(encoding="utf-8")
         )
+        assert (out_dir / "v2" / "GetAccountResponse.json").read_text(
+            encoding="utf-8"
+        ) == (out_dir / "GetAccountResponse.json").read_text(encoding="utf-8")
         assert account_response["required"] == ["account", "requiresOpenaiAuth"]
         assert account_response["properties"]["account"]["anyOf"][0]["$ref"] == (
             "Account.json"
