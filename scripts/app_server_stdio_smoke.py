@@ -21067,6 +21067,110 @@ class SmokeWebSocket:
         return payload
 
 
+def exercise_websocket_initialize(host: str, port: int, bearer_token: str | None = None) -> None:
+    websocket = SmokeWebSocket(host, port, bearer_token)
+    try:
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "second-websocket-initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "app-server-smoke",
+                        "version": "0",
+                    },
+                    "capabilities": {},
+                },
+            }
+        )
+        initialize = websocket.read_json()
+        assert initialize["id"] == "second-websocket-initialize"
+        assert initialize["result"]["serverInfo"]["name"] == "codex-zig-app-server"
+    finally:
+        websocket.close()
+
+
+def exercise_websocket_connection_state_reset(host: str, port: int, bearer_token: str | None = None) -> None:
+    websocket = SmokeWebSocket(host, port, bearer_token)
+    try:
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-reset-initialize-first",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "app-server-smoke",
+                        "version": "0",
+                    },
+                    "capabilities": {},
+                },
+            }
+        )
+        initialize = websocket.read_json()
+        assert initialize["id"] == "websocket-reset-initialize-first"
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-reset-thread-start",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            }
+        )
+        thread_start = websocket.read_json()
+        assert thread_start["id"] == "websocket-reset-thread-start"
+        thread_id = thread_start["result"]["thread"]["id"]
+        started = websocket.read_json()
+        assert started["method"] == "thread/started"
+        assert started["params"]["thread"]["id"] == thread_id
+    finally:
+        websocket.close()
+
+    websocket = SmokeWebSocket(host, port, bearer_token)
+    try:
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-reset-initialize-second",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "app-server-smoke",
+                        "version": "0",
+                    },
+                    "capabilities": {},
+                },
+            }
+        )
+        initialize = websocket.read_json()
+        assert initialize["id"] == "websocket-reset-initialize-second"
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-reset-thread-read",
+                "method": "thread/read",
+                "params": {"threadId": thread_id, "includeTurns": False},
+            }
+        )
+        thread_read = websocket.read_json()
+        assert thread_read["id"] == "websocket-reset-thread-read"
+        assert thread_read["result"]["thread"]["id"] == thread_id
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-reset-unsubscribe",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": thread_id},
+            }
+        )
+        unsubscribe = websocket.read_json()
+        assert unsubscribe["id"] == "websocket-reset-unsubscribe"
+        assert unsubscribe["result"] == {"status": "notSubscribed"}
+    finally:
+        websocket.close()
+
+
 def run_websocket_smoke(binary: Path) -> None:
     proc = subprocess.Popen(
         [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
@@ -21095,6 +21199,16 @@ def run_websocket_smoke(binary: Path) -> None:
         )
         websocket = SmokeWebSocket(host, port)
         exercise_json_rpc(websocket.write_json, websocket.read_json)
+        websocket.close()
+        websocket = None
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after first websocket client: {proc.stderr.read()}")
+        exercise_websocket_initialize(host, port)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after second websocket client: {proc.stderr.read()}")
+        exercise_websocket_connection_state_reset(host, port)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after websocket connection-state reset smoke: {proc.stderr.read()}")
     finally:
         if websocket is not None:
             websocket.close()
