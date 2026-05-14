@@ -2,6 +2,9 @@ const std = @import("std");
 const env = @import("env.zig");
 const model_catalog = @import("model_catalog.zig");
 
+pub const MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS: u64 = 5_000;
+pub const DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS: u64 = 300_000;
+
 pub const Config = struct {
     codex_home: []const u8,
     active_profile: ?[]const u8,
@@ -31,6 +34,7 @@ pub const Config = struct {
     tui_status_line: ?StringList,
     tui_terminal_title: ?StringList,
     tui_alternate_screen: AltScreenMode,
+    background_terminal_max_timeout: u64 = DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -706,6 +710,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     var tui_terminal_title = try resolveTuiStringArray(allocator, config_view, "terminal_title");
     errdefer if (tui_terminal_title) |*value| value.deinit(allocator);
     const tui_alternate_screen = try resolveTuiAlternateScreen(allocator, config_view);
+    const background_terminal_max_timeout = try resolveBackgroundTerminalMaxTimeout(config_view);
 
     return .{
         .codex_home = codex_home,
@@ -735,6 +740,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = tui_alternate_screen,
+        .background_terminal_max_timeout = background_terminal_max_timeout,
     };
 }
 
@@ -1044,6 +1050,11 @@ fn resolveTuiAlternateScreen(allocator: std.mem.Allocator, config_view: ConfigVi
     const value = try config_view.getSectionString(allocator, "tui", "alternate_screen") orelse return .auto;
     defer allocator.free(value);
     return AltScreenMode.parse(value);
+}
+
+fn resolveBackgroundTerminalMaxTimeout(config_view: ConfigView) !u64 {
+    const timeout = (try config_view.getTopLevelU64("background_terminal_max_timeout")) orelse DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS;
+    return @max(timeout, MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS);
 }
 
 fn feedbackEnabledFromConfigBytes(bytes: []const u8) bool {
@@ -1573,6 +1584,17 @@ const ConfigView = struct {
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
             if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
+        }
+        return null;
+    }
+
+    fn getTopLevelU64(self: ConfigView, key: []const u8) !?u64 {
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') break;
+            if (try u64ValueForKey(line, key)) |value| return value;
         }
         return null;
     }
@@ -3072,6 +3094,21 @@ test "feedback enabled defaults true and honors feedback table" {
         \\enabled = false
         \\
     ));
+}
+
+test "background terminal max timeout defaults and clamps to empty poll floor" {
+    try std.testing.expectEqual(
+        DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS,
+        try resolveBackgroundTerminalMaxTimeout(.{ .bytes = "" }),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 10_000),
+        try resolveBackgroundTerminalMaxTimeout(.{ .bytes = "background_terminal_max_timeout = 10000\n" }),
+    );
+    try std.testing.expectEqual(
+        MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS,
+        try resolveBackgroundTerminalMaxTimeout(.{ .bytes = "background_terminal_max_timeout = 1\n" }),
+    );
 }
 
 test "profile model provider overrides top-level provider" {

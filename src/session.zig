@@ -652,6 +652,7 @@ fn runToolCall(
         .prompt_for_approval = options.prompt_for_approval,
         .workdir = options.workdir,
         .background_terminal_owner = options.background_terminal_owner,
+        .background_terminal_max_timeout_ms = cfg.background_terminal_max_timeout,
     });
     errdefer tool_result.deinit(allocator);
 

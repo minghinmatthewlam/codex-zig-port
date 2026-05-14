@@ -14,6 +14,10 @@ extern "c" fn openpty(
 ) c_int;
 
 const session_allocator = std.heap.page_allocator;
+const MIN_YIELD_TIME_MS: u64 = 250;
+const MAX_YIELD_TIME_MS: u64 = 30_000;
+const DEFAULT_EXEC_YIELD_TIME_MS: u64 = 10_000;
+const DEFAULT_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
 
 var exec_sessions: std.ArrayList(ExecSession) = .empty;
 var next_exec_session_id: u64 = 1000;
@@ -149,6 +153,7 @@ pub const Policy = struct {
     prompt_for_approval: bool = true,
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
+    background_terminal_max_timeout_ms: u64 = config.DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS,
 };
 
 const ToolKind = enum {
@@ -174,7 +179,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
     if (std.mem.eql(u8, call.name, "write_stdin")) {
         var parsed = try std.json.parseFromSlice(WriteStdinArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        return runWriteStdin(allocator, call.call_id, parsed.value);
+        return runWriteStdin(allocator, call.call_id, parsed.value, policy);
     }
 
     if (std.mem.eql(u8, call.name, "shell_command")) {
@@ -295,7 +300,7 @@ fn runExecCommand(
             .network_enabled = policy.network_enabled,
             .workdir = args.workdir orelse policy.workdir,
             .owner = policy.background_terminal_owner,
-            .yield_time_ms = args.yield_time_ms orelse 1000,
+            .yield_time_ms = clampYieldTime(args.yield_time_ms orelse DEFAULT_EXEC_YIELD_TIME_MS),
             .max_output_tokens = args.max_output_tokens,
             .pty = true,
         });
@@ -360,7 +365,7 @@ fn runExecCommandSession(
     };
 }
 
-fn runWriteStdin(allocator: std.mem.Allocator, call_id: []const u8, args: WriteStdinArgs) !ToolResult {
+fn runWriteStdin(allocator: std.mem.Allocator, call_id: []const u8, args: WriteStdinArgs, policy: Policy) !ToolResult {
     const session_index = findExecSessionIndex(args.session_id) orelse {
         return .{
             .call_id = try allocator.dupe(u8, call_id),
@@ -374,7 +379,8 @@ fn runWriteStdin(allocator: std.mem.Allocator, call_id: []const u8, args: WriteS
         try stdin_file.writeStreamingAll(session.io_instance.io(), args.chars);
     }
 
-    var read = try readExecSession(allocator, session, args.yield_time_ms orelse 1000, args.max_output_tokens);
+    const yield_time_ms = writeStdinYieldTime(args, policy.background_terminal_max_timeout_ms);
+    var read = try readExecSession(allocator, session, yield_time_ms, args.max_output_tokens);
     defer read.deinit(allocator);
     var reap_on_error = read.term != null;
     errdefer if (reap_on_error) removeExecSession(session_index);
@@ -398,6 +404,19 @@ fn runWriteStdin(allocator: std.mem.Allocator, call_id: []const u8, args: WriteS
         .summary = summary,
         .output = output,
     };
+}
+
+fn clampYieldTime(yield_time_ms: u64) u64 {
+    return std.math.clamp(yield_time_ms, MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS);
+}
+
+fn writeStdinYieldTime(args: WriteStdinArgs, background_terminal_max_timeout_ms: u64) u64 {
+    const requested = @max(args.yield_time_ms orelse DEFAULT_WRITE_STDIN_YIELD_TIME_MS, MIN_YIELD_TIME_MS);
+    if (args.chars.len == 0) {
+        const max_empty_poll = @max(background_terminal_max_timeout_ms, config.MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS);
+        return std.math.clamp(requested, config.MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS, max_empty_poll);
+    }
+    return @min(requested, MAX_YIELD_TIME_MS);
 }
 
 fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usize {
@@ -1658,6 +1677,25 @@ test "exec sessions can be stopped by owner" {
     try std.testing.expectEqual(@as(usize, 0), stopExecSessionsForOwner("missing-thread"));
     try std.testing.expectEqual(@as(usize, 1), stopExecSessionsForOwner("thread-b"));
     try std.testing.expectEqual(@as(usize, 0), activeExecSessionCount());
+}
+
+test "write_stdin yield time follows unified exec bounds" {
+    try std.testing.expectEqual(
+        @as(u64, config.MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS),
+        writeStdinYieldTime(.{ .session_id = 1, .chars = "", .yield_time_ms = 100 }, 1_000),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 7_000),
+        writeStdinYieldTime(.{ .session_id = 1, .chars = "", .yield_time_ms = 120_000 }, 7_000),
+    );
+    try std.testing.expectEqual(
+        @as(u64, MAX_YIELD_TIME_MS),
+        writeStdinYieldTime(.{ .session_id = 1, .chars = "x", .yield_time_ms = 120_000 }, 300_000),
+    );
+    try std.testing.expectEqual(
+        @as(u64, MIN_YIELD_TIME_MS),
+        writeStdinYieldTime(.{ .session_id = 1, .chars = "x", .yield_time_ms = 1 }, 300_000),
+    );
 }
 
 test "write_stdin reports unknown session" {
