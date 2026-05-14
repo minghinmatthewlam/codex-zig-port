@@ -355,8 +355,11 @@ test "sandbox permission profile resolver supports Rust built-ins" {
     defer danger.deinit(allocator);
 
     try std.testing.expectEqual(config.SandboxMode.read_only, read_only.mode);
+    try std.testing.expect(!read_only.network_enabled);
     try std.testing.expectEqual(config.SandboxMode.workspace_write, workspace.mode);
+    try std.testing.expect(!workspace.network_enabled);
     try std.testing.expectEqual(config.SandboxMode.danger_full_access, danger.mode);
+    try std.testing.expect(danger.network_enabled);
 }
 
 test "sandbox macos args parse help" {

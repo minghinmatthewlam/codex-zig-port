@@ -350,6 +350,7 @@ fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile:
     return .{
         .mode = mode,
         .additional_writable_roots = .{ .items = try allocator.alloc([]const u8, 0) },
+        .network_enabled = mode == .danger_full_access,
     };
 }
 

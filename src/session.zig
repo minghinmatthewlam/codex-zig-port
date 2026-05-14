@@ -271,6 +271,8 @@ pub const TurnOptions = struct {
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
+    include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
     include_tools: bool = true,
@@ -538,6 +540,8 @@ fn runToolCall(
         .approval_policy = cfg.approval_policy,
         .sandbox_mode = cfg.sandbox_mode,
         .additional_writable_roots = options.additional_writable_roots,
+        .include_cwd_write_root = options.include_cwd_write_root,
+        .network_enabled = options.network_enabled,
         .auto_approve = options.auto_approve,
         .prompt_for_approval = options.prompt_for_approval,
     });

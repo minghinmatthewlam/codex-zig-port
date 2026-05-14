@@ -132,6 +132,8 @@ pub const Policy = struct {
     approval_policy: config.ApprovalPolicy = .on_request,
     sandbox_mode: config.SandboxMode = .workspace_write,
     additional_writable_roots: []const []const u8 = &.{},
+    include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
 };
@@ -153,7 +155,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ExecCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
-        return runExecCommand(allocator, call.call_id, parsed.value, policy.sandbox_mode, policy.additional_writable_roots);
+        return runExecCommand(allocator, call.call_id, parsed.value, policy);
     }
 
     if (std.mem.eql(u8, call.name, "write_stdin")) {
@@ -166,7 +168,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, isTrustedShellCommand(parsed.value.command))) |result| return result;
-        return runShellCommand(allocator, call.call_id, parsed.value.command, policy.sandbox_mode, policy.additional_writable_roots);
+        return runShellCommand(allocator, call.call_id, parsed.value.command, policy);
     }
 
     if (std.mem.eql(u8, call.name, "shell")) {
@@ -176,7 +178,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         const command = try joinCommand(allocator, parsed.value.command);
         defer allocator.free(command);
         if (try permissionResult(allocator, call.call_id, policy, .shell, command, isTrustedArgv(parsed.value.command))) |result| return result;
-        return runArgv(allocator, call.call_id, parsed.value.command, policy.sandbox_mode, policy.additional_writable_roots);
+        return runArgv(allocator, call.call_id, parsed.value.command, policy);
     }
 
     if (std.mem.eql(u8, call.name, "apply_patch")) {
@@ -257,27 +259,27 @@ fn runShellCommand(
     allocator: std.mem.Allocator,
     call_id: []const u8,
     command: []const u8,
-    sandbox_mode: config.SandboxMode,
-    additional_writable_roots: []const []const u8,
+    policy: Policy,
 ) !ToolResult {
     const argv = [_][]const u8{ "/bin/zsh", "-lc", command };
-    return runArgv(allocator, call_id, argv[0..], sandbox_mode, additional_writable_roots);
+    return runArgv(allocator, call_id, argv[0..], policy);
 }
 
 fn runExecCommand(
     allocator: std.mem.Allocator,
     call_id: []const u8,
     args: ExecCommandArgs,
-    sandbox_mode: config.SandboxMode,
-    additional_writable_roots: []const []const u8,
+    policy: Policy,
 ) !ToolResult {
     const shell = args.shell orelse "/bin/zsh";
     const shell_flag = if (args.login orelse false) "-lic" else "-lc";
     const argv = [_][]const u8{ shell, shell_flag, args.cmd };
     if (args.tty orelse false) {
         return runExecCommandSession(allocator, call_id, argv[0..], .{
-            .sandbox_mode = sandbox_mode,
-            .additional_writable_roots = additional_writable_roots,
+            .sandbox_mode = policy.sandbox_mode,
+            .additional_writable_roots = policy.additional_writable_roots,
+            .include_cwd_write_root = policy.include_cwd_write_root,
+            .network_enabled = policy.network_enabled,
             .workdir = args.workdir,
             .yield_time_ms = args.yield_time_ms orelse 1000,
             .max_output_tokens = args.max_output_tokens,
@@ -285,8 +287,10 @@ fn runExecCommand(
         });
     }
     return runArgvWithOptions(allocator, call_id, argv[0..], .{
-        .sandbox_mode = sandbox_mode,
-        .additional_writable_roots = additional_writable_roots,
+        .sandbox_mode = policy.sandbox_mode,
+        .additional_writable_roots = policy.additional_writable_roots,
+        .include_cwd_write_root = policy.include_cwd_write_root,
+        .network_enabled = policy.network_enabled,
         .workdir = args.workdir,
         .max_output_tokens = args.max_output_tokens,
         .unified_format = true,
@@ -296,6 +300,8 @@ fn runExecCommand(
 const ExecSessionOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
+    include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
     workdir: ?[]const u8 = null,
     yield_time_ms: u64 = 1000,
     max_output_tokens: ?usize = null,
@@ -386,7 +392,15 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(session_allocator);
     const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgv(session_allocator, options.sandbox_mode, argv, options.additional_writable_roots);
+        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(
+            session_allocator,
+            options.sandbox_mode,
+            argv,
+            options.additional_writable_roots,
+            options.workdir,
+            options.include_cwd_write_root,
+            options.network_enabled,
+        );
         break :blk sandboxed_argv.?.argv;
     } else argv;
 
@@ -492,18 +506,21 @@ fn runArgv(
     allocator: std.mem.Allocator,
     call_id: []const u8,
     argv: []const []const u8,
-    sandbox_mode: config.SandboxMode,
-    additional_writable_roots: []const []const u8,
+    policy: Policy,
 ) !ToolResult {
     return runArgvWithOptions(allocator, call_id, argv, .{
-        .sandbox_mode = sandbox_mode,
-        .additional_writable_roots = additional_writable_roots,
+        .sandbox_mode = policy.sandbox_mode,
+        .additional_writable_roots = policy.additional_writable_roots,
+        .include_cwd_write_root = policy.include_cwd_write_root,
+        .network_enabled = policy.network_enabled,
     });
 }
 
 const RunArgvOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
+    include_cwd_write_root: bool = true,
+    network_enabled: bool = true,
     workdir: ?[]const u8 = null,
     max_output_tokens: ?usize = null,
     unified_format: bool = false,
@@ -521,7 +538,15 @@ fn runArgvWithOptions(
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgv(allocator, options.sandbox_mode, argv, options.additional_writable_roots);
+        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(
+            allocator,
+            options.sandbox_mode,
+            argv,
+            options.additional_writable_roots,
+            options.workdir,
+            options.include_cwd_write_root,
+            options.network_enabled,
+        );
         break :blk sandboxed_argv.?.argv;
     } else argv;
 

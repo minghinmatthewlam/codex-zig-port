@@ -118,6 +118,9 @@ const LoadedThread = struct {
     approval_policy: []const u8,
     approvals_reviewer: []const u8,
     sandbox_mode: []const u8,
+    sandbox_writable_roots: config.StringList,
+    sandbox_include_cwd_write_root: bool,
+    sandbox_network_enabled: bool,
     reasoning_effort: ?[]const u8,
     reasoning_summary: ?[]const u8,
     personality: ?[]const u8,
@@ -155,6 +158,7 @@ const LoadedThread = struct {
         allocator.free(self.approval_policy);
         allocator.free(self.approvals_reviewer);
         allocator.free(self.sandbox_mode);
+        self.sandbox_writable_roots.deinit(allocator);
         if (self.reasoning_effort) |value| allocator.free(value);
         if (self.reasoning_summary) |value| allocator.free(value);
         if (self.personality) |value| allocator.free(value);
@@ -5241,6 +5245,7 @@ const TURN_START_PARAMS_TS =
     \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { ReasoningSummary } from "../ReasoningSummary";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { PermissionProfileSelectionParams } from "./PermissionProfileSelectionParams";
     \\import type { SandboxPolicy } from "./SandboxPolicy";
     \\import type { UserInput } from "./UserInput";
     \\
@@ -5258,6 +5263,7 @@ const TURN_START_PARAMS_TS =
     \\  approvalsReviewer?: ApprovalsReviewer | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
     \\  sandboxPolicy?: SandboxPolicy | null;
+    \\  permissions?: PermissionProfileSelectionParams | null;
     \\  outputSchema?: unknown | null;
     \\}
     \\
@@ -15265,6 +15271,53 @@ const SANDBOX_POLICY_JSON_SCHEMA =
     \\
 ;
 
+const PERMISSION_PROFILE_MODIFICATION_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileModificationParams",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "path"],
+    \\      "properties": {
+    \\        "type": { "const": "additionalWritableRoot" },
+    \\        "path": { "$ref": "AbsolutePathBuf.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
+const PERMISSION_PROFILE_SELECTION_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileSelectionParams",
+    \\  "oneOf": [
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["type", "id"],
+    \\      "properties": {
+    \\        "type": { "const": "profile" },
+    \\        "id": { "type": "string" },
+    \\        "modifications": {
+    \\          "oneOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "PermissionProfileModificationParams.json" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  ]
+    \\}
+    \\
+;
+
 const FILE_SYSTEM_ACCESS_MODE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -16386,6 +16439,12 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "sandboxPolicy": {
     \\      "oneOf": [
     \\        { "$ref": "SandboxPolicy.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "permissions": {
+    \\      "oneOf": [
+    \\        { "$ref": "PermissionProfileSelectionParams.json" },
     \\        { "type": "null" }
     \\      ]
     \\    },
@@ -21057,6 +21116,41 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        }
     \\      ]
     \\    },
+    \\    "PermissionProfileModificationParams": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "path"],
+    \\          "properties": {
+    \\            "type": { "const": "additionalWritableRoot" },
+    \\            "path": { "$ref": "#/$defs/AbsolutePathBuf" }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "PermissionProfileSelectionParams": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "id"],
+    \\          "properties": {
+    \\            "type": { "const": "profile" },
+    \\            "id": { "type": "string" },
+    \\            "modifications": {
+    \\              "oneOf": [
+    \\                {
+    \\                  "type": "array",
+    \\                  "items": { "$ref": "#/$defs/PermissionProfileModificationParams" }
+    \\                },
+    \\                { "type": "null" }
+    \\              ]
+    \\            }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
     \\    "FileSystemAccessMode": {
     \\      "enum": ["read", "write", "none"],
     \\      "type": "string"
@@ -21832,6 +21926,12 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "sandboxPolicy": {
     \\          "oneOf": [
     \\            { "$ref": "#/$defs/SandboxPolicy" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "permissions": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/PermissionProfileSelectionParams" },
     \\            { "type": "null" }
     \\          ]
     \\        },
@@ -23325,6 +23425,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "FsChangedNotification.json", .contents = FS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "NetworkAccess.json", .contents = NETWORK_ACCESS_JSON_SCHEMA },
     .{ .name = "SandboxPolicy.json", .contents = SANDBOX_POLICY_JSON_SCHEMA },
+    .{ .name = "PermissionProfileModificationParams.json", .contents = PERMISSION_PROFILE_MODIFICATION_PARAMS_JSON_SCHEMA },
+    .{ .name = "PermissionProfileSelectionParams.json", .contents = PERMISSION_PROFILE_SELECTION_PARAMS_JSON_SCHEMA },
     .{ .name = "FileSystemAccessMode.json", .contents = FILE_SYSTEM_ACCESS_MODE_JSON_SCHEMA },
     .{ .name = "FileSystemSpecialPath.json", .contents = FILE_SYSTEM_SPECIAL_PATH_JSON_SCHEMA },
     .{ .name = "FileSystemPath.json", .contents = FILE_SYSTEM_PATH_JSON_SCHEMA },
@@ -23592,6 +23694,8 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ModelProviderCapabilitiesReadResponse.json",
     "v2/ModelReroutedNotification.json",
     "v2/ModelVerificationNotification.json",
+    "v2/PermissionProfileModificationParams.json",
+    "v2/PermissionProfileSelectionParams.json",
     "v2/PlanDeltaNotification.json",
     "v2/ProcessExitedNotification.json",
     "v2/ProcessOutputDeltaNotification.json",
@@ -25122,6 +25226,9 @@ fn handleTurnStart(
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
+        .additional_writable_roots = thread.sandbox_writable_roots.items,
+        .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
+        .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
     }) catch |err| {
@@ -25601,27 +25708,56 @@ fn applyTurnStartRuntimeOverrides(
         thread.runtime_overrides.approvals_reviewer = true;
     }
 
-    if (params.get("sandboxPolicy")) |sandbox_policy| {
+    const permissions_value = params.get("permissions");
+    const has_permissions = permissions_value != null and permissions_value.? != .null;
+    if (has_permissions) {
+        if (params.get("sandboxPolicy")) |sandbox_policy| {
+            if (sandbox_policy != .null) return error.InvalidTurnContextOverride;
+        }
+        if (params.get("sandbox")) |sandbox| {
+            if (sandbox != .null) return error.InvalidTurnContextOverride;
+        }
+        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        defer profile.deinit(allocator);
+        cfg.sandbox_mode = profile.mode;
+        var roots = try profile.additional_writable_roots.clone(allocator);
+        errdefer roots.deinit(allocator);
+        try replaceLoadedThreadSandboxProfile(
+            allocator,
+            thread,
+            profile.mode,
+            roots,
+            profile.include_cwd_write_root,
+            profile.network_enabled,
+        );
+    } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
             const sandbox_mode = parseTurnStartSandboxPolicyMode(sandbox_policy) catch return error.InvalidTurnContextOverride;
             cfg.sandbox_mode = sandbox_mode;
-            try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox_mode.label());
-            thread.runtime_overrides.sandbox_mode = true;
+            try resetLoadedThreadSandboxProfile(allocator, thread, sandbox_mode, sandbox_mode == .danger_full_access);
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
             if (optionalStringParam(params, "sandbox")) |sandbox| {
-                try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
-                thread.runtime_overrides.sandbox_mode = true;
+                try resetLoadedThreadSandboxProfile(
+                    allocator,
+                    thread,
+                    config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
+                    true,
+                );
             }
         }
     } else {
         const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
         cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
         if (optionalStringParam(params, "sandbox")) |sandbox| {
-            try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
-            thread.runtime_overrides.sandbox_mode = true;
+            try resetLoadedThreadSandboxProfile(
+                allocator,
+                thread,
+                config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
+                true,
+            );
         }
     }
 
@@ -25699,6 +25835,81 @@ fn parseTurnStartSandboxPolicyMode(value: std.json.Value) !config.SandboxMode {
     return error.InvalidTurnContextOverride;
 }
 
+fn parseTurnStartPermissionSelection(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+) !config.SandboxPermissionProfile {
+    if (value != .object) return error.InvalidTurnContextOverride;
+    const type_value = value.object.get("type") orelse return error.InvalidTurnContextOverride;
+    if (type_value != .string or !std.mem.eql(u8, type_value.string, "profile")) return error.InvalidTurnContextOverride;
+    const id_value = value.object.get("id") orelse return error.InvalidTurnContextOverride;
+    if (id_value != .string or id_value.string.len == 0) return error.InvalidTurnContextOverride;
+
+    var profile = config.loadSandboxPermissionProfile(allocator, id_value.string) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return error.InvalidTurnContextOverride,
+    };
+    errdefer profile.deinit(allocator);
+
+    try applyTurnStartPermissionModifications(allocator, &profile, value.object.get("modifications"));
+    return profile;
+}
+
+fn applyTurnStartPermissionModifications(
+    allocator: std.mem.Allocator,
+    profile: *config.SandboxPermissionProfile,
+    modifications_value: ?std.json.Value,
+) !void {
+    const value = modifications_value orelse return;
+    if (value == .null) return;
+    if (value != .array) return error.InvalidTurnContextOverride;
+    if (value.array.items.len == 0) return;
+
+    var roots = std.ArrayList([]const u8).empty;
+    var roots_moved = false;
+    errdefer if (!roots_moved) {
+        for (roots.items) |root| allocator.free(root);
+        roots.deinit(allocator);
+    };
+
+    for (profile.additional_writable_roots.items) |root| {
+        const copy = try allocator.dupe(u8, root);
+        roots.append(allocator, copy) catch |err| {
+            allocator.free(copy);
+            return err;
+        };
+    }
+
+    var added_root = false;
+    for (value.array.items) |modification| {
+        if (modification != .object) return error.InvalidTurnContextOverride;
+        const type_value = modification.object.get("type") orelse return error.InvalidTurnContextOverride;
+        if (type_value != .string or !std.mem.eql(u8, type_value.string, "additionalWritableRoot")) {
+            return error.InvalidTurnContextOverride;
+        }
+        const path_value = modification.object.get("path") orelse return error.InvalidTurnContextOverride;
+        if (path_value != .string or path_value.string.len == 0 or !std.fs.path.isAbsolute(path_value.string)) {
+            return error.InvalidTurnContextOverride;
+        }
+        const path = try allocator.dupe(u8, path_value.string);
+        roots.append(allocator, path) catch |err| {
+            allocator.free(path);
+            return err;
+        };
+        added_root = true;
+    }
+
+    if (!added_root) return;
+    const owned_roots = try roots.toOwnedSlice(allocator);
+    roots_moved = true;
+    profile.additional_writable_roots.deinit(allocator);
+    profile.additional_writable_roots = .{ .items = owned_roots };
+    if (profile.mode == .read_only) {
+        profile.mode = .workspace_write;
+        profile.include_cwd_write_root = false;
+    }
+}
+
 fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void {
     const value = object.get("networkAccess") orelse return;
     if (value == .null) return;
@@ -25715,6 +25926,44 @@ fn expectTurnStartSandboxPolicyBoolDefaultFalse(object: std.json.ObjectMap, fiel
     const value = object.get(field) orelse return;
     if (value == .null) return;
     if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
+}
+
+fn emptyStringList(allocator: std.mem.Allocator) !config.StringList {
+    return .{ .items = try allocator.alloc([]const u8, 0) };
+}
+
+fn resetLoadedThreadSandboxProfile(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    mode: config.SandboxMode,
+    network_enabled: bool,
+) !void {
+    var roots = try emptyStringList(allocator);
+    errdefer roots.deinit(allocator);
+    try replaceLoadedThreadSandboxProfile(
+        allocator,
+        thread,
+        mode,
+        roots,
+        true,
+        network_enabled,
+    );
+}
+
+fn replaceLoadedThreadSandboxProfile(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    mode: config.SandboxMode,
+    roots: config.StringList,
+    include_cwd_write_root: bool,
+    network_enabled: bool,
+) !void {
+    try replaceOwnedString(allocator, &thread.sandbox_mode, mode.label());
+    thread.sandbox_writable_roots.deinit(allocator);
+    thread.sandbox_writable_roots = roots;
+    thread.sandbox_include_cwd_write_root = include_cwd_write_root;
+    thread.sandbox_network_enabled = network_enabled;
+    thread.runtime_overrides.sandbox_mode = true;
 }
 
 fn applyLoadedThreadRuntimeConfig(
@@ -26049,6 +26298,9 @@ fn handleLoadedThreadCompactStart(
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, APP_SERVER_COMPACT_PROMPT, .{
         .prompt_for_approval = false,
+        .additional_writable_roots = thread.sandbox_writable_roots.items,
+        .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
+        .network_enabled = thread.sandbox_network_enabled,
         .include_tools = false,
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "thread/compact/start failed to run compaction: {s}", .{@errorName(err)});
@@ -27778,6 +28030,8 @@ fn createLoadedThreadFromStartParams(
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
     errdefer allocator.free(sandbox_mode);
+    var sandbox_writable_roots = try emptyStringList(allocator);
+    errdefer sandbox_writable_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -27826,6 +28080,9 @@ fn createLoadedThreadFromStartParams(
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
+        .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_include_cwd_write_root = true,
+        .sandbox_network_enabled = true,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -27905,6 +28162,8 @@ fn createLoadedThreadFromHistoryParams(
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
     errdefer allocator.free(sandbox_mode);
+    var sandbox_writable_roots = try emptyStringList(allocator);
+    errdefer sandbox_writable_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -27940,6 +28199,9 @@ fn createLoadedThreadFromHistoryParams(
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
+        .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_include_cwd_write_root = true,
+        .sandbox_network_enabled = true,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -28041,6 +28303,8 @@ fn createLoadedThreadFromResumeParams(
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
     errdefer allocator.free(sandbox_mode);
+    var sandbox_writable_roots = try emptyStringList(allocator);
+    errdefer sandbox_writable_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -28067,6 +28331,9 @@ fn createLoadedThreadFromResumeParams(
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
+        .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_include_cwd_write_root = true,
+        .sandbox_network_enabled = true,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -28171,6 +28438,14 @@ fn createLoadedThreadFromForkParams(
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse source.sandbox_mode);
     errdefer allocator.free(sandbox_mode);
+    const sandbox_override = optionalStringParam(params, "sandbox") != null;
+    var sandbox_writable_roots = if (sandbox_override)
+        try emptyStringList(allocator)
+    else
+        try source.sandbox_writable_roots.clone(allocator);
+    errdefer sandbox_writable_roots.deinit(allocator);
+    const sandbox_include_cwd_write_root = if (sandbox_override) true else source.sandbox_include_cwd_write_root;
+    const sandbox_network_enabled = if (sandbox_override) true else source.sandbox_network_enabled;
 
     const reasoning_effort = if (source.reasoning_effort) |value|
         try allocator.dupe(u8, value)
@@ -28224,6 +28499,9 @@ fn createLoadedThreadFromForkParams(
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
+        .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
+        .sandbox_network_enabled = sandbox_network_enabled,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -28233,7 +28511,7 @@ fn createLoadedThreadFromForkParams(
             .service_tier = paramPresent(params, "serviceTier") or source.runtime_overrides.service_tier,
             .approval_policy = paramPresent(params, "approvalPolicy") or source.runtime_overrides.approval_policy,
             .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
-            .sandbox_mode = paramPresent(params, "sandbox") or source.runtime_overrides.sandbox_mode,
+            .sandbox_mode = sandbox_override or source.runtime_overrides.sandbox_mode,
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
             .reasoning_summary = source.runtime_overrides.reasoning_summary,
             .personality = source.runtime_overrides.personality,
@@ -40227,6 +40505,14 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
         }
         if (!thread.runtime_overrides.sandbox_mode) {
             try replaceOwnedString(allocator, &thread.sandbox_mode, cfg.sandbox_mode.label());
+            var roots = try emptyStringList(allocator);
+            var roots_moved = false;
+            errdefer if (!roots_moved) roots.deinit(allocator);
+            thread.sandbox_writable_roots.deinit(allocator);
+            thread.sandbox_writable_roots = roots;
+            roots_moved = true;
+            thread.sandbox_include_cwd_write_root = true;
+            thread.sandbox_network_enabled = true;
         }
         if (!thread.runtime_overrides.reasoning_effort) {
             if (cfg.model_reasoning_effort) |effort| {
