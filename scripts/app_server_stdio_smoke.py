@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -20635,6 +20636,17 @@ def websocket_handshake_status(host: str, port: int, headers: list[str]) -> int:
         return int(status_line.split()[1])
 
 
+def websocket_signed_bearer_token(secret: bytes, claims: dict) -> str:
+    def encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    header = encode(b'{"alg":"HS256","typ":"JWT"}')
+    payload = encode(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header}.{payload}"
+    signature = encode(hmac.new(secret, signing_input.encode("ascii"), hashlib.sha256).digest())
+    return f"{signing_input}.{signature}"
+
+
 class SmokeWebSocket:
     def __init__(self, host: str, port: int, bearer_token: str | None = None) -> None:
         self.sock = socket.create_connection((host, port), timeout=5)
@@ -20833,6 +20845,162 @@ def run_websocket_capability_auth_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_websocket_signed_bearer_auth_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-signed-auth-", dir="/tmp"))
+    shared_secret = b"0123456789abcdef0123456789abcdef"
+    shared_secret_file = codex_home / "app-server-signing-secret"
+    shared_secret_file.write_text(shared_secret.decode("ascii") + "\n", encoding="utf-8")
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:0",
+            "--ws-auth",
+            "signed-bearer-token",
+            "--ws-shared-secret-file",
+            str(shared_secret_file),
+            "--ws-issuer",
+            "codex-enroller",
+            "--ws-audience",
+            "codex-app-server",
+            "--ws-max-clock-skew-seconds",
+            "1",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    websocket = None
+    try:
+        host, port = wait_for_websocket_bind(proc, 5)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        upgrade_headers = [
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+        ]
+        assert websocket_handshake_status(host, port, upgrade_headers) == 401
+        now = int(time.time())
+        expired_token = websocket_signed_bearer_token(
+            shared_secret,
+            {"exp": now - 30, "iss": "codex-enroller", "aud": "codex-app-server"},
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, f"Authorization: Bearer {expired_token}"],
+            )
+            == 401
+        )
+        not_yet_valid_token = websocket_signed_bearer_token(
+            shared_secret,
+            {
+                "exp": now + 60,
+                "nbf": now + 30,
+                "iss": "codex-enroller",
+                "aud": "codex-app-server",
+            },
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, f"Authorization: Bearer {not_yet_valid_token}"],
+            )
+            == 401
+        )
+        wrong_issuer_token = websocket_signed_bearer_token(
+            shared_secret,
+            {"exp": now + 60, "iss": "someone-else", "aud": "codex-app-server"},
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, f"Authorization: Bearer {wrong_issuer_token}"],
+            )
+            == 401
+        )
+        wrong_audience_token = websocket_signed_bearer_token(
+            shared_secret,
+            {"exp": now + 60, "iss": "codex-enroller", "aud": "wrong-audience"},
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, f"Authorization: Bearer {wrong_audience_token}"],
+            )
+            == 401
+        )
+        wrong_signature_token = websocket_signed_bearer_token(
+            b"fedcba9876543210fedcba9876543210",
+            {"exp": now + 60, "iss": "codex-enroller", "aud": "codex-app-server"},
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, f"Authorization: Bearer {wrong_signature_token}"],
+            )
+            == 401
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [*upgrade_headers, "Authorization: Bearer not-a-jwt"],
+            )
+            == 401
+        )
+        valid_token = websocket_signed_bearer_token(
+            shared_secret,
+            {"exp": now + 60, "iss": "codex-enroller", "aud": ["other", "codex-app-server"]},
+        )
+        websocket = SmokeWebSocket(host, port, valid_token)
+        exercise_json_rpc(websocket.write_json, websocket.read_json)
+    finally:
+        if websocket is not None:
+            websocket.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_websocket_signed_bearer_config_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-short-secret-", dir="/tmp"))
+    shared_secret_file = codex_home / "app-server-signing-secret"
+    shared_secret_file.write_text("too-short\n", encoding="utf-8")
+    try:
+        output = subprocess.run(
+            [
+                str(binary),
+                "app-server",
+                "--listen",
+                "ws://127.0.0.1:0",
+                "--ws-auth",
+                "signed-bearer-token",
+                "--ws-shared-secret-file",
+                str(shared_secret_file),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert output.returncode != 0
+        assert "AppServerWebsocketSignedBearerSecretTooShort" in output.stderr
+    finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -29856,16 +30024,19 @@ def run_flag_compat_smoke(binary: Path) -> None:
     assert capability.stderr is not None
     assert "UnknownAppServerOption" not in capability.stderr.read()
 
-    signed_bearer = subprocess.run(
+    signed_secret_dir = Path(tempfile.mkdtemp(prefix="codex-zig-ws-flag-auth-", dir="/tmp"))
+    signed_secret_file = signed_secret_dir / "secret"
+    signed_secret_file.write_text("0123456789abcdef0123456789abcdef\n", encoding="utf-8")
+    signed_bearer = subprocess.Popen(
         [
             str(binary),
             "app-server",
             "--listen",
-            "ws://127.0.0.1:4500",
+            "ws://127.0.0.1:0",
             "--ws-auth",
             "signed-bearer-token",
             "--ws-shared-secret-file",
-            "/tmp/codex-app-server-secret",
+            str(signed_secret_file),
             "--ws-issuer",
             "issuer",
             "--ws-audience",
@@ -29877,12 +30048,17 @@ def run_flag_compat_smoke(binary: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=5,
-        check=False,
     )
-    assert signed_bearer.returncode != 0
-    assert "AppServerWebsocketAuthNotImplemented" in signed_bearer.stderr
-    assert "UnknownAppServerOption" not in signed_bearer.stderr
+    try:
+        wait_for_websocket_bind(signed_bearer, 5)
+        assert signed_bearer.poll() is None
+    finally:
+        if signed_bearer.poll() is None:
+            signed_bearer.kill()
+            signed_bearer.wait(timeout=5)
+        shutil.rmtree(signed_secret_dir, ignore_errors=True)
+    assert signed_bearer.stderr is not None
+    assert "UnknownAppServerOption" not in signed_bearer.stderr.read()
 
     missing_mode = subprocess.run(
         [str(binary), "app-server", "--listen", "off", "--ws-token-sha256", digest],
@@ -30024,6 +30200,10 @@ def main() -> None:
     print("app-server-websocket-e2e: ok")
     run_websocket_capability_auth_smoke(binary)
     print("app-server-websocket-capability-auth-e2e: ok")
+    run_websocket_signed_bearer_auth_smoke(binary)
+    print("app-server-websocket-signed-bearer-auth-e2e: ok")
+    run_websocket_signed_bearer_config_smoke(binary)
+    print("app-server-websocket-signed-bearer-config-e2e: ok")
     run_proxy_smoke(binary)
     print("app-server-proxy-e2e: ok")
     run_stdio_to_uds_smoke(binary)
