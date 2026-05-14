@@ -1263,7 +1263,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
             "method": "initialize",
             "params": {
                 "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                "capabilities": {},
+                "capabilities": {"experimentalApi": True},
             },
         }
     )
@@ -7198,6 +7198,94 @@ def run_turn_terminal_interaction_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_background_terminal_clean_experimental_gate_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-background-clean-gate-home-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-stable-client",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-stable-client"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-background-clean-without-experimental-api",
+                    "method": "thread/backgroundTerminals/clean",
+                    "params": {"threadId": "00000000-0000-0000-0000-000000000004"},
+                },
+            )
+            gated = read_json_line(proc, 5)
+            assert gated["id"] == "thread-background-clean-without-experimental-api"
+            assert gated["error"]["code"] == -32600
+            assert (
+                "thread/backgroundTerminals/clean requires experimentalApi capability"
+                in gated["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-experimental-client",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {"experimentalApi": True},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-experimental-client"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-background-clean-with-experimental-api",
+                    "method": "thread/backgroundTerminals/clean",
+                    "params": {"threadId": "00000000-0000-0000-0000-000000000004"},
+                },
+            )
+            ungated = read_json_line(proc, 5)
+            assert ungated["id"] == "thread-background-clean-with-experimental-api"
+            assert ungated["error"]["code"] == -32600
+            assert (
+                "thread not found: 00000000-0000-0000-0000-000000000004"
+                in ungated["error"]["message"]
+            )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_thread_background_terminal_clean_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-background-clean-home-", dir="/tmp"))
@@ -7228,7 +7316,7 @@ def run_thread_background_terminal_clean_smoke(binary: Path) -> None:
                     "method": "initialize",
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                        "capabilities": {},
+                        "capabilities": {"experimentalApi": True},
                     },
                 },
             )
@@ -33422,6 +33510,8 @@ def main() -> None:
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
+    run_thread_background_terminal_clean_experimental_gate_smoke(binary)
+    print("app-server-thread-background-terminal-clean-experimental-gate-e2e: ok")
     run_thread_background_terminal_clean_smoke(binary)
     print("app-server-thread-background-terminal-clean-e2e: ok")
     run_turn_diff_opt_out_smoke(binary)

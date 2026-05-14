@@ -89,6 +89,7 @@ const AppServerOptions = struct {
 
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
+    experimental_api_enabled: bool = false,
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
@@ -25271,11 +25272,18 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
 
     const method = method_value.string;
     if (std.mem.eql(u8, method, "initialize")) {
-        try updateOptOutNotificationMethods(allocator, state, object.get("params"));
+        try updateInitializeCapabilities(allocator, state, object.get("params"));
         try queueInitializeConfigWarningNotifications(allocator, state);
         const result = try renderInitializeResult(allocator);
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
+    }
+    if (experimentalReasonForRequestMethod(method)) |reason| {
+        if (!state.experimental_api_enabled) {
+            const message = try std.fmt.allocPrint(allocator, "{s} requires experimentalApi capability", .{reason});
+            defer allocator.free(message);
+            return try renderJsonRpcError(allocator, id_value, -32600, message);
+        }
     }
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, id_value.?);
@@ -32591,13 +32599,17 @@ fn appendSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.ArrayList(
     }
 }
 
-fn updateOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServerState, params_value: ?std.json.Value) !void {
+fn updateInitializeCapabilities(allocator: std.mem.Allocator, state: *AppServerState, params_value: ?std.json.Value) !void {
     clearOptOutNotificationMethods(allocator, state);
+    state.experimental_api_enabled = false;
     const params = params_value orelse return;
     if (params != .object) return;
     const capabilities = params.object.get("capabilities") orelse return;
     if (capabilities == .null) return;
     if (capabilities != .object) return;
+    if (capabilities.object.get("experimentalApi")) |experimental_api| {
+        if (experimental_api == .bool) state.experimental_api_enabled = experimental_api.bool;
+    }
     const opt_out = capabilities.object.get("optOutNotificationMethods") orelse return;
     if (opt_out == .null) return;
     if (opt_out != .array) return;
@@ -32607,6 +32619,11 @@ fn updateOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServ
         errdefer allocator.free(owned);
         try state.opt_out_notification_methods.append(allocator, owned);
     }
+}
+
+fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) return "thread/backgroundTerminals/clean";
+    return null;
 }
 
 fn clearOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServerState) void {
