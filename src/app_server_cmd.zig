@@ -25837,6 +25837,13 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var terminal_interaction_context = TerminalInteractionNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/commandExecution/terminalInteraction"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
     var file_change_patch_update_context = FileChangePatchUpdateNotificationContext{
         .allocator = allocator,
         .enabled = !notificationMethodOptedOut(state, "item/fileChange/patchUpdated"),
@@ -25901,6 +25908,10 @@ fn handleTurnStart(
         .command_execution_output_callback = .{
             .ctx = &command_execution_output_context,
             .on_command_execution_output = handleSessionCommandExecutionOutput,
+        },
+        .terminal_interaction_callback = .{
+            .ctx = &terminal_interaction_context,
+            .on_terminal_interaction = handleSessionTerminalInteraction,
         },
         .file_change_patch_update_callback = .{
             .ctx = &file_change_patch_update_context,
@@ -27580,6 +27591,14 @@ const CommandExecutionOutputNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const TerminalInteractionNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 const FileChangePatchUpdateNotificationContext = struct {
     allocator: std.mem.Allocator,
     enabled: bool,
@@ -27657,6 +27676,14 @@ fn handleSessionCommandExecutionOutput(ctx: *anyopaque, item_id: []const u8, del
     const context: *CommandExecutionOutputNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
     const notification = try renderCommandExecutionOutputDeltaNotification(context.allocator, context.thread_id, context.turn_id, item_id, delta);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionTerminalInteraction(ctx: *anyopaque, item_id: []const u8, process_id: []const u8, stdin: []const u8) anyerror!void {
+    const context: *TerminalInteractionNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+    const notification = try renderTerminalInteractionNotification(context.allocator, context.thread_id, context.turn_id, item_id, process_id, stdin);
     errdefer context.allocator.free(notification);
     try context.notifications.append(context.allocator, notification);
 }
@@ -27773,6 +27800,30 @@ fn renderCommandExecutionOutputDeltaNotification(
     try appendJsonString(allocator, &notification, item_id);
     try notification.appendSlice(allocator, ",\"delta\":");
     try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderTerminalInteractionNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    process_id: []const u8,
+    stdin: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/commandExecution/terminalInteraction\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"processId\":");
+    try appendJsonString(allocator, &notification, process_id);
+    try notification.appendSlice(allocator, ",\"stdin\":");
+    try appendJsonString(allocator, &notification, stdin);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
 }

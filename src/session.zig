@@ -280,6 +280,7 @@ pub const TurnOptions = struct {
     plan_update_callback: ?PlanUpdateCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
     command_execution_output_callback: ?CommandExecutionOutputCallback = null,
+    terminal_interaction_callback: ?TerminalInteractionCallback = null,
     file_change_patch_update_callback: ?FileChangePatchUpdateCallback = null,
     raw_response_item_callback: ?RawResponseItemCallback = null,
     reasoning_event_callback: ?ReasoningEventCallback = null,
@@ -303,6 +304,11 @@ pub const DiffUpdateCallback = struct {
 pub const CommandExecutionOutputCallback = struct {
     ctx: *anyopaque,
     on_command_execution_output: *const fn (ctx: *anyopaque, item_id: []const u8, delta: []const u8) anyerror!void,
+};
+
+pub const TerminalInteractionCallback = struct {
+    ctx: *anyopaque,
+    on_terminal_interaction: *const fn (ctx: *anyopaque, item_id: []const u8, process_id: []const u8, stdin: []const u8) anyerror!void,
 };
 
 pub const FileChangePatchUpdateCallback = struct {
@@ -655,6 +661,9 @@ fn runToolCall(
             try callback.on_diff_updated(callback.ctx);
         }
     }
+    if (std.mem.eql(u8, call.name, "write_stdin") and !std.mem.eql(u8, tool_result.summary, "unknown session")) {
+        try reportTerminalInteraction(allocator, options, call.call_id, call.arguments);
+    }
     if (isCommandExecutionToolName(call.name) and tool_result.output.len > 0) {
         if (options.command_execution_output_callback) |callback| {
             try callback.on_command_execution_output(callback.ctx, call.call_id, tool_result.output);
@@ -662,6 +671,30 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+const TerminalInteractionArgs = struct {
+    session_id: u64,
+    chars: []const u8 = "",
+};
+
+fn reportTerminalInteraction(
+    allocator: std.mem.Allocator,
+    options: TurnOptions,
+    item_id: []const u8,
+    arguments_json: []const u8,
+) !void {
+    const callback = options.terminal_interaction_callback orelse return;
+    var parsed = std.json.parseFromSlice(TerminalInteractionArgs, allocator, arguments_json, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer parsed.deinit();
+    if (parsed.value.chars.len == 0) return;
+
+    const process_id = try std.fmt.allocPrint(allocator, "{d}", .{parsed.value.session_id});
+    defer allocator.free(process_id);
+    try callback.on_terminal_interaction(callback.ctx, item_id, process_id, parsed.value.chars);
 }
 
 fn reportMcpToolCallProgress(
