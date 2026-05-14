@@ -25,18 +25,22 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25841829077` passed for
-  `c633f12 Document fuzzy search index parity`.
-- Source hygiene: current tracked-file scans found no provider-shaped tokens,
-  GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
-  JWT-shaped blobs, unignored local auth/env files, or tracked local build
-  artifacts. Current ignored-file scans only found local build output,
-  Python bytecode, ignored demo scratch files, and ignored local `plans/`
-  content. Broad keyword/path scans only found test fixtures, docs, ignored
-  local build output, and temporary-path examples. Git-history regex scans found
-  no provider-shaped secrets, private-key blocks, or JWT-shaped blobs, and only
-  an old dummy `sk-proj-*` test fixture added by commit `820d156` and removed by
-  commit `0383594`; no real secret material was identified.
+  Checked push run `25846439635` passed for
+  `6d3108d Document command exec empty followup ids`. Local pre-push
+  verification for the app-server websocket slice passed formatting,
+  Python compilation, whitespace checks, `zig build`, focused websocket and
+  flag-compat smokes, the full app-server smoke, `zig build test`, and
+  `zig build e2e`.
+- Source hygiene: current tracked-file scans after the app-server websocket
+  commits found no provider-shaped tokens, GitHub tokens, Slack tokens, AWS
+  access keys, private-key blocks, or JWT-shaped blobs. Keyword/path scans found
+  public docs, test fixtures, mocked auth/token flows, and temporary-path
+  examples rather than checked-in local credentials. Current ignored-file scans
+  only found local build output, Python bytecode, ignored demo scratch files,
+  and ignored local `plans/` content. Git-history regex scans found no real
+  provider-shaped secrets, private-key blocks, or JWT-shaped blobs; the only
+  provider-shaped history match is an old dummy `sk-proj-*` test fixture added
+  by commit `820d156` and removed by commit `0383594`.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
