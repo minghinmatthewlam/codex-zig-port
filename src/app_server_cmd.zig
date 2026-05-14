@@ -28286,6 +28286,7 @@ fn handleThreadStart(
     subscription_committed = true;
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
+    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28330,6 +28331,7 @@ fn handleThreadResume(
             thread_moved = true;
             subscription_committed = true;
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
+            try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
 
             return renderJsonRpcResult(allocator, id_value, result);
         }
@@ -28372,6 +28374,7 @@ fn handleThreadResume(
     thread_moved = true;
     subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
+    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28454,6 +28457,7 @@ fn handleThreadForkWithSource(
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
+    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -30727,6 +30731,39 @@ fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServe
         return;
     }
     try state.pending_notifications.append(allocator, notification);
+}
+
+fn queueUnstableFeaturesWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    cfg: config.Config,
+    thread_id: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "warning")) return;
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const message = try features_cmd.unstableFeaturesWarningMessage(allocator, cfg.codex_home, config_bytes orelse "", cfg.active_profile);
+    defer if (message) |value| allocator.free(value);
+    const warning = message orelse return;
+
+    const notification = try renderWarningNotification(allocator, thread_id, warning);
+    errdefer allocator.free(notification);
+    try state.pending_notifications.append(allocator, notification);
+}
+
+fn renderWarningNotification(allocator: std.mem.Allocator, thread_id: ?[]const u8, message: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"warning\",\"params\":{\"threadId\":");
+    try appendOptionalJsonString(allocator, &result, thread_id);
+    try result.appendSlice(allocator, ",\"message\":");
+    try appendJsonString(allocator, &result, message);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
 }
 
 fn queueThreadStatusChangedNotification(

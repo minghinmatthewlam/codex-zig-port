@@ -3624,12 +3624,16 @@ def run_stdio_smoke(binary: Path) -> None:
 
 
 def run_thread_started_opt_out_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-opt-out-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     try:
         write_json_line(
@@ -3683,6 +3687,7 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
@@ -20912,6 +20917,7 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
                     "[profiles.work.features]",
                     "apps = false",
                     "goals = true",
+                    "code_mode = true",
                     "",
                 ]
             ),
@@ -20925,6 +20931,89 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         assert by_name["goals"]["enabled"] is True
         assert by_name["goals"]["stage"] == "beta"
         assert by_name["goals"]["displayName"] == "goals"
+        assert by_name["code_mode"]["enabled"] is True
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "feature-warning-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-feature-warning",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        feature_warning_start = read_json_line(proc, 5)
+        assert feature_warning_start["id"] == "feature-warning-thread-start"
+        feature_warning_thread = feature_warning_start["result"]["thread"]
+        assert_thread_started_notification(read_json_line(proc, 5), feature_warning_thread)
+        feature_warning = read_json_line(proc, 5)
+        assert feature_warning["method"] == "warning"
+        assert feature_warning["params"]["threadId"] == feature_warning_thread["id"]
+        assert (
+            "Under-development features enabled: code_mode."
+            in feature_warning["params"]["message"]
+        )
+        assert (
+            "suppress_unstable_features_warning = true"
+            in feature_warning["params"]["message"]
+        )
+
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    "suppress_unstable_features_warning = true",
+                    'profile = "work"',
+                    "[profiles.work.features]",
+                    "code_mode = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "feature-warning-suppressed-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-feature-warning",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        suppressed_start = read_json_line(proc, 5)
+        assert suppressed_start["id"] == "feature-warning-suppressed-thread-start"
+        assert_thread_started_notification(
+            read_json_line(proc, 5), suppressed_start["result"]["thread"]
+        )
+        no_stray_warning = rpc("feature-warning-suppressed-followup", "experimentalFeature/list", {})
+        assert no_stray_warning["id"] == "feature-warning-suppressed-followup"
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'profile = "work"',
+                    "[features]",
+                    "apps = true",
+                    "goals = false",
+                    "[profiles.work.features]",
+                    "apps = false",
+                    "goals = true",
+                    "code_mode = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         set_enablement = rpc(
             "feature-enable-set",
@@ -21192,11 +21281,15 @@ def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: 
 
 def run_unix_path_smoke(binary: Path) -> None:
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-", dir="/tmp"))
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-home-", dir="/tmp"))
     try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
         socket_path = socket_dir / "app-server.sock"
-        exercise_unix_socket(binary, f"unix://{socket_path}", socket_path)
+        exercise_unix_socket(binary, f"unix://{socket_path}", socket_path, env=env)
     finally:
         shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_unix_default_smoke(binary: Path) -> None:
@@ -21502,12 +21595,16 @@ def exercise_websocket_connection_state_reset(host: str, port: int, bearer_token
 
 
 def run_websocket_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-home-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
         [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     websocket = None
     try:
@@ -21545,10 +21642,13 @@ def run_websocket_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_websocket_capability_auth_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-auth-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     token_file = codex_home / "app-server-token"
     token_file.write_text("super-secret-token\n", encoding="utf-8")
     proc = subprocess.Popen(
@@ -21566,6 +21666,7 @@ def run_websocket_capability_auth_smoke(binary: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     websocket = None
     try:
@@ -21614,6 +21715,8 @@ def run_websocket_capability_auth_smoke(binary: Path) -> None:
 
 def run_websocket_signed_bearer_auth_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-signed-auth-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     shared_secret = b"0123456789abcdef0123456789abcdef"
     shared_secret_file = codex_home / "app-server-signing-secret"
     shared_secret_file.write_text(shared_secret.decode("ascii") + "\n", encoding="utf-8")
@@ -21638,6 +21741,7 @@ def run_websocket_signed_bearer_auth_smoke(binary: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     websocket = None
     try:
@@ -21770,6 +21874,9 @@ def run_websocket_signed_bearer_config_smoke(binary: Path) -> None:
 
 def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-proxy-", dir="/tmp"))
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-proxy-home-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
     try:
         socket_path = socket_dir / "app-server.sock"
         server = subprocess.Popen(
@@ -21778,6 +21885,7 @@ def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
         proxy = None
         try:
@@ -21788,6 +21896,7 @@ def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=env,
             )
             exercise_json_rpc(
                 lambda payload: write_json_line(proxy, payload),
@@ -21816,6 +21925,7 @@ def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
                 server.wait(timeout=5)
     finally:
         shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_proxy_smoke(binary: Path) -> None:

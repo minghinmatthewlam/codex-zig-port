@@ -201,7 +201,7 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
     if (enabled and options.profile == null and isDirectUnderDevelopmentFeature(feature)) {
-        const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+        const config_path = try config.configTomlPath(allocator, codex_home);
         defer allocator.free(config_path);
         const warning = try std.fmt.allocPrint(
             allocator,
@@ -211,6 +211,59 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
         defer allocator.free(warning);
         try cli_utils.writeStderr(warning);
     }
+}
+
+pub fn unstableFeaturesWarningMessage(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    profile: ?[]const u8,
+) !?[]const u8 {
+    if (suppressUnstableFeaturesWarning(config_bytes)) return null;
+
+    var overrides = try parseFeatureOverridesForProfile(allocator, config_bytes, profile);
+    defer overrides.deinit(allocator);
+
+    var keys = std.ArrayList(u8).empty;
+    defer keys.deinit(allocator);
+    for (features) |feature| {
+        if (!std.mem.eql(u8, feature.stage, "under development")) continue;
+        if (overrides.get(feature.key) orelse false) {
+            if (keys.items.len > 0) try keys.appendSlice(allocator, ", ");
+            try keys.appendSlice(allocator, feature.key);
+        }
+    }
+    if (keys.items.len == 0) return null;
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const message: []const u8 = try std.fmt.allocPrint(
+        allocator,
+        "Under-development features enabled: {s}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {s}.",
+        .{ keys.items, config_path },
+    );
+    return message;
+}
+
+fn suppressUnstableFeaturesWarning(bytes: []const u8) bool {
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') return false;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (!std.mem.eql(u8, key, "suppress_unstable_features_warning")) continue;
+        const raw_value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        return std.mem.eql(u8, raw_value, "true");
+    }
+    return false;
 }
 
 pub fn loadFeatureOverrides(allocator: std.mem.Allocator, codex_home: []const u8) !FeatureOverrides {
@@ -833,4 +886,34 @@ test "runtime feature toggles accept legacy aliases" {
 
     try std.testing.expectEqual(false, overrides.get("multi_agent").?);
     try std.testing.expect(overrides.get("collab") == null);
+}
+
+test "unstable feature warning message lists effective under-development features" {
+    const allocator = std.testing.allocator;
+    const message = try unstableFeaturesWarningMessage(allocator, "/tmp/codex-home",
+        \\[features]
+        \\code_mode = true
+        \\goals = true
+        \\shell_zsh_fork = false
+        \\[profiles.work.features]
+        \\remote_control = true
+        \\
+    , "work") orelse return error.TestExpectedWarning;
+    defer allocator.free(message);
+
+    try std.testing.expect(std.mem.indexOf(u8, message, "Under-development features enabled: code_mode, remote_control.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "suppress_unstable_features_warning = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "/tmp/codex-home/config.toml") != null);
+}
+
+test "unstable feature warning message respects suppression flag" {
+    const allocator = std.testing.allocator;
+    const message = try unstableFeaturesWarningMessage(allocator, "/tmp/codex-home",
+        \\suppress_unstable_features_warning = true # quiet startup notices
+        \\[features]
+        \\code_mode = true
+        \\
+    , null);
+
+    try std.testing.expect(message == null);
 }
