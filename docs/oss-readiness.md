@@ -25,16 +25,16 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25857746425` passed for
-  `bde1d95 Handle relative execpolicy rule paths`; prior push runs
-  `25857315857`, `25856905041`, and `25856434734` also passed for the hook
-  startup warning, project config warning, and initialize config warning
-  slices. Local pre-push verification for the latest slice included Python
-  compilation, whitespace checks, `zig build`, the focused initialize
-  config-warning smoke, `zig build test`, and `zig build e2e`.
-- Source hygiene: current tracked-file scans after the app-server websocket
-  and warning-parity commits found no provider-shaped tokens, GitHub tokens,
-  Slack tokens, AWS access keys, private-key blocks, or JWT-shaped blobs.
+  Checked push run `25860483310` passed for
+  `3a9c767 Document app-server reasoning coverage`; prior push runs
+  `25860011324` and `25859779287` also passed for the thread-compacted and raw
+  response item notification slices. Local pre-push verification for the latest
+  slice included Python compilation, whitespace checks, `zig build`, the focused
+  app-server reasoning-notification smoke, `zig build test`, and
+  `zig build e2e`.
+- Source hygiene: current tracked-file scans after the app-server reasoning
+  notification commits found no provider-shaped tokens, GitHub tokens, Slack
+  tokens, AWS access keys, private-key blocks, or JWT-shaped blobs.
   Keyword/path scans found public docs, test fixtures, mocked auth/token flows
   such as `test-api-key`, and temporary-path examples rather than checked-in
   local credentials. Current ignored-file scans only found local build output,
