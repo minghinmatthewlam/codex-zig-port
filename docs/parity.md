@@ -516,8 +516,10 @@ bound URL, serves `/readyz` and `/healthz` on the same listener, and exchanges
 JSON-RPC requests/responses as websocket text frames. It rejects requests with
 an `Origin` header and enforces `--ws-auth capability-token` from either
 `--ws-token-file` or `--ws-token-sha256` against `Authorization: Bearer ...`
-during upgrade. Signed-bearer websocket auth, multi-connection lifecycle
-routing, and graceful shutdown parity remain planned.
+during upgrade. It also enforces `--ws-auth signed-bearer-token` with trimmed
+shared-secret files, HS256 JWT signature verification, exp/nbf clock-skew
+checks, and optional issuer/audience checks during upgrade. Multi-connection
+lifecycle routing and graceful shutdown parity remain planned.
 
 Additional app-server config reload coverage: `config/batchWrite` honors
 `reloadUserConfig` for already-loaded threads by refreshing default-derived
