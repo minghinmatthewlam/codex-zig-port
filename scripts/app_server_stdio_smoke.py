@@ -6158,6 +6158,176 @@ def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_reasoning_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-reasoning-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-reasoning"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-reasoning-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-reasoning",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-reasoning"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                reasoning_events = [
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": "reasoning-item-1",
+                        "summary_index": 0,
+                    },
+                    {
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": "reasoning-item-1",
+                        "summary_index": 0,
+                        "delta": "checked constraints",
+                    },
+                    {
+                        "type": "response.reasoning_text.delta",
+                        "item_id": "reasoning-item-1",
+                        "content_index": 2,
+                        "delta": "private trace",
+                    },
+                    {
+                        "type": "response.output_text.delta",
+                        "delta": "reasoned reply",
+                    },
+                ]
+                payload = "".join(
+                    f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                    for event in reasoning_events
+                )
+                server.response_payloads.append((payload + "data: [DONE]\n\n").encode())
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-reasoning",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "show reasoning notifications"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-reasoning"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+
+                assert read_json_line(proc, 5) == {
+                    "jsonrpc": "2.0",
+                    "method": "item/reasoning/summaryPartAdded",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "itemId": "reasoning-item-1",
+                        "summaryIndex": 0,
+                    },
+                }
+                assert read_json_line(proc, 5) == {
+                    "jsonrpc": "2.0",
+                    "method": "item/reasoning/summaryTextDelta",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "itemId": "reasoning-item-1",
+                        "delta": "checked constraints",
+                        "summaryIndex": 0,
+                    },
+                }
+                assert read_json_line(proc, 5) == {
+                    "jsonrpc": "2.0",
+                    "method": "item/reasoning/textDelta",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "itemId": "reasoning-item-1",
+                        "delta": "private trace",
+                        "contentIndex": 2,
+                    },
+                }
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "reasoned reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == "reasoned reply"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == ["/responses"]
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_tool_cwd_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-tool-cwd-home-", dir="/tmp"))
@@ -32319,6 +32489,8 @@ def main() -> None:
     print("app-server-turn-start-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
     print("app-server-turn-plan-updated-notification-e2e: ok")
+    run_turn_reasoning_notification_smoke(binary)
+    print("app-server-turn-reasoning-notification-e2e: ok")
     run_turn_tool_cwd_smoke(binary)
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_diff_opt_out_smoke(binary)

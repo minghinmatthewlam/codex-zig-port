@@ -25837,6 +25837,15 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var reasoning_event_context = ReasoningEventNotificationContext{
+        .allocator = allocator,
+        .summary_text_delta_enabled = !notificationMethodOptedOut(state, "item/reasoning/summaryTextDelta"),
+        .summary_part_added_enabled = !notificationMethodOptedOut(state, "item/reasoning/summaryPartAdded"),
+        .text_delta_enabled = !notificationMethodOptedOut(state, "item/reasoning/textDelta"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
@@ -25857,6 +25866,10 @@ fn handleTurnStart(
         .raw_response_item_callback = .{
             .ctx = &raw_response_item_context,
             .on_raw_response_item = handleSessionRawResponseItem,
+        },
+        .reasoning_event_callback = .{
+            .ctx = &reasoning_event_context,
+            .on_reasoning_event = handleSessionReasoningEvent,
         },
         .workdir = thread.cwd,
     }) catch |err| {
@@ -27508,6 +27521,16 @@ const RawResponseItemNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const ReasoningEventNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    summary_text_delta_enabled: bool,
+    summary_part_added_enabled: bool,
+    text_delta_enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
     const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
@@ -27539,6 +27562,20 @@ fn handleSessionRawResponseItem(ctx: *anyopaque, item_json: []const u8) anyerror
     try context.notifications.append(context.allocator, notification);
 }
 
+fn handleSessionReasoningEvent(ctx: *anyopaque, event: api.ReasoningEvent) anyerror!void {
+    const context: *ReasoningEventNotificationContext = @ptrCast(@alignCast(ctx));
+    const enabled = switch (event.kind) {
+        .summary_text_delta => context.summary_text_delta_enabled,
+        .summary_part_added => context.summary_part_added_enabled,
+        .text_delta => context.text_delta_enabled,
+    };
+    if (!enabled) return;
+
+    const notification = try renderReasoningEventNotification(context.allocator, context.thread_id, context.turn_id, event);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
 fn movePendingTurnUpdateNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -27565,6 +27602,88 @@ fn renderRawResponseItemCompletedNotification(
     try appendJsonString(allocator, &notification, turn_id);
     try notification.appendSlice(allocator, ",\"item\":");
     try notification.appendSlice(allocator, item_json);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderReasoningEventNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    event: api.ReasoningEvent,
+) ![]const u8 {
+    return switch (event.kind) {
+        .summary_text_delta => renderReasoningSummaryTextDeltaNotification(allocator, thread_id, turn_id, event.item_id, event.delta, event.index),
+        .summary_part_added => renderReasoningSummaryPartAddedNotification(allocator, thread_id, turn_id, event.item_id, event.index),
+        .text_delta => renderReasoningTextDeltaNotification(allocator, thread_id, turn_id, event.item_id, event.delta, event.index),
+    };
+}
+
+fn renderReasoningSummaryTextDeltaNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    delta: []const u8,
+    summary_index: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/reasoning/summaryTextDelta\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"delta\":");
+    try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, ",\"summaryIndex\":");
+    try appendInt(allocator, &notification, summary_index);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderReasoningSummaryPartAddedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    summary_index: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/reasoning/summaryPartAdded\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"summaryIndex\":");
+    try appendInt(allocator, &notification, summary_index);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderReasoningTextDeltaNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    delta: []const u8,
+    content_index: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/reasoning/textDelta\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"delta\":");
+    try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, ",\"contentIndex\":");
+    try appendInt(allocator, &notification, content_index);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
 }

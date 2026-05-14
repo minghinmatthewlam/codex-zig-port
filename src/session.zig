@@ -280,6 +280,7 @@ pub const TurnOptions = struct {
     plan_update_callback: ?PlanUpdateCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
     raw_response_item_callback: ?RawResponseItemCallback = null,
+    reasoning_event_callback: ?ReasoningEventCallback = null,
     workdir: ?[]const u8 = null,
 };
 
@@ -296,6 +297,11 @@ pub const DiffUpdateCallback = struct {
 pub const RawResponseItemCallback = struct {
     ctx: *anyopaque,
     on_raw_response_item: *const fn (ctx: *anyopaque, item_json: []const u8) anyerror!void,
+};
+
+pub const ReasoningEventCallback = struct {
+    ctx: *anyopaque,
+    on_reasoning_event: *const fn (ctx: *anyopaque, event: api.ReasoningEvent) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -468,6 +474,11 @@ pub fn runTurnWithOptions(
         if (options.raw_response_item_callback) |callback| {
             for (response.raw_response_items) |item_json| {
                 try callback.on_raw_response_item(callback.ctx, item_json);
+            }
+        }
+        if (options.reasoning_event_callback) |callback| {
+            for (response.reasoning_events) |event| {
+                try callback.on_reasoning_event(callback.ctx, event);
             }
         }
 

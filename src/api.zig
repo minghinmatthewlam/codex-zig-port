@@ -18,10 +18,29 @@ pub const FunctionCall = struct {
     }
 };
 
+pub const ReasoningEventKind = enum {
+    summary_text_delta,
+    summary_part_added,
+    text_delta,
+};
+
+pub const ReasoningEvent = struct {
+    kind: ReasoningEventKind,
+    item_id: []const u8,
+    delta: []const u8,
+    index: i64,
+
+    pub fn deinit(self: ReasoningEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.item_id);
+        allocator.free(self.delta);
+    }
+};
+
 pub const ParsedResponse = struct {
     text: []const u8,
     function_calls: []FunctionCall,
     raw_response_items: []const []const u8,
+    reasoning_events: []const ReasoningEvent,
 
     pub fn deinit(self: *ParsedResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
@@ -29,6 +48,8 @@ pub const ParsedResponse = struct {
         allocator.free(self.function_calls);
         for (self.raw_response_items) |item| allocator.free(item);
         allocator.free(self.raw_response_items);
+        for (self.reasoning_events) |event| event.deinit(allocator);
+        allocator.free(self.reasoning_events);
     }
 };
 
@@ -697,6 +718,11 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         for (raw_response_items.items) |item| allocator.free(item);
         raw_response_items.deinit(allocator);
     }
+    var reasoning_events = std.ArrayList(ReasoningEvent).empty;
+    errdefer {
+        for (reasoning_events.items) |event| event.deinit(allocator);
+        reasoning_events.deinit(allocator);
+    }
 
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
@@ -718,6 +744,8 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
             if (object.get("delta")) |delta| {
                 if (delta == .string) try text.appendSlice(allocator, delta.string);
             }
+        } else if (try parseReasoningEvent(allocator, event_type.string, object)) |reasoning_event| {
+            try reasoning_events.append(allocator, reasoning_event);
         } else if (std.mem.eql(u8, event_type.string, "response.failed")) {
             return error.ApiResponseFailed;
         } else if (std.mem.eql(u8, event_type.string, "response.output_item.done")) {
@@ -749,7 +777,54 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         .text = try text.toOwnedSlice(allocator),
         .function_calls = try calls.toOwnedSlice(allocator),
         .raw_response_items = try raw_response_items.toOwnedSlice(allocator),
+        .reasoning_events = try reasoning_events.toOwnedSlice(allocator),
     };
+}
+
+fn parseReasoningEvent(
+    allocator: std.mem.Allocator,
+    event_type: []const u8,
+    object: std.json.ObjectMap,
+) !?ReasoningEvent {
+    const kind: ReasoningEventKind = if (std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta"))
+        .summary_text_delta
+    else if (std.mem.eql(u8, event_type, "response.reasoning_summary_part.added"))
+        .summary_part_added
+    else if (std.mem.eql(u8, event_type, "response.reasoning_text.delta"))
+        .text_delta
+    else
+        return null;
+
+    const item_id = jsonStringFieldAny(object, "item_id", "itemId") orelse return null;
+    const index = switch (kind) {
+        .summary_text_delta, .summary_part_added => jsonIntegerFieldAny(object, "summary_index", "summaryIndex") orelse return null,
+        .text_delta => jsonIntegerFieldAny(object, "content_index", "contentIndex") orelse return null,
+    };
+    const delta = switch (kind) {
+        .summary_text_delta, .text_delta => jsonStringFieldAny(object, "delta", "delta") orelse return null,
+        .summary_part_added => "",
+    };
+    const owned_item_id = try allocator.dupe(u8, item_id);
+    errdefer allocator.free(owned_item_id);
+
+    return .{
+        .kind = kind,
+        .item_id = owned_item_id,
+        .delta = try allocator.dupe(u8, delta),
+        .index = index,
+    };
+}
+
+fn jsonStringFieldAny(object: std.json.ObjectMap, snake_name: []const u8, camel_name: []const u8) ?[]const u8 {
+    const value = object.get(snake_name) orelse object.get(camel_name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn jsonIntegerFieldAny(object: std.json.ObjectMap, snake_name: []const u8, camel_name: []const u8) ?i64 {
+    const value = object.get(snake_name) orelse object.get(camel_name) orelse return null;
+    if (value != .integer) return null;
+    return value.integer;
 }
 
 const baseInstructions =
@@ -890,6 +965,26 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
     try std.testing.expectEqual(@as(usize, 1), parsed.raw_response_items.len);
     try std.testing.expect(std.mem.indexOf(u8, parsed.raw_response_items[0], "\"call_id\":\"c1\"") != null);
+}
+
+test "parses SSE reasoning events" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_1\",\"summary_index\":0}\n" ++
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"summary_index\":0,\"delta\":\"thinking\"}\n" ++
+        "data: {\"type\":\"response.reasoning_text.delta\",\"item_id\":\"rt_1\",\"content_index\":2,\"delta\":\"trace\"}\n" ++
+        "data: [DONE]\n";
+    var parsed = try parseSseResponse(allocator, body);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.reasoning_events.len);
+    try std.testing.expectEqual(ReasoningEventKind.summary_part_added, parsed.reasoning_events[0].kind);
+    try std.testing.expectEqualStrings("rs_1", parsed.reasoning_events[0].item_id);
+    try std.testing.expectEqual(@as(i64, 0), parsed.reasoning_events[0].index);
+    try std.testing.expectEqual(ReasoningEventKind.summary_text_delta, parsed.reasoning_events[1].kind);
+    try std.testing.expectEqualStrings("thinking", parsed.reasoning_events[1].delta);
+    try std.testing.expectEqual(ReasoningEventKind.text_delta, parsed.reasoning_events[2].kind);
+    try std.testing.expectEqual(@as(i64, 2), parsed.reasoning_events[2].index);
 }
 
 test "parses SSE failed response as API failure" {
