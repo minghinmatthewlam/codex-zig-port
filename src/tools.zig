@@ -952,6 +952,7 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
         if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
             const path = line["*** Delete File: ".len..];
             try validateRelativePath(path);
+            if (index + 1 >= lines.items.len or !isPatchSection(lines.items[index + 1])) return error.InvalidPatch;
             try root.deleteFile(std.Io.Threaded.global_single_threaded.io(), path);
             stats.deleted += 1;
             index += 1;
@@ -1405,6 +1406,26 @@ test "apply_patch deletes files and rejects unsafe paths" {
         \\*** End Patch
     ;
     try std.testing.expectError(error.InvalidPatchPath, applyPatchInDir(allocator, dir.dir, unsafe_patch));
+}
+
+test "apply_patch rejects delete body before deleting file" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "delete.txt",
+        .data = "keep\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Delete File: delete.txt
+        \\bad
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, patch));
+    try dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "delete.txt", .{});
 }
 
 test "apply_patch supports moves and destination overwrite" {
