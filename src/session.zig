@@ -279,6 +279,7 @@ pub const TurnOptions = struct {
     plan_mode: bool = false,
     plan_update_callback: ?PlanUpdateCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
+    command_execution_output_callback: ?CommandExecutionOutputCallback = null,
     raw_response_item_callback: ?RawResponseItemCallback = null,
     reasoning_event_callback: ?ReasoningEventCallback = null,
     server_model_callback: ?ServerModelCallback = null,
@@ -295,6 +296,11 @@ pub const PlanUpdateCallback = struct {
 pub const DiffUpdateCallback = struct {
     ctx: *anyopaque,
     on_diff_updated: *const fn (ctx: *anyopaque) anyerror!void,
+};
+
+pub const CommandExecutionOutputCallback = struct {
+    ctx: *anyopaque,
+    on_command_execution_output: *const fn (ctx: *anyopaque, item_id: []const u8, delta: []const u8) anyerror!void,
 };
 
 pub const RawResponseItemCallback = struct {
@@ -631,8 +637,20 @@ fn runToolCall(
             try callback.on_diff_updated(callback.ctx);
         }
     }
+    if (isCommandExecutionToolName(call.name) and tool_result.output.len > 0) {
+        if (options.command_execution_output_callback) |callback| {
+            try callback.on_command_execution_output(callback.ctx, call.call_id, tool_result.output);
+        }
+    }
 
     return tool_result;
+}
+
+fn isCommandExecutionToolName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "exec_command") or
+        std.mem.eql(u8, name, "write_stdin") or
+        std.mem.eql(u8, name, "shell_command") or
+        std.mem.eql(u8, name, "shell");
 }
 
 const StreamTextContext = struct {};

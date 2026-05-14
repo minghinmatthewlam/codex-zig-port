@@ -1224,7 +1224,10 @@ def assert_turn_start_rpc_completed(
     assert read_json_line(proc, 5)["method"] == "item/started"
     assert read_json_line(proc, 5)["method"] == "item/completed"
     next_notification = read_json_line(proc, 5)
-    while next_notification["method"] == "rawResponseItem/completed":
+    while next_notification["method"] in {
+        "rawResponseItem/completed",
+        "item/commandExecution/outputDelta",
+    }:
         assert next_notification["jsonrpc"] == "2.0"
         assert next_notification["params"]["threadId"] == thread_id
         next_notification = read_json_line(proc, 5)
@@ -6858,6 +6861,14 @@ def run_turn_tool_cwd_smoke(binary: Path) -> None:
                 diff = diff_updated["params"]["diff"]
                 assert f"diff --git a/{tool_file_name} b/{tool_file_name}" in diff
                 assert "+created in thread cwd" in diff
+
+                command_output_delta = read_json_line(proc, 5)
+                assert command_output_delta["method"] == "item/commandExecution/outputDelta"
+                assert command_output_delta["params"]["threadId"] == thread_id
+                assert command_output_delta["params"]["turnId"] == "turn-0"
+                assert command_output_delta["params"]["itemId"] == "cwd-pwd-call"
+                assert "Wall time: " in command_output_delta["params"]["delta"]
+                assert cwd in command_output_delta["params"]["delta"]
 
                 agent_item_started = read_json_line(proc, 5)
                 assert agent_item_started["method"] == "item/started"

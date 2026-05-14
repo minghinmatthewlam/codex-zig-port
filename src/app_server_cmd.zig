@@ -25830,6 +25830,13 @@ fn handleTurnStart(
         .cwd = thread.cwd,
         .notifications = &turn_update_notifications,
     };
+    var command_execution_output_context = CommandExecutionOutputNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/commandExecution/outputDelta"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
     var raw_response_item_context = RawResponseItemNotificationContext{
         .allocator = allocator,
         .enabled = !notificationMethodOptedOut(state, "rawResponseItem/completed"),
@@ -25876,6 +25883,10 @@ fn handleTurnStart(
         .diff_update_callback = .{
             .ctx = &diff_update_context,
             .on_diff_updated = handleSessionDiffUpdated,
+        },
+        .command_execution_output_callback = .{
+            .ctx = &command_execution_output_context,
+            .on_command_execution_output = handleSessionCommandExecutionOutput,
         },
         .raw_response_item_callback = .{
             .ctx = &raw_response_item_context,
@@ -27539,6 +27550,14 @@ const DiffUpdateNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const CommandExecutionOutputNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 const RawResponseItemNotificationContext = struct {
     allocator: std.mem.Allocator,
     enabled: bool,
@@ -27592,6 +27611,14 @@ fn handleSessionDiffUpdated(ctx: *anyopaque) anyerror!void {
     defer context.allocator.free(diff);
 
     const notification = try renderTurnDiffUpdatedNotification(context.allocator, context.thread_id, context.turn_id, diff);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionCommandExecutionOutput(ctx: *anyopaque, item_id: []const u8, delta: []const u8) anyerror!void {
+    const context: *CommandExecutionOutputNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+    const notification = try renderCommandExecutionOutputDeltaNotification(context.allocator, context.thread_id, context.turn_id, item_id, delta);
     errdefer context.allocator.free(notification);
     try context.notifications.append(context.allocator, notification);
 }
@@ -27662,6 +27689,27 @@ fn movePendingTurnUpdateNotifications(
         errdefer allocator.free(notification);
         try state.pending_notifications.append(allocator, notification);
     }
+}
+
+fn renderCommandExecutionOutputDeltaNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    delta: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/commandExecution/outputDelta\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"delta\":");
+    try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn renderRawResponseItemCompletedNotification(
