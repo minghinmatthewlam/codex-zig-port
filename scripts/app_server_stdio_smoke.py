@@ -14420,9 +14420,24 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     },
                 },
             )
-            streaming_stdout_delta = read_json_line(streaming_proc, 5)
-            streaming_stderr_delta = read_json_line(streaming_proc, 5)
-            streaming_response = read_json_line(streaming_proc, 5)
+            streaming_messages = [read_json_line(streaming_proc, 5) for _ in range(3)]
+            streaming_stdout_delta = next(
+                message
+                for message in streaming_messages
+                if message.get("method") == "command/exec/outputDelta"
+                and message["params"]["stream"] == "stdout"
+            )
+            streaming_stderr_delta = next(
+                message
+                for message in streaming_messages
+                if message.get("method") == "command/exec/outputDelta"
+                and message["params"]["stream"] == "stderr"
+            )
+            streaming_response = next(
+                message
+                for message in streaming_messages
+                if message.get("id") == "command-exec-streaming"
+            )
             assert streaming_stdout_delta["method"] == "command/exec/outputDelta"
             assert streaming_stdout_delta["params"]["processId"] == "proc-1"
             assert streaming_stdout_delta["params"]["stream"] == "stdout"
@@ -14539,6 +14554,115 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                 "stdout": "",
                 "stderr": "",
             }
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-stdin",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys; data=sys.stdin.read(); sys.stdout.write('echo:' + data)",
+                        ],
+                        "streamStdin": True,
+                        "streamStdoutStderr": True,
+                        "processId": "proc-stdin",
+                    },
+                },
+            )
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-stdin-write",
+                    "method": "command/exec/write",
+                    "params": {
+                        "processId": "proc-stdin",
+                        "deltaBase64": base64.b64encode(b"hello\n").decode("ascii"),
+                        "closeStdin": True,
+                    },
+                },
+            )
+            stdin_messages = [read_json_line(streaming_proc, 5) for _ in range(3)]
+            stdin_write_response = next(
+                message
+                for message in stdin_messages
+                if message.get("id") == "command-exec-stdin-write"
+            )
+            stdin_delta = next(
+                message
+                for message in stdin_messages
+                if message.get("method") == "command/exec/outputDelta"
+            )
+            stdin_response = next(
+                message
+                for message in stdin_messages
+                if message.get("id") == "command-exec-stdin"
+            )
+            assert stdin_write_response["result"] == {}
+            assert stdin_delta["params"]["processId"] == "proc-stdin"
+            assert stdin_delta["params"]["stream"] == "stdout"
+            assert (
+                base64.b64decode(stdin_delta["params"]["deltaBase64"])
+                == b"echo:hello\n"
+            )
+            assert stdin_delta["params"]["capReached"] is False
+            assert stdin_response["result"] == {
+                "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-terminate-running",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "import sys, time; sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)",
+                        ],
+                        "streamStdoutStderr": True,
+                        "processId": "proc-terminate",
+                        "timeoutMs": 60000,
+                    },
+                },
+            )
+            terminate_ready_delta = read_json_line(streaming_proc, 5)
+            assert terminate_ready_delta["method"] == "command/exec/outputDelta"
+            assert terminate_ready_delta["params"]["processId"] == "proc-terminate"
+            assert (
+                base64.b64decode(terminate_ready_delta["params"]["deltaBase64"])
+                == b"ready\n"
+            )
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-terminate-active",
+                    "method": "command/exec/terminate",
+                    "params": {"processId": "proc-terminate"},
+                },
+            )
+            terminate_messages = [read_json_line(streaming_proc, 5) for _ in range(2)]
+            terminate_response = next(
+                message
+                for message in terminate_messages
+                if message.get("id") == "command-exec-terminate-active"
+            )
+            terminated_command = next(
+                message
+                for message in terminate_messages
+                if message.get("id") == "command-exec-terminate-running"
+            )
+            assert terminate_response["result"] == {}
+            assert terminated_command["result"]["exitCode"] != 0
+            assert terminated_command["result"]["stdout"] == ""
+            assert terminated_command["result"]["stderr"] == ""
             assert streaming_proc.stdin is not None
             streaming_proc.stdin.close()
             streaming_proc.wait(timeout=5)
