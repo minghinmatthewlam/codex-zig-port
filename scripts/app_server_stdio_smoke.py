@@ -6539,6 +6539,14 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                     "                'nextCursor': None,",
                     "            },",
                     "        })",
+                    "    elif method == 'tools/call':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'content': [{'type': 'text', 'text': 'lookup result'}],",
+                    "            },",
+                    "        })",
                     "    else:",
                     "        write({",
                     "            'jsonrpc': '2.0',",
@@ -6615,9 +6623,26 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                 thread_id = thread["id"]
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
-                server.response_payloads.append(
-                    b'data: {"type":"response.output_text.delta","delta":"mcp status reply"}\n\n'
-                    b"data: [DONE]\n\n"
+                mcp_tool_event = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "mcp-progress-call",
+                        "name": "mcp__status_docs__lookup",
+                        "arguments": "{}",
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(mcp_tool_event, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"mcp status reply"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
                 )
                 write_json_line(
                     proc,
@@ -6675,6 +6700,33 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                 assert isinstance(failed_status["params"]["error"], str)
                 assert failed_status["params"]["error"]
 
+                raw_mcp_item_completed = read_json_line(proc, 5)
+                assert raw_mcp_item_completed["method"] == "rawResponseItem/completed"
+                assert raw_mcp_item_completed["params"]["threadId"] == thread_id
+                assert raw_mcp_item_completed["params"]["turnId"] == "turn-0"
+                assert raw_mcp_item_completed["params"]["item"]["type"] == "function_call"
+                assert (
+                    raw_mcp_item_completed["params"]["item"]["call_id"]
+                    == "mcp-progress-call"
+                )
+
+                mcp_calling = read_json_line(proc, 5)
+                assert mcp_calling["method"] == "item/mcpToolCall/progress"
+                assert mcp_calling["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "mcp-progress-call",
+                    "message": "calling status_docs.lookup",
+                }
+                mcp_completed = read_json_line(proc, 5)
+                assert mcp_completed["method"] == "item/mcpToolCall/progress"
+                assert mcp_completed["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "mcp-progress-call",
+                    "message": "completed status_docs.lookup",
+                }
+
                 agent_item_started = read_json_line(proc, 5)
                 assert agent_item_started["method"] == "item/started"
                 assert agent_item_started["params"]["item"]["text"] == "mcp status reply"
@@ -6689,9 +6741,15 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                     read_json_line(proc, 5), thread_id, "idle"
                 )
 
-                assert server.request_paths == ["/responses"]
+                assert server.request_paths == ["/responses", "/responses"]
                 tool_names = {tool["name"] for tool in server.request_bodies[0]["tools"]}
                 assert "mcp__status_docs__lookup" in tool_names
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "mcp-progress-call"
+                    and item.get("output") == "lookup result"
+                    for item in server.request_bodies[1]["input"]
+                )
 
             proc.stdin.close()
             proc.wait(timeout=5)

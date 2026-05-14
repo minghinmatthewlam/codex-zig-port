@@ -284,6 +284,7 @@ pub const TurnOptions = struct {
     reasoning_event_callback: ?ReasoningEventCallback = null,
     server_model_callback: ?ServerModelCallback = null,
     model_verification_callback: ?ModelVerificationCallback = null,
+    mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
     workdir: ?[]const u8 = null,
 };
@@ -321,6 +322,11 @@ pub const ServerModelCallback = struct {
 pub const ModelVerificationCallback = struct {
     ctx: *anyopaque,
     on_model_verifications: *const fn (ctx: *anyopaque, verifications: []const api.ModelVerification) anyerror!void,
+};
+
+pub const McpToolCallProgressCallback = struct {
+    ctx: *anyopaque,
+    on_mcp_tool_call_progress: *const fn (ctx: *anyopaque, item_id: []const u8, message: []const u8) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -605,7 +611,9 @@ fn runToolCall(
     }
 
     if (mcp_catalog.find(call.name)) |mcp_tool| {
+        try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
         var output = mcp_runtime.callTool(allocator, cfg.codex_home, mcp_tool, call.arguments) catch |err| {
+            try reportMcpToolCallProgress(allocator, options, call.call_id, "failed", mcp_tool.server_name, mcp_tool.raw_tool_name, @errorName(err));
             return .{
                 .call_id = try allocator.dupe(u8, call.call_id),
                 .summary = try allocator.dupe(u8, "mcp failed"),
@@ -613,6 +621,7 @@ fn runToolCall(
             };
         };
         defer output.deinit(allocator);
+        try reportMcpToolCallProgress(allocator, options, call.call_id, "completed", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
         return .{
             .call_id = try allocator.dupe(u8, call.call_id),
             .summary = try allocator.dupe(u8, output.summary),
@@ -644,6 +653,24 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+fn reportMcpToolCallProgress(
+    allocator: std.mem.Allocator,
+    options: TurnOptions,
+    item_id: []const u8,
+    status: []const u8,
+    server_name: []const u8,
+    tool_name: []const u8,
+    maybe_error: ?[]const u8,
+) !void {
+    const callback = options.mcp_tool_call_progress_callback orelse return;
+    const message = if (maybe_error) |error_message|
+        try std.fmt.allocPrint(allocator, "{s} {s}.{s}: {s}", .{ status, server_name, tool_name, error_message })
+    else
+        try std.fmt.allocPrint(allocator, "{s} {s}.{s}", .{ status, server_name, tool_name });
+    defer allocator.free(message);
+    try callback.on_mcp_tool_call_progress(callback.ctx, item_id, message);
 }
 
 fn isCommandExecutionToolName(name: []const u8) bool {

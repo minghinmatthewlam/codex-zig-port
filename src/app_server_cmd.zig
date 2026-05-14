@@ -25867,6 +25867,13 @@ fn handleTurnStart(
         .enabled = !notificationMethodOptedOut(state, "mcpServer/startupStatus/updated"),
         .notifications = &turn_update_notifications,
     };
+    var mcp_tool_call_progress_context = McpToolCallProgressNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/mcpToolCall/progress"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
@@ -25903,6 +25910,10 @@ fn handleTurnStart(
         .model_verification_callback = .{
             .ctx = &model_notification_context,
             .on_model_verifications = handleSessionModelVerifications,
+        },
+        .mcp_tool_call_progress_callback = .{
+            .ctx = &mcp_tool_call_progress_context,
+            .on_mcp_tool_call_progress = handleSessionMcpToolCallProgress,
         },
         .mcp_startup_status_callback = .{
             .ctx = &mcp_startup_status_context,
@@ -27592,6 +27603,14 @@ const McpStartupStatusNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const McpToolCallProgressNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
     const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
@@ -27679,6 +27698,15 @@ fn handleSessionMcpStartupStatus(
     try context.notifications.append(context.allocator, notification);
 }
 
+fn handleSessionMcpToolCallProgress(ctx: *anyopaque, item_id: []const u8, message: []const u8) anyerror!void {
+    const context: *McpToolCallProgressNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+
+    const notification = try renderMcpToolCallProgressNotification(context.allocator, context.thread_id, context.turn_id, item_id, message);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
 fn movePendingTurnUpdateNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -27757,6 +27785,27 @@ fn renderMcpServerStatusUpdatedNotification(
     try appendJsonString(allocator, &notification, status.label());
     try notification.appendSlice(allocator, ",\"error\":");
     try appendOptionalJsonString(allocator, &notification, error_message);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderMcpToolCallProgressNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    message: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/mcpToolCall/progress\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"message\":");
+    try appendJsonString(allocator, &notification, message);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
 }
