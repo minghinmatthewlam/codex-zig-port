@@ -8779,9 +8779,15 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fuzzy-search-", dir="/tmp"))
     codex_home = root / "codex-home"
     search_root = root / "search-root"
+    session_root_a = root / "session-root-a"
+    session_root_b = root / "session-root-b"
     try:
         codex_home.mkdir()
         search_root.mkdir()
+        session_root_a.mkdir()
+        session_root_b.mkdir()
+        (session_root_a / "alpha.txt").write_text("session a match\n", encoding="utf-8")
+        (session_root_b / "beta.txt").write_text("session b match\n", encoding="utf-8")
         fake_home = root / "home"
         fake_home.mkdir()
         global_ignore = root / "global-ignore"
@@ -9609,6 +9615,80 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             assert missing_session["id"] == "fuzzy-session-missing"
             assert missing_session["error"]["code"] == -32600
             assert missing_session["error"]["message"] == "fuzzy file search session not found: session-1"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-a-start",
+                    "method": "fuzzyFileSearch/sessionStart",
+                    "params": {"sessionId": "session-a", "roots": [str(session_root_a)]},
+                },
+            )
+            session_a_start = read_json_line(proc, 5)
+            assert session_a_start["id"] == "fuzzy-session-a-start"
+            assert session_a_start["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-b-start",
+                    "method": "fuzzyFileSearch/sessionStart",
+                    "params": {"sessionId": "session-b", "roots": [str(session_root_b)]},
+                },
+            )
+            session_b_start = read_json_line(proc, 5)
+            assert session_b_start["id"] == "fuzzy-session-b-start"
+            assert session_b_start["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-a-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-a", "query": "alp"},
+                },
+            )
+            session_a_update = read_json_line(proc, 5)
+            assert session_a_update["id"] == "fuzzy-session-a-update"
+            assert session_a_update["result"] == {}
+            session_a_updated = read_json_line(proc, 5)
+            assert session_a_updated["method"] == "fuzzyFileSearch/sessionUpdated"
+            assert session_a_updated["params"]["sessionId"] == "session-a"
+            assert len(session_a_updated["params"]["files"]) == 1
+            session_a_file = session_a_updated["params"]["files"][0]
+            assert session_a_file["root"] == str(session_root_a)
+            assert session_a_file["path"] == "alpha.txt"
+            assert session_a_file["indices"] == [0, 1, 2]
+            session_a_completed = read_json_line(proc, 5)
+            assert session_a_completed["method"] == "fuzzyFileSearch/sessionCompleted"
+            assert session_a_completed["params"]["sessionId"] == "session-a"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-b-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-b", "query": "bet"},
+                },
+            )
+            session_b_update = read_json_line(proc, 5)
+            assert session_b_update["id"] == "fuzzy-session-b-update"
+            assert session_b_update["result"] == {}
+            session_b_updated = read_json_line(proc, 5)
+            assert session_b_updated["method"] == "fuzzyFileSearch/sessionUpdated"
+            assert session_b_updated["params"]["sessionId"] == "session-b"
+            assert len(session_b_updated["params"]["files"]) == 1
+            session_b_file = session_b_updated["params"]["files"][0]
+            assert session_b_file["root"] == str(session_root_b)
+            assert session_b_file["path"] == "beta.txt"
+            assert session_b_file["indices"] == [0, 1, 2]
+            session_b_completed = read_json_line(proc, 5)
+            assert session_b_completed["method"] == "fuzzyFileSearch/sessionCompleted"
+            assert session_b_completed["params"]["sessionId"] == "session-b"
 
             assert proc.stdin is not None
             proc.stdin.close()
