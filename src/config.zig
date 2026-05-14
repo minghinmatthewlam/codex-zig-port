@@ -1083,6 +1083,10 @@ pub fn topLevelStringValue(allocator: std.mem.Allocator, bytes: []const u8, key:
     return (ConfigView{ .bytes = bytes }).getTopLevelString(allocator, key);
 }
 
+pub fn scopedStringValue(allocator: std.mem.Allocator, bytes: []const u8, profile: ?[]const u8, key: []const u8) !?[]const u8 {
+    return (ConfigView{ .bytes = bytes }).getScopedString(allocator, profile, key);
+}
+
 pub fn topLevelStringArrayValue(allocator: std.mem.Allocator, bytes: []const u8, key: []const u8) !?StringList {
     return (ConfigView{ .bytes = bytes }).getTopLevelStringArray(allocator, key);
 }

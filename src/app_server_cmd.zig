@@ -28286,7 +28286,7 @@ fn handleThreadStart(
     subscription_committed = true;
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
-    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
@@ -28332,7 +28332,7 @@ fn handleThreadResume(
             thread_moved = true;
             subscription_committed = true;
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
-            try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+            try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
             try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
             return renderJsonRpcResult(allocator, id_value, result);
@@ -28376,7 +28376,7 @@ fn handleThreadResume(
     thread_moved = true;
     subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
-    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
@@ -28460,7 +28460,7 @@ fn handleThreadForkWithSource(
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
-    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
@@ -30737,24 +30737,84 @@ fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServe
     try state.pending_notifications.append(allocator, notification);
 }
 
-fn queueUnstableFeaturesWarningNotification(
+fn queueConfigStartupNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
     cfg: config.Config,
     thread_id: []const u8,
 ) !void {
-    if (notificationMethodOptedOut(state, "warning")) return;
+    if (notificationMethodOptedOut(state, "warning") and
+        notificationMethodOptedOut(state, "deprecationNotice"))
+    {
+        return;
+    }
 
     const config_path = try config.configTomlPath(allocator, cfg.codex_home);
     defer allocator.free(config_path);
     const config_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (config_bytes) |bytes| allocator.free(bytes);
+    const bytes = config_bytes orelse "";
 
-    const message = try features_cmd.unstableFeaturesWarningMessage(allocator, cfg.codex_home, config_bytes orelse "", cfg.active_profile);
+    try queueDeprecatedInstructionsFileNoticeNotification(allocator, state, cfg, bytes);
+    try queueUnstableFeaturesWarningNotification(allocator, state, cfg, bytes, thread_id);
+}
+
+fn queueUnstableFeaturesWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    cfg: config.Config,
+    config_bytes: []const u8,
+    thread_id: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "warning")) return;
+
+    const message = try features_cmd.unstableFeaturesWarningMessage(allocator, cfg.codex_home, config_bytes, cfg.active_profile);
     defer if (message) |value| allocator.free(value);
     const warning = message orelse return;
 
     try queueWarningNotification(allocator, state, thread_id, warning);
+}
+
+const deprecated_instructions_file_summary = "`experimental_instructions_file` is deprecated and ignored. Use `model_instructions_file` instead.";
+const deprecated_instructions_file_details = "Move the setting to `model_instructions_file` in config.toml (or under a profile) to load instructions from a file.";
+
+fn queueDeprecatedInstructionsFileNoticeNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    cfg: config.Config,
+    config_bytes: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "deprecationNotice")) return;
+
+    const value = try config.scopedStringValue(allocator, config_bytes, cfg.active_profile, "experimental_instructions_file");
+    defer if (value) |deprecated_file| allocator.free(deprecated_file);
+    if (value == null) return;
+
+    try queueDeprecationNoticeNotification(allocator, state, deprecated_instructions_file_summary, deprecated_instructions_file_details);
+}
+
+fn queueDeprecationNoticeNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    summary: []const u8,
+    details: ?[]const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "deprecationNotice")) return;
+
+    const notification = try renderDeprecationNoticeNotification(allocator, summary, details);
+    errdefer allocator.free(notification);
+    try state.pending_notifications.append(allocator, notification);
+}
+
+fn renderDeprecationNoticeNotification(allocator: std.mem.Allocator, summary: []const u8, details: ?[]const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"deprecationNotice\",\"params\":{\"summary\":");
+    try appendJsonString(allocator, &result, summary);
+    try result.appendSlice(allocator, ",\"details\":");
+    try appendOptionalJsonString(allocator, &result, details);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
 }
 
 const deprecated_on_failure_approval_policy_warning = "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs.";

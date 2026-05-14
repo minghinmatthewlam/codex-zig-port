@@ -21079,6 +21079,139 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_deprecated_instructions_file_notice_smoke(binary: Path) -> None:
+    summary = "`experimental_instructions_file` is deprecated and ignored. Use `model_instructions_file` instead."
+    details = "Move the setting to `model_instructions_file` in config.toml (or under a profile) to load instructions from a file."
+
+    def start_server(codex_home: Path) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+
+    def close_server(proc: subprocess.Popen[str]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            assert proc.stderr is not None
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-deprecated-instructions-", dir="/tmp"))
+    opt_out_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-deprecated-instructions-opt-out-", dir="/tmp"))
+    proc: subprocess.Popen[str] | None = None
+    opt_out_proc: subprocess.Popen[str] | None = None
+    try:
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'profile = "work"',
+                    "[profiles.work]",
+                    'experimental_instructions_file = "legacy.md"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        proc = start_server(codex_home)
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-instructions-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-deprecated-instructions",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "deprecated-instructions-thread-start"
+        thread = started["result"]["thread"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+        notice = read_json_line(proc, 5)
+        assert notice == {
+            "jsonrpc": "2.0",
+            "method": "deprecationNotice",
+            "params": {"summary": summary, "details": details},
+        }
+        close_server(proc)
+        proc = None
+
+        (opt_out_home / "config.toml").write_text(
+            'experimental_instructions_file = "legacy.md"\n',
+            encoding="utf-8",
+        )
+        opt_out_proc = start_server(opt_out_home)
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-deprecation-opt-out",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": [
+                            "thread/started",
+                            "deprecationNotice",
+                        ],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(opt_out_proc, 5)
+        assert initialized["id"] == "initialize-deprecation-opt-out"
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-instructions-thread-start-opted-out",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-deprecated-instructions",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        opted_out_start = read_json_line(opt_out_proc, 5)
+        assert opted_out_start["id"] == "deprecated-instructions-thread-start-opted-out"
+        thread_id = opted_out_start["result"]["thread"]["id"]
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-instructions-loaded-after-opt-out",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded = read_json_line(opt_out_proc, 5)
+        assert loaded["id"] == "deprecated-instructions-loaded-after-opt-out"
+        assert loaded["result"] == {"data": [thread_id], "nextCursor": None}
+        close_server(opt_out_proc)
+        opt_out_proc = None
+    finally:
+        for running_proc in (proc, opt_out_proc):
+            if running_proc is not None and running_proc.poll() is None:
+                running_proc.kill()
+                running_proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(opt_out_home, ignore_errors=True)
+
+
 def run_deprecated_approval_policy_warning_smoke(binary: Path) -> None:
     warning_message = "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs."
 
@@ -31190,6 +31323,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_deprecated_instructions_file_notice_smoke(binary)
+    print("app-server-deprecated-instructions-file-notice-e2e: ok")
     run_deprecated_approval_policy_warning_smoke(binary)
     print("app-server-deprecated-approval-policy-warning-e2e: ok")
     run_unix_path_smoke(binary)
