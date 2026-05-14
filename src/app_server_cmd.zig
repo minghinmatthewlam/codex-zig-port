@@ -30755,6 +30755,7 @@ fn queueConfigStartupNotifications(
     defer if (config_bytes) |bytes| allocator.free(bytes);
     const bytes = config_bytes orelse "";
 
+    try queueLegacyFeatureDeprecationNoticeNotifications(allocator, state, cfg, bytes);
     try queueDeprecatedInstructionsFileNoticeNotification(allocator, state, cfg, bytes);
     try queueUnstableFeaturesWarningNotification(allocator, state, cfg, bytes, thread_id);
 }
@@ -30773,6 +30774,21 @@ fn queueUnstableFeaturesWarningNotification(
     const warning = message orelse return;
 
     try queueWarningNotification(allocator, state, thread_id, warning);
+}
+
+fn queueLegacyFeatureDeprecationNoticeNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    cfg: config.Config,
+    config_bytes: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "deprecationNotice")) return;
+
+    var notices = try features_cmd.featureDeprecationNoticesForProfile(allocator, config_bytes, cfg.active_profile);
+    defer notices.deinit(allocator);
+    for (notices.items.items) |notice| {
+        try queueDeprecationNoticeNotification(allocator, state, notice.summary, notice.details);
+    }
 }
 
 const deprecated_instructions_file_summary = "`experimental_instructions_file` is deprecated and ignored. Use `model_instructions_file` instead.";

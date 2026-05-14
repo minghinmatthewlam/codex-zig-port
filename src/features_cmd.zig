@@ -59,6 +59,36 @@ pub const FeatureOverrides = struct {
     }
 };
 
+pub const FeatureDeprecationNotice = struct {
+    summary: []const u8,
+    details: ?[]const u8,
+
+    pub fn deinit(self: FeatureDeprecationNotice, allocator: std.mem.Allocator) void {
+        allocator.free(self.summary);
+        if (self.details) |details| allocator.free(details);
+    }
+};
+
+pub const FeatureDeprecationNotices = struct {
+    items: std.ArrayList(FeatureDeprecationNotice) = .empty,
+
+    pub fn deinit(self: *FeatureDeprecationNotices, allocator: std.mem.Allocator) void {
+        for (self.items.items) |item| item.deinit(allocator);
+        self.items.deinit(allocator);
+    }
+
+    fn put(self: *FeatureDeprecationNotices, allocator: std.mem.Allocator, notice: FeatureDeprecationNotice) !void {
+        for (self.items.items) |item| {
+            if (std.mem.eql(u8, item.summary, notice.summary) and optionalStringsEqual(item.details, notice.details)) {
+                notice.deinit(allocator);
+                return;
+            }
+        }
+        errdefer notice.deinit(allocator);
+        try self.items.append(allocator, notice);
+    }
+};
+
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: FeatureOverrides = .{},
@@ -245,6 +275,42 @@ pub fn unstableFeaturesWarningMessage(
     return message;
 }
 
+pub fn featureDeprecationNoticesForProfile(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    profile: ?[]const u8,
+) !FeatureDeprecationNotices {
+    var notices = FeatureDeprecationNotices{};
+    errdefer notices.deinit(allocator);
+
+    var section: FeatureConfigSection = .none;
+    var start: usize = 0;
+    while (start < config_bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, config_bytes, start, '\n') orelse config_bytes.len;
+        const line_raw = config_bytes[start..end];
+        start = if (end < config_bytes.len) end + 1 else config_bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            section = featureConfigSectionForLine(line, profile);
+            continue;
+        }
+        if (section == .none) continue;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const raw_value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (!std.mem.eql(u8, raw_value, "true") and !std.mem.eql(u8, raw_value, "false")) continue;
+        if (try featureDeprecationNotice(allocator, key)) |notice| {
+            try notices.put(allocator, notice);
+        }
+    }
+
+    return notices;
+}
+
 fn suppressUnstableFeaturesWarning(bytes: []const u8) bool {
     var start: usize = 0;
     while (start < bytes.len) {
@@ -264,6 +330,63 @@ fn suppressUnstableFeaturesWarning(bytes: []const u8) bool {
         return std.mem.eql(u8, raw_value, "true");
     }
     return false;
+}
+
+fn featureDeprecationNotice(allocator: std.mem.Allocator, key: []const u8) !?FeatureDeprecationNotice {
+    if (std.mem.eql(u8, key, "web_search") or
+        std.mem.eql(u8, key, "web_search_request") or
+        std.mem.eql(u8, key, "web_search_cached"))
+    {
+        const label = if (std.mem.eql(u8, key, "web_search"))
+            "[features].web_search"
+        else if (std.mem.eql(u8, key, "web_search_request"))
+            "[features].web_search_request"
+        else
+            "[features].web_search_cached";
+        const summary = try std.fmt.allocPrint(allocator, "`{s}` is deprecated because web search is enabled by default.", .{label});
+        errdefer allocator.free(summary);
+        const details = try allocator.dupe(u8, "Set `web_search` to `\"live\"`, `\"cached\"`, or `\"disabled\"` at the top level (or under a profile) in config.toml if you want to override it.");
+        return .{
+            .summary = summary,
+            .details = details,
+        };
+    }
+
+    if (std.mem.eql(u8, key, "use_legacy_landlock")) {
+        const summary = try allocator.dupe(u8, "`[features].use_legacy_landlock` is deprecated and will be removed soon.");
+        errdefer allocator.free(summary);
+        const details = try allocator.dupe(u8, "Remove this setting to stop opting into the legacy Linux sandbox behavior.");
+        return .{
+            .summary = summary,
+            .details = details,
+        };
+    }
+
+    for (feature_aliases) |alias| {
+        if (std.mem.eql(u8, alias.alias, key)) {
+            const summary = try std.fmt.allocPrint(allocator, "`[features].{s}` is deprecated. Use `[features].{s}` instead.", .{ alias.alias, alias.canonical });
+            errdefer allocator.free(summary);
+            const details = try std.fmt.allocPrint(
+                allocator,
+                "Enable it with `--enable {s}` or `[features].{s}` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.",
+                .{ alias.canonical, alias.canonical },
+            );
+            return .{
+                .summary = summary,
+                .details = details,
+            };
+        }
+    }
+
+    return null;
+}
+
+fn optionalStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |left| {
+        if (b) |right| return std.mem.eql(u8, left, right);
+        return false;
+    }
+    return b == null;
 }
 
 pub fn loadFeatureOverrides(allocator: std.mem.Allocator, codex_home: []const u8) !FeatureOverrides {
@@ -713,6 +836,41 @@ test "feature overrides parse legacy aliases as canonical features" {
     try std.testing.expectEqual(false, overrides.get("multi_agent").?);
     try std.testing.expectEqual(true, overrides.get("memories").?);
     try std.testing.expect(overrides.get("collab") == null);
+}
+
+test "feature deprecation notices include legacy aliases for active profile" {
+    const allocator = std.testing.allocator;
+    var notices = try featureDeprecationNoticesForProfile(allocator,
+        \\[features]
+        \\memory_tool = false
+        \\[profiles.work.features]
+        \\collab = true
+        \\
+    , "work");
+    defer notices.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), notices.items.items.len);
+    try std.testing.expectEqualStrings("`[features].memory_tool` is deprecated. Use `[features].memories` instead.", notices.items.items[0].summary);
+    try std.testing.expectEqualStrings("Enable it with `--enable memories` or `[features].memories` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.", notices.items.items[0].details.?);
+    try std.testing.expectEqualStrings("`[features].collab` is deprecated. Use `[features].multi_agent` instead.", notices.items.items[1].summary);
+    try std.testing.expectEqualStrings("Enable it with `--enable multi_agent` or `[features].multi_agent` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.", notices.items.items[1].details.?);
+}
+
+test "feature deprecation notices include special deprecated feature messages" {
+    const allocator = std.testing.allocator;
+    var notices = try featureDeprecationNoticesForProfile(allocator,
+        \\[features]
+        \\web_search_request = false
+        \\use_legacy_landlock = true
+        \\
+    , null);
+    defer notices.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), notices.items.items.len);
+    try std.testing.expectEqualStrings("`[features].web_search_request` is deprecated because web search is enabled by default.", notices.items.items[0].summary);
+    try std.testing.expectEqualStrings("Set `web_search` to `\"live\"`, `\"cached\"`, or `\"disabled\"` at the top level (or under a profile) in config.toml if you want to override it.", notices.items.items[0].details.?);
+    try std.testing.expectEqualStrings("`[features].use_legacy_landlock` is deprecated and will be removed soon.", notices.items.items[1].summary);
+    try std.testing.expectEqualStrings("Remove this setting to stop opting into the legacy Linux sandbox behavior.", notices.items.items[1].details.?);
 }
 
 test "feature overrides apply profile scoped values over base values" {

@@ -21079,6 +21079,71 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_legacy_feature_deprecation_notice_smoke(binary: Path) -> None:
+    summary = "`[features].collab` is deprecated. Use `[features].multi_agent` instead."
+    details = "Enable it with `--enable multi_agent` or `[features].multi_agent` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details."
+
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-legacy-feature-notice-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'profile = "work"',
+                    "[profiles.work.features]",
+                    "collab = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "legacy-feature-deprecation-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-legacy-feature-notice",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "legacy-feature-deprecation-thread-start"
+        thread = started["result"]["thread"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+        notice = read_json_line(proc, 5)
+        assert notice == {
+            "jsonrpc": "2.0",
+            "method": "deprecationNotice",
+            "params": {"summary": summary, "details": details},
+        }
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_deprecated_instructions_file_notice_smoke(binary: Path) -> None:
     summary = "`experimental_instructions_file` is deprecated and ignored. Use `model_instructions_file` instead."
     details = "Move the setting to `model_instructions_file` in config.toml (or under a profile) to load instructions from a file."
@@ -31323,6 +31388,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_legacy_feature_deprecation_notice_smoke(binary)
+    print("app-server-legacy-feature-deprecation-notice-e2e: ok")
     run_deprecated_instructions_file_notice_smoke(binary)
     print("app-server-deprecated-instructions-file-notice-e2e: ok")
     run_deprecated_approval_policy_warning_smoke(binary)
