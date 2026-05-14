@@ -432,7 +432,9 @@ deny, and workspace-write `sandboxPolicy` temp-root defaults plus
 `excludeTmpdirEnvVar` / `excludeSlashTmp` flags are enforced; implicit
 config-driven workspace-write command execution uses the same default temp
 roots. Follow-up calls return inactive-process errors until true async command
-sessions are implemented.
+sessions are implemented. Empty `processId` values on follow-up calls preserve
+Rust validation order: payload/size errors win first, otherwise the
+inactive-command error includes the empty id.
 
 Current app-server experimental `process/*` coverage includes generated
 TypeScript and JSON Schema artifacts for `process/spawn`,
