@@ -239,8 +239,10 @@ the top-level `ServerNotification` `"item/reasoning/summaryTextDelta"`,
 `"item/reasoning/summaryPartAdded"`, `"item/reasoning/textDelta"`, and
 `"thread/compacted"` union variants. Runtime emission for the deprecated
 `thread/compacted` notification is now covered after successful loaded-thread
-`thread/compact/start` compactions. Runtime emission for reasoning deltas
-remains planned.
+`thread/compact/start` compactions. Runtime emission is now covered for
+`item/reasoning/summaryPartAdded`, `item/reasoning/summaryTextDelta`, and
+`item/reasoning/textDelta` events observed during app-server `turn/start`
+Responses streams. Broader reasoning item lifecycle parity remains planned.
 
 Additional app-server control/status notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include
