@@ -199,7 +199,106 @@ def experimental_api_field_cases(thread_id: str):
             },
             "turn/start.collaborationMode",
         ),
+        (
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "input": turn_input,
+                "responsesapiClientMetadata": {"surface": "smoke"},
+                "expectedTurnId": "turn-0",
+            },
+            "turn/steer.responsesapiClientMetadata",
+        ),
+        (
+            "command/exec",
+            {
+                "command": ["/usr/bin/true"],
+                "permissionProfile": {"type": "disabled"},
+            },
+            "command/exec.permissionProfile",
+        ),
+        (
+            "account/login/start",
+            {
+                "type": "chatgptAuthTokens",
+                "accessToken": "external-token",
+                "chatgptAccountId": "acct_external",
+            },
+            "account/login/start.chatgptAuthTokens",
+        ),
     ]
+
+
+def value_is_set(params: dict, key: str) -> bool:
+    return key in params and params[key] is not None
+
+
+def payload_requires_experimental_api(payload: dict) -> bool:
+    method = payload.get("method")
+    if method in EXPERIMENTAL_API_METHODS:
+        return True
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return False
+    if method == "thread/start":
+        if value_is_set(params, "approvalPolicy") and isinstance(
+            params["approvalPolicy"], dict
+        ):
+            return "granular" in params["approvalPolicy"]
+        return any(
+            value_is_set(params, field)
+            for field in (
+                "permissions",
+                "environments",
+                "dynamicTools",
+                "mockExperimentalField",
+            )
+        ) or params.get("experimentalRawEvents") is True or params.get(
+            "persistExtendedHistory"
+        ) is True
+    if method == "thread/resume":
+        if value_is_set(params, "approvalPolicy") and isinstance(
+            params["approvalPolicy"], dict
+        ):
+            return "granular" in params["approvalPolicy"]
+        return any(
+            value_is_set(params, field)
+            for field in ("history", "path", "permissions")
+        ) or params.get("excludeTurns") is True or params.get(
+            "persistExtendedHistory"
+        ) is True
+    if method == "thread/fork":
+        if value_is_set(params, "approvalPolicy") and isinstance(
+            params["approvalPolicy"], dict
+        ):
+            return "granular" in params["approvalPolicy"]
+        return any(
+            value_is_set(params, field)
+            for field in ("path", "permissions")
+        ) or params.get("excludeTurns") is True or params.get(
+            "persistExtendedHistory"
+        ) is True
+    if method == "turn/start":
+        if value_is_set(params, "approvalPolicy") and isinstance(
+            params["approvalPolicy"], dict
+        ):
+            return "granular" in params["approvalPolicy"]
+        return any(
+            value_is_set(params, field)
+            for field in (
+                "responsesapiClientMetadata",
+                "environments",
+                "permissions",
+                "collaborationMode",
+            )
+        )
+    if method == "turn/steer":
+        return value_is_set(params, "responsesapiClientMetadata")
+    if method == "command/exec":
+        return value_is_set(params, "permissionProfile")
+    if method == "account/login/start":
+        return params.get("type") == "chatgptAuthTokens"
+    return False
 
 
 EXPECTED_REALTIME_VOICES = {
@@ -3648,7 +3747,7 @@ def request_stdio_app_server(
         env=env,
     )
     try:
-        if capabilities is None and payload.get("method") in EXPERIMENTAL_API_METHODS:
+        if capabilities is None and payload_requires_experimental_api(payload):
             capabilities = EXPERIMENTAL_API_CAPABILITIES
 
         if capabilities is not None:
@@ -7968,7 +8067,7 @@ def run_turn_control_rpc_smoke(binary: Path) -> None:
                     "method": "initialize",
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                        "capabilities": {},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                     },
                 },
             )
@@ -22169,6 +22268,25 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
                     env=forced_env,
                 )
                 try:
+                    if params.get("type") == "chatgptAuthTokens":
+                        write_json_line(
+                            forced_proc,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": f"{request_id}-initialize",
+                                "method": "initialize",
+                                "params": {
+                                    "clientInfo": {
+                                        "name": "app-server-smoke",
+                                        "version": "0",
+                                    },
+                                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                                },
+                            },
+                        )
+                        initialized = read_json_line(forced_proc, 5)
+                        assert initialized["id"] == f"{request_id}-initialize"
+
                     write_json_line(
                         forced_proc,
                         {
@@ -22249,6 +22367,20 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
                     },
                 }
             )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-auth-tokens-login",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-auth-tokens-login"
+
             write_json_line(
                 proc,
                 {

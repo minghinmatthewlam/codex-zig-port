@@ -32706,6 +32706,9 @@ fn experimentalReasonForRequestFields(method: []const u8, params_value: ?std.jso
     if (std.mem.eql(u8, method, "thread/resume")) return experimentalReasonForThreadResumeFields(object);
     if (std.mem.eql(u8, method, "thread/fork")) return experimentalReasonForThreadForkFields(object);
     if (std.mem.eql(u8, method, "turn/start")) return experimentalReasonForTurnStartFields(object);
+    if (std.mem.eql(u8, method, "turn/steer")) return experimentalReasonForTurnSteerFields(object);
+    if (std.mem.eql(u8, method, "command/exec")) return experimentalReasonForCommandExecFields(object);
+    if (std.mem.eql(u8, method, "account/login/start")) return experimentalReasonForAccountLoginStartFields(object);
     return null;
 }
 
@@ -32757,6 +32760,23 @@ fn experimentalReasonForTurnStartFields(object: std.json.ObjectMap) ?[]const u8 
     if (experimentalReasonForApprovalPolicy(object)) |reason| return reason;
     if (optionalExperimentalFieldIsSet(object, "permissions")) return "turn/start.permissions";
     if (optionalExperimentalFieldIsSet(object, "collaborationMode")) return "turn/start.collaborationMode";
+    return null;
+}
+
+fn experimentalReasonForTurnSteerFields(object: std.json.ObjectMap) ?[]const u8 {
+    if (optionalExperimentalFieldIsSet(object, "responsesapiClientMetadata")) return "turn/steer.responsesapiClientMetadata";
+    return null;
+}
+
+fn experimentalReasonForCommandExecFields(object: std.json.ObjectMap) ?[]const u8 {
+    if (optionalExperimentalFieldIsSet(object, "permissionProfile")) return "command/exec.permissionProfile";
+    return null;
+}
+
+fn experimentalReasonForAccountLoginStartFields(object: std.json.ObjectMap) ?[]const u8 {
+    const login_type = object.get("type") orelse return null;
+    if (login_type != .string) return null;
+    if (std.mem.eql(u8, login_type.string, "chatgptAuthTokens")) return "account/login/start.chatgptAuthTokens";
     return null;
 }
 
