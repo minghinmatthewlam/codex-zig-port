@@ -225,6 +225,11 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   when `turn/start` writes stdin to model-started terminal sessions
 - clean model-started app-server PTY sessions through
   `thread/backgroundTerminals/clean` for clients with `experimentalApi`
+- require `initialize.params.capabilities.experimentalApi` for implemented
+  Rust experimental app-server request methods, including `memory/reset`,
+  `thread/goal/*`, `thread/memoryMode/set`, `thread/turns/list`,
+  `thread/realtime/*`, `thread/backgroundTerminals/clean`, `process/*`,
+  `collaborationMode/list`, and `fuzzyFileSearch/session*`
 - emit app-server `rawResponseItem/completed` notifications for raw Responses
   output items observed during `turn/start`
 - emit app-server reasoning stream notifications for Responses reasoning
