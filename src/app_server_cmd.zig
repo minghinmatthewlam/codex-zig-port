@@ -34500,7 +34500,6 @@ fn handleProcessWriteStdin(allocator: std.mem.Allocator, id_value: std.json.Valu
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (process_handle.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "processHandle must not be empty");
 
     const close_stdin = commandExecOptionalBool(object, "closeStdin", false) catch |err| {
         return commandExecBoolError(allocator, id_value, err, "closeStdin must be a boolean");
@@ -34537,7 +34536,6 @@ fn handleProcessKill(allocator: std.mem.Allocator, id_value: std.json.Value, par
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (process_handle.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "processHandle must not be empty");
     return renderNoActiveProcess(allocator, id_value, process_handle);
 }
 
@@ -34550,7 +34548,6 @@ fn handleProcessResizePty(allocator: std.mem.Allocator, id_value: std.json.Value
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (process_handle.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "processHandle must not be empty");
 
     const size_value = object.get("size") orelse return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
     if (size_value != .object) return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");

@@ -15016,6 +15016,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert missing_write_payload["error"]["code"] == -32602
         assert "requires deltaBase64 or closeStdin" in missing_write_payload["error"]["message"]
 
+        empty_handle_missing_write_payload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-write-empty-handle-missing-payload",
+                "method": "process/writeStdin",
+                "params": {"processHandle": ""},
+            },
+            env,
+        )
+        assert empty_handle_missing_write_payload["id"] == "process-write-empty-handle-missing-payload"
+        assert empty_handle_missing_write_payload["error"]["code"] == -32602
+        assert "requires deltaBase64 or closeStdin" in empty_handle_missing_write_payload["error"]["message"]
+
         bad_write_delta = request_stdio_app_server(
             binary,
             {
@@ -15044,6 +15058,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert followup["error"]["code"] == -32600
         assert 'no active process for process handle "proc-1"' in followup["error"]["message"]
 
+        empty_handle_followup = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-write-empty-handle",
+                "method": "process/writeStdin",
+                "params": {"processHandle": "", "deltaBase64": "", "closeStdin": True},
+            },
+            env,
+        )
+        assert empty_handle_followup["id"] == "process-write-empty-handle"
+        assert empty_handle_followup["error"]["code"] == -32600
+        assert 'no active process for process handle ""' in empty_handle_followup["error"]["message"]
+
         kill = request_stdio_app_server(
             binary,
             {
@@ -15057,6 +15085,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert kill["id"] == "process-kill"
         assert kill["error"]["code"] == -32600
         assert 'no active process for process handle "proc-1"' in kill["error"]["message"]
+
+        empty_handle_kill = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-kill-empty-handle",
+                "method": "process/kill",
+                "params": {"processHandle": ""},
+            },
+            env,
+        )
+        assert empty_handle_kill["id"] == "process-kill-empty-handle"
+        assert empty_handle_kill["error"]["code"] == -32600
+        assert 'no active process for process handle ""' in empty_handle_kill["error"]["message"]
 
         bad_resize = request_stdio_app_server(
             binary,
@@ -15072,6 +15114,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert bad_resize["error"]["code"] == -32602
         assert "rows and cols must be greater than 0" in bad_resize["error"]["message"]
 
+        empty_handle_bad_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-resize-empty-handle-bad-size",
+                "method": "process/resizePty",
+                "params": {"processHandle": "", "size": {"rows": 0, "cols": 80}},
+            },
+            env,
+        )
+        assert empty_handle_bad_resize["id"] == "process-resize-empty-handle-bad-size"
+        assert empty_handle_bad_resize["error"]["code"] == -32602
+        assert "rows and cols must be greater than 0" in empty_handle_bad_resize["error"]["message"]
+
         resize = request_stdio_app_server(
             binary,
             {
@@ -15085,6 +15141,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert resize["id"] == "process-resize"
         assert resize["error"]["code"] == -32600
         assert 'no active process for process handle "proc-1"' in resize["error"]["message"]
+
+        empty_handle_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "process-resize-empty-handle",
+                "method": "process/resizePty",
+                "params": {"processHandle": "", "size": {"rows": 24, "cols": 80}},
+            },
+            env,
+        )
+        assert empty_handle_resize["id"] == "process-resize-empty-handle"
+        assert empty_handle_resize["error"]["code"] == -32600
+        assert 'no active process for process handle ""' in empty_handle_resize["error"]["message"]
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
