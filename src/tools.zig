@@ -1023,7 +1023,13 @@ fn updateFileFromPatch(
     defer allocator.free(current);
 
     var saw_hunk = false;
+    var consumed_context_marker = false;
     while (index.* < lines.len and !isPatchSection(lines[index.*])) {
+        if (!saw_hunk and !consumed_context_marker and lines[index.*].len == 0) {
+            index.* += 1;
+            continue;
+        }
+
         const directive = patchDirective(lines[index.*]);
         if (std.mem.eql(u8, directive, "*** End of File")) {
             index.* += 1;
@@ -1031,6 +1037,7 @@ fn updateFileFromPatch(
         }
         if (std.mem.startsWith(u8, directive, "@@")) {
             index.* += 1;
+            consumed_context_marker = true;
             continue;
         }
 
@@ -1073,6 +1080,7 @@ fn updateFileFromPatch(
         allocator.free(current);
         current = replaced;
         saw_hunk = true;
+        consumed_context_marker = false;
     }
 
     if (!saw_hunk) return error.InvalidPatch;
@@ -1089,10 +1097,16 @@ fn updateFileFromPatch(
 fn validateUpdatePatchShape(lines: []const []const u8, start_index: usize) !void {
     var index = start_index;
     var saw_hunk = false;
+    var consumed_context_marker = false;
     var current_hunk_has_lines = false;
 
     while (index < lines.len and !isPatchSection(lines[index])) {
         const line = lines[index];
+        if (!saw_hunk and !consumed_context_marker and line.len == 0) {
+            index += 1;
+            continue;
+        }
+
         if (isHunkBoundary(line)) {
             if (std.mem.eql(u8, patchDirective(line), "*** End of File")) {
                 if (!current_hunk_has_lines) return error.InvalidPatch;
@@ -1102,6 +1116,7 @@ fn validateUpdatePatchShape(lines: []const []const u8, start_index: usize) !void
             }
 
             current_hunk_has_lines = false;
+            consumed_context_marker = true;
             index += 1;
             if (index >= lines.len or isPatchSection(lines[index]) or isHunkBoundary(lines[index])) {
                 return error.InvalidPatch;
@@ -1111,6 +1126,7 @@ fn validateUpdatePatchShape(lines: []const []const u8, start_index: usize) !void
 
         if (line.len == 0 or line[0] == ' ' or line[0] == '+' or line[0] == '-') {
             saw_hunk = true;
+            consumed_context_marker = false;
             current_hunk_has_lines = true;
             index += 1;
             continue;
@@ -1484,6 +1500,51 @@ test "apply_patch treats blank hunk lines as empty context" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "blank.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("alpha\n\ngamma\n", content);
+}
+
+test "apply_patch skips blank lines before first update chunk" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "leading_blank.txt",
+        .data = "alpha\n",
+    });
+
+    const context_marker_patch =
+        \\*** Begin Patch
+        \\*** Update File: leading_blank.txt
+        \\
+        \\@@
+        \\-alpha
+        \\+beta
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, context_marker_patch);
+
+    const updated = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "leading_blank.txt", allocator, .limited(1024));
+    defer allocator.free(updated);
+    try std.testing.expectEqualStrings("beta\n", updated);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "missing_context.txt",
+        .data = "import foo\n",
+    });
+
+    const missing_context_patch =
+        \\*** Begin Patch
+        \\*** Update File: missing_context.txt
+        \\
+        \\ import foo
+        \\+bar
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, missing_context_patch);
+
+    const missing_context = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "missing_context.txt", allocator, .limited(1024));
+    defer allocator.free(missing_context);
+    try std.testing.expectEqualStrings("import foo\nbar\n", missing_context);
 }
 
 test "apply_patch deletes files and rejects unsafe paths" {
