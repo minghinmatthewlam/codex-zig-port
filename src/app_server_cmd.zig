@@ -28289,6 +28289,7 @@ fn handleThreadStart(
     notification_moved = true;
     try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
+    try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28335,6 +28336,7 @@ fn handleThreadResume(
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
             try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
             try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
+            try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
 
             return renderJsonRpcResult(allocator, id_value, result);
         }
@@ -28379,6 +28381,7 @@ fn handleThreadResume(
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
+    try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28463,6 +28466,7 @@ fn handleThreadForkWithSource(
     notification_moved = true;
     try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
+    try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -31147,6 +31151,21 @@ fn queueDeprecatedApprovalPolicyWarningNotification(
     if (!std.mem.eql(u8, thread.approval_policy, "on-failure")) return;
 
     try queueWarningNotification(allocator, state, thread.id, deprecated_on_failure_approval_policy_warning);
+}
+
+fn queueHookStartupWarningNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    codex_home: []const u8,
+    thread_id: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "warning")) return;
+
+    var warnings = try hooks_list.startupWarnings(allocator, codex_home);
+    defer warnings.deinit(allocator);
+    for (warnings.items) |message| {
+        try queueWarningNotification(allocator, state, thread_id, message);
+    }
 }
 
 fn queueWarningNotification(

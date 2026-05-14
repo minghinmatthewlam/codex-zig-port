@@ -196,6 +196,15 @@ pub const Result = struct {
     }
 };
 
+pub const StartupWarnings = struct {
+    items: []const []const u8,
+
+    pub fn deinit(self: StartupWarnings, allocator: std.mem.Allocator) void {
+        for (self.items) |warning| allocator.free(warning);
+        allocator.free(self.items);
+    }
+};
+
 const PartialGroup = struct {
     event_name: HookEvent,
     matcher: ?[]const u8 = null,
@@ -242,6 +251,37 @@ pub fn list(allocator: std.mem.Allocator, codex_home: []const u8, cwd_inputs: []
     }
 
     return .{ .entries = try entries.toOwnedSlice(allocator) };
+}
+
+pub fn startupWarnings(allocator: std.mem.Allocator, codex_home: []const u8) !StartupWarnings {
+    var hooks = std.ArrayList(Hook).empty;
+    defer {
+        for (hooks.items) |hook| hook.deinit(allocator);
+        hooks.deinit(allocator);
+    }
+    var warnings = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (warnings.items) |warning| allocator.free(warning);
+        warnings.deinit(allocator);
+    }
+    var errors = std.ArrayList(HookError).empty;
+    defer {
+        for (errors.items) |err| err.deinit(allocator);
+        errors.deinit(allocator);
+    }
+    var display_order: i64 = 0;
+
+    const user_config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(user_config_path);
+    const hook_states = try loadHookStatesFromConfigFile(allocator, user_config_path);
+    defer hook_states.deinit(allocator);
+    const user_hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "hooks.json" });
+    defer allocator.free(user_hooks_json_path);
+
+    try appendHooksFromLayer(allocator, user_config_path, user_hooks_json_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
+    try appendPluginHooks(allocator, codex_home, user_config_path, hook_states, &hooks, &warnings, &display_order);
+
+    return .{ .items = try warnings.toOwnedSlice(allocator) };
 }
 
 fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const u8) !Entry {

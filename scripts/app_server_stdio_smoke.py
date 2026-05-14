@@ -11341,6 +11341,131 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_hook_startup_warning_smoke(binary: Path) -> None:
+    binary = binary.resolve()
+
+    def start_server(codex_home: Path, cwd: Path) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(cwd),
+        )
+
+    def close_server(proc: subprocess.Popen[str]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            assert proc.stderr is not None
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-warning-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    opt_out_home = root / "opt-out-home"
+    opt_out_cwd = root / "opt-out-repo"
+    proc: subprocess.Popen[str] | None = None
+    opt_out_proc: subprocess.Popen[str] | None = None
+    try:
+        codex_home.mkdir()
+        cwd.mkdir()
+        (codex_home / "hooks.json").write_text("{ not-json", encoding="utf-8")
+        proc = start_server(codex_home, cwd)
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "hook-warning-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-hook-warning",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "hook-warning-thread-start"
+        thread = started["result"]["thread"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+        warning = read_json_line(proc, 5)
+        assert warning["jsonrpc"] == "2.0"
+        assert warning["method"] == "warning"
+        assert warning["params"]["threadId"] == thread["id"]
+        assert "failed to parse hooks config" in warning["params"]["message"]
+        assert str(codex_home / "hooks.json") in warning["params"]["message"]
+        close_server(proc)
+        proc = None
+
+        opt_out_home.mkdir()
+        opt_out_cwd.mkdir()
+        (opt_out_home / "hooks.json").write_text("{ not-json", encoding="utf-8")
+        opt_out_proc = start_server(opt_out_home, opt_out_cwd)
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-hook-warning-opt-out",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": ["warning"],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(opt_out_proc, 5)
+        assert initialized["id"] == "initialize-hook-warning-opt-out"
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "hook-warning-thread-start-opted-out",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-hook-warning",
+                    "modelProvider": "mock_provider",
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        opted_out_start = read_json_line(opt_out_proc, 5)
+        assert opted_out_start["id"] == "hook-warning-thread-start-opted-out"
+        assert_thread_started_notification(
+            read_json_line(opt_out_proc, 5), opted_out_start["result"]["thread"]
+        )
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-after-hook-warning-opt-out",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded = read_json_line(opt_out_proc, 5)
+        assert loaded["id"] == "loaded-after-hook-warning-opt-out"
+        assert loaded["result"]["data"] == [opted_out_start["result"]["thread"]["id"]]
+        close_server(opt_out_proc)
+        opt_out_proc = None
+    finally:
+        for running_proc in (proc, opt_out_proc):
+            if running_proc is not None and running_proc.poll() is None:
+                running_proc.kill()
+                running_proc.wait(timeout=5)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_skills_list_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-skills-", dir="/tmp"))
     codex_home = root / "codex-home"
@@ -31563,6 +31688,8 @@ def main() -> None:
     print("app-server-plugin-rpc-e2e: ok")
     run_hooks_list_rpc_smoke(binary)
     print("app-server-hooks-list-rpc-e2e: ok")
+    run_hook_startup_warning_smoke(binary)
+    print("app-server-hook-startup-warning-e2e: ok")
     run_skills_list_rpc_smoke(binary)
     print("app-server-skills-list-rpc-e2e: ok")
     run_mcp_server_status_rpc_smoke(binary)
