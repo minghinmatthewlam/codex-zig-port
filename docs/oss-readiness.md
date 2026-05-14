@@ -25,20 +25,21 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25851989045` passed for
-  `a769147 Clarify websocket app-server parity status`; prior push runs
-  `25851811478`, `25851439123`, and `25850544891` also passed for the
-  websocket lifecycle, Unix lifecycle, and stdio PTY slices. Local pre-push
-  verification for those slices included formatting, Python compilation,
-  whitespace checks, `zig build`, focused Unix/websocket smokes, the full
-  app-server smoke, `zig build test`, and `zig build e2e`.
+  Checked push run `25857746425` passed for
+  `bde1d95 Handle relative execpolicy rule paths`; prior push runs
+  `25857315857`, `25856905041`, and `25856434734` also passed for the hook
+  startup warning, project config warning, and initialize config warning
+  slices. Local pre-push verification for the latest slice included Python
+  compilation, whitespace checks, `zig build`, the focused initialize
+  config-warning smoke, `zig build test`, and `zig build e2e`.
 - Source hygiene: current tracked-file scans after the app-server websocket
-  commits found no provider-shaped tokens, GitHub tokens, Slack tokens, AWS
-  access keys, private-key blocks, or JWT-shaped blobs. Keyword/path scans found
-  public docs, test fixtures, mocked auth/token flows such as `test-api-key`,
-  and temporary-path examples rather than checked-in local credentials. Current
-  ignored-file scans only found local build output, Python bytecode, ignored
-  demo scratch files, and ignored local `plans/` content. Git-history regex
+  and warning-parity commits found no provider-shaped tokens, GitHub tokens,
+  Slack tokens, AWS access keys, private-key blocks, or JWT-shaped blobs.
+  Keyword/path scans found public docs, test fixtures, mocked auth/token flows
+  such as `test-api-key`, and temporary-path examples rather than checked-in
+  local credentials. Current ignored-file scans only found local build output,
+  Python bytecode, ignored demo scratch files, and ignored local `plans/`
+  content. Git-history regex
   scans found no real provider-shaped secrets, private-key blocks, or
   JWT-shaped blobs; the only provider-shaped history match is an old dummy
   `sk-proj-*` test fixture added by commit `820d156` and removed by commit
