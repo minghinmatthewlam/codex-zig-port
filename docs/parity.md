@@ -167,8 +167,9 @@ generic `warning` notifications on config-enabled under-development features
 and deprecated `on-failure` approval-policy configuration during app-server
 thread startup. Runtime `configWarning` emission is covered on app-server
 `initialize` for untrusted project-local `.codex` folders whose config, hooks,
-and exec policies are disabled until the project is trusted; other Rust
-config-warning sources remain planned.
+and exec policies are disabled until the project is trusted, and for trusted
+project-local config files that contain unsupported root keys ignored for
+safety; other Rust config-warning sources remain planned.
 
 Additional app-server hook-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `HookExecutionMode`,
