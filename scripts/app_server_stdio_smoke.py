@@ -8788,11 +8788,15 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / ".git").mkdir()
         (search_root / ".git" / "info").mkdir()
         (search_root / ".git" / "info" / "exclude").write_text(
-            "info-excluded.txt\n",
+            "info-excluded.txt\ninfo-reincluded.txt\n",
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+            encoding="utf-8",
+        )
+        (search_root / ".ignore").write_text(
+            "ignore-over-gitignore.txt\nnested-repo/parent-dotignored.txt\n",
             encoding="utf-8",
         )
         (search_root / "ignored.txt").write_text("ignored file\n", encoding="utf-8")
@@ -8800,15 +8804,28 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "!literal-bang-name.txt").write_text("escaped bang file\n", encoding="utf-8")
         (search_root / "literal space.txt").write_text("escaped space file\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
+        (search_root / "info-reincluded.txt").write_text("info reincluded file\n", encoding="utf-8")
+        (search_root / "ignore-over-gitignore.txt").write_text("dot ignore file\n", encoding="utf-8")
         (search_root / "ignored-dir").mkdir()
         (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
         (search_root / ".vscode").mkdir()
         (search_root / ".vscode" / "extensions.json").write_text("{}\n", encoding="utf-8")
         (search_root / ".vscode" / "settings.json").write_text("{}\n", encoding="utf-8")
+        nested_repo = search_root / "nested-repo"
+        nested_repo.mkdir()
+        (nested_repo / ".git").mkdir()
+        (nested_repo / ".gitignore").write_text("nested-gitignored.txt\n", encoding="utf-8")
+        (nested_repo / "parent-gitignored.txt").write_text("visible past git barrier\n", encoding="utf-8")
+        (nested_repo / "parent-dotignored.txt").write_text("ignored past git barrier\n", encoding="utf-8")
+        (nested_repo / "nested-gitignored.txt").write_text("ignored by nested gitignore\n", encoding="utf-8")
+        (nested_repo / "nested-visible.txt").write_text("visible\n", encoding="utf-8")
         no_git_root = root / "outside-git-root"
         no_git_root.mkdir()
         (no_git_root / ".gitignore").write_text("package.json\n", encoding="utf-8")
+        (no_git_root / ".ignore").write_text("plain-ignore.txt\n", encoding="utf-8")
         (no_git_root / "package.json").write_text("{\"name\":\"demo\"}\n", encoding="utf-8")
+        (no_git_root / "plain-ignore.txt").write_text("ignored\n", encoding="utf-8")
+        (no_git_root / "plain-visible.txt").write_text("visible\n", encoding="utf-8")
         worktree_root = root / "worktree-root"
         worktree_root.mkdir()
         worktree_git_dir = root / "main" / ".git"
@@ -8993,6 +9010,92 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         info_excluded_paths = {item["path"] for item in info_excluded_search["result"]["files"]}
         assert "info-excluded.txt" not in info_excluded_paths
 
+        info_reincluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-info-reincluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "inforeincluded", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert info_reincluded_search["id"] == "fuzzy-search-info-reincluded"
+        info_reincluded_paths = {item["path"] for item in info_reincluded_search["result"]["files"]}
+        assert "info-reincluded.txt" in info_reincluded_paths
+
+        dot_ignore_precedence_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-dot-ignore-precedence",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "ignoreovergitignore", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert dot_ignore_precedence_search["id"] == "fuzzy-search-dot-ignore-precedence"
+        dot_ignore_precedence_paths = {item["path"] for item in dot_ignore_precedence_search["result"]["files"]}
+        assert "ignore-over-gitignore.txt" not in dot_ignore_precedence_paths
+
+        nested_parent_gitignore_barrier_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-nested-parent-gitignore-barrier",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "parentgitignored", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert nested_parent_gitignore_barrier_search["id"] == "fuzzy-search-nested-parent-gitignore-barrier"
+        nested_parent_gitignore_barrier_paths = {
+            item["path"] for item in nested_parent_gitignore_barrier_search["result"]["files"]
+        }
+        assert "nested-repo/parent-gitignored.txt" in nested_parent_gitignore_barrier_paths
+
+        nested_parent_dot_ignore_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-nested-parent-dot-ignore",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "parentdotignored", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert nested_parent_dot_ignore_search["id"] == "fuzzy-search-nested-parent-dot-ignore"
+        nested_parent_dot_ignore_paths = {item["path"] for item in nested_parent_dot_ignore_search["result"]["files"]}
+        assert "nested-repo/parent-dotignored.txt" not in nested_parent_dot_ignore_paths
+
+        nested_gitignore_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-nested-gitignore",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "nestedgitignored", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert nested_gitignore_search["id"] == "fuzzy-search-nested-gitignore"
+        nested_gitignore_paths = {item["path"] for item in nested_gitignore_search["result"]["files"]}
+        assert "nested-repo/nested-gitignored.txt" not in nested_gitignore_paths
+
+        nested_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-nested-visible",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "nestedvisible", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert nested_visible_search["id"] == "fuzzy-search-nested-visible"
+        nested_visible_paths = {item["path"] for item in nested_visible_search["result"]["files"]}
+        assert "nested-repo/nested-visible.txt" in nested_visible_paths
+
         reincluded_search = request_stdio_app_server(
             binary,
             {
@@ -9034,6 +9137,34 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert no_git_context_search["id"] == "fuzzy-search-no-git-context"
         no_git_context_paths = {item["path"] for item in no_git_context_search["result"]["files"]}
         assert "package.json" in no_git_context_paths
+
+        dot_ignore_no_git_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-dot-ignore-no-git",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "plainignore", "roots": [str(no_git_root)]},
+            },
+            env,
+        )
+        assert dot_ignore_no_git_search["id"] == "fuzzy-search-dot-ignore-no-git"
+        dot_ignore_no_git_paths = {item["path"] for item in dot_ignore_no_git_search["result"]["files"]}
+        assert "plain-ignore.txt" not in dot_ignore_no_git_paths
+
+        dot_ignore_no_git_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-dot-ignore-no-git-visible",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "plainvisible", "roots": [str(no_git_root)]},
+            },
+            env,
+        )
+        assert dot_ignore_no_git_visible_search["id"] == "fuzzy-search-dot-ignore-no-git-visible"
+        dot_ignore_no_git_visible_paths = {item["path"] for item in dot_ignore_no_git_visible_search["result"]["files"]}
+        assert "plain-visible.txt" in dot_ignore_no_git_visible_paths
 
         worktree_visible_search = request_stdio_app_server(
             binary,

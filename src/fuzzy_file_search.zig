@@ -44,6 +44,8 @@ const ScanState = struct {
 };
 
 const IgnoreRule = struct {
+    source: IgnoreSource,
+    git_context_id: usize,
     base_dir: []const u8,
     pattern: []const u8,
     negated: bool,
@@ -55,6 +57,12 @@ const IgnoreRule = struct {
         allocator.free(self.base_dir);
         allocator.free(self.pattern);
     }
+};
+
+const IgnoreSource = enum {
+    git_exclude,
+    gitignore,
+    dot_ignore,
 };
 
 const IgnoreStack = struct {
@@ -70,14 +78,28 @@ const IgnoreStack = struct {
         self.rules.shrinkRetainingCapacity(len);
     }
 
-    fn isIgnored(self: *const IgnoreStack, relative_path: []const u8, is_dir: bool) bool {
-        var ignored = false;
+    fn isIgnored(self: *const IgnoreStack, relative_path: []const u8, is_dir: bool, git_context_id: usize) bool {
+        var dot_ignore_match: ?bool = null;
+        var gitignore_match: ?bool = null;
+        var git_exclude_match: ?bool = null;
         for (self.rules.items) |rule| {
             if (ruleMatches(rule, relative_path, is_dir)) {
-                ignored = !rule.negated;
+                const ignored = !rule.negated;
+                switch (rule.source) {
+                    .dot_ignore => dot_ignore_match = ignored,
+                    .gitignore => if (rule.git_context_id == git_context_id) {
+                        gitignore_match = ignored;
+                    },
+                    .git_exclude => if (rule.git_context_id == git_context_id) {
+                        git_exclude_match = ignored;
+                    },
+                }
             }
         }
-        return ignored;
+        if (dot_ignore_match) |ignored| return ignored;
+        if (gitignore_match) |ignored| return ignored;
+        if (git_exclude_match) |ignored| return ignored;
+        return false;
     }
 };
 
@@ -173,7 +195,7 @@ fn scanRoot(
     const has_git_context = try rootHasGitContext(allocator, io, root);
     var ignore_stack = IgnoreStack{};
     defer ignore_stack.deinit(allocator);
-    try scanDir(allocator, io, root, "", &dir, query, matches, state, &ignore_stack, has_git_context);
+    try scanDir(allocator, io, root, "", &dir, query, matches, state, &ignore_stack, has_git_context, 0);
 }
 
 fn scanDir(
@@ -187,17 +209,20 @@ fn scanDir(
     state: *ScanState,
     ignore_stack: *IgnoreStack,
     parent_git_context: bool,
+    parent_git_context_id: usize,
 ) !void {
     const current_has_git_marker = try dirHasGitMarker(allocator, io, root, relative_dir);
     const current_git_context = parent_git_context or current_has_git_marker;
+    const current_git_context_id = if (current_has_git_marker) parent_git_context_id + 1 else parent_git_context_id;
     const previous_ignore_rule_len = ignore_stack.rules.items.len;
     defer ignore_stack.truncate(allocator, previous_ignore_rule_len);
-    if (current_git_context) {
-        try loadGitignoreRules(allocator, io, root, relative_dir, ignore_stack);
-    }
     if (current_has_git_marker) {
-        try loadGitInfoExcludeRules(allocator, io, root, relative_dir, ignore_stack);
+        try loadGitInfoExcludeRules(allocator, io, root, relative_dir, current_git_context_id, ignore_stack);
     }
+    if (current_git_context) {
+        try loadGitignoreRules(allocator, io, root, relative_dir, current_git_context_id, ignore_stack);
+    }
+    try loadDotIgnoreRules(allocator, io, root, relative_dir, ignore_stack);
 
     var iter = dir.iterate();
     while (state.scanned_entries < MAX_SCANNED_ENTRIES) {
@@ -224,7 +249,7 @@ fn scanDir(
             else => null,
         };
         const should_recurse = stat.kind == .directory;
-        if (match_type != null and ignore_stack.isIgnored(relative_path, stat.kind == .directory)) {
+        if (match_type != null and ignore_stack.isIgnored(relative_path, stat.kind == .directory, current_git_context_id)) {
             allocator.free(relative_path);
             owns_relative_path = false;
             continue;
@@ -265,7 +290,7 @@ fn scanDir(
                     continue;
                 };
                 defer child_dir.close(io);
-                try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state, ignore_stack, current_git_context);
+                try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state, ignore_stack, current_git_context, current_git_context_id);
             }
             if (owns_relative_path) {
                 allocator.free(relative_path);
@@ -335,15 +360,39 @@ fn loadGitignoreRules(
     io: std.Io,
     root: []const u8,
     relative_dir: []const u8,
+    git_context_id: usize,
+    ignore_stack: *IgnoreStack,
+) !void {
+    try loadNamedIgnoreRules(allocator, io, root, relative_dir, ".gitignore", .gitignore, git_context_id, ignore_stack);
+}
+
+fn loadDotIgnoreRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    ignore_stack: *IgnoreStack,
+) !void {
+    try loadNamedIgnoreRules(allocator, io, root, relative_dir, ".ignore", .dot_ignore, 0, ignore_stack);
+}
+
+fn loadNamedIgnoreRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    filename: []const u8,
+    source: IgnoreSource,
+    git_context_id: usize,
     ignore_stack: *IgnoreStack,
 ) !void {
     const path = if (relative_dir.len == 0)
-        try std.fs.path.join(allocator, &.{ root, ".gitignore" })
+        try std.fs.path.join(allocator, &.{ root, filename })
     else
-        try std.fs.path.join(allocator, &.{ root, relative_dir, ".gitignore" });
+        try std.fs.path.join(allocator, &.{ root, relative_dir, filename });
     defer allocator.free(path);
 
-    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, ignore_stack);
+    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, source, git_context_id, ignore_stack);
 }
 
 fn loadGitInfoExcludeRules(
@@ -351,6 +400,7 @@ fn loadGitInfoExcludeRules(
     io: std.Io,
     root: []const u8,
     relative_dir: []const u8,
+    git_context_id: usize,
     ignore_stack: *IgnoreStack,
 ) !void {
     const git_dir = (try resolveGitDirFromMarker(allocator, io, root, relative_dir)) orelse return;
@@ -362,7 +412,7 @@ fn loadGitInfoExcludeRules(
     const path = try std.fs.path.join(allocator, &.{ common_dir, "info", "exclude" });
     defer allocator.free(path);
 
-    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, ignore_stack);
+    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, .git_exclude, git_context_id, ignore_stack);
 }
 
 fn resolveGitDirFromMarker(allocator: std.mem.Allocator, io: std.Io, root: []const u8, relative_dir: []const u8) !?[]const u8 {
@@ -429,6 +479,8 @@ fn loadIgnoreRulesFromPath(
     io: std.Io,
     path: []const u8,
     relative_dir: []const u8,
+    source: IgnoreSource,
+    git_context_id: usize,
     ignore_stack: *IgnoreStack,
 ) !void {
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
@@ -462,6 +514,8 @@ fn loadIgnoreRulesFromPath(
         const owned_pattern = try allocator.dupe(u8, pattern);
         errdefer allocator.free(owned_pattern);
         try ignore_stack.rules.append(allocator, .{
+            .source = source,
+            .git_context_id = git_context_id,
             .base_dir = owned_base,
             .pattern = owned_pattern,
             .negated = parsed.negated,
@@ -961,17 +1015,23 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".ignore",
+        .data = "ignore-over-gitignore.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".git/info/exclude",
-        .data = "info-excluded.txt\n",
+        .data = "info-excluded.txt\ninfo-reincluded.txt\n",
     });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "#literal-comment-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "!literal-bang-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "literal space.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "info-reincluded.txt", .data = "visible\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "ignore-over-gitignore.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored-dir/nested.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/extensions.json", .data = "{}\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/settings.json", .data = "{}\n" });
@@ -1009,6 +1069,86 @@ test "fuzzy search respects local gitignore rules in git context" {
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);
     try std.testing.expect(!resultContainsPath(info_excluded, "info-excluded.txt"));
+
+    var info_reincluded = try search(allocator, "inforeincluded", &roots);
+    defer info_reincluded.deinit(allocator);
+    try std.testing.expect(resultContainsPath(info_reincluded, "info-reincluded.txt"));
+
+    var dot_ignore_over_gitignore = try search(allocator, "ignoreovergitignore", &roots);
+    defer dot_ignore_over_gitignore.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(dot_ignore_over_gitignore, "ignore-over-gitignore.txt"));
+}
+
+test "fuzzy search honors dot ignore files" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".ignore",
+        .data = "plain-ignore.txt\n",
+    });
+    try dir.dir.writeFile(io, .{ .sub_path = "plain-ignore.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "plain-visible.txt", .data = "visible\n" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const roots = [_][]const u8{root};
+
+    var ignored = try search(allocator, "plainignore", &roots);
+    defer ignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(ignored, "plain-ignore.txt"));
+
+    var visible = try search(allocator, "plainvisible", &roots);
+    defer visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(visible, "plain-visible.txt"));
+}
+
+test "fuzzy search stops gitignore at nested git roots while keeping dot ignore" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDir(io, ".git", .default_dir);
+    try dir.dir.createDirPath(io, "nested-repo/.git");
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".gitignore",
+        .data = "nested-repo/parent-gitignored.txt\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".ignore",
+        .data = "nested-repo/parent-dotignored.txt\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "nested-repo/.gitignore",
+        .data = "nested-gitignored.txt\n",
+    });
+    try dir.dir.writeFile(io, .{ .sub_path = "nested-repo/parent-gitignored.txt", .data = "visible past git barrier\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "nested-repo/parent-dotignored.txt", .data = "ignored past git barrier\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "nested-repo/nested-gitignored.txt", .data = "ignored by nested gitignore\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "nested-repo/nested-visible.txt", .data = "visible\n" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const roots = [_][]const u8{root};
+
+    var parent_gitignored = try search(allocator, "parentgitignored", &roots);
+    defer parent_gitignored.deinit(allocator);
+    try std.testing.expect(resultContainsPath(parent_gitignored, "nested-repo/parent-gitignored.txt"));
+
+    var parent_dotignored = try search(allocator, "parentdotignored", &roots);
+    defer parent_dotignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(parent_dotignored, "nested-repo/parent-dotignored.txt"));
+
+    var nested_gitignored = try search(allocator, "nestedgitignored", &roots);
+    defer nested_gitignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(nested_gitignored, "nested-repo/nested-gitignored.txt"));
+
+    var nested_visible = try search(allocator, "nestedvisible", &roots);
+    defer nested_visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(nested_visible, "nested-repo/nested-visible.txt"));
 }
 
 test "fuzzy search resolves gitdir file excludes for worktrees" {
