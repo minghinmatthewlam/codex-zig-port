@@ -4902,6 +4902,15 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     compact_item_completed["params"]["completedAtMs"], int
                 )
                 assert compact_item_completed["params"]["item"] == context_item
+                compacted_notification = read_json_line(proc, 5)
+                assert compacted_notification == {
+                    "jsonrpc": "2.0",
+                    "method": "thread/compacted",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": compact_turn_id,
+                    },
+                }
                 compact_completed = read_json_line(proc, 5)
                 assert compact_completed["method"] == "turn/completed"
                 assert compact_completed["params"]["threadId"] == thread_id

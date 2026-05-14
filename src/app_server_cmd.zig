@@ -27106,6 +27106,7 @@ fn handleLoadedThreadCompactStart(
     started_notification_moved = true;
     try queueContextCompactionItemNotification(allocator, state, "item/started", thread.id, turn_id, item_id, "startedAtMs", started_at_ms);
     try queueContextCompactionItemNotification(allocator, state, "item/completed", thread.id, turn_id, item_id, "completedAtMs", completed_at_ms);
+    try queueContextCompactedNotification(allocator, state, thread.id, turn_id);
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
     thread.status = .idle;
@@ -27296,6 +27297,19 @@ fn queueContextCompactionItemNotification(
     notification_moved = true;
 }
 
+fn queueContextCompactedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    turn_id: []const u8,
+) !void {
+    const notification = try renderContextCompactedNotification(allocator, thread_id, turn_id);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, "thread/compacted", notification);
+    notification_moved = true;
+}
+
 fn renderUserMessageItemNotification(
     allocator: std.mem.Allocator,
     method: []const u8,
@@ -27349,6 +27363,21 @@ fn renderContextCompactionItemNotification(
     try appendJsonString(allocator, &notification, timestamp_field);
     try notification.append(allocator, ':');
     try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderContextCompactedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/compacted\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
 }
