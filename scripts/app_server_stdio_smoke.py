@@ -14375,25 +14375,6 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             == "command/exec size rows and cols must be greater than 0"
         )
 
-        tty_unsupported = request_stdio_app_server(
-            binary,
-            {
-                "jsonrpc": "2.0",
-                "id": "command-exec-tty-unsupported",
-                "method": "command/exec",
-                "params": {
-                    "command": ["/bin/echo", "unused"],
-                    "processId": "proc-tty-unsupported",
-                    "tty": True,
-                    "size": {"rows": 24, "cols": 80},
-                },
-            },
-            env,
-        )
-        assert tty_unsupported["id"] == "command-exec-tty-unsupported"
-        assert tty_unsupported["error"]["code"] == -32603
-        assert "not implemented yet" in tty_unsupported["error"]["message"]
-
         streaming_proc = subprocess.Popen(
             [str(binary), "app-server"],
             stdin=subprocess.PIPE,
@@ -14663,6 +14644,94 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             assert terminated_command["result"]["exitCode"] != 0
             assert terminated_command["result"]["stdout"] == ""
             assert terminated_command["result"]["stderr"] == ""
+            tty_child = (
+                "import os,sys; "
+                "size=os.get_terminal_size(0); "
+                "print(f'{size.lines} {size.columns}', flush=True); "
+                "line=sys.stdin.readline().strip(); "
+                "size=os.get_terminal_size(0); "
+                "print(f'{size.lines} {size.columns}', flush=True); "
+                "print('GOT:' + line, flush=True)"
+            )
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-tty",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [sys.executable, "-c", tty_child],
+                        "tty": True,
+                        "processId": "proc-tty",
+                        "size": {"rows": 24, "cols": 80},
+                        "timeoutMs": 5000,
+                    },
+                },
+            )
+            tty_initial_delta = read_json_line(streaming_proc, 5)
+            assert tty_initial_delta["method"] == "command/exec/outputDelta"
+            assert tty_initial_delta["params"]["processId"] == "proc-tty"
+            assert tty_initial_delta["params"]["stream"] == "stdout"
+            tty_initial_output = base64.b64decode(
+                tty_initial_delta["params"]["deltaBase64"]
+            )
+            assert b"24 80" in tty_initial_output
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-tty-resize",
+                    "method": "command/exec/resize",
+                    "params": {
+                        "processId": "proc-tty",
+                        "size": {"rows": 40, "cols": 100},
+                    },
+                },
+            )
+            tty_resize_response = read_json_line(streaming_proc, 5)
+            assert tty_resize_response["id"] == "command-exec-tty-resize"
+            assert tty_resize_response["result"] == {}
+            write_json_line(
+                streaming_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-tty-write",
+                    "method": "command/exec/write",
+                    "params": {
+                        "processId": "proc-tty",
+                        "deltaBase64": base64.b64encode(b"hello\n").decode("ascii"),
+                    },
+                },
+            )
+            tty_messages = []
+            for _ in range(10):
+                message = read_json_line(streaming_proc, 5)
+                tty_messages.append(message)
+                if message.get("id") == "command-exec-tty":
+                    break
+            tty_write_response = next(
+                message
+                for message in tty_messages
+                if message.get("id") == "command-exec-tty-write"
+            )
+            tty_response = next(
+                message
+                for message in tty_messages
+                if message.get("id") == "command-exec-tty"
+            )
+            tty_output = b"".join(
+                base64.b64decode(message["params"]["deltaBase64"])
+                for message in tty_messages
+                if message.get("method") == "command/exec/outputDelta"
+            )
+            assert tty_write_response["result"] == {}
+            assert b"40 100" in tty_output
+            assert b"GOT:hello" in tty_output
+            assert tty_response["result"] == {
+                "exitCode": 0,
+                "stdout": "",
+                "stderr": "",
+            }
             assert streaming_proc.stdin is not None
             streaming_proc.stdin.close()
             streaming_proc.wait(timeout=5)
