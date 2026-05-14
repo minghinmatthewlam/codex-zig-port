@@ -44,9 +44,37 @@ pub fn render(allocator: std.mem.Allocator) ![]const u8 {
     try appendOrNone(allocator, &out, stat.stdout, "<none>\n");
     try out.appendSlice(allocator, "\ndiff:\n");
     try appendOrNone(allocator, &out, diff.stdout, "<none>\n");
-    try appendUntrackedFiles(allocator, &out, untracked.stdout);
+    try appendUntrackedFiles(allocator, &out, std.Io.Dir.cwd(), untracked.stdout, true);
 
     return out.toOwnedSlice(allocator);
+}
+
+pub fn renderUnifiedForCwd(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
+    var diff = try runGitInCwd(allocator, cwd, &.{ "git", "diff", "--no-textconv", "--no-ext-diff", "--" });
+    defer diff.deinit(allocator);
+    if (!diff.success()) return null;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, diff.stdout);
+
+    var untracked = try runGitInCwd(allocator, cwd, &.{ "git", "ls-files", "--others", "--exclude-standard", "-z" });
+    defer untracked.deinit(allocator);
+    if (untracked.success()) {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var dir = if (std.fs.path.isAbsolute(cwd))
+            try std.Io.Dir.openDirAbsolute(io, cwd, .{})
+        else
+            try std.Io.Dir.cwd().openDir(io, cwd, .{});
+        defer dir.close(io);
+        try appendUntrackedFiles(allocator, &out, dir, untracked.stdout, false);
+    }
+
+    if (out.items.len == 0) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
 }
 
 pub fn renderCommit(allocator: std.mem.Allocator, commit: []const u8) ![]const u8 {
@@ -102,11 +130,21 @@ pub fn renderBase(allocator: std.mem.Allocator, branch: []const u8) ![]const u8 
 }
 
 fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !CommandOutput {
+    return runGitWithCwd(allocator, null, argv);
+}
+
+fn runGitInCwd(allocator: std.mem.Allocator, cwd: []const u8, argv: []const []const u8) !CommandOutput {
+    return runGitWithCwd(allocator, cwd, argv);
+}
+
+fn runGitWithCwd(allocator: std.mem.Allocator, cwd: ?[]const u8, argv: []const []const u8) !CommandOutput {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
+    const process_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = argv,
+        .cwd = process_cwd,
         .stdout_limit = .limited(128 * 1024),
         .stderr_limit = .limited(32 * 1024),
         .timeout = .{ .duration = .{
@@ -143,10 +181,21 @@ fn appendOrNone(
     }
 }
 
-fn appendUntrackedFiles(allocator: std.mem.Allocator, out: *std.ArrayList(u8), paths: []const u8) !void {
+fn appendUntrackedFiles(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    dir: std.Io.Dir,
+    paths: []const u8,
+    include_header: bool,
+) !void {
     if (paths.len == 0) return;
 
-    try out.appendSlice(allocator, "\nuntracked files:\n");
+    if (include_header) {
+        try out.appendSlice(allocator, "\nuntracked files:\n");
+    } else if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
+        try out.append(allocator, '\n');
+    }
+
     var path_iter = std.mem.splitScalar(u8, paths, 0);
     var rendered: usize = 0;
     while (path_iter.next()) |path| {
@@ -156,12 +205,12 @@ fn appendUntrackedFiles(allocator: std.mem.Allocator, out: *std.ArrayList(u8), p
             break;
         }
 
-        try appendUntrackedFile(allocator, out, path);
+        try appendUntrackedFile(allocator, out, dir, path);
         rendered += 1;
     }
 }
 
-fn appendUntrackedFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8) !void {
+fn appendUntrackedFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), dir: std.Io.Dir, path: []const u8) !void {
     try validateGitPath(path);
     const header = try std.fmt.allocPrint(allocator,
         \\diff --git a/{s} b/{s}
@@ -174,7 +223,7 @@ fn appendUntrackedFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), pa
     defer allocator.free(header);
     try out.appendSlice(allocator, header);
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(
+    const bytes = dir.readFileAlloc(
         std.Io.Threaded.global_single_threaded.io(),
         path,
         allocator,

@@ -278,12 +278,18 @@ pub const TurnOptions = struct {
     include_tools: bool = true,
     plan_mode: bool = false,
     plan_update_callback: ?PlanUpdateCallback = null,
+    diff_update_callback: ?DiffUpdateCallback = null,
     workdir: ?[]const u8 = null,
 };
 
 pub const PlanUpdateCallback = struct {
     ctx: *anyopaque,
     on_plan_updated: *const fn (ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void,
+};
+
+pub const DiffUpdateCallback = struct {
+    ctx: *anyopaque,
+    on_diff_updated: *const fn (ctx: *anyopaque) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -548,7 +554,7 @@ fn runToolCall(
         };
     }
 
-    return tools.runFunctionCall(allocator, call, .{
+    var tool_result = try tools.runFunctionCall(allocator, call, .{
         .approval_policy = cfg.approval_policy,
         .sandbox_mode = cfg.sandbox_mode,
         .additional_writable_roots = options.additional_writable_roots,
@@ -558,6 +564,15 @@ fn runToolCall(
         .prompt_for_approval = options.prompt_for_approval,
         .workdir = options.workdir,
     });
+    errdefer tool_result.deinit(allocator);
+
+    if (std.mem.eql(u8, call.name, "apply_patch") and std.mem.startsWith(u8, tool_result.summary, "patched ")) {
+        if (options.diff_update_callback) |callback| {
+            try callback.on_diff_updated(callback.ctx);
+        }
+    }
+
+    return tool_result;
 }
 
 const StreamTextContext = struct {};

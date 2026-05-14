@@ -15,6 +15,7 @@ const feedback_state = @import("feedback_state.zig");
 const feedback_upload = @import("feedback_upload.zig");
 const features_cmd = @import("features_cmd.zig");
 const fuzzy_file_search = @import("fuzzy_file_search.zig");
+const git_diff = @import("git_diff.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const hooks_list = @import("hooks_list.zig");
 const image_inputs = @import("input_images.zig");
@@ -25809,17 +25810,25 @@ fn handleTurnStart(
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
-    var plan_update_notifications = std.ArrayList([]const u8).empty;
+    var turn_update_notifications = std.ArrayList([]const u8).empty;
     defer {
-        for (plan_update_notifications.items) |notification| allocator.free(notification);
-        plan_update_notifications.deinit(allocator);
+        for (turn_update_notifications.items) |notification| allocator.free(notification);
+        turn_update_notifications.deinit(allocator);
     }
     var plan_update_context = PlanUpdateNotificationContext{
         .allocator = allocator,
         .enabled = !notificationMethodOptedOut(state, "turn/plan/updated"),
         .thread_id = thread.id,
         .turn_id = turn_id,
-        .notifications = &plan_update_notifications,
+        .notifications = &turn_update_notifications,
+    };
+    var diff_update_context = DiffUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "turn/diff/updated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .cwd = thread.cwd,
+        .notifications = &turn_update_notifications,
     };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
@@ -25833,6 +25842,10 @@ fn handleTurnStart(
         .plan_update_callback = .{
             .ctx = &plan_update_context,
             .on_plan_updated = handleSessionPlanUpdated,
+        },
+        .diff_update_callback = .{
+            .ctx = &diff_update_context,
+            .on_diff_updated = handleSessionDiffUpdated,
         },
         .workdir = thread.cwd,
     }) catch |err| {
@@ -25871,7 +25884,7 @@ fn handleTurnStart(
             try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
         }
     }
-    try movePendingPlanUpdateNotifications(allocator, state, &plan_update_notifications);
+    try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
         const assistant_item = thread.transcript.history.items[assistant_item_index];
         try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, assistant_item, assistant_item_index, "startedAtMs", started_at_ms);
@@ -27438,6 +27451,15 @@ const PlanUpdateNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const DiffUpdateNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    cwd: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
     const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
@@ -27446,7 +27468,22 @@ fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyer
     try context.notifications.append(context.allocator, notification);
 }
 
-fn movePendingPlanUpdateNotifications(
+fn handleSessionDiffUpdated(ctx: *anyopaque) anyerror!void {
+    const context: *DiffUpdateNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+    const maybe_diff = git_diff.renderUnifiedForCwd(context.allocator, context.cwd) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    const diff = maybe_diff orelse return;
+    defer context.allocator.free(diff);
+
+    const notification = try renderTurnDiffUpdatedNotification(context.allocator, context.thread_id, context.turn_id, diff);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn movePendingTurnUpdateNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
     notifications: *std.ArrayList([]const u8),
@@ -27456,6 +27493,24 @@ fn movePendingPlanUpdateNotifications(
         errdefer allocator.free(notification);
         try state.pending_notifications.append(allocator, notification);
     }
+}
+
+fn renderTurnDiffUpdatedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    diff: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/diff/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"diff\":");
+    try appendJsonString(allocator, &notification, diff);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn renderTurnPlanUpdatedNotification(
