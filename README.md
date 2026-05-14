@@ -350,9 +350,9 @@ flags, implicit workspace-write temp-root defaults, required streaming
 `processId` validation, and follow-up command session validation/inactive-process
 errors,
 verifies app-server `process/spawn` execution, output/exited notifications,
-active stdio stdin streaming, duplicate active handle rejection, active
-`process/kill`, macOS PTY sessions with `process/resizePty`, and non-stdio
-transport rejection for process stdin/TTY sessions,
+active stdio streamed-output and stdin sessions, duplicate active handle
+rejection, active `process/kill`, macOS PTY sessions with `process/resizePty`,
+and non-stdio transport rejection for process stdin/TTY sessions,
 checks app-server model catalog, provider-capability, collaboration-mode-list,
 app-list empty and enabled local plugin app manifest catalogs,
 git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notifications,
