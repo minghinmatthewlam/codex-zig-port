@@ -1005,6 +1005,8 @@ fn updateFileFromPatch(
         }
     }
 
+    if (index.* >= lines.len or isPatchSection(lines[index.*])) return error.InvalidPatch;
+
     var current = try root.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
     defer allocator.free(current);
 
@@ -1330,6 +1332,19 @@ test "apply_patch add overwrites existing file" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "duplicate.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("new content\n", content);
+}
+
+test "apply_patch rejects empty update before reading target" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, patch));
 }
 
 test "apply_patch deletes files and rejects unsafe paths" {
