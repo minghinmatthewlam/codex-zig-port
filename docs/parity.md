@@ -162,7 +162,8 @@ the top-level `ServerNotification` `"warning"`, `"guardianWarning"`,
 `"windows/worldWritableWarning"` union variants. Runtime emission for those
 warning and notice notifications mostly remains planned; generic `warning`
 notification emission is now covered for config-enabled under-development
-features during app-server thread startup.
+features and deprecated `on-failure` approval-policy configuration during
+app-server thread startup.
 
 Additional app-server hook-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `HookExecutionMode`,

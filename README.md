@@ -201,6 +201,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `features enable|disable`, including Rust-like root clearing for default-off
   flags, under-development warnings for direct root enables, and app-server
   startup warnings for config-enabled under-development features
+- emit app-server startup warnings for deprecated `on-failure` approval-policy
+  configuration
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
@@ -269,8 +271,9 @@ The `e2e` step starts a local mock Responses server, launches the real
 runtime feature toggles through `features list`, profile-scoped feature
 persistence, Rust legacy feature aliases, direct under-development enable
 warnings, app-server startup warnings for config-enabled under-development
-features, suppression with `suppress_unstable_features_warning = true`, and
-root default-off feature clearing, checks `help [COMMAND]`,
+features, suppression with `suppress_unstable_features_warning = true`,
+deprecated `on-failure` approval-policy warnings, and root default-off feature
+clearing, checks `help [COMMAND]`,
 verifies exact generated shell completion output for bash, elvish, fish,
 powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
