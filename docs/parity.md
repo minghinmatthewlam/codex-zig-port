@@ -207,6 +207,8 @@ included in the top-level `ServerNotification` `"item/plan/delta"`,
 `"item/fileChange/outputDelta"`, and `"item/fileChange/patchUpdated"` union
 variants. Runtime `item/commandExecution/outputDelta` emission is now covered
 for the model-visible output from model-requested shell tools during app-server
+`turn/start`. Runtime `item/commandExecution/terminalInteraction` emission is
+now covered for successful model-requested `write_stdin` calls during app-server
 `turn/start`. Runtime `item/fileChange/patchUpdated` emission is now covered
 for successful model-requested `apply_patch` edits during app-server
 `turn/start`. Runtime emission for the remaining current item-stream

@@ -220,6 +220,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `turn/start` runs successful model-requested `apply_patch` edits
 - emit app-server `item/commandExecution/outputDelta` notifications when
   `turn/start` runs model-requested shell tools
+- emit app-server `item/commandExecution/terminalInteraction` notifications
+  when `turn/start` writes stdin to model-started terminal sessions
 - emit app-server `rawResponseItem/completed` notifications for raw Responses
   output items observed during `turn/start`
 - emit app-server reasoning stream notifications for Responses reasoning
