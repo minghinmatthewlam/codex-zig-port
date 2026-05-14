@@ -18,6 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 
 _OMIT = object()
 
@@ -1140,6 +1141,41 @@ def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
         stderr = proc.stderr.read()
         raise AssertionError(f"app-server closed stdout before response\n{stderr}")
     return json.loads(line)
+
+
+def read_json_lines_until(
+    proc: subprocess.Popen[str],
+    timeout: float,
+    predicate: Callable[[list[dict]], bool],
+) -> list[dict]:
+    deadline = time.monotonic() + timeout
+    messages: list[dict] = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"timed out waiting for app-server messages: {messages!r}")
+        messages.append(read_json_line(proc, remaining))
+        if predicate(messages):
+            return messages
+
+
+def decoded_process_output(messages: list[dict], process_handle: str, stream: str = "stdout") -> bytes:
+    chunks: list[bytes] = []
+    for message in messages:
+        if message.get("method") != "process/outputDelta":
+            continue
+        params = message["params"]
+        if params["processHandle"] != process_handle or params["stream"] != stream:
+            continue
+        chunks.append(base64.b64decode(params["deltaBase64"]))
+    return b"".join(chunks)
+
+
+def find_process_exited(messages: list[dict], process_handle: str) -> dict:
+    for message in messages:
+        if message.get("method") == "process/exited" and message["params"]["processHandle"] == process_handle:
+            return message
+    raise AssertionError(f"missing process/exited for {process_handle}: {messages!r}")
 
 
 def write_json_line(proc: subprocess.Popen[str], payload: dict) -> None:
@@ -15128,6 +15164,280 @@ def run_process_rpc_smoke(binary: Path) -> None:
             assert null_timeout_exited["params"]["exitCode"] == 0
             assert null_timeout_exited["params"]["stdout"] == "after-timeout"
 
+            stdin_script = (
+                "import sys; "
+                "data = sys.stdin.read(); "
+                "sys.stdout.write('stdin:' + data); "
+                "sys.stdout.flush()"
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-stdin",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [sys.executable, "-c", stdin_script],
+                        "processHandle": "proc-stdin",
+                        "cwd": str(cwd),
+                        "streamStdin": True,
+                        "streamStdoutStderr": True,
+                    },
+                },
+            )
+            stdin_spawn = read_json_line(proc, 5)
+            assert stdin_spawn["id"] == "process-spawn-stdin"
+            assert stdin_spawn["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-stdin-duplicate",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": ["/bin/echo", "unused"],
+                        "processHandle": "proc-stdin",
+                        "cwd": str(cwd),
+                        "streamStdin": True,
+                    },
+                },
+            )
+            stdin_duplicate = read_json_line(proc, 5)
+            assert stdin_duplicate["id"] == "process-spawn-stdin-duplicate"
+            assert stdin_duplicate["error"]["code"] == -32600
+            assert "duplicate active process handle" in stdin_duplicate["error"]["message"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-write-active",
+                    "method": "process/writeStdin",
+                    "params": {
+                        "processHandle": "proc-stdin",
+                        "deltaBase64": base64.b64encode(b"ping\n").decode("ascii"),
+                        "closeStdin": True,
+                    },
+                },
+            )
+            stdin_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-write-active" for message in messages)
+                and any(
+                    message.get("method") == "process/exited"
+                    and message["params"]["processHandle"] == "proc-stdin"
+                    for message in messages
+                ),
+            )
+            stdin_write = next(
+                message for message in stdin_messages if message.get("id") == "process-write-active"
+            )
+            assert stdin_write["result"] == {}
+            assert decoded_process_output(stdin_messages, "proc-stdin") == b"stdin:ping\n"
+            stdin_exited = find_process_exited(stdin_messages, "proc-stdin")
+            assert stdin_exited["params"]["exitCode"] == 0
+            assert stdin_exited["params"]["stdout"] == ""
+            assert stdin_exited["params"]["stderr"] == ""
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-stdin-buffered",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [sys.executable, "-c", stdin_script],
+                        "processHandle": "proc-stdin-buffered",
+                        "cwd": str(cwd),
+                        "streamStdin": True,
+                    },
+                },
+            )
+            stdin_buffered_spawn = read_json_line(proc, 5)
+            assert stdin_buffered_spawn["id"] == "process-spawn-stdin-buffered"
+            assert stdin_buffered_spawn["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-write-buffered-active",
+                    "method": "process/writeStdin",
+                    "params": {
+                        "processHandle": "proc-stdin-buffered",
+                        "deltaBase64": base64.b64encode(b"buffered\n").decode("ascii"),
+                        "closeStdin": True,
+                    },
+                },
+            )
+            stdin_buffered_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-write-buffered-active" for message in messages)
+                and any(
+                    message.get("method") == "process/exited"
+                    and message["params"]["processHandle"] == "proc-stdin-buffered"
+                    for message in messages
+                ),
+            )
+            stdin_buffered_write = next(
+                message for message in stdin_buffered_messages if message.get("id") == "process-write-buffered-active"
+            )
+            assert stdin_buffered_write["result"] == {}
+            assert decoded_process_output(stdin_buffered_messages, "proc-stdin-buffered") == b""
+            stdin_buffered_exited = find_process_exited(stdin_buffered_messages, "proc-stdin-buffered")
+            assert stdin_buffered_exited["params"]["exitCode"] == 0
+            assert stdin_buffered_exited["params"]["stdout"] == "stdin:buffered\n"
+            assert stdin_buffered_exited["params"]["stderr"] == ""
+
+            kill_script = (
+                "import sys, time; "
+                "sys.stdout.write('ready\\n'); "
+                "sys.stdout.flush(); "
+                "time.sleep(30)"
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-kill",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [sys.executable, "-c", kill_script],
+                        "processHandle": "proc-kill-active",
+                        "cwd": str(cwd),
+                        "streamStdin": True,
+                        "streamStdoutStderr": True,
+                    },
+                },
+            )
+            kill_ready_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-spawn-kill" for message in messages)
+                and decoded_process_output(messages, "proc-kill-active") == b"ready\n",
+            )
+            kill_spawn = next(
+                message for message in kill_ready_messages if message.get("id") == "process-spawn-kill"
+            )
+            assert kill_spawn["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-kill-active",
+                    "method": "process/kill",
+                    "params": {"processHandle": "proc-kill-active"},
+                },
+            )
+            kill_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-kill-active" for message in messages)
+                and any(
+                    message.get("method") == "process/exited"
+                    and message["params"]["processHandle"] == "proc-kill-active"
+                    for message in messages
+                ),
+            )
+            kill_response = next(
+                message for message in kill_messages if message.get("id") == "process-kill-active"
+            )
+            assert kill_response["result"] == {}
+            kill_exited = find_process_exited(kill_messages, "proc-kill-active")
+            assert kill_exited["params"]["exitCode"] != 0
+
+            pty_script = "\n".join(
+                [
+                    "import fcntl, struct, sys, termios",
+                    "def size():",
+                    "    rows, cols, _, _ = struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))",
+                    "    return f'{rows} {cols}'",
+                    "print('SIZE:' + size(), flush=True)",
+                    "line = sys.stdin.readline().strip()",
+                    "print('AFTER:' + size(), flush=True)",
+                    "print('LINE:' + line, flush=True)",
+                ]
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-spawn-pty",
+                    "method": "process/spawn",
+                    "params": {
+                        "command": [sys.executable, "-c", pty_script],
+                        "processHandle": "proc-pty",
+                        "cwd": str(cwd),
+                        "tty": True,
+                        "size": {"rows": 24, "cols": 80},
+                    },
+                },
+            )
+            pty_initial_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-spawn-pty" for message in messages)
+                and b"SIZE:24 80" in decoded_process_output(messages, "proc-pty"),
+            )
+            pty_spawn = next(
+                message for message in pty_initial_messages if message.get("id") == "process-spawn-pty"
+            )
+            assert pty_spawn["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-resize-active",
+                    "method": "process/resizePty",
+                    "params": {
+                        "processHandle": "proc-pty",
+                        "size": {"rows": 40, "cols": 100},
+                    },
+                },
+            )
+            pty_resize = read_json_line(proc, 5)
+            assert pty_resize["id"] == "process-resize-active"
+            assert pty_resize["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "process-write-pty",
+                    "method": "process/writeStdin",
+                    "params": {
+                        "processHandle": "proc-pty",
+                        "deltaBase64": base64.b64encode(b"hello\n").decode("ascii"),
+                    },
+                },
+            )
+            pty_finish_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-write-pty" for message in messages)
+                and any(
+                    message.get("method") == "process/exited"
+                    and message["params"]["processHandle"] == "proc-pty"
+                    for message in messages
+                ),
+            )
+            pty_write = next(
+                message for message in pty_finish_messages if message.get("id") == "process-write-pty"
+            )
+            assert pty_write["result"] == {}
+            pty_output = decoded_process_output(pty_initial_messages + pty_finish_messages, "proc-pty")
+            assert b"AFTER:40 100" in pty_output
+            assert b"LINE:hello" in pty_output
+            pty_exited = find_process_exited(pty_finish_messages, "proc-pty")
+            assert pty_exited["params"]["exitCode"] == 0
+            assert pty_exited["params"]["stdout"] == ""
+            assert pty_exited["params"]["stderr"] == ""
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -15224,26 +15534,6 @@ def run_process_rpc_smoke(binary: Path) -> None:
         assert invalid_size["id"] == "process-spawn-invalid-size"
         assert invalid_size["error"]["code"] == -32602
         assert "rows and cols must be greater than 0" in invalid_size["error"]["message"]
-
-        unsupported_tty = request_stdio_app_server(
-            binary,
-            {
-                "jsonrpc": "2.0",
-                "id": "process-spawn-unsupported-tty",
-                "method": "process/spawn",
-                "params": {
-                    "command": ["/bin/echo", "unused"],
-                    "processHandle": "proc-tty",
-                    "cwd": str(cwd),
-                    "tty": True,
-                    "size": {"rows": 24, "cols": 80},
-                },
-            },
-            env,
-        )
-        assert unsupported_tty["id"] == "process-spawn-unsupported-tty"
-        assert unsupported_tty["error"]["code"] == -32603
-        assert "not implemented yet" in unsupported_tty["error"]["message"]
 
         negative_timeout = request_stdio_app_server(
             binary,
@@ -20847,6 +21137,27 @@ def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
                 unsubscribe = read_json_line_from_socket(reader)
                 assert unsubscribe["id"] == "connection-reset-unsubscribe"
                 assert unsubscribe["result"] == {"status": "notSubscribed"}
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unix-process-spawn-stdio-only",
+                        "method": "process/spawn",
+                        "params": {
+                            "command": [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                            "processHandle": "unix-proc-stdio-only",
+                            "cwd": tempfile.gettempdir(),
+                            "streamStdin": True,
+                        },
+                    },
+                )
+                process_spawn = read_json_line_from_socket(reader)
+                assert process_spawn["id"] == "unix-process-spawn-stdio-only"
+                assert process_spawn["error"]["code"] == -32603
+                assert (
+                    "stdio app-server transport only"
+                    in process_spawn["error"]["message"]
+                )
 
 
 def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: dict[str, str] | None = None) -> None:
@@ -21167,6 +21478,23 @@ def exercise_websocket_connection_state_reset(host: str, port: int, bearer_token
         unsubscribe = websocket.read_json()
         assert unsubscribe["id"] == "websocket-reset-unsubscribe"
         assert unsubscribe["result"] == {"status": "notSubscribed"}
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-process-spawn-stdio-only",
+                "method": "process/spawn",
+                "params": {
+                    "command": [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                    "processHandle": "websocket-proc-stdio-only",
+                    "cwd": tempfile.gettempdir(),
+                    "streamStdin": True,
+                },
+            }
+        )
+        process_spawn = websocket.read_json()
+        assert process_spawn["id"] == "websocket-process-spawn-stdio-only"
+        assert process_spawn["error"]["code"] == -32603
+        assert "stdio app-server transport only" in process_spawn["error"]["message"]
     finally:
         websocket.close()
 
