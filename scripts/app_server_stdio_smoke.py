@@ -8800,7 +8800,7 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
             encoding="utf-8",
         )
         (search_root / ".ignore").write_text(
@@ -8811,6 +8811,8 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "#literal-comment-name.txt").write_text("escaped comment file\n", encoding="utf-8")
         (search_root / "!literal-bang-name.txt").write_text("escaped bang file\n", encoding="utf-8")
         (search_root / "literal space.txt").write_text("escaped space file\n", encoding="utf-8")
+        (search_root / "literal*.txt").write_text("escaped wildcard file\n", encoding="utf-8")
+        (search_root / "literal-star.txt").write_text("escaped wildcard non-match\n", encoding="utf-8")
         (search_root / "digit-7.txt").write_text("bracket digit ignored\n", encoding="utf-8")
         (search_root / "digit-x.txt").write_text("bracket digit visible\n", encoding="utf-8")
         (search_root / "letter-x.txt").write_text("bracket negated ignored\n", encoding="utf-8")
@@ -9012,6 +9014,36 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert escaped_space_search["id"] == "fuzzy-search-escaped-space"
         escaped_space_paths = {item["path"] for item in escaped_space_search["result"]["files"]}
         assert "literal space.txt" not in escaped_space_paths
+
+        escaped_wildcard_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-escaped-wildcard",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "literal", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert escaped_wildcard_search["id"] == "fuzzy-search-escaped-wildcard"
+        escaped_wildcard_paths = {item["path"] for item in escaped_wildcard_search["result"]["files"]}
+        assert "literal*.txt" not in escaped_wildcard_paths
+
+        escaped_wildcard_non_match_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-escaped-wildcard-non-match",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "literalstar", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert escaped_wildcard_non_match_search["id"] == "fuzzy-search-escaped-wildcard-non-match"
+        escaped_wildcard_non_match_paths = {
+            item["path"] for item in escaped_wildcard_non_match_search["result"]["files"]
+        }
+        assert "literal-star.txt" in escaped_wildcard_non_match_paths
 
         bracket_digit_ignored_search = request_stdio_app_server(
             binary,

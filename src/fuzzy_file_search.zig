@@ -617,8 +617,7 @@ fn parseIgnoreLine(allocator: std.mem.Allocator, raw_line: []const u8) !?ParsedI
     if (trimmed.len == 0 or trimmed[0] == '#') return null;
 
     const negated = trimmed[0] == '!';
-    const pattern = try unescapeIgnorePattern(allocator, trimmed);
-    errdefer allocator.free(pattern);
+    const pattern = try allocator.dupe(u8, trimmed);
     if (pattern.len == 0) {
         allocator.free(pattern);
         return null;
@@ -642,21 +641,6 @@ fn trimUnescapedTrailingWhitespace(value: []const u8) []const u8 {
         end -= 1;
     }
     return value[0..end];
-}
-
-fn unescapeIgnorePattern(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    var index: usize = 0;
-    while (index < value.len) {
-        if (value[index] == '\\' and index + 1 < value.len) {
-            index += 1;
-        }
-        try out.append(allocator, value[index]);
-        index += 1;
-    }
-    return out.toOwnedSlice(allocator);
 }
 
 fn ruleMatches(rule: IgnoreRule, relative_path: []const u8, is_dir: bool) bool {
@@ -710,6 +694,12 @@ fn globMatchesAt(pattern: []const u8, value: []const u8) bool {
             return false;
         }
         if (value_index >= value.len) return false;
+        if (token == '\\' and pattern_index + 1 < pattern.len) {
+            if (pattern[pattern_index + 1] != value[value_index]) return false;
+            pattern_index += 2;
+            value_index += 1;
+            continue;
+        }
         if (token == '?') {
             if (value[value_index] == '/') return false;
             pattern_index += 1;
@@ -1160,7 +1150,7 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".ignore",
@@ -1174,6 +1164,8 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.writeFile(io, .{ .sub_path = "#literal-comment-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "!literal-bang-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "literal space.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "literal*.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "literal-star.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "digit-7.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "digit-x.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "letter-x.txt", .data = "ignored\n" });
@@ -1214,6 +1206,14 @@ test "fuzzy search respects local gitignore rules in git context" {
     var escaped_space = try search(allocator, "literalspace", &roots);
     defer escaped_space.deinit(allocator);
     try std.testing.expect(!resultContainsPath(escaped_space, "literal space.txt"));
+
+    var escaped_wildcard = try search(allocator, "literal", &roots);
+    defer escaped_wildcard.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(escaped_wildcard, "literal*.txt"));
+
+    var wildcard_non_match = try search(allocator, "literalstar", &roots);
+    defer wildcard_non_match.deinit(allocator);
+    try std.testing.expect(resultContainsPath(wildcard_non_match, "literal-star.txt"));
 
     var digit_ignored = try search(allocator, "digit7", &roots);
     defer digit_ignored.deinit(allocator);
