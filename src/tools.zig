@@ -1029,7 +1029,11 @@ fn updateFileFromPatch(
 
         while (index.* < lines.len and !isPatchSection(lines[index.*]) and !isHunkBoundary(lines[index.*])) : (index.* += 1) {
             const line = lines[index.*];
-            if (line.len == 0) return error.InvalidPatch;
+            if (line.len == 0) {
+                try old.append(allocator, '\n');
+                try new.append(allocator, '\n');
+                continue;
+            }
             switch (line[0]) {
                 ' ' => {
                     try old.appendSlice(allocator, line[1..]);
@@ -1345,6 +1349,34 @@ test "apply_patch rejects empty update before reading target" {
         \\*** End Patch
     ;
     try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, patch));
+}
+
+test "apply_patch treats blank hunk lines as empty context" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "blank.txt",
+        .data = "alpha\n\nbeta\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: blank.txt
+        \\@@
+        \\ alpha
+        \\
+        \\-beta
+        \\+gamma
+        \\*** End Patch
+    ;
+    const stats = try applyPatchInDir(allocator, dir.dir, patch);
+    try std.testing.expectEqual(@as(usize, 1), stats.updated);
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "blank.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("alpha\n\ngamma\n", content);
 }
 
 test "apply_patch deletes files and rejects unsafe paths" {
