@@ -985,7 +985,6 @@ fn addFileFromPatch(
     try root.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
         .sub_path = path,
         .data = content.items,
-        .flags = .{ .exclusive = true },
     });
 }
 
@@ -1307,6 +1306,30 @@ test "apply_patch adds and updates files" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "docs/demo.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("alpha\ngamma\n", content);
+}
+
+test "apply_patch add overwrites existing file" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "duplicate.txt",
+        .data = "old content\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Add File: duplicate.txt
+        \\+new content
+        \\*** End Patch
+    ;
+    const stats = try applyPatchInDir(allocator, dir.dir, patch);
+    try std.testing.expectEqual(@as(usize, 1), stats.added);
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "duplicate.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("new content\n", content);
 }
 
 test "apply_patch deletes files and rejects unsafe paths" {
