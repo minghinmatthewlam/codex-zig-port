@@ -419,8 +419,8 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             try server.run();
         },
         .websocket => |address| {
-            if (options.websocket_auth.ws_auth != null) return error.AppServerWebsocketAuthNotImplemented;
-            var server = WebSocketServer{ .allocator = allocator, .address = address };
+            const auth_policy = try websocketAuthPolicyFromArgs(allocator, options.websocket_auth);
+            var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy };
             try server.run();
         },
     }
@@ -472,14 +472,57 @@ fn validateAbsolutePathArg(path: []const u8) !void {
 }
 
 fn validateSha256DigestArg(value: []const u8) !void {
+    _ = try parseSha256DigestArg(value);
+}
+
+const WebsocketAuthPolicy = union(enum) {
+    none,
+    capability_token: [std.crypto.hash.sha2.Sha256.digest_length]u8,
+};
+
+fn websocketAuthPolicyFromArgs(allocator: std.mem.Allocator, auth: WebsocketAuthArgs) !WebsocketAuthPolicy {
+    switch (auth.ws_auth orelse return .none) {
+        .capability_token => {
+            if (auth.ws_token_sha256) |digest| {
+                return .{ .capability_token = try parseSha256DigestArg(digest) };
+            }
+            const token_file = auth.ws_token_file orelse return error.AppServerWebsocketTokenSourceRequired;
+            const token = try readWebsocketAuthSecret(allocator, token_file);
+            defer allocator.free(token);
+            var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(token, &digest, .{});
+            return .{ .capability_token = digest };
+        },
+        .signed_bearer_token => return error.AppServerWebsocketAuthNotImplemented,
+    }
+}
+
+fn parseSha256DigestArg(value: []const u8) ![std.crypto.hash.sha2.Sha256.digest_length]u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len != 64) return error.AppServerWebsocketAuthSha256DigestInvalid;
-    for (trimmed) |byte| {
-        switch (byte) {
-            '0'...'9', 'a'...'f', 'A'...'F' => {},
-            else => return error.AppServerWebsocketAuthSha256DigestInvalid,
-        }
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    for (&digest, 0..) |*byte, index| {
+        const pair = trimmed[index * 2 .. index * 2 + 2];
+        byte.* = (try websocketHexNibble(pair[0])) << 4 | try websocketHexNibble(pair[1]);
     }
+    return digest;
+}
+
+fn websocketHexNibble(byte: u8) !u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => error.AppServerWebsocketAuthSha256DigestInvalid,
+    };
+}
+
+fn readWebsocketAuthSecret(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
+    defer allocator.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.AppServerWebsocketAuthSecretEmpty;
+    return allocator.dupe(u8, trimmed);
 }
 
 fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -24715,6 +24758,7 @@ const UnixServer = struct {
 const WebSocketServer = struct {
     allocator: std.mem.Allocator,
     address: WebSocketListen,
+    auth_policy: WebsocketAuthPolicy = .none,
 
     fn run(self: *WebSocketServer) !void {
         const io = std.Io.Threaded.global_single_threaded.io();
@@ -24765,6 +24809,11 @@ const WebSocketServer = struct {
             else => return err,
         };
 
+        if (websocketHeaderValue(&request, "origin") != null) {
+            try request.respond("Forbidden\n", .{ .status = .forbidden });
+            return;
+        }
+
         if (std.mem.eql(u8, request.head.target, "/readyz") or std.mem.eql(u8, request.head.target, "/healthz")) {
             try request.respond("OK\n", .{
                 .status = .ok,
@@ -24790,6 +24839,10 @@ const WebSocketServer = struct {
             !websocketHeaderEquals(&request, "sec-websocket-version", "13"))
         {
             try request.respond("Bad Request\n", .{ .status = .bad_request });
+            return;
+        }
+        if (!websocketAuthorizeUpgrade(&request, self.auth_policy)) {
+            try request.respond("Unauthorized\n", .{ .status = .unauthorized });
             return;
         }
         const accept = try websocketAcceptValue(self.allocator, websocket_key);
@@ -24845,6 +24898,36 @@ fn websocketConnectionIncludesUpgrade(request: *const std.http.Server.Request) b
         if (std.ascii.eqlIgnoreCase(token, "upgrade")) return true;
     }
     return false;
+}
+
+fn websocketAuthorizeUpgrade(request: *const std.http.Server.Request, policy: WebsocketAuthPolicy) bool {
+    switch (policy) {
+        .none => return true,
+        .capability_token => |expected_digest| {
+            const token = websocketBearerToken(request) orelse return false;
+            var actual_digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(token, &actual_digest, .{});
+            return websocketConstantTimeEqual(&expected_digest, &actual_digest);
+        },
+    }
+}
+
+fn websocketBearerToken(request: *const std.http.Server.Request) ?[]const u8 {
+    const value = websocketHeaderValue(request, "authorization") orelse return null;
+    const separator = std.mem.indexOfScalar(u8, value, ' ') orelse return null;
+    const scheme = value[0..separator];
+    if (!std.ascii.eqlIgnoreCase(scheme, "Bearer")) return null;
+    const token = std.mem.trim(u8, value[separator + 1 ..], " \t\r\n");
+    if (token.len == 0) return null;
+    return token;
+}
+
+fn websocketConstantTimeEqual(a: *const [std.crypto.hash.sha2.Sha256.digest_length]u8, b: *const [std.crypto.hash.sha2.Sha256.digest_length]u8) bool {
+    var difference: u8 = 0;
+    for (a, b) |left, right| {
+        difference |= left ^ right;
+    }
+    return difference == 0;
 }
 
 fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
