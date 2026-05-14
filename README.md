@@ -222,6 +222,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `turn/start` runs model-requested shell tools
 - emit app-server `item/commandExecution/terminalInteraction` notifications
   when `turn/start` writes stdin to model-started terminal sessions
+- clean model-started app-server PTY sessions through
+  `thread/backgroundTerminals/clean`
 - emit app-server `rawResponseItem/completed` notifications for raw Responses
   output items observed during `turn/start`
 - emit app-server reasoning stream notifications for Responses reasoning
