@@ -8788,6 +8788,8 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "abc").write_text("prefix non-match\n", encoding="utf-8")
         (search_root / "abcde").write_text("spread match\n", encoding="utf-8")
         (search_root / "abexy").write_text("best match\n", encoding="utf-8")
+        accent_name = "r\u00e9sum\u00e9.md"
+        (search_root / accent_name).write_text("accent folded match\n", encoding="utf-8")
         (search_root / "sub").mkdir()
         (search_root / "sub" / "abce").write_text("nested match\n", encoding="utf-8")
 
@@ -8859,6 +8861,22 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
                 "indices": [0, 1, 4],
             },
         ]
+
+        accent_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-accent",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "resume", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert accent_search["id"] == "fuzzy-search-accent"
+        by_accent_path = {item["path"]: item for item in accent_search["result"]["files"]}
+        assert by_accent_path[accent_name]["root"] == str(search_root)
+        assert by_accent_path[accent_name]["match_type"] == "file"
+        assert by_accent_path[accent_name]["indices"] == [0, 1, 3, 4, 5, 6]
 
         empty_query = request_stdio_app_server(
             binary,

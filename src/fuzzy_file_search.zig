@@ -57,6 +57,16 @@ const FuzzyMatch = struct {
     indices: []const u32,
 };
 
+const NormalizedFuzzyInput = struct {
+    bytes: []const u8,
+    byte_indices: []const u32,
+
+    fn deinit(self: *NormalizedFuzzyInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.bytes);
+        allocator.free(self.byte_indices);
+    }
+};
+
 const ScoreState = struct {
     score: u32 = 0,
     run_bonus: u32 = 0,
@@ -216,19 +226,26 @@ fn shouldSkipName(name: []const u8) bool {
 }
 
 fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const u8) !?FuzzyMatch {
-    if (query.len == 0) {
+    var normalized_path = try normalizeFuzzyInput(allocator, path);
+    defer normalized_path.deinit(allocator);
+
+    var normalized_query = try normalizeFuzzyInput(allocator, query);
+    defer normalized_query.deinit(allocator);
+
+    if (normalized_query.bytes.len == 0) {
         return .{
             .score = 0,
             .indices = try allocator.alloc(u32, 0),
         };
     }
-    if (query.len > path.len) return null;
+    if (normalized_query.bytes.len > normalized_path.bytes.len) return null;
 
-    const path_len = path.len;
-    const cell_count = std.math.mul(usize, query.len, path_len) catch return error.OutOfMemory;
+    const path_len = normalized_path.bytes.len;
+    const query_len = normalized_query.bytes.len;
+    const cell_count = std.math.mul(usize, query_len, path_len) catch return error.OutOfMemory;
     const bonuses = try allocator.alloc(u32, path_len);
     defer allocator.free(bonuses);
-    fillPathBonuses(path, bonuses);
+    fillPathBonuses(normalized_path.bytes, bonuses);
 
     var parents = try allocator.alloc(usize, cell_count);
     defer allocator.free(parents);
@@ -241,13 +258,13 @@ fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const
     var current = try allocator.alloc(ScoreState, path_len);
     defer allocator.free(current);
 
-    for (query, 0..) |query_byte, query_index| {
+    for (normalized_query.bytes, 0..) |query_byte, query_index| {
         @memset(current, .{});
         var best_gap_value: ?u32 = null;
         var best_gap_index: usize = ParentIndexNone;
         const query_lower = std.ascii.toLower(query_byte);
 
-        for (path, 0..) |path_byte, path_index| {
+        for (normalized_path.bytes, 0..) |path_byte, path_index| {
             if (query_index > 0 and path_index >= 2 and previous[path_index - 2].valid) {
                 const candidate_gap_value = previous[path_index - 2].score + @as(u32, @intCast(path_index - 2));
                 if (best_gap_value == null or candidate_gap_value > best_gap_value.?) {
@@ -322,13 +339,13 @@ fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const
 
     if (best_index == ParentIndexNone) return null;
 
-    var indices = try allocator.alloc(u32, query.len);
+    var indices = try allocator.alloc(u32, query_len);
     errdefer allocator.free(indices);
-    var query_index = query.len;
+    var query_index = query_len;
     var path_index = best_index;
     while (query_index > 0) {
         query_index -= 1;
-        indices[query_index] = @intCast(path_index);
+        indices[query_index] = normalized_path.byte_indices[path_index];
         const parent = parents[query_index * path_len + path_index];
         if (query_index == 0) break;
         path_index = parent;
@@ -337,6 +354,126 @@ fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const
     return .{
         .score = best_score,
         .indices = indices,
+    };
+}
+
+fn normalizeFuzzyInput(allocator: std.mem.Allocator, value: []const u8) !NormalizedFuzzyInput {
+    var bytes = std.ArrayList(u8).empty;
+    errdefer bytes.deinit(allocator);
+    var byte_indices = std.ArrayList(u32).empty;
+    errdefer byte_indices.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < value.len) {
+        const start_index = index;
+        if (value[index] < 0x80) {
+            try appendNormalizedFuzzyByte(allocator, &bytes, &byte_indices, value[index], start_index);
+            index += 1;
+            continue;
+        }
+
+        const width = std.unicode.utf8ByteSequenceLength(value[index]) catch {
+            try appendNormalizedFuzzyByte(allocator, &bytes, &byte_indices, value[index], start_index);
+            index += 1;
+            continue;
+        };
+        if (index + width > value.len) {
+            try appendNormalizedFuzzyByte(allocator, &bytes, &byte_indices, value[index], start_index);
+            index += 1;
+            continue;
+        }
+
+        const codepoint = std.unicode.utf8Decode(value[index .. index + width]) catch {
+            try appendNormalizedFuzzyByte(allocator, &bytes, &byte_indices, value[index], start_index);
+            index += 1;
+            continue;
+        };
+        index += width;
+
+        if (isCombiningMark(codepoint)) continue;
+        if (try appendFoldedLatin(allocator, &bytes, &byte_indices, codepoint, start_index)) continue;
+
+        for (value[start_index..index], start_index..) |byte, byte_index| {
+            try appendNormalizedFuzzyByte(allocator, &bytes, &byte_indices, byte, byte_index);
+        }
+    }
+
+    const owned_bytes = try bytes.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_bytes);
+    const owned_byte_indices = try byte_indices.toOwnedSlice(allocator);
+    return .{
+        .bytes = owned_bytes,
+        .byte_indices = owned_byte_indices,
+    };
+}
+
+fn appendNormalizedFuzzyByte(
+    allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    byte_indices: *std.ArrayList(u32),
+    byte: u8,
+    byte_index: usize,
+) !void {
+    try bytes.append(allocator, byte);
+    try byte_indices.append(allocator, @intCast(byte_index));
+}
+
+fn appendNormalizedFuzzyAscii(
+    allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    byte_indices: *std.ArrayList(u32),
+    replacement: []const u8,
+    byte_index: usize,
+) !void {
+    for (replacement) |byte| try appendNormalizedFuzzyByte(allocator, bytes, byte_indices, byte, byte_index);
+}
+
+fn appendFoldedLatin(
+    allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    byte_indices: *std.ArrayList(u32),
+    codepoint: u21,
+    byte_index: usize,
+) !bool {
+    const replacement = foldedLatinReplacement(codepoint) orelse return false;
+    try appendNormalizedFuzzyAscii(allocator, bytes, byte_indices, replacement, byte_index);
+    return true;
+}
+
+fn isCombiningMark(codepoint: u21) bool {
+    return (codepoint >= 0x0300 and codepoint <= 0x036f) or
+        (codepoint >= 0x1ab0 and codepoint <= 0x1aff) or
+        (codepoint >= 0x1dc0 and codepoint <= 0x1dff) or
+        (codepoint >= 0x20d0 and codepoint <= 0x20ff) or
+        (codepoint >= 0xfe20 and codepoint <= 0xfe2f);
+}
+
+fn foldedLatinReplacement(codepoint: u21) ?[]const u8 {
+    return switch (codepoint) {
+        0x00c0...0x00c5, 0x00e0...0x00e5, 0x0100...0x0105, 0x01cd...0x01ce, 0x01de...0x01e1, 0x01fa...0x01fb, 0x0200...0x0203, 0x0226...0x0227 => "a",
+        0x00c7, 0x00e7, 0x0106...0x010d, 0x0187...0x0188, 0x023b...0x023c => "c",
+        0x00d0, 0x00f0, 0x010e...0x0111 => "d",
+        0x00c8...0x00cb, 0x00e8...0x00eb, 0x0112...0x011b, 0x0204...0x0207, 0x0228...0x0229 => "e",
+        0x011c...0x0123, 0x01e4...0x01e7 => "g",
+        0x0124...0x0127, 0x021e...0x021f => "h",
+        0x00cc...0x00cf, 0x00ec...0x00ef, 0x0128...0x0131, 0x01cf...0x01d0, 0x0208...0x020b => "i",
+        0x0134...0x0135 => "j",
+        0x0136...0x0138, 0x01e8...0x01e9 => "k",
+        0x0139...0x0142, 0x0234 => "l",
+        0x00d1, 0x00f1, 0x0143...0x0149, 0x01f8...0x01f9 => "n",
+        0x00d2...0x00d6, 0x00d8, 0x00f2...0x00f6, 0x00f8, 0x014c...0x0151, 0x01d1...0x01d2, 0x01fe...0x01ff, 0x020c...0x020f, 0x022a...0x0231 => "o",
+        0x0154...0x0159, 0x0210...0x0213 => "r",
+        0x015a...0x0161, 0x0218...0x0219 => "s",
+        0x0162...0x0167, 0x021a...0x021b, 0x0236 => "t",
+        0x00d9...0x00dc, 0x00f9...0x00fc, 0x0168...0x0173, 0x01d3...0x01dc, 0x0214...0x0217 => "u",
+        0x0174...0x0175 => "w",
+        0x00dd, 0x00fd, 0x00ff, 0x0176...0x0178, 0x0232...0x0233 => "y",
+        0x0179...0x017e => "z",
+        0x00c6, 0x00e6 => "ae",
+        0x0152, 0x0153 => "oe",
+        0x00df => "ss",
+        0x00de, 0x00fe => "th",
+        else => null,
     };
 }
 
@@ -411,4 +548,20 @@ test "fuzzy match uses Rust path scoring constants" {
     defer allocator.free(spread.indices);
     try std.testing.expectEqual(@as(u32, 71), spread.score);
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 4 }, spread.indices);
+}
+
+test "fuzzy match folds latin accents while preserving original byte indices" {
+    const allocator = std.testing.allocator;
+
+    const composed = (try fuzzyMatchPath(allocator, "caf\u{e9}.txt", "cafe")).?;
+    defer allocator.free(composed.indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3 }, composed.indices);
+
+    const decomposed = (try fuzzyMatchPath(allocator, "src/cafe\u{301}.txt", "cafe")).?;
+    defer allocator.free(decomposed.indices);
+    try std.testing.expectEqualSlices(u32, &.{ 4, 5, 6, 7 }, decomposed.indices);
+
+    const query_accent = (try fuzzyMatchPath(allocator, "resume.md", "r\u{e9}sum\u{e9}")).?;
+    defer allocator.free(query_accent.indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4, 5 }, query_accent.indices);
 }
