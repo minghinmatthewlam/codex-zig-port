@@ -3716,6 +3716,53 @@ def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
         shutil.rmtree(workspace, ignore_errors=True)
 
+    escaped_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-escaped-home-", dir="/tmp"))
+    escaped_parent = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-escaped-parent-", dir="/tmp"))
+    escaped_workspace = escaped_parent / 'quote"slash\\project'
+    try:
+        escaped_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'approval_policy = "never"',
+                    'sandbox_mode = "read-only"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        escaped_workspace.joinpath(".codex").mkdir(parents=True)
+        escaped_workspace.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    'approval_policy = "on-request"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        escaped = rpc(
+            escaped_home,
+            "thread-start-escaped-path-trust",
+            {"cwd": str(escaped_workspace), "sandbox": "workspace-write", "ephemeral": True},
+        )
+        assert escaped["id"] == "thread-start-escaped-path-trust"
+        assert escaped["result"]["approvalPolicy"] == "on-request"
+        escaped_config_toml = escaped_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_escaped_section = f'[projects."{toml_quoted_key(str(escaped_workspace.resolve()))}"]'
+        assert trusted_escaped_section in escaped_config_toml
+
+        escaped_followup = rpc(
+            escaped_home,
+            "thread-start-escaped-path-followup",
+            {"cwd": str(escaped_workspace), "ephemeral": True},
+        )
+        assert escaped_followup["id"] == "thread-start-escaped-path-followup"
+        assert escaped_followup["result"]["approvalPolicy"] == "on-request"
+    finally:
+        shutil.rmtree(escaped_home, ignore_errors=True)
+        shutil.rmtree(escaped_parent, ignore_errors=True)
+
     nested_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-nested-home-", dir="/tmp"))
     repo_root = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-repo-", dir="/tmp"))
     nested = repo_root / "nested" / "project"

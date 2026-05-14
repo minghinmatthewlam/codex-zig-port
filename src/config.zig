@@ -1995,8 +1995,8 @@ fn isPermissionsProfileSection(line: []const u8, profile: []const u8, subsection
     const remainder = section[prefix.len..];
 
     if (remainder.len >= 2 and remainder[0] == '"') {
-        const close = std.mem.indexOfScalarPos(u8, remainder, 1, '"') orelse return false;
-        if (!std.mem.eql(u8, remainder[1..close], profile)) return false;
+        const close = tomlBasicStringClosingQuoteIndex(remainder) orelse return false;
+        if (!tomlBasicStringContentMatches(remainder[1..close], profile)) return false;
         const suffix = remainder[close + 1 ..];
         return suffix.len == subsection.len + 1 and suffix[0] == '.' and std.mem.eql(u8, suffix[1..], subsection);
     }
@@ -2239,14 +2239,7 @@ pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const 
 
         index += 1;
         if (index >= rhs.len) return error.InvalidTomlString;
-        const escaped: u8 = switch (rhs[index]) {
-            '"' => '"',
-            '\\' => '\\',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            else => return error.InvalidTomlString,
-        };
+        const escaped = tomlBasicStringEscapedByte(rhs[index]) orelse return error.InvalidTomlString;
         try output.append(allocator, escaped);
     }
 
@@ -2291,14 +2284,7 @@ pub fn parseTomlStringArray(allocator: std.mem.Allocator, rhs: []const u8) !?Str
 
             index += 1;
             if (index >= rhs.len) return error.InvalidTomlStringArray;
-            const escaped: u8 = switch (rhs[index]) {
-                '"' => '"',
-                '\\' => '\\',
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                else => return error.InvalidTomlStringArray,
-            };
+            const escaped = tomlBasicStringEscapedByte(rhs[index]) orelse return error.InvalidTomlStringArray;
             try output.append(allocator, escaped);
         } else return error.InvalidTomlStringArray;
     }
@@ -2323,15 +2309,7 @@ fn isProfileOrNestedSection(line: []const u8, profile: []const u8) bool {
     {
         return true;
     }
-    if (remainder.len >= profile.len + 3 and
-        remainder[0] == '"' and
-        std.mem.eql(u8, remainder[1 .. 1 + profile.len], profile) and
-        remainder[1 + profile.len] == '"' and
-        remainder[2 + profile.len] == '.')
-    {
-        return true;
-    }
-    return false;
+    return tomlQuotedNameAndDotMatches(remainder, profile);
 }
 
 fn isNamedSection(line: []const u8, prefix: []const u8, name: []const u8) bool {
@@ -2339,10 +2317,69 @@ fn isNamedSection(line: []const u8, prefix: []const u8, name: []const u8) bool {
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
     if (!std.mem.startsWith(u8, section, prefix)) return false;
     const raw_name = section[prefix.len..];
-    if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
-        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], name);
-    }
+    if (tomlQuotedNameMatches(raw_name, name)) return true;
     return std.mem.eql(u8, raw_name, name);
+}
+
+fn tomlQuotedNameAndDotMatches(raw: []const u8, name: []const u8) bool {
+    const end_quote = tomlBasicStringClosingQuoteIndex(raw) orelse return false;
+    if (end_quote + 1 >= raw.len or raw[end_quote + 1] != '.') return false;
+    return tomlBasicStringContentMatches(raw[1..end_quote], name);
+}
+
+fn tomlQuotedNameMatches(raw: []const u8, name: []const u8) bool {
+    const end_quote = tomlBasicStringClosingQuoteIndex(raw) orelse return false;
+    if (end_quote != raw.len - 1) return false;
+    return tomlBasicStringContentMatches(raw[1..end_quote], name);
+}
+
+fn tomlBasicStringClosingQuoteIndex(raw: []const u8) ?usize {
+    if (raw.len < 2 or raw[0] != '"') return null;
+    var index: usize = 1;
+    var escaped = false;
+    while (index < raw.len) : (index += 1) {
+        const byte = raw[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (byte == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (byte == '"') return index;
+    }
+    return null;
+}
+
+fn tomlBasicStringContentMatches(raw: []const u8, expected: []const u8) bool {
+    var raw_index: usize = 0;
+    var expected_index: usize = 0;
+    while (raw_index < raw.len) {
+        const decoded = if (raw[raw_index] == '\\') decoded: {
+            raw_index += 1;
+            if (raw_index >= raw.len) return false;
+            break :decoded tomlBasicStringEscapedByte(raw[raw_index]) orelse return false;
+        } else raw[raw_index];
+
+        if (expected_index >= expected.len or expected[expected_index] != decoded) return false;
+        expected_index += 1;
+        raw_index += 1;
+    }
+    return expected_index == expected.len;
+}
+
+fn tomlBasicStringEscapedByte(byte: u8) ?u8 {
+    return switch (byte) {
+        '"' => '"',
+        '\\' => '\\',
+        'b' => 0x08,
+        'f' => 0x0c,
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        else => null,
+    };
 }
 
 fn modelProviderAuthSectionName(allocator: std.mem.Allocator, provider: []const u8) ![]const u8 {
@@ -2437,6 +2474,28 @@ test "sandbox permission profile supports disabled network" {
     };
 
     var profile = try view.resolveCustomSandboxPermissionProfile(allocator, "demo");
+    defer profile.deinit(allocator);
+
+    try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
+    try std.testing.expect(profile.include_cwd_write_root);
+    try std.testing.expect(!profile.network_enabled);
+}
+
+test "sandbox permission profile decodes quoted profile section escapes" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[permissions."demo \"team".filesystem]
+        \\":root" = "read"
+        \\":project_roots" = "write"
+        \\
+        \\[permissions."demo \"team".network]
+        \\enabled = false
+        \\
+        ,
+    };
+
+    var profile = try view.resolveCustomSandboxPermissionProfile(allocator, "demo \"team");
     defer profile.deinit(allocator);
 
     try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
@@ -2673,6 +2732,23 @@ test "quoted profile section names are supported" {
     try std.testing.expectEqualStrings("quoted-profile-model", model.?);
 }
 
+test "quoted named section escapes are decoded" {
+    const allocator = std.testing.allocator;
+    const trust_level = try namedSectionStringValue(
+        allocator,
+        \\[projects."/tmp/a\"b\\c"]
+        \\trust_level = "trusted"
+        \\
+    ,
+        "projects.",
+        "/tmp/a\"b\\c",
+        "trust_level",
+    );
+    try std.testing.expect(trust_level != null);
+    defer allocator.free(trust_level.?);
+    try std.testing.expectEqualStrings("trusted", trust_level.?);
+}
+
 test "nested profile sections count as existing profiles" {
     const view = ConfigView{
         .bytes =
@@ -2687,6 +2763,19 @@ test "nested profile sections count as existing profiles" {
     try std.testing.expect(view.hasProfile("team a"));
     try std.testing.expect(view.hasProfile("work"));
     try std.testing.expect(!view.hasProfile("other"));
+}
+
+test "quoted nested profile section escapes are decoded" {
+    const view = ConfigView{
+        .bytes =
+        \\[profiles."team \"a".features]
+        \\goals = true
+        \\
+        ,
+    };
+
+    try std.testing.expect(view.hasProfile("team \"a"));
+    try std.testing.expect(!view.hasProfile("team \\\"a"));
 }
 
 test "model provider base url resolves from active provider table" {
