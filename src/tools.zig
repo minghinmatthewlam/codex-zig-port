@@ -1100,10 +1100,11 @@ fn updateFileFromPatch(
         }
 
         if (old.items.len == 0 and new.items.len == 0) continue;
+        const is_end_of_file = index.* < lines.len and std.mem.eql(u8, patchDirective(lines[index.*]), "*** End of File");
         const replaced = if (old.items.len == 0) blk: {
             break :blk try appendToEnd(allocator, current, new.items);
         } else blk: {
-            const replacement = try replaceOnceFrom(allocator, current, old.items, new.items, search_start);
+            const replacement = try replaceOnceFrom(allocator, current, old.items, new.items, search_start, is_end_of_file);
             search_start = replacement.next_start;
             break :blk replacement.text;
         };
@@ -1254,10 +1255,13 @@ fn replaceOnceFrom(
     needle: []const u8,
     replacement: []const u8,
     start_offset: usize,
+    end_only: bool,
 ) !PatchReplacement {
     if (needle.len == 0) return error.InvalidPatch;
     const bounded_start = @min(start_offset, haystack.len);
-    const match = if (std.mem.indexOfPos(u8, haystack, bounded_start, needle)) |start|
+    const match = if (end_only)
+        (try fuzzyLineMatchAtEnd(allocator, haystack, needle)) orelse return error.PatchContextNotFound
+    else if (std.mem.indexOfPos(u8, haystack, bounded_start, needle)) |start|
         TextMatch{ .start = start, .end = start + needle.len }
     else if (trailingNewlineMatchFrom(haystack, needle, bounded_start)) |matched|
         matched
@@ -1298,14 +1302,7 @@ fn fuzzyLineMatchFrom(allocator: std.mem.Allocator, haystack: []const u8, needle
         var source_index: usize = 0;
         while (source_index <= last_start) : (source_index += 1) {
             if (source_lines.items[source_index].start < start_offset) continue;
-            var matched = true;
-            for (pattern_lines.items, 0..) |pattern_line, pattern_index| {
-                if (!try patchLinesEqual(allocator, source_lines.items[source_index + pattern_index].content, pattern_line, mode)) {
-                    matched = false;
-                    break;
-                }
-            }
-            if (matched) {
+            if (try patchLineSequenceMatches(allocator, source_lines.items, pattern_lines.items, source_index, mode)) {
                 return .{
                     .start = source_lines.items[source_index].start,
                     .end = source_lines.items[source_index + pattern_lines.items.len - 1].end,
@@ -1315,6 +1312,46 @@ fn fuzzyLineMatchFrom(allocator: std.mem.Allocator, haystack: []const u8, needle
     }
 
     return null;
+}
+
+fn fuzzyLineMatchAtEnd(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8) !?TextMatch {
+    var source_lines = std.ArrayList(PatchSourceLine).empty;
+    defer source_lines.deinit(allocator);
+    try collectPatchSourceLines(allocator, haystack, &source_lines);
+
+    var pattern_lines = std.ArrayList([]const u8).empty;
+    defer pattern_lines.deinit(allocator);
+    try collectPatchPatternLines(allocator, needle, &pattern_lines);
+
+    if (pattern_lines.items.len == 0 or pattern_lines.items.len > source_lines.items.len) return null;
+
+    const source_index = source_lines.items.len - pattern_lines.items.len;
+    const modes = [_]PatchLineMatchMode{ .exact, .trim_end, .trim, .normalized };
+    for (modes) |mode| {
+        if (try patchLineSequenceMatches(allocator, source_lines.items, pattern_lines.items, source_index, mode)) {
+            return .{
+                .start = source_lines.items[source_index].start,
+                .end = source_lines.items[source_index + pattern_lines.items.len - 1].end,
+            };
+        }
+    }
+
+    return null;
+}
+
+fn patchLineSequenceMatches(
+    allocator: std.mem.Allocator,
+    source_lines: []const PatchSourceLine,
+    pattern_lines: []const []const u8,
+    source_index: usize,
+    mode: PatchLineMatchMode,
+) !bool {
+    for (pattern_lines, 0..) |pattern_line, pattern_index| {
+        if (!try patchLinesEqual(allocator, source_lines[source_index + pattern_index].content, pattern_line, mode)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn changeContextFromMarker(directive: []const u8) ?[]const u8 {
@@ -1975,6 +2012,24 @@ test "apply_patch handles EOF, pure additions, and padded markers" {
     const tail = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "tail.txt", allocator, .limited(1024));
     defer allocator.free(tail);
     try std.testing.expectEqualStrings("first\nsecond updated\n", tail);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "tail_repeated.txt",
+        .data = "target\nmiddle\ntarget\n",
+    });
+    const eof_repeated_patch =
+        \\*** Begin Patch
+        \\*** Update File: tail_repeated.txt
+        \\@@
+        \\-target
+        \\+last target
+        \\*** End of File
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, eof_repeated_patch);
+    const tail_repeated = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "tail_repeated.txt", allocator, .limited(1024));
+    defer allocator.free(tail_repeated);
+    try std.testing.expectEqualStrings("target\nmiddle\nlast target\n", tail_repeated);
 
     try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
         .sub_path = "input.txt",
