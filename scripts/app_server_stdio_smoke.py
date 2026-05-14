@@ -9454,6 +9454,47 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "fuzzy-session-empty-id-start",
+                    "method": "fuzzyFileSearch/sessionStart",
+                    "params": {"sessionId": "", "roots": [str(search_root)]},
+                },
+            )
+            empty_id_start = read_json_line(proc, 5)
+            assert empty_id_start["id"] == "fuzzy-session-empty-id-start"
+            assert empty_id_start["error"]["code"] == -32600
+            assert empty_id_start["error"]["message"] == "sessionId must not be empty"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-empty-id-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "", "query": "alp"},
+                },
+            )
+            empty_id_update = read_json_line(proc, 5)
+            assert empty_id_update["id"] == "fuzzy-session-empty-id-update"
+            assert empty_id_update["error"]["code"] == -32600
+            assert empty_id_update["error"]["message"] == "fuzzy file search session not found: "
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "fuzzy-session-empty-id-stop",
+                    "method": "fuzzyFileSearch/sessionStop",
+                    "params": {"sessionId": ""},
+                },
+            )
+            empty_id_stop = read_json_line(proc, 5)
+            assert empty_id_stop["id"] == "fuzzy-session-empty-id-stop"
+            assert empty_id_stop["result"] == {}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "fuzzy-session-start",
                     "method": "fuzzyFileSearch/sessionStart",
                     "params": {"sessionId": "session-1", "roots": [str(search_root)]},

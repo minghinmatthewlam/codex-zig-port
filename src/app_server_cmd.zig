@@ -31322,10 +31322,8 @@ fn handleFuzzyFileSearchSessionStart(
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStart params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "fuzzyFileSearch/sessionStart params must be an object");
 
-    const session_id = parseSessionIdParam(params.object) catch |err| switch (err) {
-        error.MissingFuzzySessionId => return renderJsonRpcError(allocator, id_value, -32602, "sessionId must be a string"),
-        error.EmptyFuzzySessionId => return renderJsonRpcError(allocator, id_value, -32600, "sessionId must not be empty"),
-    };
+    const session_id = parseSessionIdParam(params.object) catch return renderJsonRpcError(allocator, id_value, -32602, "sessionId must be a string");
+    if (session_id.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "sessionId must not be empty");
     const roots = parseFuzzyFileSearchRootsOwned(allocator, params.object.get("roots")) catch |err| switch (err) {
         error.InvalidFuzzyFileSearchRoots => return renderJsonRpcError(allocator, id_value, -32602, "roots must be an array of strings"),
         else => return err,
@@ -31425,7 +31423,6 @@ fn handleFuzzyFileSearchSessionStop(
 fn parseSessionIdParam(object: std.json.ObjectMap) ![]const u8 {
     const session_id = object.get("sessionId") orelse return error.MissingFuzzySessionId;
     if (session_id != .string) return error.MissingFuzzySessionId;
-    if (session_id.string.len == 0) return error.EmptyFuzzySessionId;
     return session_id.string;
 }
 
