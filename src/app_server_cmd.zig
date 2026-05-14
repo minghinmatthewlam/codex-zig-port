@@ -28290,11 +28290,25 @@ fn appendTurnJson(
 }
 
 fn queueTurnNotification(allocator: std.mem.Allocator, state: *AppServerState, method: []const u8, notification: []const u8) !void {
-    if (notificationMethodOptedOut(state, method)) {
+    try queuePendingServerNotification(allocator, state, method, notification);
+}
+
+fn queuePendingServerNotification(allocator: std.mem.Allocator, state: *AppServerState, method: []const u8, notification: []const u8) !void {
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+
+    if (serverNotificationShouldBeDropped(state, method)) {
         allocator.free(notification);
+        notification_moved = true;
         return;
     }
     try state.pending_notifications.append(allocator, notification);
+    notification_moved = true;
+}
+
+fn serverNotificationShouldBeDropped(state: *const AppServerState, method: []const u8) bool {
+    if (!state.experimental_api_enabled and experimentalReasonForServerNotificationMethod(method) != null) return true;
+    return notificationMethodOptedOut(state, method);
 }
 
 fn queueErrorNotification(
@@ -32247,8 +32261,7 @@ fn queueThreadGoalUpdatedNotification(allocator: std.mem.Allocator, state: *AppS
     try appendLoadedThreadGoalJson(allocator, &notification, thread.id, goal);
     try notification.appendSlice(allocator, "}}");
     const owned = try notification.toOwnedSlice(allocator);
-    errdefer allocator.free(owned);
-    try state.pending_notifications.append(allocator, owned);
+    try queuePendingServerNotification(allocator, state, "thread/goal/updated", owned);
 }
 
 fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !void {
@@ -32258,8 +32271,7 @@ fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppS
     try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, "}}");
     const owned = try notification.toOwnedSlice(allocator);
-    errdefer allocator.free(owned);
-    try state.pending_notifications.append(allocator, owned);
+    try queuePendingServerNotification(allocator, state, "thread/goal/cleared", owned);
 }
 
 fn renderThreadGoalSetResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
@@ -32650,6 +32662,26 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "thread/realtime/listVoices",
     }) |experimental_method| {
         if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
+    }
+    return null;
+}
+
+fn experimentalReasonForServerNotificationMethod(method: []const u8) ?[]const u8 {
+    inline for (&.{
+        .{ .method = "thread/goal/updated", .reason = "thread/goal/updated" },
+        .{ .method = "thread/goal/cleared", .reason = "thread/goal/cleared" },
+        .{ .method = "process/outputDelta", .reason = "process/outputDelta" },
+        .{ .method = "process/exited", .reason = "process/exited" },
+        .{ .method = "thread/realtime/started", .reason = "thread/realtime/started" },
+        .{ .method = "thread/realtime/itemAdded", .reason = "thread/realtime/itemAdded" },
+        .{ .method = "thread/realtime/transcript/delta", .reason = "thread/realtime/transcript/delta" },
+        .{ .method = "thread/realtime/transcript/done", .reason = "thread/realtime/transcript/done" },
+        .{ .method = "thread/realtime/outputAudio/delta", .reason = "thread/realtime/outputAudio/delta" },
+        .{ .method = "thread/realtime/sdp", .reason = "thread/realtime/sdp" },
+        .{ .method = "thread/realtime/error", .reason = "thread/realtime/error" },
+        .{ .method = "thread/realtime/closed", .reason = "thread/realtime/closed" },
+    }) |experimental_notification| {
+        if (std.mem.eql(u8, method, experimental_notification.method)) return experimental_notification.reason;
     }
     return null;
 }
@@ -37523,8 +37555,7 @@ fn queueProcessOutputDelta(
     const cap_reached = commandExecOutputCapReached(observed_len, output_bytes_cap);
 
     const notification = try renderProcessOutputDeltaNotification(allocator, process_handle, stream, capped, cap_reached);
-    errdefer allocator.free(notification);
-    try state.pending_notifications.append(allocator, notification);
+    try queuePendingServerNotification(allocator, state, "process/outputDelta", notification);
 }
 
 fn renderProcessOutputDeltaNotification(
@@ -37564,8 +37595,7 @@ fn queueProcessExitedNotification(
     stderr_cap_reached: bool,
 ) !void {
     const notification = try renderProcessExitedNotification(allocator, process_handle, exit_code, stdout, stderr, stdout_cap_reached, stderr_cap_reached);
-    errdefer allocator.free(notification);
-    try state.pending_notifications.append(allocator, notification);
+    try queuePendingServerNotification(allocator, state, "process/exited", notification);
 }
 
 fn renderProcessExitedNotification(
@@ -49487,6 +49517,27 @@ test "app-server collaboration mode list returns built-in presets" {
     );
     defer allocator.free(invalid.?);
     try std.testing.expect(std.mem.indexOf(u8, invalid.?, "\"code\":-32602") != null);
+}
+
+test "app-server filters experimental server notifications by capability" {
+    const allocator = std.testing.allocator;
+
+    var stable_state = AppServerState{};
+    defer stable_state.deinit(allocator);
+    try queueThreadGoalClearedNotification(allocator, &stable_state, "thread-1");
+    try queueProcessOutputDelta(allocator, &stable_state, "process-1", "stdout", "hello", "hello".len, null);
+    try queueProcessExitedNotification(allocator, &stable_state, "process-1", 0, "", "", false, false);
+    try std.testing.expectEqual(@as(usize, 0), stable_state.pending_notifications.items.len);
+
+    var experimental_state = AppServerState{ .experimental_api_enabled = true };
+    defer experimental_state.deinit(allocator);
+    try queueThreadGoalClearedNotification(allocator, &experimental_state, "thread-1");
+    try queueProcessOutputDelta(allocator, &experimental_state, "process-1", "stdout", "hello", "hello".len, null);
+    try queueProcessExitedNotification(allocator, &experimental_state, "process-1", 0, "", "", false, false);
+    try std.testing.expectEqual(@as(usize, 3), experimental_state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[0], "\"method\":\"thread/goal/cleared\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[1], "\"method\":\"process/outputDelta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[2], "\"method\":\"process/exited\"") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
