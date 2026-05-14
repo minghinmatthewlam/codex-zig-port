@@ -641,7 +641,19 @@ rejects invalid reasoning-effort labels before issuing a provider request,
 stores the selected effort on the loaded-thread runtime state, and applies
 that effort to the current and subsequent Responses requests. The
 generated TypeScript and JSON schemas include `TurnStartParams.effort`. Rust
-collaboration-mode turn-context overrides remain planned.
+collaboration-mode precedence over explicit `model` / `effort` overrides is
+covered separately below.
+
+Additional app-server turn-start collaboration-mode override coverage:
+`turn/start` now accepts Rust-compatible `collaborationMode` overrides for
+already-loaded threads, validates mode/settings shape, applies mode model and
+reasoning effort ahead of explicit `model` / `effort` params, fills built-in
+developer instructions when `developer_instructions` is null, stores the mode
+on loaded-thread runtime state for subsequent turns, and renders plan-mode
+`<proposed_plan>` responses without raw tags. Explicit empty
+`developer_instructions` clears the extra collaboration instruction block. The
+generated TypeScript and JSON schemas include
+`TurnStartParams.collaborationMode`.
 
 Additional app-server turn-start approvals-reviewer override coverage:
 `turn/start` now accepts Rust-compatible `approvalsReviewer` overrides for
@@ -656,8 +668,7 @@ now accepts Rust-compatible `personality` overrides for already-loaded
 threads, rejects invalid personality labels before issuing a provider request,
 stores the selected personality on the loaded-thread runtime state, and applies
 it to the current and subsequent Responses request instructions. The generated
-TypeScript and JSON schemas include `TurnStartParams.personality`. Rust
-collaboration-mode turn-context overrides remain planned.
+TypeScript and JSON schemas include `TurnStartParams.personality`.
 
 Additional app-server turn-start reasoning-summary override coverage:
 `turn/start` now accepts Rust-compatible `summary` overrides for
