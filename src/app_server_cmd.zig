@@ -49,6 +49,7 @@ const APP_SERVER_COMPACT_PROMPT =
     \\Preserve the user's goal, decisions, constraints, files changed, commands run, verification results, unresolved risks, and exact next steps.
     \\Be concise but specific. Do not include generic advice.
 ;
+const EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE = "External auth is active. Use account/login/start (chatgptAuthTokens) to update it or account/logout to clear it.";
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -44231,6 +44232,9 @@ fn handleAccountLoginStart(allocator: std.mem.Allocator, id_value: std.json.Valu
             return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
         };
         defer cfg.deinit(allocator);
+        if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+            return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
+        }
         if (cfg.forced_login_method == .api) {
             return renderJsonRpcError(allocator, id_value, -32600, "ChatGPT login is disabled. Use API key login instead.");
         }
@@ -44255,6 +44259,9 @@ fn handleAccountLoginStartApiKey(allocator: std.mem.Allocator, id_value: std.jso
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+        return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
+    }
     if (cfg.forced_login_method == .chatgpt) {
         return renderJsonRpcError(allocator, id_value, -32600, "API key login is disabled. Use ChatGPT login instead.");
     }
@@ -44327,6 +44334,12 @@ fn handleAccountLoginCancel(allocator: std.mem.Allocator, id_value: std.json.Val
     }
 
     return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notFound\"}");
+}
+
+fn externalChatGptAuthActive(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    var credentials = (try auth_mod.loadStored(allocator, codex_home)) orelse return false;
+    defer credentials.deinit(allocator);
+    return credentials.mode == .chatgpt_auth_tokens;
 }
 
 fn isUuidString(value: []const u8) bool {

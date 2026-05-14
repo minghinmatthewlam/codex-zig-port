@@ -303,7 +303,9 @@ now loads `forced_login_method` and `forced_chatgpt_workspace_id` from the
 effective config, rejects disabled API-key, ChatGPT, and external
 ChatGPT-token login attempts with Rust-shaped invalid-request errors, and
 rejects external ChatGPT auth tokens that target the wrong forced workspace.
-Browser and device-code active ChatGPT login flows remain planned.
+It also preserves Rust's externally managed auth guard by rejecting API-key,
+browser, and device-code login attempts while external ChatGPT auth tokens are
+active. Browser and device-code active ChatGPT login flows remain planned.
 
 Additional app-server filesystem generation coverage: `fs/readFile`,
 `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,

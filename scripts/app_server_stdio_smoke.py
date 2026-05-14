@@ -18594,6 +18594,23 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "api-key-while-external-auth",
+                    "method": "account/login/start",
+                    "params": {"type": "apiKey", "apiKey": "replacement-api-key"},
+                },
+            )
+            api_key_while_external_auth = read_json_line(proc, 5)
+            assert api_key_while_external_auth["id"] == "api-key-while-external-auth"
+            assert api_key_while_external_auth["error"]["code"] == -32600
+            assert api_key_while_external_auth["error"]["message"] == (
+                "External auth is active. Use account/login/start (chatgptAuthTokens) "
+                "to update it or account/logout to clear it."
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "missing-api-key",
                     "method": "account/login/start",
                     "params": {"type": "apiKey"},
@@ -18627,7 +18644,11 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             )
             unsupported = read_json_line(proc, 5)
             assert unsupported["id"] == "unsupported-login"
-            assert unsupported["error"]["code"] == -32603
+            assert unsupported["error"]["code"] == -32600
+            assert unsupported["error"]["message"] == (
+                "External auth is active. Use account/login/start (chatgptAuthTokens) "
+                "to update it or account/logout to clear it."
+            )
 
             assert proc.stdin is not None
             proc.stdin.close()
