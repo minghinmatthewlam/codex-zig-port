@@ -81,9 +81,14 @@ class TurnResponsesHandler(BaseHTTPRequestHandler):
             b'data: {"type":"response.output_text.delta","delta":"app turn reply"}\n\n'
             b"data: [DONE]\n\n"
         )
+        response_headers = (
+            self.server.response_headers.pop(0) if self.server.response_headers else {}
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
+        for key, value in response_headers.items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -95,6 +100,7 @@ class TurnResponsesServer(ThreadingHTTPServer):
     request_paths: list[str]
     request_bodies: list[dict]
     response_payloads: list[bytes]
+    response_headers: list[dict[str, str]]
 
 
 class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
@@ -430,6 +436,7 @@ def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server.request_paths = []
     server.request_bodies = []
     server.response_payloads = []
+    server.response_headers = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -6386,14 +6393,6 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
 
                 model_events = [
                     {
-                        "type": "response.created",
-                        "response": {
-                            "headers": {
-                                "OpenAI-Model": "gpt-rerouted-model",
-                            },
-                        },
-                    },
-                    {
                         "type": "response.metadata",
                         "metadata": {
                             "openai_verification_recommendation": [
@@ -6413,6 +6412,7 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
                     for event in model_events
                 )
                 server.response_payloads.append((payload + "data: [DONE]\n\n").encode())
+                server.response_headers.append({"OpenAI-Model": "gpt-rerouted-model"})
 
                 write_json_line(
                     proc,

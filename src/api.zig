@@ -225,7 +225,7 @@ pub fn createTurnWithOptions(
                 std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
                 return error.ApiRequestFailed;
             }
-            return parseSseResponse(allocator, retry_response.body);
+            return parseSseResponseWithHttpModel(allocator, retry_response.body, retry_response.server_model);
         }
     }
 
@@ -234,15 +234,17 @@ pub fn createTurnWithOptions(
         return error.ApiRequestFailed;
     }
 
-    return parseSseResponse(allocator, response.body);
+    return parseSseResponseWithHttpModel(allocator, response.body, response.server_model);
 }
 
 const ApiFetchResponse = struct {
     status: std.http.Status,
     body: []u8,
+    server_model: ?[]const u8,
 
     fn deinit(self: ApiFetchResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
+        if (self.server_model) |server_model| allocator.free(server_model);
     }
 };
 
@@ -282,21 +284,65 @@ fn fetchTurn(
     var response_body = try StreamingResponseWriter.init(allocator, stream_callback);
     defer response_body.deinit();
 
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &response_body.writer,
+    const uri = try std.Uri.parse(url);
+    var request = try client.request(.POST, uri, .{
+        .redirect_behavior = .unhandled,
         .extra_headers = headers.items,
     });
+    defer request.deinit();
+
+    request.transfer_encoding = .{ .content_length = body.len };
+    var request_body = try request.sendBodyUnflushed(&.{});
+    try request_body.writer.writeAll(body);
+    try request_body.end();
+    try request.connection.?.flush();
+
+    var response_head_buffer: [8192]u8 = undefined;
+    var response = try request.receiveHead(&response_head_buffer);
+    const server_model = try serverModelFromHttpHeaders(allocator, response.head);
+    errdefer if (server_model) |model| allocator.free(model);
+
+    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer if (response.head.content_encoding != .identity) allocator.free(decompress_buffer);
+
+    var transfer_buffer: [64]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+    _ = reader.streamRemaining(&response_body.writer) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr().?,
+        else => |e| {
+            if (response_body.failure) |failure| return failure;
+            return e;
+        },
+    };
 
     if (response_body.failure) |err| return err;
     try response_body.finish();
 
     return .{
-        .status = result.status,
+        .status = response.head.status,
         .body = try response_body.toOwnedSlice(),
+        .server_model = server_model,
     };
+}
+
+fn serverModelFromHttpHeaders(allocator: std.mem.Allocator, head: std.http.Client.Response.Head) !?[]const u8 {
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "openai-model") and
+            !std.ascii.eqlIgnoreCase(header.name, "x-openai-model"))
+        {
+            continue;
+        }
+        if (header.value.len == 0) continue;
+        return try allocator.dupe(u8, header.value);
+    }
+    return null;
 }
 
 fn buildProviderUrl(
@@ -806,6 +852,21 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         .server_model = server_model,
         .model_verifications = try model_verifications.toOwnedSlice(allocator),
     };
+}
+
+fn parseSseResponseWithHttpModel(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    http_server_model: ?[]const u8,
+) !ParsedResponse {
+    var parsed = try parseSseResponse(allocator, bytes);
+    errdefer parsed.deinit(allocator);
+    if (parsed.server_model == null) {
+        if (http_server_model) |server_model| {
+            parsed.server_model = try allocator.dupe(u8, server_model);
+        }
+    }
+    return parsed;
 }
 
 fn parseServerModel(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
