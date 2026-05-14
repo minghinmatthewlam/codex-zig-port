@@ -1177,8 +1177,10 @@ fn replaceOnce(allocator: std.mem.Allocator, haystack: []const u8, needle: []con
     if (needle.len == 0) return error.InvalidPatch;
     const match = if (std.mem.indexOf(u8, haystack, needle)) |start|
         TextMatch{ .start = start, .end = start + needle.len }
+    else if (trailingNewlineMatch(haystack, needle)) |matched|
+        matched
     else
-        trailingNewlineMatch(haystack, needle) orelse return error.PatchContextNotFound;
+        (try fuzzyLineMatch(allocator, haystack, needle)) orelse return error.PatchContextNotFound;
 
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
@@ -1229,12 +1231,127 @@ const TextMatch = struct {
     end: usize,
 };
 
+const PatchSourceLine = struct {
+    content: []const u8,
+    start: usize,
+    end: usize,
+};
+
+const PatchLineMatchMode = enum {
+    exact,
+    trim_end,
+    trim,
+    normalized,
+};
+
 fn trailingNewlineMatch(haystack: []const u8, needle: []const u8) ?TextMatch {
     if (!std.mem.endsWith(u8, needle, "\n")) return null;
     const trimmed = needle[0 .. needle.len - 1];
     if (trimmed.len == 0) return null;
     if (!std.mem.endsWith(u8, haystack, trimmed)) return null;
     return .{ .start = haystack.len - trimmed.len, .end = haystack.len };
+}
+
+fn fuzzyLineMatch(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8) !?TextMatch {
+    var source_lines = std.ArrayList(PatchSourceLine).empty;
+    defer source_lines.deinit(allocator);
+    try collectPatchSourceLines(allocator, haystack, &source_lines);
+
+    var pattern_lines = std.ArrayList([]const u8).empty;
+    defer pattern_lines.deinit(allocator);
+    try collectPatchPatternLines(allocator, needle, &pattern_lines);
+
+    if (pattern_lines.items.len == 0 or pattern_lines.items.len > source_lines.items.len) return null;
+
+    const modes = [_]PatchLineMatchMode{ .exact, .trim_end, .trim, .normalized };
+    for (modes) |mode| {
+        const last_start = source_lines.items.len - pattern_lines.items.len;
+        var source_index: usize = 0;
+        while (source_index <= last_start) : (source_index += 1) {
+            var matched = true;
+            for (pattern_lines.items, 0..) |pattern_line, pattern_index| {
+                if (!try patchLinesEqual(allocator, source_lines.items[source_index + pattern_index].content, pattern_line, mode)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) {
+                return .{
+                    .start = source_lines.items[source_index].start,
+                    .end = source_lines.items[source_index + pattern_lines.items.len - 1].end,
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+fn collectPatchSourceLines(allocator: std.mem.Allocator, text: []const u8, lines: *std.ArrayList(PatchSourceLine)) !void {
+    var start: usize = 0;
+    while (start < text.len) {
+        const newline_index = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        const end = if (newline_index < text.len) newline_index + 1 else newline_index;
+        try lines.append(allocator, .{
+            .content = text[start..newline_index],
+            .start = start,
+            .end = end,
+        });
+        start = end;
+    }
+}
+
+fn collectPatchPatternLines(allocator: std.mem.Allocator, text: []const u8, lines: *std.ArrayList([]const u8)) !void {
+    var start: usize = 0;
+    while (start < text.len) {
+        const newline_index = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        try lines.append(allocator, text[start..newline_index]);
+        if (newline_index == text.len) break;
+        start = newline_index + 1;
+    }
+}
+
+fn patchLinesEqual(allocator: std.mem.Allocator, source: []const u8, pattern: []const u8, mode: PatchLineMatchMode) !bool {
+    return switch (mode) {
+        .exact => std.mem.eql(u8, source, pattern),
+        .trim_end => std.mem.eql(u8, std.mem.trimEnd(u8, source, " \t\r"), std.mem.trimEnd(u8, pattern, " \t\r")),
+        .trim => std.mem.eql(u8, std.mem.trim(u8, source, " \t\r"), std.mem.trim(u8, pattern, " \t\r")),
+        .normalized => blk: {
+            const normalized_source = try normalizePatchMatchLine(allocator, source);
+            defer allocator.free(normalized_source);
+            const normalized_pattern = try normalizePatchMatchLine(allocator, pattern);
+            defer allocator.free(normalized_pattern);
+            break :blk std.mem.eql(u8, normalized_source, normalized_pattern);
+        },
+    };
+}
+
+fn normalizePatchMatchLine(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    const view = std.unicode.Utf8View.init(trimmed) catch return allocator.dupe(u8, trimmed);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    var iterator = view.iterator();
+    while (iterator.nextCodepointSlice()) |codepoint_slice| {
+        const codepoint = std.unicode.utf8Decode(codepoint_slice) catch unreachable;
+        if (normalizedPatchAsciiByte(codepoint)) |byte| {
+            try output.append(allocator, byte);
+        } else {
+            try output.appendSlice(allocator, codepoint_slice);
+        }
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn normalizedPatchAsciiByte(codepoint: u21) ?u8 {
+    return switch (codepoint) {
+        0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212 => '-',
+        0x2018, 0x2019, 0x201a, 0x201b => '\'',
+        0x201c, 0x201d, 0x201e, 0x201f => '"',
+        0x00a0, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x202f, 0x205f, 0x3000 => ' ',
+        else => null,
+    };
 }
 
 test "shell command creates output" {
@@ -1573,6 +1690,52 @@ test "apply_patch treats blank hunk lines as empty context" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "blank.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("alpha\n\ngamma\n", content);
+}
+
+test "apply_patch fuzzy matches Unicode punctuation" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "unicode_dash.txt",
+        .data = "import asyncio  # local import \u{2013} avoids top\u{2011}level dep\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: unicode_dash.txt
+        \\@@
+        \\-import asyncio  # local import - avoids top-level dep
+        \\+import asyncio  # HELLO
+        \\*** End Patch
+    ;
+    const stats = try applyPatchInDir(allocator, dir.dir, patch);
+    try std.testing.expectEqual(@as(usize, 1), stats.updated);
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "unicode_dash.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("import asyncio  # HELLO\n", content);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "unicode_quotes.txt",
+        .data = "say \u{201c}hello\u{201d}\nkey\u{00a0}value\n",
+    });
+
+    const quotes_patch =
+        \\*** Begin Patch
+        \\*** Update File: unicode_quotes.txt
+        \\@@
+        \\-say "hello"
+        \\-key value
+        \\+normalized
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, quotes_patch);
+
+    const quotes_content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "unicode_quotes.txt", allocator, .limited(1024));
+    defer allocator.free(quotes_content);
+    try std.testing.expectEqualStrings("normalized\n", quotes_content);
 }
 
 test "apply_patch skips blank lines before first update chunk" {
