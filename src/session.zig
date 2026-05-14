@@ -283,6 +283,7 @@ pub const TurnOptions = struct {
     reasoning_event_callback: ?ReasoningEventCallback = null,
     server_model_callback: ?ServerModelCallback = null,
     model_verification_callback: ?ModelVerificationCallback = null,
+    mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
     workdir: ?[]const u8 = null,
 };
 
@@ -461,7 +462,9 @@ pub fn runTurnWithOptions(
     var last_reported_server_model: ?[]const u8 = null;
     defer if (last_reported_server_model) |model| allocator.free(model);
 
-    var mcp_catalog = try mcp_runtime.loadCatalog(allocator, cfg.codex_home);
+    var mcp_catalog = try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
+        .startup_status_callback = options.mcp_startup_status_callback,
+    });
     defer mcp_catalog.deinit(allocator);
 
     var rounds: usize = 0;

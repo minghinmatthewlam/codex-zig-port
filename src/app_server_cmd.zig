@@ -25855,6 +25855,11 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var mcp_startup_status_context = McpStartupStatusNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "mcpServer/startupStatus/updated"),
+        .notifications = &turn_update_notifications,
+    };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
@@ -25887,6 +25892,10 @@ fn handleTurnStart(
         .model_verification_callback = .{
             .ctx = &model_notification_context,
             .on_model_verifications = handleSessionModelVerifications,
+        },
+        .mcp_startup_status_callback = .{
+            .ctx = &mcp_startup_status_context,
+            .on_startup_status = handleSessionMcpStartupStatus,
         },
         .workdir = thread.cwd,
     }) catch |err| {
@@ -27558,6 +27567,12 @@ const ModelNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const McpStartupStatusNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    notifications: *std.ArrayList([]const u8),
+};
+
 fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
     const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
@@ -27623,6 +27638,20 @@ fn handleSessionModelVerifications(ctx: *anyopaque, verifications: []const api.M
     try context.notifications.append(context.allocator, notification);
 }
 
+fn handleSessionMcpStartupStatus(
+    ctx: *anyopaque,
+    server_name: []const u8,
+    status: mcp_runtime.StartupStatus,
+    error_message: ?[]const u8,
+) anyerror!void {
+    const context: *McpStartupStatusNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+
+    const notification = try renderMcpServerStatusUpdatedNotification(context.allocator, server_name, status, error_message);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
 fn movePendingTurnUpdateNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -27664,6 +27693,24 @@ fn renderReasoningEventNotification(
         .summary_part_added => renderReasoningSummaryPartAddedNotification(allocator, thread_id, turn_id, event.item_id, event.index),
         .text_delta => renderReasoningTextDeltaNotification(allocator, thread_id, turn_id, event.item_id, event.delta, event.index),
     };
+}
+
+fn renderMcpServerStatusUpdatedNotification(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    status: mcp_runtime.StartupStatus,
+    error_message: ?[]const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"mcpServer/startupStatus/updated\",\"params\":{\"name\":");
+    try appendJsonString(allocator, &notification, server_name);
+    try notification.appendSlice(allocator, ",\"status\":");
+    try appendJsonString(allocator, &notification, status.label());
+    try notification.appendSlice(allocator, ",\"error\":");
+    try appendOptionalJsonString(allocator, &notification, error_message);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn renderModelReroutedNotification(

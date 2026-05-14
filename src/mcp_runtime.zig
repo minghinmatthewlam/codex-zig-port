@@ -35,6 +35,29 @@ pub const Catalog = struct {
     }
 };
 
+pub const StartupStatus = enum {
+    starting,
+    ready,
+    failed,
+
+    pub fn label(self: StartupStatus) []const u8 {
+        return switch (self) {
+            .starting => "starting",
+            .ready => "ready",
+            .failed => "failed",
+        };
+    }
+};
+
+pub const StartupStatusCallback = struct {
+    ctx: *anyopaque,
+    on_startup_status: *const fn (ctx: *anyopaque, server_name: []const u8, status: StartupStatus, error_message: ?[]const u8) anyerror!void,
+};
+
+pub const LoadCatalogOptions = struct {
+    startup_status_callback: ?StartupStatusCallback = null,
+};
+
 pub const CallOutput = struct {
     summary: []const u8,
     output: []const u8,
@@ -150,6 +173,14 @@ pub fn isResourceToolName(name: []const u8) bool {
 }
 
 pub fn loadCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalog {
+    return loadCatalogWithOptions(allocator, codex_home, .{});
+}
+
+pub fn loadCatalogWithOptions(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    options: LoadCatalogOptions,
+) !Catalog {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
 
@@ -161,10 +192,19 @@ pub fn loadCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalo
 
     for (servers.items.items) |server| {
         if (!server.enabled) continue;
+        if (options.startup_status_callback) |callback| {
+            try callback.on_startup_status(callback.ctx, server.name, .starting, null);
+        }
         appendServerTools(allocator, codex_home, server, &specs) catch |err| {
             std.debug.print("[mcp] failed to list tools for {s}: {s}\n", .{ server.name, @errorName(err) });
+            if (options.startup_status_callback) |callback| {
+                try callback.on_startup_status(callback.ctx, server.name, .failed, @errorName(err));
+            }
             continue;
         };
+        if (options.startup_status_callback) |callback| {
+            try callback.on_startup_status(callback.ctx, server.name, .ready, null);
+        }
     }
 
     return .{ .tools = try specs.toOwnedSlice(allocator) };
