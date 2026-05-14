@@ -53,6 +53,7 @@ const EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE = "External auth is active. Use account
 const WEBSOCKET_DEFAULT_MAX_CLOCK_SKEW_SECONDS: u64 = 30;
 const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
+var app_server_stdout_mutex: std.Io.Mutex = .init;
 
 const WebsocketAuthMode = enum {
     capability_token,
@@ -75,6 +76,7 @@ const AppServerOptions = struct {
 };
 
 const AppServerState = struct {
+    deferred_command_exec_stdio: bool = false,
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
@@ -85,8 +87,11 @@ const AppServerState = struct {
     opt_out_notification_methods: std.ArrayList([]const u8) = .empty,
     pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
+    active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
+        terminateActiveCommandExecSessions(self);
+        cleanupFinishedCommandExecSessions(allocator, self, true);
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
         self.loaded_threads.deinit(allocator);
@@ -106,6 +111,7 @@ const AppServerState = struct {
         self.pre_response_notifications.deinit(allocator);
         for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
+        self.active_command_execs.deinit(allocator);
     }
 };
 
@@ -24730,7 +24736,7 @@ const StdioServer = struct {
     allocator: std.mem.Allocator,
 
     fn run(self: *StdioServer) !void {
-        var state = AppServerState{};
+        var state = AppServerState{ .deferred_command_exec_stdio = true };
         defer state.deinit(self.allocator);
 
         var input_buffer: [64 * 1024]u8 = undefined;
@@ -24754,6 +24760,7 @@ const StdioServer = struct {
             }
             try queueExternalFsWatchNotifications(self.allocator, &state);
             try writePendingNotificationsStdout(self.allocator, &state);
+            cleanupFinishedCommandExecSessions(self.allocator, &state, false);
         }
     }
 };
@@ -34346,30 +34353,30 @@ fn handleCommandExecMethod(
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
-) ![]const u8 {
+) !?[]const u8 {
     if (std.mem.eql(u8, method, "command/exec")) {
         return handleCommandExec(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "command/exec/write")) {
-        return handleCommandExecWrite(allocator, id_value, params_value);
+        return try handleCommandExecWrite(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "command/exec/terminate")) {
-        return handleCommandExecTerminate(allocator, id_value, params_value);
+        return try handleCommandExecTerminate(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "command/exec/resize")) {
-        return handleCommandExecResize(allocator, id_value, params_value);
+        return try handleCommandExecResize(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "process/spawn")) {
-        return handleProcessSpawn(allocator, state, id_value, params_value);
+        return try handleProcessSpawn(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "process/writeStdin")) {
-        return handleProcessWriteStdin(allocator, id_value, params_value);
+        return try handleProcessWriteStdin(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "process/kill")) {
-        return handleProcessKill(allocator, id_value, params_value);
+        return try handleProcessKill(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "process/resizePty")) {
-        return handleProcessResizePty(allocator, id_value, params_value);
+        return try handleProcessResizePty(allocator, id_value, params_value);
     }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown command exec method");
 }
@@ -34403,119 +34410,122 @@ const CommandExecPermissionProfileSummary = struct {
     }
 };
 
-fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
-    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
-    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
+fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
+    if (params != .object) return try renderJsonRpcError(allocator, id_value, -32602, "command/exec params must be an object");
     const object = params.object;
 
-    const command_value = object.get("command") orelse return renderJsonRpcError(allocator, id_value, -32602, "command must be an array");
-    if (command_value != .array) return renderJsonRpcError(allocator, id_value, -32602, "command must be an array");
-    if (command_value.array.items.len == 0) return renderJsonRpcError(allocator, id_value, -32600, "command must not be empty");
+    const command_value = object.get("command") orelse return try renderJsonRpcError(allocator, id_value, -32602, "command must be an array");
+    if (command_value != .array) return try renderJsonRpcError(allocator, id_value, -32602, "command must be an array");
+    if (command_value.array.items.len == 0) return try renderJsonRpcError(allocator, id_value, -32600, "command must not be empty");
 
     const command = try allocator.alloc([]const u8, command_value.array.items.len);
     defer allocator.free(command);
     for (command_value.array.items, 0..) |item, index| {
-        if (item != .string) return renderJsonRpcError(allocator, id_value, -32602, "command entries must be strings");
+        if (item != .string) return try renderJsonRpcError(allocator, id_value, -32602, "command entries must be strings");
         command[index] = item.string;
     }
 
     const process_id = commandExecOptionalString(object, "processId") catch {
-        return renderJsonRpcError(allocator, id_value, -32602, "processId must be a string or null");
+        return try renderJsonRpcError(allocator, id_value, -32602, "processId must be a string or null");
     };
 
     const tty = commandExecOptionalBool(object, "tty", false) catch |err| {
-        return commandExecBoolError(allocator, id_value, err, "tty must be a boolean");
+        return try commandExecBoolError(allocator, id_value, err, "tty must be a boolean");
     };
     const stream_stdin = commandExecOptionalBool(object, "streamStdin", false) catch |err| {
-        return commandExecBoolError(allocator, id_value, err, "streamStdin must be a boolean");
+        return try commandExecBoolError(allocator, id_value, err, "streamStdin must be a boolean");
     };
     const stream_stdout_stderr = commandExecOptionalBool(object, "streamStdoutStderr", false) catch |err| {
-        return commandExecBoolError(allocator, id_value, err, "streamStdoutStderr must be a boolean");
+        return try commandExecBoolError(allocator, id_value, err, "streamStdoutStderr must be a boolean");
     };
     if (object.get("size")) |size| {
-        if (size != .null and !tty) return renderJsonRpcError(allocator, id_value, -32602, "command/exec size requires tty: true");
+        if (size != .null and !tty) return try renderJsonRpcError(allocator, id_value, -32602, "command/exec size requires tty: true");
         if (size != .null) {
-            if (size != .object) return renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
+            if (size != .object) return try renderJsonRpcError(allocator, id_value, -32602, "size must be an object");
             _ = commandExecRequiredPositiveU16(size.object, "rows") catch |err| switch (err) {
-                error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+                error.InvalidCommandExecTerminalSize => return try renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
             };
             _ = commandExecRequiredPositiveU16(size.object, "cols") catch |err| switch (err) {
-                error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
+                error.InvalidCommandExecTerminalSize => return try renderJsonRpcError(allocator, id_value, -32602, "command/exec size rows and cols must be greater than 0"),
             };
         }
     }
     if ((tty or stream_stdin or stream_stdout_stderr) and process_id == null) {
-        return renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
+        return try renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
     }
-    if (tty or stream_stdin) {
-        return renderJsonRpcError(allocator, id_value, -32603, "command/exec stdin streaming and tty modes are parsed but not implemented yet");
+    if (tty) {
+        return try renderJsonRpcError(allocator, id_value, -32603, "command/exec tty mode is parsed but not implemented yet");
+    }
+    if (stream_stdin and !state.deferred_command_exec_stdio) {
+        return try renderJsonRpcError(allocator, id_value, -32603, "command/exec stdin streaming is currently implemented for stdio app-server transport only");
     }
     const stream_output = stream_stdout_stderr;
 
     const disable_output_cap = commandExecOptionalBool(object, "disableOutputCap", false) catch |err| {
-        return commandExecBoolError(allocator, id_value, err, "disableOutputCap must be a boolean");
+        return try commandExecBoolError(allocator, id_value, err, "disableOutputCap must be a boolean");
     };
     const output_bytes_cap = commandExecOptionalUsize(object, "outputBytesCap", "outputBytesCap must be a non-negative integer or null") catch |err| {
-        return commandExecNumberError(allocator, id_value, err, "outputBytesCap must be a non-negative integer or null");
+        return try commandExecNumberError(allocator, id_value, err, "outputBytesCap must be a non-negative integer or null");
     };
     if (disable_output_cap and output_bytes_cap != null) {
-        return renderJsonRpcError(allocator, id_value, -32602, "command/exec cannot set both outputBytesCap and disableOutputCap");
+        return try renderJsonRpcError(allocator, id_value, -32602, "command/exec cannot set both outputBytesCap and disableOutputCap");
     }
 
     const disable_timeout = commandExecOptionalBool(object, "disableTimeout", false) catch |err| {
-        return commandExecBoolError(allocator, id_value, err, "disableTimeout must be a boolean");
+        return try commandExecBoolError(allocator, id_value, err, "disableTimeout must be a boolean");
     };
     const timeout_ms = switch (commandExecOptionalTimeoutMs(object, "timeoutMs")) {
         .value => |value| value,
         .negative => |value| {
             const message = try std.fmt.allocPrint(allocator, "command/exec timeoutMs must be non-negative, got {d}", .{value});
             defer allocator.free(message);
-            return renderJsonRpcError(allocator, id_value, -32602, message);
+            return try renderJsonRpcError(allocator, id_value, -32602, message);
         },
-        .invalid => return renderJsonRpcError(allocator, id_value, -32602, "timeoutMs must be a non-negative integer or null"),
+        .invalid => return try renderJsonRpcError(allocator, id_value, -32602, "timeoutMs must be a non-negative integer or null"),
     };
     if (disable_timeout and timeout_ms != null) {
-        return renderJsonRpcError(allocator, id_value, -32602, "command/exec cannot set both timeoutMs and disableTimeout");
+        return try renderJsonRpcError(allocator, id_value, -32602, "command/exec cannot set both timeoutMs and disableTimeout");
     }
     const timeout_ms_i64 = timeout_ms orelse COMMAND_EXEC_DEFAULT_TIMEOUT_MS;
 
     const cwd = commandExecOptionalString(object, "cwd") catch |err| switch (err) {
-        error.InvalidCommandExecString => return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null"),
+        error.InvalidCommandExecString => return try renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null"),
     };
 
     const has_permission_profile = object.get("permissionProfile") != null and object.get("permissionProfile").? != .null;
     const sandbox_policy_value = object.get("sandboxPolicy");
     if (has_permission_profile and sandbox_policy_value != null and sandbox_policy_value.? != .null) {
-        return renderJsonRpcError(allocator, id_value, -32600, "`permissionProfile` cannot be combined with `sandboxPolicy`");
+        return try renderJsonRpcError(allocator, id_value, -32600, "`permissionProfile` cannot be combined with `sandboxPolicy`");
     }
 
     var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed to load config", err);
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
     var command_sandbox = if (has_permission_profile)
         parseCommandExecPermissionProfile(allocator, object.get("permissionProfile").?, cfg.sandbox_mode) catch |err| switch (err) {
-            error.InvalidCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile must be an object or null"),
-            error.InvalidCommandExecPermissionProfileType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.type must be disabled, managed, or external"),
-            error.InvalidCommandExecPermissionProfileNetwork => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.network.enabled must be a boolean"),
-            error.InvalidCommandExecPermissionProfileFileSystem => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem must be an object"),
-            error.InvalidCommandExecPermissionProfileFileSystemType => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.type must be restricted or unrestricted"),
-            error.InvalidCommandExecPermissionProfileEntries => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.entries must be an array"),
-            error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer or null"),
-            error.InvalidCommandExecPermissionProfileEntry => return renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
-            error.UnsupportedCommandExecPermissionProfile => return renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
+            error.InvalidCommandExecPermissionProfile => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile must be an object or null"),
+            error.InvalidCommandExecPermissionProfileType => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.type must be disabled, managed, or external"),
+            error.InvalidCommandExecPermissionProfileNetwork => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.network.enabled must be a boolean"),
+            error.InvalidCommandExecPermissionProfileFileSystem => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem must be an object"),
+            error.InvalidCommandExecPermissionProfileFileSystemType => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.type must be restricted or unrestricted"),
+            error.InvalidCommandExecPermissionProfileEntries => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.entries must be an array"),
+            error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer or null"),
+            error.InvalidCommandExecPermissionProfileEntry => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
+            error.UnsupportedCommandExecPermissionProfile => return try renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
             else => return err,
         }
     else
         parseCommandExecSandboxPolicy(allocator, sandbox_policy_value, cfg.sandbox_mode) catch |err| switch (err) {
-            error.InvalidCommandExecSandboxPolicy => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
-            error.InvalidCommandExecSandboxPolicyType => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, externalSandbox, or workspaceWrite"),
-            error.InvalidCommandExecSandboxPolicyNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be a boolean"),
-            error.InvalidCommandExecSandboxPolicyExternalNetworkAccess => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be restricted or enabled"),
-            error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeTmpdirEnvVar must be a boolean"),
-            error.InvalidCommandExecSandboxPolicyExcludeSlashTmp => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeSlashTmp must be a boolean"),
-            error.InvalidCommandExecWritableRoots => return renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
+            error.InvalidCommandExecSandboxPolicy => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy must be an object or null"),
+            error.InvalidCommandExecSandboxPolicyType => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.type must be dangerFullAccess, readOnly, externalSandbox, or workspaceWrite"),
+            error.InvalidCommandExecSandboxPolicyNetworkAccess => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be a boolean"),
+            error.InvalidCommandExecSandboxPolicyExternalNetworkAccess => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.networkAccess must be restricted or enabled"),
+            error.InvalidCommandExecSandboxPolicyExcludeTmpdirEnvVar => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeTmpdirEnvVar must be a boolean"),
+            error.InvalidCommandExecSandboxPolicyExcludeSlashTmp => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.excludeSlashTmp must be a boolean"),
+            error.InvalidCommandExecWritableRoots => return try renderJsonRpcError(allocator, id_value, -32602, "sandboxPolicy.writableRoots must be an array of absolute strings"),
             else => return err,
         };
     defer command_sandbox.deinit(allocator);
@@ -34538,9 +34548,9 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     if (object.get("env")) |env_value| {
         if (env_value != .null) {
             child_env = commandExecEnvironment(allocator, env_value) catch |err| switch (err) {
-                error.InvalidCommandExecEnv => return renderJsonRpcError(allocator, id_value, -32602, "env must be an object or null"),
-                error.InvalidCommandExecEnvKey => return renderJsonRpcError(allocator, id_value, -32602, "env keys must be non-empty strings without NUL or '='"),
-                error.InvalidCommandExecEnvValue => return renderJsonRpcError(allocator, id_value, -32602, "env values must be strings or null"),
+                error.InvalidCommandExecEnv => return try renderJsonRpcError(allocator, id_value, -32602, "env must be an object or null"),
+                error.InvalidCommandExecEnvKey => return try renderJsonRpcError(allocator, id_value, -32602, "env keys must be non-empty strings without NUL or '='"),
+                error.InvalidCommandExecEnvValue => return try renderJsonRpcError(allocator, id_value, -32602, "env values must be strings or null"),
                 else => return err,
             };
         }
@@ -34553,8 +34563,24 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
     const env_map = if (child_env) |*map| map else null;
 
+    if (state.deferred_command_exec_stdio and (stream_stdin or stream_output)) {
+        return try startDeferredCommandExecProcess(
+            allocator,
+            state,
+            id_value,
+            process_id.?,
+            effective_argv,
+            run_cwd,
+            env_map,
+            if (disable_timeout) null else timeout_ms_i64,
+            effective_output_cap,
+            stream_stdin,
+            stream_output,
+        );
+    }
+
     var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, if (disable_timeout) null else timeout_ms_i64, effective_output_cap) catch |err| switch (err) {
-        else => return renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
+        else => return try renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
     };
     defer result.deinit(allocator);
 
@@ -34573,7 +34599,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
 
     const stdout_response = if (stream_output) "" else commandExecCappedOutput(result.stdout, effective_output_cap);
     const stderr_response = if (stream_output) "" else commandExecCappedOutput(result.stderr, effective_output_cap);
-    return renderCommandExecResponse(allocator, id_value, result.exit_code, stdout_response, stderr_response);
+    return try renderCommandExecResponse(allocator, id_value, result.exit_code, stdout_response, stderr_response);
 }
 
 fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -34723,6 +34749,453 @@ const CommandExecRunResult = struct {
         self.* = .{ .exit_code = 0, .stdout = "", .stderr = "", .stdout_observed_len = 0, .stderr_observed_len = 0 };
     }
 };
+
+const ActiveCommandExecSession = struct {
+    process_id: []const u8,
+    request_id_json: []const u8,
+    stdin_file: ?std.Io.File,
+    pid: ?std.posix.pid_t,
+    stream_stdin: bool,
+    stream_stdout_stderr: bool,
+    output_bytes_cap: ?usize,
+    mutex: std.Io.Mutex = .init,
+    finished: bool = false,
+    thread: ?std.Thread = null,
+
+    fn deinit(self: *ActiveCommandExecSession, allocator: std.mem.Allocator) void {
+        if (self.stdin_file) |file| {
+            file.close(std.Io.Threaded.global_single_threaded.io());
+            self.stdin_file = null;
+        }
+        allocator.free(self.process_id);
+        allocator.free(self.request_id_json);
+    }
+};
+
+fn startDeferredCommandExecProcess(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    process_id: []const u8,
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*std.process.Environ.Map,
+    timeout_ms: ?i64,
+    output_bytes_cap: ?usize,
+    stream_stdin: bool,
+    stream_stdout_stderr: bool,
+) !?[]const u8 {
+    cleanupFinishedCommandExecSessions(allocator, state, false);
+    if (findActiveCommandExecSession(state, process_id)) |_| {
+        const process_id_json = try std.json.Stringify.valueAlloc(allocator, process_id, .{});
+        defer allocator.free(process_id_json);
+        const message = try std.fmt.allocPrint(allocator, "duplicate active command/exec process id: {s}", .{process_id_json});
+        defer allocator.free(message);
+        return try renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    var spawn_io = std.Io.Threaded.init(allocator, .{});
+    defer spawn_io.deinit();
+
+    var child = try std.process.spawn(spawn_io.io(), .{
+        .argv = argv,
+        .cwd = cwd,
+        .environ_map = environ_map,
+        .stdin = if (stream_stdin) .pipe else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    var child_owned = true;
+    errdefer if (child_owned) child.kill(spawn_io.io());
+
+    const request_id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    errdefer allocator.free(request_id_json);
+    const owned_process_id = try allocator.dupe(u8, process_id);
+    errdefer allocator.free(owned_process_id);
+
+    const session = try allocator.create(ActiveCommandExecSession);
+    var session_owned = true;
+    errdefer if (session_owned) allocator.destroy(session);
+
+    const stdin_file = child.stdin;
+    child.stdin = null;
+    const pid = child.id;
+
+    session.* = .{
+        .process_id = owned_process_id,
+        .request_id_json = request_id_json,
+        .stdin_file = stdin_file,
+        .pid = pid,
+        .stream_stdin = stream_stdin,
+        .stream_stdout_stderr = stream_stdout_stderr,
+        .output_bytes_cap = output_bytes_cap,
+    };
+    errdefer if (session_owned) session.deinit(allocator);
+
+    const session_index = state.active_command_execs.items.len;
+    try state.active_command_execs.append(allocator, session);
+    var session_appended = true;
+    errdefer if (session_appended) {
+        _ = state.active_command_execs.swapRemove(session_index);
+    };
+
+    const thread = try std.Thread.spawn(.{ .allocator = allocator }, deferredCommandExecWorker, .{
+        allocator,
+        session,
+        child,
+        timeout_ms,
+    });
+    session.thread = thread;
+    child_owned = false;
+    session_owned = false;
+    session_appended = false;
+    return null;
+}
+
+fn deferredCommandExecWorker(
+    allocator: std.mem.Allocator,
+    session: *ActiveCommandExecSession,
+    child: std.process.Child,
+    timeout_ms: ?i64,
+) void {
+    runDeferredCommandExecWorker(allocator, session, child, timeout_ms) catch |err| {
+        defer markCommandExecSessionFinished(session);
+        const message = std.fmt.allocPrint(allocator, "command/exec failed: {s}", .{@errorName(err)}) catch return;
+        defer allocator.free(message);
+        const response = renderJsonRpcErrorFromIdJson(allocator, session.request_id_json, -32603, message) catch return;
+        defer allocator.free(response);
+        writeStdoutLine(response) catch {};
+    };
+}
+
+fn runDeferredCommandExecWorker(
+    allocator: std.mem.Allocator,
+    session: *ActiveCommandExecSession,
+    child_arg: std.process.Child,
+    timeout_ms: ?i64,
+) !void {
+    var child = child_arg;
+    var child_alive = true;
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    defer closeCommandExecSessionStdin(session);
+    errdefer if (child_alive) child.kill(io_instance.io());
+
+    var stdout = std.ArrayList(u8).empty;
+    defer stdout.deinit(allocator);
+    var stderr = std.ArrayList(u8).empty;
+    defer stderr.deinit(allocator);
+    var stdout_observed_len: usize = 0;
+    var stderr_observed_len: usize = 0;
+    var stdout_cap_notified = false;
+    var stderr_cap_notified = false;
+
+    const started = std.Io.Timestamp.now(io_instance.io(), .awake);
+    const exit_code = while (true) {
+        if (pollCommandExecChild(&child)) |term| {
+            child_alive = false;
+            try drainDeferredCommandExecOutput(
+                &io_instance,
+                allocator,
+                session,
+                &child,
+                &stdout,
+                &stderr,
+                &stdout_observed_len,
+                &stderr_observed_len,
+                &stdout_cap_notified,
+                &stderr_cap_notified,
+            );
+            break commandExecExitCode(term);
+        }
+
+        _ = try readDeferredCommandExecPipeChunk(
+            &io_instance,
+            allocator,
+            session,
+            child.stdout,
+            &stdout,
+            &stdout_observed_len,
+            &stdout_cap_notified,
+            "stdout",
+            2,
+        );
+        _ = try readDeferredCommandExecPipeChunk(
+            &io_instance,
+            allocator,
+            session,
+            child.stderr,
+            &stderr,
+            &stderr_observed_len,
+            &stderr_cap_notified,
+            "stderr",
+            2,
+        );
+
+        if (timeout_ms) |limit| {
+            if (elapsedCommandExecMilliseconds(io_instance.io(), started) >= @as(u64, @intCast(limit))) {
+                child.kill(io_instance.io());
+                child_alive = false;
+                try drainDeferredCommandExecOutput(
+                    &io_instance,
+                    allocator,
+                    session,
+                    &child,
+                    &stdout,
+                    &stderr,
+                    &stdout_observed_len,
+                    &stderr_observed_len,
+                    &stdout_cap_notified,
+                    &stderr_cap_notified,
+                );
+                break COMMAND_EXEC_TIMEOUT_EXIT_CODE;
+            }
+        }
+    };
+
+    const stdout_response = if (session.stream_stdout_stderr) "" else commandExecCappedOutput(stdout.items, session.output_bytes_cap);
+    const stderr_response = if (session.stream_stdout_stderr) "" else commandExecCappedOutput(stderr.items, session.output_bytes_cap);
+    const response = try renderCommandExecResponseFromIdJson(allocator, session.request_id_json, exit_code, stdout_response, stderr_response);
+    defer allocator.free(response);
+    try writeStdoutLine(response);
+    markCommandExecSessionFinished(session);
+}
+
+fn drainDeferredCommandExecOutput(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    session: *ActiveCommandExecSession,
+    child: *std.process.Child,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    stdout_cap_notified: *bool,
+    stderr_cap_notified: *bool,
+) !void {
+    var empty_rounds: usize = 0;
+    while (empty_rounds < 2) {
+        var made_progress = false;
+        made_progress = try readDeferredCommandExecPipeChunk(io_instance, allocator, session, child.stdout, stdout, stdout_observed_len, stdout_cap_notified, "stdout", 1) or made_progress;
+        made_progress = try readDeferredCommandExecPipeChunk(io_instance, allocator, session, child.stderr, stderr, stderr_observed_len, stderr_cap_notified, "stderr", 1) or made_progress;
+        if (made_progress) {
+            empty_rounds = 0;
+        } else {
+            empty_rounds += 1;
+        }
+    }
+}
+
+fn readDeferredCommandExecPipeChunk(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    session: *ActiveCommandExecSession,
+    maybe_file: ?std.Io.File,
+    output: *std.ArrayList(u8),
+    observed_len: *usize,
+    cap_notified: *bool,
+    stream: []const u8,
+    timeout_ms: u64,
+) !bool {
+    const file = maybe_file orelse return false;
+    var buffer: [4096]u8 = undefined;
+    const result = io_instance.io().operateTimeout(.{ .file_read_streaming = .{
+        .file = file,
+        .data = &.{buffer[0..]},
+    } }, .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } }) catch |err| switch (err) {
+        error.Timeout => return false,
+        else => return err,
+    };
+    const count = result.file_read_streaming catch |err| switch (err) {
+        error.EndOfStream => return false,
+        error.WouldBlock => return false,
+        else => return err,
+    };
+    if (count == 0) return false;
+
+    const previous_observed_len = observed_len.*;
+    observed_len.* += count;
+    const bytes = buffer[0..count];
+
+    const capped_len = blk: {
+        const cap = session.output_bytes_cap orelse break :blk bytes.len;
+        const remaining = cap -| previous_observed_len;
+        break :blk @min(bytes.len, remaining);
+    };
+    const capped = bytes[0..capped_len];
+    if (!session.stream_stdout_stderr) {
+        try output.appendSlice(allocator, capped);
+        return true;
+    }
+
+    const cap_reached = commandExecOutputCapReached(observed_len.*, session.output_bytes_cap);
+    if (cap_reached and cap_notified.*) return true;
+    if (cap_reached) cap_notified.* = true;
+    try writeCommandExecOutputDeltaStdout(allocator, session.process_id, stream, capped, cap_reached);
+    return true;
+}
+
+fn writeCommandExecOutputDeltaStdout(
+    allocator: std.mem.Allocator,
+    process_id: []const u8,
+    stream: []const u8,
+    bytes: []const u8,
+    cap_reached: bool,
+) !void {
+    const encoded_len = std.base64.standard.Encoder.calcSize(bytes.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, bytes);
+
+    const process_id_json = try std.json.Stringify.valueAlloc(allocator, process_id, .{});
+    defer allocator.free(process_id_json);
+    const stream_json = try std.json.Stringify.valueAlloc(allocator, stream, .{});
+    defer allocator.free(stream_json);
+    const delta_json = try std.json.Stringify.valueAlloc(allocator, encoded, .{});
+    defer allocator.free(delta_json);
+
+    const notification = try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"command/exec/outputDelta\",\"params\":{{\"processId\":{s},\"stream\":{s},\"deltaBase64\":{s},\"capReached\":{s}}}}}",
+        .{ process_id_json, stream_json, delta_json, if (cap_reached) "true" else "false" },
+    );
+    defer allocator.free(notification);
+    try writeStdoutLine(notification);
+}
+
+fn renderCommandExecResponseFromIdJson(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    exit_code: i32,
+    stdout: []const u8,
+    stderr: []const u8,
+) ![]const u8 {
+    const stdout_json = try std.json.Stringify.valueAlloc(allocator, stdout, .{});
+    defer allocator.free(stdout_json);
+    const stderr_json = try std.json.Stringify.valueAlloc(allocator, stderr, .{});
+    defer allocator.free(stderr_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"exitCode\":{d},\"stdout\":{s},\"stderr\":{s}}}}}",
+        .{ id_json, exit_code, stdout_json, stderr_json },
+    );
+}
+
+fn renderJsonRpcErrorFromIdJson(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    code: i64,
+    message: []const u8,
+) ![]const u8 {
+    const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
+    defer allocator.free(message_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
+        .{ id_json, code, message_json },
+    );
+}
+
+fn findActiveCommandExecSession(state: *const AppServerState, process_id: []const u8) ?*ActiveCommandExecSession {
+    for (state.active_command_execs.items) |session| {
+        if (!commandExecSessionFinished(session) and std.mem.eql(u8, session.process_id, process_id)) return session;
+    }
+    return null;
+}
+
+fn commandExecSessionFinished(session: *ActiveCommandExecSession) bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    session.mutex.lockUncancelable(io);
+    defer session.mutex.unlock(io);
+    return session.finished;
+}
+
+fn markCommandExecSessionFinished(session: *ActiveCommandExecSession) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    session.mutex.lockUncancelable(io);
+    defer session.mutex.unlock(io);
+    session.finished = true;
+    session.pid = null;
+}
+
+fn closeCommandExecSessionStdin(session: *ActiveCommandExecSession) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    session.mutex.lockUncancelable(io);
+    defer session.mutex.unlock(io);
+    if (session.stdin_file) |file| {
+        file.close(io);
+        session.stdin_file = null;
+    }
+}
+
+fn terminateActiveCommandExecSessions(state: *AppServerState) void {
+    for (state.active_command_execs.items) |session| {
+        requestCommandExecSignal(session, .KILL);
+    }
+}
+
+fn requestCommandExecTerminate(session: *ActiveCommandExecSession) void {
+    requestCommandExecSignal(session, .TERM);
+}
+
+fn requestCommandExecSignal(session: *ActiveCommandExecSession, signal: std.posix.SIG) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    session.mutex.lockUncancelable(io);
+    defer session.mutex.unlock(io);
+    if (session.finished) return;
+    if (session.pid) |pid| {
+        std.posix.kill(pid, signal) catch {};
+    }
+}
+
+fn writeActiveCommandExecStdin(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    session: *ActiveCommandExecSession,
+    delta: []const u8,
+    close_stdin: bool,
+) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    session.mutex.lockUncancelable(io);
+    defer session.mutex.unlock(io);
+
+    if (session.finished) return renderNoActiveCommandExec(allocator, id_value, session.process_id);
+    if (!session.stream_stdin) {
+        return renderJsonRpcError(allocator, id_value, -32600, "stdin streaming is not enabled for this command/exec");
+    }
+    if (delta.len > 0) {
+        const file = session.stdin_file orelse return renderJsonRpcError(allocator, id_value, -32600, "stdin is already closed");
+        file.writeStreamingAll(io, delta) catch {
+            return renderJsonRpcError(allocator, id_value, -32600, "stdin is already closed");
+        };
+    }
+    if (close_stdin) {
+        if (session.stdin_file) |file| {
+            file.close(io);
+            session.stdin_file = null;
+        }
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn cleanupFinishedCommandExecSessions(allocator: std.mem.Allocator, state: *AppServerState, force: bool) void {
+    var index: usize = 0;
+    while (index < state.active_command_execs.items.len) {
+        const session = state.active_command_execs.items[index];
+        if (!force and !commandExecSessionFinished(session)) {
+            index += 1;
+            continue;
+        }
+        if (force) requestCommandExecSignal(session, .KILL);
+        if (session.thread) |thread| thread.join();
+        session.deinit(allocator);
+        allocator.destroy(session);
+        _ = state.active_command_execs.swapRemove(index);
+    }
+}
 
 fn runCommandExecProcess(
     allocator: std.mem.Allocator,
@@ -34894,7 +35367,7 @@ fn renderCommandExecResponse(
     return renderJsonRpcResult(allocator, id_value, response);
 }
 
-fn handleCommandExecWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleCommandExecWrite(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (commandExecObjectParams(params_value, "command/exec/write")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -34913,24 +35386,28 @@ fn handleCommandExecWrite(allocator: std.mem.Allocator, id_value: std.json.Value
     if (delta_base64 == null and !close_stdin) {
         return renderJsonRpcError(allocator, id_value, -32602, "command/exec/write requires deltaBase64 or closeStdin");
     }
+    var decoded: ?[]u8 = null;
+    defer if (decoded) |value| allocator.free(value);
     if (delta_base64) |value| {
         const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(value) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "invalid deltaBase64: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return renderJsonRpcError(allocator, id_value, -32602, message);
         };
-        const decoded = try allocator.alloc(u8, decoded_len);
-        defer allocator.free(decoded);
-        std.base64.standard.Decoder.decode(decoded, value) catch |err| {
+        decoded = try allocator.alloc(u8, decoded_len);
+        std.base64.standard.Decoder.decode(decoded.?, value) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "invalid deltaBase64: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return renderJsonRpcError(allocator, id_value, -32602, message);
         };
     }
+    if (findActiveCommandExecSession(state, process_id)) |session| {
+        return writeActiveCommandExecStdin(allocator, id_value, session, decoded orelse "", close_stdin);
+    }
     return renderNoActiveCommandExec(allocator, id_value, process_id);
 }
 
-fn handleCommandExecTerminate(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleCommandExecTerminate(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const object = switch (commandExecObjectParams(params_value, "command/exec/terminate")) {
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -34939,6 +35416,10 @@ fn handleCommandExecTerminate(allocator: std.mem.Allocator, id_value: std.json.V
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
+    if (findActiveCommandExecSession(state, process_id)) |session| {
+        requestCommandExecTerminate(session);
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
     return renderNoActiveCommandExec(allocator, id_value, process_id);
 }
 
@@ -46460,6 +46941,9 @@ fn renderJsonRpcErrorForFailure(
 }
 
 fn writeStdoutLine(payload: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    app_server_stdout_mutex.lockUncancelable(io);
+    defer app_server_stdout_mutex.unlock(io);
     try cli_utils.writeStdout(payload);
     try cli_utils.writeStdout("\n");
 }
