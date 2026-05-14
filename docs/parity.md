@@ -188,8 +188,10 @@ TypeScript and JSON Schema artifacts now include `TurnDiffUpdatedNotification`,
 `TurnPlanStepStatus`, `TurnPlanStep`, and `TurnPlanUpdatedNotification`,
 exported through `v2/index.ts` and included in the top-level
 `ServerNotification` `"turn/diff/updated"` and `"turn/plan/updated"` union
-variants. Runtime emission for turn diff and plan update notifications remains
-planned.
+variants. Runtime `turn/plan/updated` emission is now covered for
+app-server `turn/start` turns that receive a model-requested `update_plan`
+tool call through the shared session loop. Runtime emission for turn diff
+notifications and broader plan-update timing parity remains planned.
 
 Additional app-server item-stream notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `PlanDeltaNotification`,

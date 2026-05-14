@@ -211,6 +211,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   config, hooks, and exec policies are disabled until the project is trusted,
   for ignored unsupported project-local config keys, and for malformed user or
   trusted project-local execpolicy rules
+- emit app-server `turn/plan/updated` notifications when `turn/start` runs a
+  model-requested `update_plan` tool call
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
