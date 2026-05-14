@@ -98,30 +98,41 @@ const AppServerState = struct {
     active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
-        terminateActiveCommandExecSessions(self);
-        cleanupFinishedCommandExecSessions(allocator, self, true);
+        clearAppServerConnectionState(allocator, self);
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
         self.loaded_threads.deinit(allocator);
-        for (self.fs_watches.items) |*watch| watch.deinit(allocator);
         self.fs_watches.deinit(allocator);
-        for (self.fuzzy_search_sessions.items) |*session| session.deinit(allocator);
         self.fuzzy_search_sessions.deinit(allocator);
-        for (self.skill_watch_roots.items) |root| allocator.free(root);
         self.skill_watch_roots.deinit(allocator);
-        clearSkillsListCache(allocator, self);
         self.skills_list_cache.deinit(allocator);
-        for (self.subscribed_thread_ids.items) |thread_id| allocator.free(thread_id);
         self.subscribed_thread_ids.deinit(allocator);
-        clearOptOutNotificationMethods(allocator, self);
         self.opt_out_notification_methods.deinit(allocator);
-        for (self.pre_response_notifications.items) |payload| allocator.free(payload);
         self.pre_response_notifications.deinit(allocator);
-        for (self.pending_notifications.items) |payload| allocator.free(payload);
         self.pending_notifications.deinit(allocator);
         self.active_command_execs.deinit(allocator);
     }
 };
+
+fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServerState) void {
+    terminateActiveCommandExecSessions(state);
+    cleanupFinishedCommandExecSessions(allocator, state, true);
+
+    for (state.fs_watches.items) |*watch| watch.deinit(allocator);
+    state.fs_watches.clearRetainingCapacity();
+    for (state.fuzzy_search_sessions.items) |*session| session.deinit(allocator);
+    state.fuzzy_search_sessions.clearRetainingCapacity();
+    for (state.skill_watch_roots.items) |root| allocator.free(root);
+    state.skill_watch_roots.clearRetainingCapacity();
+    clearSkillsListCache(allocator, state);
+    for (state.subscribed_thread_ids.items) |thread_id| allocator.free(thread_id);
+    state.subscribed_thread_ids.clearRetainingCapacity();
+    clearOptOutNotificationMethods(allocator, state);
+    for (state.pre_response_notifications.items) |payload| allocator.free(payload);
+    state.pre_response_notifications.clearRetainingCapacity();
+    for (state.pending_notifications.items) |payload| allocator.free(payload);
+    state.pending_notifications.clearRetainingCapacity();
+}
 
 const LoadedThread = struct {
     id: []const u8,
@@ -24793,8 +24804,32 @@ const UnixServer = struct {
         var state = AppServerState{};
         defer state.deinit(self.allocator);
 
-        var stream = try server.accept(io);
-        defer stream.close(io);
+        while (true) {
+            var stream = try server.accept(io);
+            self.handleConnection(&state, io, &stream) catch |err| {
+                const message = std.fmt.allocPrint(
+                    self.allocator,
+                    "[app-server] unix connection error: {s}\n",
+                    .{@errorName(err)},
+                ) catch null;
+                if (message) |stderr_message| {
+                    defer self.allocator.free(stderr_message);
+                    cli_utils.writeStderr(stderr_message) catch {};
+                }
+                stream.close(io);
+                continue;
+            };
+            stream.close(io);
+        }
+    }
+
+    fn handleConnection(
+        self: *UnixServer,
+        state: *AppServerState,
+        io: std.Io,
+        stream: *net.Stream,
+    ) !void {
+        defer clearAppServerConnectionState(self.allocator, state);
 
         var input_buffer: [64 * 1024]u8 = undefined;
         var output_buffer: [64 * 1024]u8 = undefined;
@@ -24806,19 +24841,19 @@ const UnixServer = struct {
             const line = line_opt orelse break;
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0) continue;
-            const response = handleJsonRpcLine(self.allocator, &state, trimmed) catch |err| {
+            const response = handleJsonRpcLine(self.allocator, state, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
                 defer self.allocator.free(message);
                 try cli_utils.writeStderr(message);
                 continue;
             };
-            try writePreResponseNotificationsStream(self.allocator, &state, &writer.interface);
+            try writePreResponseNotificationsStream(self.allocator, state, &writer.interface);
             if (response) |payload| {
                 defer self.allocator.free(payload);
                 try writeStreamLine(&writer.interface, payload);
             }
-            try queueExternalFsWatchNotifications(self.allocator, &state);
-            try writePendingNotificationsStream(self.allocator, &state, &writer.interface);
+            try queueExternalFsWatchNotifications(self.allocator, state);
+            try writePendingNotificationsStream(self.allocator, state, &writer.interface);
         }
     }
 };
@@ -24867,6 +24902,8 @@ const WebSocketServer = struct {
         io: std.Io,
         stream: *net.Stream,
     ) !void {
+        defer clearAppServerConnectionState(self.allocator, state);
+
         var input_buffer: [64 * 1024]u8 = undefined;
         var output_buffer: [64 * 1024]u8 = undefined;
         var reader = stream.reader(io, &input_buffer);
