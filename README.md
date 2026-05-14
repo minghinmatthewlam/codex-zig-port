@@ -230,6 +230,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `thread/goal/*`, `thread/memoryMode/set`, `thread/turns/list`,
   `thread/realtime/*`, `thread/backgroundTerminals/clean`, `process/*`,
   `collaborationMode/list`, and `fuzzyFileSearch/session*`
+- require `initialize.params.capabilities.experimentalApi` for implemented
+  Rust experimental app-server request fields on `thread/start`,
+  `thread/resume`, `thread/fork`, and `turn/start`
 - emit app-server `rawResponseItem/completed` notifications for raw Responses
   output items observed during `turn/start`
 - emit app-server reasoning stream notifications for Responses reasoning
