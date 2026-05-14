@@ -8782,13 +8782,21 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
     try:
         codex_home.mkdir()
         search_root.mkdir()
+        fake_home = root / "home"
+        fake_home.mkdir()
+        global_ignore = root / "global-ignore"
+        global_ignore.write_text("global-excluded.txt\nglobal-reincluded.txt\n", encoding="utf-8")
+        (fake_home / ".gitconfig").write_text(
+            f"[core]\nexcludesFile = {global_ignore}\n",
+            encoding="utf-8",
+        )
         (search_root / "alpha.txt").write_text("file match\n", encoding="utf-8")
         (search_root / "beta.txt").write_text("not a match\n", encoding="utf-8")
         (search_root / "alpha_dir").mkdir()
         (search_root / ".git").mkdir()
         (search_root / ".git" / "info").mkdir()
         (search_root / ".git" / "info" / "exclude").write_text(
-            "info-excluded.txt\ninfo-reincluded.txt\n",
+            "info-excluded.txt\ninfo-reincluded.txt\n!global-reincluded.txt\n",
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
@@ -8805,6 +8813,8 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "literal space.txt").write_text("escaped space file\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "info-reincluded.txt").write_text("info reincluded file\n", encoding="utf-8")
+        (search_root / "global-excluded.txt").write_text("global excluded file\n", encoding="utf-8")
+        (search_root / "global-reincluded.txt").write_text("global reincluded file\n", encoding="utf-8")
         (search_root / "ignore-over-gitignore.txt").write_text("dot ignore file\n", encoding="utf-8")
         (search_root / "ignored-dir").mkdir()
         (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
@@ -8824,6 +8834,7 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (no_git_root / ".gitignore").write_text("package.json\n", encoding="utf-8")
         (no_git_root / ".ignore").write_text("plain-ignore.txt\n", encoding="utf-8")
         (no_git_root / "package.json").write_text("{\"name\":\"demo\"}\n", encoding="utf-8")
+        (no_git_root / "global-excluded.txt").write_text("visible outside git\n", encoding="utf-8")
         (no_git_root / "plain-ignore.txt").write_text("ignored\n", encoding="utf-8")
         (no_git_root / "plain-visible.txt").write_text("visible\n", encoding="utf-8")
         worktree_root = root / "worktree-root"
@@ -8857,6 +8868,8 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_ACCESS_TOKEN", None)
         env["CODEX_HOME"] = str(codex_home)
+        env["HOME"] = str(fake_home)
+        env.pop("XDG_CONFIG_HOME", None)
 
         search = request_stdio_app_server(
             binary,
@@ -9024,6 +9037,34 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         info_reincluded_paths = {item["path"] for item in info_reincluded_search["result"]["files"]}
         assert "info-reincluded.txt" in info_reincluded_paths
 
+        global_excluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-global-excluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "globalexcluded", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert global_excluded_search["id"] == "fuzzy-search-global-excluded"
+        global_excluded_paths = {item["path"] for item in global_excluded_search["result"]["files"]}
+        assert "global-excluded.txt" not in global_excluded_paths
+
+        global_reincluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-global-reincluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "globalreincluded", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert global_reincluded_search["id"] == "fuzzy-search-global-reincluded"
+        global_reincluded_paths = {item["path"] for item in global_reincluded_search["result"]["files"]}
+        assert "global-reincluded.txt" in global_reincluded_paths
+
         dot_ignore_precedence_search = request_stdio_app_server(
             binary,
             {
@@ -9137,6 +9178,20 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert no_git_context_search["id"] == "fuzzy-search-no-git-context"
         no_git_context_paths = {item["path"] for item in no_git_context_search["result"]["files"]}
         assert "package.json" in no_git_context_paths
+
+        global_no_git_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-global-no-git",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "globalexcluded", "roots": [str(no_git_root)]},
+            },
+            env,
+        )
+        assert global_no_git_search["id"] == "fuzzy-search-global-no-git"
+        global_no_git_paths = {item["path"] for item in global_no_git_search["result"]["files"]}
+        assert "global-excluded.txt" in global_no_git_paths
 
         dot_ignore_no_git_search = request_stdio_app_server(
             binary,

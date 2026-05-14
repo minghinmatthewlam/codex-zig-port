@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("env.zig");
 
 const MATCH_LIMIT = 50;
 const MAX_SCANNED_ENTRIES = 20_000;
@@ -60,6 +61,7 @@ const IgnoreRule = struct {
 };
 
 const IgnoreSource = enum {
+    git_global,
     git_exclude,
     gitignore,
     dot_ignore,
@@ -78,10 +80,11 @@ const IgnoreStack = struct {
         self.rules.shrinkRetainingCapacity(len);
     }
 
-    fn isIgnored(self: *const IgnoreStack, relative_path: []const u8, is_dir: bool, git_context_id: usize) bool {
+    fn isIgnored(self: *const IgnoreStack, relative_path: []const u8, is_dir: bool, has_git_context: bool, git_context_id: usize) bool {
         var dot_ignore_match: ?bool = null;
         var gitignore_match: ?bool = null;
         var git_exclude_match: ?bool = null;
+        var git_global_match: ?bool = null;
         for (self.rules.items) |rule| {
             if (ruleMatches(rule, relative_path, is_dir)) {
                 const ignored = !rule.negated;
@@ -93,12 +96,16 @@ const IgnoreStack = struct {
                     .git_exclude => if (rule.git_context_id == git_context_id) {
                         git_exclude_match = ignored;
                     },
+                    .git_global => if (has_git_context) {
+                        git_global_match = ignored;
+                    },
                 }
             }
         }
         if (dot_ignore_match) |ignored| return ignored;
         if (gitignore_match) |ignored| return ignored;
         if (git_exclude_match) |ignored| return ignored;
+        if (git_global_match) |ignored| return ignored;
         return false;
     }
 };
@@ -195,6 +202,7 @@ fn scanRoot(
     const has_git_context = try rootHasGitContext(allocator, io, root);
     var ignore_stack = IgnoreStack{};
     defer ignore_stack.deinit(allocator);
+    try loadGitGlobalIgnoreRules(allocator, io, &ignore_stack);
     try scanDir(allocator, io, root, "", &dir, query, matches, state, &ignore_stack, has_git_context, 0);
 }
 
@@ -249,7 +257,7 @@ fn scanDir(
             else => null,
         };
         const should_recurse = stat.kind == .directory;
-        if (match_type != null and ignore_stack.isIgnored(relative_path, stat.kind == .directory, current_git_context_id)) {
+        if (match_type != null and ignore_stack.isIgnored(relative_path, stat.kind == .directory, current_git_context, current_git_context_id)) {
             allocator.free(relative_path);
             owns_relative_path = false;
             continue;
@@ -364,6 +372,82 @@ fn loadGitignoreRules(
     ignore_stack: *IgnoreStack,
 ) !void {
     try loadNamedIgnoreRules(allocator, io, root, relative_dir, ".gitignore", .gitignore, git_context_id, ignore_stack);
+}
+
+fn loadGitGlobalIgnoreRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    ignore_stack: *IgnoreStack,
+) !void {
+    const path = (try gitGlobalIgnorePath(allocator, io)) orelse return;
+    defer allocator.free(path);
+    try loadIgnoreRulesFromPath(allocator, io, path, "", .git_global, 0, ignore_stack);
+}
+
+fn gitGlobalIgnorePath(allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
+    const home = try env.getOwned(allocator, "HOME");
+    defer if (home) |value| allocator.free(value);
+
+    if (home) |home_dir| {
+        const home_gitconfig = try std.fs.path.join(allocator, &.{ home_dir, ".gitconfig" });
+        defer allocator.free(home_gitconfig);
+        if (try gitConfigExcludesFileFromPath(allocator, io, home_gitconfig, home_dir)) |path| return path;
+    }
+
+    const xdg_config_home = try resolveXdgConfigHome(allocator, home);
+    defer if (xdg_config_home) |value| allocator.free(value);
+    if (xdg_config_home) |config_home| {
+        const xdg_gitconfig = try std.fs.path.join(allocator, &.{ config_home, "git", "config" });
+        defer allocator.free(xdg_gitconfig);
+        if (try gitConfigExcludesFileFromPath(allocator, io, xdg_gitconfig, home)) |path| return path;
+
+        return try std.fs.path.join(allocator, &.{ config_home, "git", "ignore" });
+    }
+
+    return null;
+}
+
+fn resolveXdgConfigHome(allocator: std.mem.Allocator, home: ?[]const u8) !?[]const u8 {
+    if (try env.getOwned(allocator, "XDG_CONFIG_HOME")) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    }
+    if (home) |home_dir| return try std.fs.path.join(allocator, &.{ home_dir, ".config" });
+    return null;
+}
+
+fn gitConfigExcludesFileFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8, home: ?[]const u8) !?[]const u8 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.FileNotFound, error.IsDir => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return try parseGitConfigExcludesFile(allocator, bytes, home);
+}
+
+fn parseGitConfigExcludesFile(allocator: std.mem.Allocator, bytes: []const u8, home: ?[]const u8) !?[]const u8 {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const raw_without_cr = std.mem.trimEnd(u8, raw_line, "\r");
+        const equals_index = std.mem.indexOfScalar(u8, raw_without_cr, '=') orelse continue;
+        const key = std.mem.trim(u8, raw_without_cr[0..equals_index], " \t");
+        if (!std.ascii.eqlIgnoreCase(key, "excludesfile")) continue;
+
+        var value = std.mem.trim(u8, raw_without_cr[equals_index + 1 ..], " \t");
+        if (value.len > 0 and value[0] == '"') value = std.mem.trimStart(u8, value[1..], " \t");
+        if (value.len > 0 and value[value.len - 1] == '"') value = std.mem.trimEnd(u8, value[0 .. value.len - 1], " \t");
+        if (value.len == 0) continue;
+        return try expandGitConfigPath(allocator, value, home);
+    }
+    return null;
+}
+
+fn expandGitConfigPath(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]const u8 {
+    if (home) |home_dir| {
+        if (std.mem.eql(u8, path, "~")) return allocator.dupe(u8, home_dir);
+        if (std.mem.startsWith(u8, path, "~/")) return std.fs.path.join(allocator, &.{ home_dir, path[2..] });
+    }
+    return allocator.dupe(u8, path);
 }
 
 fn loadDotIgnoreRules(
@@ -1001,6 +1085,17 @@ test "fuzzy match folds latin accents while preserving original character indice
     const path_accent = (try fuzzyMatchPath(allocator, "r\u{e9}sum\u{e9}.md", "resume")).?;
     defer allocator.free(path_accent.indices);
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4, 5 }, path_accent.indices);
+}
+
+test "git config excludesfile parser trims quotes and expands home" {
+    const allocator = std.testing.allocator;
+    const parsed = (try parseGitConfigExcludesFile(
+        allocator,
+        "[core]\n  excludesFile = \"~/git-ignore\"\n",
+        "/tmp/codex-home",
+    )).?;
+    defer allocator.free(parsed);
+    try std.testing.expectEqualStrings("/tmp/codex-home/git-ignore", parsed);
 }
 
 test "fuzzy search respects local gitignore rules in git context" {
