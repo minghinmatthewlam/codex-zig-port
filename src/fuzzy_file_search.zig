@@ -43,6 +43,44 @@ const ScanState = struct {
     scanned_entries: usize = 0,
 };
 
+const IgnoreRule = struct {
+    base_dir: []const u8,
+    pattern: []const u8,
+    negated: bool,
+    directory_only: bool,
+    anchored: bool,
+    has_slash: bool,
+
+    fn deinit(self: *IgnoreRule, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_dir);
+        allocator.free(self.pattern);
+    }
+};
+
+const IgnoreStack = struct {
+    rules: std.ArrayList(IgnoreRule) = .empty,
+
+    fn deinit(self: *IgnoreStack, allocator: std.mem.Allocator) void {
+        self.truncate(allocator, 0);
+        self.rules.deinit(allocator);
+    }
+
+    fn truncate(self: *IgnoreStack, allocator: std.mem.Allocator, len: usize) void {
+        for (self.rules.items[len..]) |*rule| rule.deinit(allocator);
+        self.rules.shrinkRetainingCapacity(len);
+    }
+
+    fn isIgnored(self: *const IgnoreStack, relative_path: []const u8, is_dir: bool) bool {
+        var ignored = false;
+        for (self.rules.items) |rule| {
+            if (ruleMatches(rule, relative_path, is_dir)) {
+                ignored = !rule.negated;
+            }
+        }
+        return ignored;
+    }
+};
+
 const CharClass = enum {
     whitespace,
     non_word,
@@ -123,7 +161,10 @@ fn scanRoot(
     const io = std.Io.Threaded.global_single_threaded.io();
     var dir = openIterableDir(io, root) catch return;
     defer dir.close(io);
-    try scanDir(allocator, io, root, "", &dir, query, matches, state);
+    const has_git_context = try rootHasGitContext(allocator, io, root);
+    var ignore_stack = IgnoreStack{};
+    defer ignore_stack.deinit(allocator);
+    try scanDir(allocator, io, root, "", &dir, query, matches, state, &ignore_stack, has_git_context);
 }
 
 fn scanDir(
@@ -135,7 +176,16 @@ fn scanDir(
     query: []const u8,
     matches: *std.ArrayList(Match),
     state: *ScanState,
+    ignore_stack: *IgnoreStack,
+    parent_git_context: bool,
 ) !void {
+    const current_git_context = parent_git_context or try dirHasGitMarker(allocator, io, root, relative_dir);
+    const previous_ignore_rule_len = ignore_stack.rules.items.len;
+    defer ignore_stack.truncate(allocator, previous_ignore_rule_len);
+    if (current_git_context) {
+        try loadGitignoreRules(allocator, io, root, relative_dir, ignore_stack);
+    }
+
     var iter = dir.iterate();
     while (state.scanned_entries < MAX_SCANNED_ENTRIES) {
         const entry = iter.next(io) catch break;
@@ -161,6 +211,11 @@ fn scanDir(
             else => null,
         };
         const should_recurse = stat.kind == .directory;
+        if (match_type != null and ignore_stack.isIgnored(relative_path, stat.kind == .directory)) {
+            allocator.free(relative_path);
+            owns_relative_path = false;
+            continue;
+        }
         if (match_type) |kind| {
             if (try fuzzyMatchPath(allocator, relative_path, query)) |fuzzy| {
                 defer allocator.free(fuzzy.indices);
@@ -197,7 +252,7 @@ fn scanDir(
                     continue;
                 };
                 defer child_dir.close(io);
-                try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state);
+                try scanDir(allocator, io, root, relative_path, &child_dir, query, matches, state, ignore_stack, current_git_context);
             }
             if (owns_relative_path) {
                 allocator.free(relative_path);
@@ -223,6 +278,163 @@ fn shouldSkipName(name: []const u8) bool {
     return std.mem.eql(u8, name, ".git") or
         std.mem.eql(u8, name, ".zig-cache") or
         std.mem.eql(u8, name, "zig-out");
+}
+
+fn rootHasGitContext(allocator: std.mem.Allocator, io: std.Io, root: []const u8) !bool {
+    const real_root = std.Io.Dir.cwd().realPathFileAlloc(io, root, allocator) catch return false;
+    defer allocator.free(real_root);
+    return findGitMarkerInAncestors(allocator, io, real_root);
+}
+
+fn findGitMarkerInAncestors(allocator: std.mem.Allocator, io: std.Io, start: []const u8) !bool {
+    var current = try allocator.dupe(u8, start);
+    defer allocator.free(current);
+
+    while (true) {
+        const marker = try std.fs.path.join(allocator, &.{ current, ".git" });
+        defer allocator.free(marker);
+        if (pathExists(io, marker)) return true;
+
+        const parent = std.fs.path.dirname(current) orelse return false;
+        if (std.mem.eql(u8, parent, current)) return false;
+        const owned_parent = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = owned_parent;
+    }
+}
+
+fn dirHasGitMarker(allocator: std.mem.Allocator, io: std.Io, root: []const u8, relative_dir: []const u8) !bool {
+    const marker = if (relative_dir.len == 0)
+        try std.fs.path.join(allocator, &.{ root, ".git" })
+    else
+        try std.fs.path.join(allocator, &.{ root, relative_dir, ".git" });
+    defer allocator.free(marker);
+    return pathExists(io, marker);
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return false;
+    return true;
+}
+
+fn loadGitignoreRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    ignore_stack: *IgnoreStack,
+) !void {
+    const path = if (relative_dir.len == 0)
+        try std.fs.path.join(allocator, &.{ root, ".gitignore" })
+    else
+        try std.fs.path.join(allocator, &.{ root, relative_dir, ".gitignore" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.FileNotFound, error.IsDir => return,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const raw_without_cr = std.mem.trimEnd(u8, raw_line, "\r");
+        const trimmed = std.mem.trim(u8, raw_without_cr, " \t");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        var pattern = trimmed;
+        const negated = pattern[0] == '!';
+        if (negated) {
+            pattern = pattern[1..];
+            if (pattern.len == 0) continue;
+        }
+        const anchored = pattern.len > 0 and pattern[0] == '/';
+        if (anchored) pattern = pattern[1..];
+
+        var directory_only = false;
+        while (pattern.len > 0 and pattern[pattern.len - 1] == '/') {
+            directory_only = true;
+            pattern = pattern[0 .. pattern.len - 1];
+        }
+        if (pattern.len == 0) continue;
+
+        const owned_base = try allocator.dupe(u8, relative_dir);
+        errdefer allocator.free(owned_base);
+        const owned_pattern = try allocator.dupe(u8, pattern);
+        errdefer allocator.free(owned_pattern);
+        try ignore_stack.rules.append(allocator, .{
+            .base_dir = owned_base,
+            .pattern = owned_pattern,
+            .negated = negated,
+            .directory_only = directory_only,
+            .anchored = anchored,
+            .has_slash = std.mem.indexOfScalar(u8, pattern, '/') != null,
+        });
+    }
+}
+
+fn ruleMatches(rule: IgnoreRule, relative_path: []const u8, is_dir: bool) bool {
+    if (rule.directory_only and !is_dir) return false;
+    const rel_to_base = pathRelativeToBase(rule.base_dir, relative_path) orelse return false;
+    if (rel_to_base.len == 0) return false;
+
+    if (rule.anchored or rule.has_slash) {
+        return gitignoreGlobMatches(rule.pattern, rel_to_base);
+    }
+    var components = std.mem.splitScalar(u8, rel_to_base, '/');
+    while (components.next()) |component| {
+        if (gitignoreGlobMatches(rule.pattern, component)) return true;
+    }
+    return false;
+}
+
+fn pathRelativeToBase(base_dir: []const u8, relative_path: []const u8) ?[]const u8 {
+    if (base_dir.len == 0) return relative_path;
+    if (std.mem.eql(u8, base_dir, relative_path)) return "";
+    if (!std.mem.startsWith(u8, relative_path, base_dir)) return null;
+    if (relative_path.len <= base_dir.len or relative_path[base_dir.len] != '/') return null;
+    return relative_path[base_dir.len + 1 ..];
+}
+
+fn gitignoreGlobMatches(pattern: []const u8, value: []const u8) bool {
+    return globMatchesAt(pattern, value);
+}
+
+fn globMatchesAt(pattern: []const u8, value: []const u8) bool {
+    var pattern_index: usize = 0;
+    var value_index: usize = 0;
+    while (pattern_index < pattern.len) {
+        const token = pattern[pattern_index];
+        if (token == '*') {
+            var allow_slash = false;
+            while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+                if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == '*') {
+                    allow_slash = true;
+                }
+                pattern_index += 1;
+            }
+            const rest = pattern[pattern_index..];
+            var end = value_index;
+            while (true) {
+                if (globMatchesAt(rest, value[end..])) return true;
+                if (end >= value.len) break;
+                if (!allow_slash and value[end] == '/') break;
+                end += 1;
+            }
+            return false;
+        }
+        if (value_index >= value.len) return false;
+        if (token == '?') {
+            if (value[value_index] == '/') return false;
+            pattern_index += 1;
+            value_index += 1;
+            continue;
+        }
+        if (token != value[value_index]) return false;
+        pattern_index += 1;
+        value_index += 1;
+    }
+    return value_index == value.len;
 }
 
 fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const u8) !?FuzzyMatch {
@@ -587,4 +799,48 @@ test "fuzzy match folds latin accents while preserving original character indice
     const path_accent = (try fuzzyMatchPath(allocator, "r\u{e9}sum\u{e9}.md", "resume")).?;
     defer allocator.free(path_accent.indices);
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4, 5 }, path_accent.indices);
+}
+
+test "fuzzy search respects local gitignore rules in git context" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDir(io, ".git", .default_dir);
+    try dir.dir.createDirPath(io, ".vscode");
+    try dir.dir.createDirPath(io, "ignored-dir");
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".gitignore",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
+    });
+    try dir.dir.writeFile(io, .{ .sub_path = "ignored.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "ignored-dir/nested.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = ".vscode/extensions.json", .data = "{}\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = ".vscode/settings.json", .data = "{}\n" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const roots = [_][]const u8{root};
+
+    var settings = try search(allocator, "settings", &roots);
+    defer settings.deinit(allocator);
+    try std.testing.expect(resultContainsPath(settings, ".vscode/settings.json"));
+
+    var extensions = try search(allocator, "extensions", &roots);
+    defer extensions.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(extensions, ".vscode/extensions.json"));
+
+    var ignored = try search(allocator, "ignored", &roots);
+    defer ignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(ignored, "ignored.txt"));
+    try std.testing.expect(!resultContainsPath(ignored, "ignored-dir"));
+    try std.testing.expect(!resultContainsPath(ignored, "ignored-dir/nested.txt"));
+}
+
+fn resultContainsPath(results: Results, path: []const u8) bool {
+    for (results.files) |file| {
+        if (std.mem.eql(u8, file.path, path)) return true;
+    }
+    return false;
 }

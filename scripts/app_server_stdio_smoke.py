@@ -8785,6 +8785,21 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "alpha.txt").write_text("file match\n", encoding="utf-8")
         (search_root / "beta.txt").write_text("not a match\n", encoding="utf-8")
         (search_root / "alpha_dir").mkdir()
+        (search_root / ".git").mkdir()
+        (search_root / ".gitignore").write_text(
+            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
+            encoding="utf-8",
+        )
+        (search_root / "ignored.txt").write_text("ignored file\n", encoding="utf-8")
+        (search_root / "ignored-dir").mkdir()
+        (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
+        (search_root / ".vscode").mkdir()
+        (search_root / ".vscode" / "extensions.json").write_text("{}\n", encoding="utf-8")
+        (search_root / ".vscode" / "settings.json").write_text("{}\n", encoding="utf-8")
+        no_git_root = root / "outside-git-root"
+        no_git_root.mkdir()
+        (no_git_root / ".gitignore").write_text("package.json\n", encoding="utf-8")
+        (no_git_root / "package.json").write_text("{\"name\":\"demo\"}\n", encoding="utf-8")
         (search_root / "abc").write_text("prefix non-match\n", encoding="utf-8")
         (search_root / "abcde").write_text("spread match\n", encoding="utf-8")
         (search_root / "abexy").write_text("best match\n", encoding="utf-8")
@@ -8877,6 +8892,64 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert by_accent_path[accent_name]["root"] == str(search_root)
         assert by_accent_path[accent_name]["match_type"] == "file"
         assert by_accent_path[accent_name]["indices"] == [0, 1, 2, 3, 4, 5]
+
+        ignored_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-ignored",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "ignored", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert ignored_search["id"] == "fuzzy-search-ignored"
+        ignored_paths = {item["path"] for item in ignored_search["result"]["files"]}
+        assert "ignored.txt" not in ignored_paths
+        assert "ignored-dir" not in ignored_paths
+        assert "ignored-dir/nested.txt" not in ignored_paths
+
+        reincluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-reincluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "settings", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert reincluded_search["id"] == "fuzzy-search-reincluded"
+        reincluded_paths = {item["path"] for item in reincluded_search["result"]["files"]}
+        assert ".vscode/settings.json" in reincluded_paths
+
+        excluded_extension_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-excluded-extension",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "extensions", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert excluded_extension_search["id"] == "fuzzy-search-excluded-extension"
+        excluded_extension_paths = {item["path"] for item in excluded_extension_search["result"]["files"]}
+        assert ".vscode/extensions.json" not in excluded_extension_paths
+
+        no_git_context_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-no-git-context",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "package", "roots": [str(no_git_root)]},
+            },
+            env,
+        )
+        assert no_git_context_search["id"] == "fuzzy-search-no-git-context"
+        no_git_context_paths = {item["path"] for item in no_git_context_search["result"]["files"]}
+        assert "package.json" in no_git_context_paths
 
         empty_query = request_stdio_app_server(
             binary,
