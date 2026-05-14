@@ -25837,6 +25837,13 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var file_change_patch_update_context = FileChangePatchUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/fileChange/patchUpdated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
     var raw_response_item_context = RawResponseItemNotificationContext{
         .allocator = allocator,
         .enabled = !notificationMethodOptedOut(state, "rawResponseItem/completed"),
@@ -25894,6 +25901,10 @@ fn handleTurnStart(
         .command_execution_output_callback = .{
             .ctx = &command_execution_output_context,
             .on_command_execution_output = handleSessionCommandExecutionOutput,
+        },
+        .file_change_patch_update_callback = .{
+            .ctx = &file_change_patch_update_context,
+            .on_file_change_patch_updated = handleSessionFileChangePatchUpdated,
         },
         .raw_response_item_callback = .{
             .ctx = &raw_response_item_context,
@@ -27569,6 +27580,14 @@ const CommandExecutionOutputNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const FileChangePatchUpdateNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 const RawResponseItemNotificationContext = struct {
     allocator: std.mem.Allocator,
     enabled: bool,
@@ -27638,6 +27657,24 @@ fn handleSessionCommandExecutionOutput(ctx: *anyopaque, item_id: []const u8, del
     const context: *CommandExecutionOutputNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
     const notification = try renderCommandExecutionOutputDeltaNotification(context.allocator, context.thread_id, context.turn_id, item_id, delta);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionFileChangePatchUpdated(ctx: *anyopaque, item_id: []const u8, arguments_json: []const u8) anyerror!void {
+    const context: *FileChangePatchUpdateNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, context.allocator, arguments_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const patch_value = parsed.value.object.get("patch") orelse return;
+    if (patch_value != .string) return;
+
+    const notification = try renderFileChangePatchUpdatedNotification(context.allocator, context.thread_id, context.turn_id, item_id, patch_value.string);
     errdefer context.allocator.free(notification);
     try context.notifications.append(context.allocator, notification);
 }
@@ -27738,6 +27775,190 @@ fn renderCommandExecutionOutputDeltaNotification(
     try appendJsonString(allocator, &notification, delta);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
+}
+
+const PatchNotificationKind = enum {
+    add,
+    delete,
+    update,
+};
+
+const PatchNotificationChange = struct {
+    path: []const u8,
+    kind: PatchNotificationKind,
+    diff: []const u8,
+    move_path: ?[]const u8 = null,
+
+    fn deinit(self: PatchNotificationChange, allocator: std.mem.Allocator) void {
+        allocator.free(self.diff);
+    }
+};
+
+fn renderFileChangePatchUpdatedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    patch_text: []const u8,
+) ![]const u8 {
+    var changes = try parsePatchNotificationChanges(allocator, patch_text);
+    defer {
+        for (changes.items) |change| change.deinit(allocator);
+        changes.deinit(allocator);
+    }
+    if (changes.items.len == 0) return error.InvalidPatch;
+    std.mem.sort(PatchNotificationChange, changes.items, {}, patchNotificationChangeLessThan);
+
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/fileChange/patchUpdated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"changes\":[");
+    for (changes.items, 0..) |change, index| {
+        if (index > 0) try notification.append(allocator, ',');
+        try appendPatchNotificationChangeJson(allocator, &notification, change);
+    }
+    try notification.appendSlice(allocator, "]}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn parsePatchNotificationChanges(allocator: std.mem.Allocator, patch_text: []const u8) !std.ArrayList(PatchNotificationChange) {
+    var changes = std.ArrayList(PatchNotificationChange).empty;
+    errdefer {
+        for (changes.items) |change| change.deinit(allocator);
+        changes.deinit(allocator);
+    }
+
+    var lines = std.ArrayList([]const u8).empty;
+    defer lines.deinit(allocator);
+    var raw_lines = std.mem.splitScalar(u8, normalizeNotificationPatchText(patch_text), '\n');
+    while (raw_lines.next()) |raw_line| {
+        try lines.append(allocator, std.mem.trimEnd(u8, raw_line, "\r"));
+    }
+
+    var index: usize = 0;
+    while (index < lines.items.len) {
+        const line = notificationPatchDirective(lines.items[index]);
+        if (std.mem.startsWith(u8, line, "*** Add File: ")) {
+            const path = line["*** Add File: ".len..];
+            index += 1;
+            const diff = try collectAddPatchNotificationDiff(allocator, lines.items, &index);
+            errdefer allocator.free(diff);
+            try changes.append(allocator, .{ .path = path, .kind = .add, .diff = diff });
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "*** Update File: ")) {
+            const path = line["*** Update File: ".len..];
+            index += 1;
+            var move_path: ?[]const u8 = null;
+            if (index < lines.items.len) {
+                const maybe_move = notificationPatchDirective(lines.items[index]);
+                if (std.mem.startsWith(u8, maybe_move, "*** Move to: ")) {
+                    move_path = maybe_move["*** Move to: ".len..];
+                    index += 1;
+                }
+            }
+            const diff = try collectRawPatchNotificationDiff(allocator, lines.items, &index);
+            errdefer allocator.free(diff);
+            try changes.append(allocator, .{ .path = path, .kind = .update, .diff = diff, .move_path = move_path });
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
+            const path = line["*** Delete File: ".len..];
+            index += 1;
+            const diff = try allocator.dupe(u8, "");
+            errdefer allocator.free(diff);
+            try changes.append(allocator, .{ .path = path, .kind = .delete, .diff = diff });
+            continue;
+        }
+        index += 1;
+    }
+
+    return changes;
+}
+
+fn collectAddPatchNotificationDiff(allocator: std.mem.Allocator, lines: []const []const u8, index: *usize) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    while (index.* < lines.len and !isNotificationPatchSection(lines[index.*])) : (index.* += 1) {
+        const line = lines[index.*];
+        if (line.len > 0 and line[0] == '+') {
+            try out.appendSlice(allocator, line[1..]);
+        } else {
+            try out.appendSlice(allocator, line);
+        }
+        try out.append(allocator, '\n');
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn collectRawPatchNotificationDiff(allocator: std.mem.Allocator, lines: []const []const u8, index: *usize) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    while (index.* < lines.len and !isNotificationPatchSection(lines[index.*])) : (index.* += 1) {
+        try out.appendSlice(allocator, lines[index.*]);
+        try out.append(allocator, '\n');
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendPatchNotificationChangeJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), change: PatchNotificationChange) !void {
+    try out.appendSlice(allocator, "{\"path\":");
+    try appendJsonString(allocator, out, change.path);
+    try out.appendSlice(allocator, ",\"kind\":");
+    try appendPatchNotificationKindJson(allocator, out, change);
+    try out.appendSlice(allocator, ",\"diff\":");
+    try appendJsonString(allocator, out, change.diff);
+    try out.append(allocator, '}');
+}
+
+fn appendPatchNotificationKindJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), change: PatchNotificationChange) !void {
+    switch (change.kind) {
+        .add => try out.appendSlice(allocator, "{\"type\":\"add\"}"),
+        .delete => try out.appendSlice(allocator, "{\"type\":\"delete\"}"),
+        .update => {
+            try out.appendSlice(allocator, "{\"type\":\"update\",\"move_path\":");
+            try appendOptionalJsonString(allocator, out, change.move_path);
+            try out.append(allocator, '}');
+        },
+    }
+}
+
+fn normalizeNotificationPatchText(patch_text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, patch_text, " \t\r\n");
+    const first_newline = std.mem.indexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    const last_newline = std.mem.lastIndexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    if (first_newline >= last_newline) return trimmed;
+
+    const first_line = std.mem.trimEnd(u8, trimmed[0..first_newline], "\r");
+    if (!std.mem.eql(u8, first_line, "<<EOF") and
+        !std.mem.eql(u8, first_line, "<<'EOF'") and
+        !std.mem.eql(u8, first_line, "<<\"EOF\""))
+        return trimmed;
+
+    const last_line = std.mem.trimEnd(u8, trimmed[last_newline + 1 ..], "\r");
+    if (!std.mem.endsWith(u8, last_line, "EOF")) return trimmed;
+    return std.mem.trim(u8, trimmed[first_newline + 1 .. last_newline], " \t\r\n");
+}
+
+fn notificationPatchDirective(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line, " \t");
+}
+
+fn isNotificationPatchSection(line: []const u8) bool {
+    const directive = notificationPatchDirective(line);
+    return std.mem.eql(u8, directive, "*** End Patch") or
+        std.mem.startsWith(u8, directive, "*** Add File: ") or
+        std.mem.startsWith(u8, directive, "*** Update File: ") or
+        std.mem.startsWith(u8, directive, "*** Delete File: ");
+}
+
+fn patchNotificationChangeLessThan(_: void, lhs: PatchNotificationChange, rhs: PatchNotificationChange) bool {
+    return std.mem.lessThan(u8, lhs.path, rhs.path);
 }
 
 fn renderRawResponseItemCompletedNotification(

@@ -280,6 +280,7 @@ pub const TurnOptions = struct {
     plan_update_callback: ?PlanUpdateCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
     command_execution_output_callback: ?CommandExecutionOutputCallback = null,
+    file_change_patch_update_callback: ?FileChangePatchUpdateCallback = null,
     raw_response_item_callback: ?RawResponseItemCallback = null,
     reasoning_event_callback: ?ReasoningEventCallback = null,
     server_model_callback: ?ServerModelCallback = null,
@@ -302,6 +303,11 @@ pub const DiffUpdateCallback = struct {
 pub const CommandExecutionOutputCallback = struct {
     ctx: *anyopaque,
     on_command_execution_output: *const fn (ctx: *anyopaque, item_id: []const u8, delta: []const u8) anyerror!void,
+};
+
+pub const FileChangePatchUpdateCallback = struct {
+    ctx: *anyopaque,
+    on_file_change_patch_updated: *const fn (ctx: *anyopaque, item_id: []const u8, arguments_json: []const u8) anyerror!void,
 };
 
 pub const RawResponseItemCallback = struct {
@@ -642,6 +648,9 @@ fn runToolCall(
     errdefer tool_result.deinit(allocator);
 
     if (std.mem.eql(u8, call.name, "apply_patch") and std.mem.startsWith(u8, tool_result.summary, "patched ")) {
+        if (options.file_change_patch_update_callback) |callback| {
+            try callback.on_file_change_patch_updated(callback.ctx, call.call_id, call.arguments);
+        }
         if (options.diff_update_callback) |callback| {
             try callback.on_diff_updated(callback.ctx);
         }

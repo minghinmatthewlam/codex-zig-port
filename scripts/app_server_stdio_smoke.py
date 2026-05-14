@@ -1227,6 +1227,7 @@ def assert_turn_start_rpc_completed(
     while next_notification["method"] in {
         "rawResponseItem/completed",
         "item/commandExecution/outputDelta",
+        "item/fileChange/patchUpdated",
     }:
         assert next_notification["jsonrpc"] == "2.0"
         assert next_notification["params"]["threadId"] == thread_id
@@ -6912,6 +6913,19 @@ def run_turn_tool_cwd_smoke(binary: Path) -> None:
                     == "cwd-pwd-call"
                 )
 
+                patch_updated = read_json_line(proc, 5)
+                assert patch_updated["method"] == "item/fileChange/patchUpdated"
+                assert patch_updated["params"]["threadId"] == thread_id
+                assert patch_updated["params"]["turnId"] == "turn-0"
+                assert patch_updated["params"]["itemId"] == "cwd-patch-call"
+                assert patch_updated["params"]["changes"] == [
+                    {
+                        "path": tool_file_name,
+                        "kind": {"type": "add"},
+                        "diff": "created in thread cwd\n",
+                    }
+                ]
+
                 diff_updated = read_json_line(proc, 5)
                 assert diff_updated["method"] == "turn/diff/updated"
                 assert diff_updated["params"]["threadId"] == thread_id
@@ -7007,6 +7021,7 @@ def run_turn_diff_opt_out_smoke(binary: Path) -> None:
                             "optOutNotificationMethods": [
                                 "rawResponseItem/completed",
                                 "turn/diff/updated",
+                                "item/fileChange/patchUpdated",
                             ]
                         },
                     },
