@@ -28005,7 +28005,79 @@ fn persistThreadStartProjectTrust(
 }
 
 fn resolveThreadStartProjectTrustTarget(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
-    return (try findExternalAgentRepoRoot(allocator, cwd)) orelse try allocator.dupe(u8, cwd);
+    var current = try threadStartProjectTrustSearchBase(allocator, cwd);
+    errdefer allocator.free(current);
+
+    const fallback = try allocator.dupe(u8, current);
+    defer allocator.free(fallback);
+
+    while (true) {
+        const dot_git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
+        defer allocator.free(dot_git_path);
+
+        const dot_git_stat = statPathNoFollow(allocator, dot_git_path) catch |err| switch (err) {
+            error.NotDir => null,
+            else => return err,
+        };
+        if (dot_git_stat) |metadata| {
+            if (std.c.S.ISDIR(@intCast(metadata.mode))) return current;
+            if (try resolveThreadStartWorktreeTrustTarget(allocator, current, dot_git_path)) |main_root| {
+                allocator.free(current);
+                return main_root;
+            }
+            return current;
+        }
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return allocator.dupe(u8, fallback);
+}
+
+fn threadStartProjectTrustSearchBase(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+    const stat = (try statPathFollow(allocator, cwd)) orelse return allocator.dupe(u8, cwd);
+    if (std.c.S.ISDIR(@intCast(stat.mode))) return allocator.dupe(u8, cwd);
+    const parent = std.fs.path.dirname(cwd) orelse return allocator.dupe(u8, cwd);
+    return allocator.dupe(u8, parent);
+}
+
+fn resolveThreadStartWorktreeTrustTarget(
+    allocator: std.mem.Allocator,
+    worktree_root: []const u8,
+    dot_git_path: []const u8,
+) !?[]const u8 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), dot_git_path, allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied, error.PermissionDenied => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    const prefix = "gitdir:";
+    if (!std.mem.startsWith(u8, trimmed, prefix)) return null;
+    const raw_gitdir = std.mem.trim(u8, trimmed[prefix.len..], " \t\r\n");
+    if (raw_gitdir.len == 0) return null;
+
+    const gitdir = if (std.fs.path.isAbsolute(raw_gitdir))
+        try allocator.dupe(u8, raw_gitdir)
+    else
+        try std.fs.path.join(allocator, &.{ worktree_root, raw_gitdir });
+    defer allocator.free(gitdir);
+
+    const worktrees_dir = std.fs.path.dirname(gitdir) orelse return null;
+    const worktrees_name = std.fs.path.basename(worktrees_dir);
+    if (!std.mem.eql(u8, worktrees_name, "worktrees")) return null;
+
+    const common_git_dir = std.fs.path.dirname(worktrees_dir) orelse return null;
+    const main_root = std.fs.path.dirname(common_git_dir) orelse return null;
+    return realPathFileAllocPlain(allocator, main_root) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => try allocator.dupe(u8, main_root),
+        else => return err,
+    };
 }
 
 fn projectTrustKeyPath(allocator: std.mem.Allocator, trust_target: []const u8) ![]const u8 {

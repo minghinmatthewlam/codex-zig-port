@@ -3742,6 +3742,40 @@ def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(nested_home, ignore_errors=True)
         shutil.rmtree(repo_root, ignore_errors=True)
 
+    worktree_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-worktree-home-", dir="/tmp"))
+    main_repo = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-main-repo-", dir="/tmp"))
+    worktree = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-worktree-", dir="/tmp"))
+    worktree_nested = worktree / "nested" / "project"
+    try:
+        worktree_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "read-only"\n',
+            encoding="utf-8",
+        )
+        main_repo.joinpath(".git", "worktrees", "linked").mkdir(parents=True)
+        worktree_nested.mkdir(parents=True)
+        worktree.joinpath(".git").write_text(
+            f"gitdir: {main_repo / '.git' / 'worktrees' / 'linked'}\n",
+            encoding="utf-8",
+        )
+
+        worktree_start = rpc(
+            worktree_home,
+            "thread-start-worktree-trust-main-root",
+            {"cwd": str(worktree_nested), "sandbox": "workspace-write", "ephemeral": True},
+        )
+        assert worktree_start["id"] == "thread-start-worktree-trust-main-root"
+        worktree_config_toml = worktree_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_main_section = f'[projects."{toml_quoted_key(str(main_repo.resolve()))}"]'
+        trusted_worktree_section = f'[projects."{toml_quoted_key(str(worktree.resolve()))}"]'
+        trusted_worktree_nested_section = f'[projects."{toml_quoted_key(str(worktree_nested.resolve()))}"]'
+        assert trusted_main_section in worktree_config_toml
+        assert trusted_worktree_section not in worktree_config_toml
+        assert trusted_worktree_nested_section not in worktree_config_toml
+    finally:
+        shutil.rmtree(worktree_home, ignore_errors=True)
+        shutil.rmtree(main_repo, ignore_errors=True)
+        shutil.rmtree(worktree, ignore_errors=True)
+
     danger_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-danger-home-", dir="/tmp"))
     danger_workspace = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-danger-", dir="/tmp"))
     try:
