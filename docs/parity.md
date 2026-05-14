@@ -165,7 +165,8 @@ now covered for `deprecationNotice` on deprecated
 `experimental_instructions_file` config and legacy feature keys, and for
 generic `warning` notifications on config-enabled under-development features
 and deprecated `on-failure` approval-policy configuration during app-server
-thread startup. Runtime `configWarning` emission is covered on app-server
+thread startup, plus user/plugin hook-load warnings during app-server thread
+startup. Runtime `configWarning` emission is covered on app-server
 `initialize` for untrusted project-local `.codex` folders whose config, hooks,
 and exec policies are disabled until the project is trusted, and for trusted
 project-local config files that contain unsupported root keys ignored for
