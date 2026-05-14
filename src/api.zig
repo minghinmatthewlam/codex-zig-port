@@ -653,13 +653,14 @@ pub fn buildRequestBodyWithOptions(
         null;
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort| effort.label() else "medium";
+    const reasoning_summary = if (cfg.model_reasoning_summary) |summary| summary.label() else "auto";
     const req = Request{
         .model = cfg.model,
         .instructions = instructions,
         .input = inputs.items,
         .tools = tools_list.items,
         .text = text_controls,
-        .reasoning = .{ .effort = reasoning_effort },
+        .reasoning = .{ .effort = reasoning_effort, .summary = reasoning_summary },
         .service_tier = cfg.service_tier,
         .include = include[0..],
         .prompt_cache_key = cfg.installation_id,
@@ -886,7 +887,7 @@ test "builds chronological request input from owned history" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"update_plan\"") != null);
 }
 
-test "builds request with configured reasoning effort" {
+test "builds request with configured reasoning controls" {
     const allocator = std.testing.allocator;
     const cfg = config.Config{
         .codex_home = ".",
@@ -900,6 +901,7 @@ test "builds request with configured reasoning effort" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .model_reasoning_effort = .high,
+        .model_reasoning_summary = .detailed,
         .service_tier = null,
         .syntax_theme = null,
         .personality = null,
@@ -924,7 +926,7 @@ test "builds request with configured reasoning effort" {
     const reasoning = parsed.value.object.get("reasoning").?.object;
 
     try std.testing.expectEqualStrings("high", reasoning.get("effort").?.string);
-    try std.testing.expectEqualStrings("auto", reasoning.get("summary").?.string);
+    try std.testing.expectEqualStrings("detailed", reasoning.get("summary").?.string);
 }
 
 test "builds input images on latest user message" {

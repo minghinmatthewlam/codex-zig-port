@@ -21,6 +21,7 @@ pub const Config = struct {
     sandbox_mode: SandboxMode,
     web_search_mode: ?WebSearchMode,
     model_reasoning_effort: ?ReasoningEffort,
+    model_reasoning_summary: ?ReasoningSummary = null,
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
@@ -161,6 +162,7 @@ pub const RuntimeOverrides = struct {
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
     service_tier: ?[]const u8 = null,
+    model_reasoning_summary: ?ReasoningSummary = null,
     syntax_theme: ?[]const u8 = null,
     personality: ?Personality = null,
     tui_alternate_screen: ?AltScreenMode = null,
@@ -276,6 +278,9 @@ pub fn applyRuntimeOverrides(
     if (overrides.personality) |personality| {
         cfg.personality = personality;
     }
+    if (overrides.model_reasoning_summary) |summary| {
+        cfg.model_reasoning_summary = summary;
+    }
     if (overrides.tui_alternate_screen) |mode| {
         cfg.tui_alternate_screen = mode;
     }
@@ -313,6 +318,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.syntax_theme = value;
     } else if (std.mem.eql(u8, key, "personality")) {
         runtime_overrides.personality = try Personality.parse(value);
+    } else if (std.mem.eql(u8, key, "model_reasoning_summary")) {
+        runtime_overrides.model_reasoning_summary = try ReasoningSummary.parse(value);
     } else if (std.mem.eql(u8, key, "tui.alternate_screen") or std.mem.eql(u8, key, "tui_alternate_screen")) {
         runtime_overrides.tui_alternate_screen = try AltScreenMode.parse(value);
     }
@@ -471,6 +478,30 @@ pub const ReasoningEffort = enum {
         if (std.mem.eql(u8, value, "high")) return .high;
         if (std.mem.eql(u8, value, "xhigh")) return .xhigh;
         return error.InvalidReasoningEffort;
+    }
+};
+
+pub const ReasoningSummary = enum {
+    auto,
+    concise,
+    detailed,
+    none,
+
+    pub fn label(self: ReasoningSummary) []const u8 {
+        return switch (self) {
+            .auto => "auto",
+            .concise => "concise",
+            .detailed => "detailed",
+            .none => "none",
+        };
+    }
+
+    pub fn parse(value: []const u8) !ReasoningSummary {
+        if (std.mem.eql(u8, value, "auto")) return .auto;
+        if (std.mem.eql(u8, value, "concise")) return .concise;
+        if (std.mem.eql(u8, value, "detailed")) return .detailed;
+        if (std.mem.eql(u8, value, "none")) return .none;
+        return error.InvalidReasoningSummary;
     }
 };
 
@@ -658,6 +689,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
     const model_reasoning_effort = try resolveModelReasoningEffort(allocator, config_view, active_profile);
+    const model_reasoning_summary = try resolveModelReasoningSummary(allocator, config_view, active_profile);
     const service_tier = try resolveServiceTier(allocator, config_view, active_profile);
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
@@ -691,6 +723,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
+        .model_reasoning_summary = model_reasoning_summary,
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
@@ -921,6 +954,20 @@ fn resolveModelReasoningEffort(allocator: std.mem.Allocator, config_view: Config
     if (try config_view.getScopedString(allocator, active_profile, "model_reasoning_effort")) |value| {
         defer allocator.free(value);
         return try ReasoningEffort.parse(value);
+    }
+
+    return null;
+}
+
+fn resolveModelReasoningSummary(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?ReasoningSummary {
+    if (try env.getOwned(allocator, "CODEX_ZIG_MODEL_REASONING_SUMMARY")) |value| {
+        defer allocator.free(value);
+        return try ReasoningSummary.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "model_reasoning_summary")) |value| {
+        defer allocator.free(value);
+        return try ReasoningSummary.parse(value);
     }
 
     return null;
@@ -2342,6 +2389,8 @@ test "approval and sandbox labels parse config strings" {
     try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
     try std.testing.expectEqual(WebSearchMode.live, try WebSearchMode.parse("live"));
     try std.testing.expectEqualStrings("cached", WebSearchMode.cached.label());
+    try std.testing.expectEqual(ReasoningSummary.detailed, try ReasoningSummary.parse("detailed"));
+    try std.testing.expectEqualStrings("concise", ReasoningSummary.concise.label());
     try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, null)).?);
 }
 
@@ -2970,6 +3019,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
     try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
     try applyRawConfigOverride(&runtime, &profile, "personality=friendly");
+    try applyRawConfigOverride(&runtime, &profile, "model_reasoning_summary=detailed");
     try applyRawConfigOverride(&runtime, &profile, "tui.alternate_screen=never");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
@@ -2984,6 +3034,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
     try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
     try std.testing.expectEqual(Personality.friendly, runtime.personality.?);
+    try std.testing.expectEqual(ReasoningSummary.detailed, runtime.model_reasoning_summary.?);
     try std.testing.expectEqual(AltScreenMode.never, runtime.tui_alternate_screen.?);
 }
 

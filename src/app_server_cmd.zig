@@ -119,6 +119,7 @@ const LoadedThread = struct {
     approvals_reviewer: []const u8,
     sandbox_mode: []const u8,
     reasoning_effort: ?[]const u8,
+    reasoning_summary: ?[]const u8,
     personality: ?[]const u8,
     runtime_overrides: LoadedThreadRuntimeOverrides,
     ephemeral: bool,
@@ -155,6 +156,7 @@ const LoadedThread = struct {
         allocator.free(self.approvals_reviewer);
         allocator.free(self.sandbox_mode);
         if (self.reasoning_effort) |value| allocator.free(value);
+        if (self.reasoning_summary) |value| allocator.free(value);
         if (self.personality) |value| allocator.free(value);
         if (self.path) |value| allocator.free(value);
         allocator.free(self.source);
@@ -181,6 +183,7 @@ const LoadedThreadRuntimeOverrides = struct {
     approvals_reviewer: bool = false,
     sandbox_mode: bool = false,
     reasoning_effort: bool = false,
+    reasoning_summary: bool = false,
     personality: bool = false,
 };
 
@@ -5236,6 +5239,7 @@ const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { Personality } from "../Personality";
     \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ReasoningSummary } from "../ReasoningSummary";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\import type { UserInput } from "./UserInput";
     \\
@@ -5246,6 +5250,7 @@ const TURN_START_PARAMS_TS =
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
     \\  effort?: ReasoningEffort | null;
+    \\  summary?: ReasoningSummary | null;
     \\  personality?: Personality | null;
     \\  cwd?: string | null;
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
@@ -16370,6 +16375,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
     \\    "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\    "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
     \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "cwd": { "type": ["string", "null"] },
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
@@ -21809,6 +21815,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
     \\        "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\        "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
     \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "cwd": { "type": ["string", "null"] },
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
@@ -25619,6 +25626,17 @@ fn applyTurnStartRuntimeOverrides(
         cfg.model_reasoning_effort = null;
     }
 
+    const requested_summary = optionalReasoningSummaryParam(params, "summary") catch return error.InvalidTurnContextOverride;
+    if (requested_summary) |summary| {
+        cfg.model_reasoning_summary = summary;
+        try replaceOptionalOwnedString(allocator, &thread.reasoning_summary, summary.label());
+        thread.runtime_overrides.reasoning_summary = true;
+    } else if (thread.reasoning_summary) |value| {
+        cfg.model_reasoning_summary = config.ReasoningSummary.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_reasoning_summary = null;
+    }
+
     const requested_personality = optionalPersonalityParam(params, "personality") catch return error.InvalidTurnContextOverride;
     if (requested_personality) |personality| {
         cfg.personality = personality;
@@ -25644,6 +25662,10 @@ fn applyLoadedThreadRuntimeConfig(
     if (thread.service_tier) |value| cfg.service_tier = try allocator.dupe(u8, value);
     cfg.model_reasoning_effort = if (thread.reasoning_effort) |value|
         config.ReasoningEffort.parse(value) catch return error.InvalidThreadRuntimeConfig
+    else
+        null;
+    cfg.model_reasoning_summary = if (thread.reasoning_summary) |value|
+        config.ReasoningSummary.parse(value) catch return error.InvalidThreadRuntimeConfig
     else
         null;
     cfg.personality = if (thread.personality) |value|
@@ -27695,6 +27717,9 @@ fn createLoadedThreadFromStartParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const reasoning_summary = try threadReasoningSummary(allocator, cfg);
+    errdefer if (reasoning_summary) |value| allocator.free(value);
+
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
@@ -27734,6 +27759,7 @@ fn createLoadedThreadFromStartParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .reasoning_summary = reasoning_summary,
         .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
@@ -27742,6 +27768,7 @@ fn createLoadedThreadFromStartParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = ephemeral,
@@ -27817,6 +27844,9 @@ fn createLoadedThreadFromHistoryParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const reasoning_summary = try threadReasoningSummary(allocator, cfg);
+    errdefer if (reasoning_summary) |value| allocator.free(value);
+
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
@@ -27843,6 +27873,7 @@ fn createLoadedThreadFromHistoryParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .reasoning_summary = reasoning_summary,
         .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
@@ -27851,6 +27882,7 @@ fn createLoadedThreadFromHistoryParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = false,
@@ -27948,6 +27980,9 @@ fn createLoadedThreadFromResumeParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const reasoning_summary = try threadReasoningSummary(allocator, cfg);
+    errdefer if (reasoning_summary) |value| allocator.free(value);
+
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
@@ -27965,6 +28000,7 @@ fn createLoadedThreadFromResumeParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .reasoning_summary = reasoning_summary,
         .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
@@ -27973,6 +28009,7 @@ fn createLoadedThreadFromResumeParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
         .ephemeral = false,
@@ -28073,6 +28110,12 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
+    const reasoning_summary = if (source.reasoning_summary) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (reasoning_summary) |value| allocator.free(value);
+
     const personality = if (source.personality) |value|
         try allocator.dupe(u8, value)
     else
@@ -28114,6 +28157,7 @@ fn createLoadedThreadFromForkParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .reasoning_effort = reasoning_effort,
+        .reasoning_summary = reasoning_summary,
         .personality = personality,
         .runtime_overrides = .{
             .model = paramPresent(params, "model") or source.runtime_overrides.model,
@@ -28123,6 +28167,7 @@ fn createLoadedThreadFromForkParams(
             .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
             .sandbox_mode = paramPresent(params, "sandbox") or source.runtime_overrides.sandbox_mode,
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
+            .reasoning_summary = source.runtime_overrides.reasoning_summary,
             .personality = source.runtime_overrides.personality,
         },
         .ephemeral = ephemeral,
@@ -28185,6 +28230,14 @@ fn threadPersonality(
         if (requested) |personality| return try allocator.dupe(u8, personality.label());
     }
     if (cfg.personality) |personality| return try allocator.dupe(u8, personality.label());
+    return null;
+}
+
+fn threadReasoningSummary(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+) !?[]const u8 {
+    if (cfg.model_reasoning_summary) |summary| return try allocator.dupe(u8, summary.label());
     return null;
 }
 
@@ -28377,6 +28430,13 @@ fn optionalReasoningEffortParam(params: std.json.ObjectMap, name: []const u8) !?
     if (value == .null) return null;
     if (value != .string) return error.InvalidTurnContextOverride;
     return config.ReasoningEffort.parse(value.string) catch error.InvalidTurnContextOverride;
+}
+
+fn optionalReasoningSummaryParam(params: std.json.ObjectMap, name: []const u8) !?config.ReasoningSummary {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidTurnContextOverride;
+    return config.ReasoningSummary.parse(value.string) catch error.InvalidTurnContextOverride;
 }
 
 fn optionalPersonalityParam(params: std.json.ObjectMap, name: []const u8) !?config.Personality {
@@ -40105,6 +40165,13 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
                 try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
             } else {
                 clearOptionalOwnedString(allocator, &thread.reasoning_effort);
+            }
+        }
+        if (!thread.runtime_overrides.reasoning_summary) {
+            if (cfg.model_reasoning_summary) |summary| {
+                try replaceOptionalOwnedString(allocator, &thread.reasoning_summary, summary.label());
+            } else {
+                clearOptionalOwnedString(allocator, &thread.reasoning_summary);
             }
         }
         if (!thread.runtime_overrides.personality) {
