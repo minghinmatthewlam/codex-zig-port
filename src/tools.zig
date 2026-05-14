@@ -1046,6 +1046,7 @@ fn updateFileFromPatch(
 
     var saw_hunk = false;
     var consumed_context_marker = false;
+    var search_start: usize = 0;
     while (index.* < lines.len and !isPatchSection(lines[index.*])) {
         if (!saw_hunk and !consumed_context_marker and lines[index.*].len == 0) {
             index.* += 1;
@@ -1058,6 +1059,10 @@ fn updateFileFromPatch(
             continue;
         }
         if (std.mem.startsWith(u8, directive, "@@")) {
+            if (changeContextFromMarker(directive)) |context| {
+                const context_match = try findChangeContext(allocator, current, context, search_start);
+                search_start = context_match.end;
+            }
             index.* += 1;
             consumed_context_marker = true;
             continue;
@@ -1095,10 +1100,13 @@ fn updateFileFromPatch(
         }
 
         if (old.items.len == 0 and new.items.len == 0) continue;
-        const replaced = if (old.items.len == 0)
-            try appendToEnd(allocator, current, new.items)
-        else
-            try replaceOnce(allocator, current, old.items, new.items);
+        const replaced = if (old.items.len == 0) blk: {
+            break :blk try appendToEnd(allocator, current, new.items);
+        } else blk: {
+            const replacement = try replaceOnceFrom(allocator, current, old.items, new.items, search_start);
+            search_start = replacement.next_start;
+            break :blk replacement.text;
+        };
         allocator.free(current);
         current = replaced;
         saw_hunk = true;
@@ -1173,23 +1181,6 @@ fn appendToEnd(allocator: std.mem.Allocator, current: []const u8, addition: []co
     return output.toOwnedSlice(allocator);
 }
 
-fn replaceOnce(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
-    if (needle.len == 0) return error.InvalidPatch;
-    const match = if (std.mem.indexOf(u8, haystack, needle)) |start|
-        TextMatch{ .start = start, .end = start + needle.len }
-    else if (trailingNewlineMatch(haystack, needle)) |matched|
-        matched
-    else
-        (try fuzzyLineMatch(allocator, haystack, needle)) orelse return error.PatchContextNotFound;
-
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
-    try output.appendSlice(allocator, haystack[0..match.start]);
-    try output.appendSlice(allocator, replacement);
-    try output.appendSlice(allocator, haystack[match.end..]);
-    return output.toOwnedSlice(allocator);
-}
-
 fn ensureParentDir(root: std.Io.Dir, path: []const u8) !void {
     const parent = std.fs.path.dirname(path) orelse return;
     if (parent.len == 0 or std.mem.eql(u8, parent, ".")) return;
@@ -1231,6 +1222,11 @@ const TextMatch = struct {
     end: usize,
 };
 
+const PatchReplacement = struct {
+    text: []u8,
+    next_start: usize,
+};
+
 const PatchSourceLine = struct {
     content: []const u8,
     start: usize,
@@ -1252,7 +1248,40 @@ fn trailingNewlineMatch(haystack: []const u8, needle: []const u8) ?TextMatch {
     return .{ .start = haystack.len - trimmed.len, .end = haystack.len };
 }
 
-fn fuzzyLineMatch(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8) !?TextMatch {
+fn replaceOnceFrom(
+    allocator: std.mem.Allocator,
+    haystack: []const u8,
+    needle: []const u8,
+    replacement: []const u8,
+    start_offset: usize,
+) !PatchReplacement {
+    if (needle.len == 0) return error.InvalidPatch;
+    const bounded_start = @min(start_offset, haystack.len);
+    const match = if (std.mem.indexOfPos(u8, haystack, bounded_start, needle)) |start|
+        TextMatch{ .start = start, .end = start + needle.len }
+    else if (trailingNewlineMatchFrom(haystack, needle, bounded_start)) |matched|
+        matched
+    else
+        (try fuzzyLineMatchFrom(allocator, haystack, needle, bounded_start)) orelse return error.PatchContextNotFound;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, haystack[0..match.start]);
+    try output.appendSlice(allocator, replacement);
+    try output.appendSlice(allocator, haystack[match.end..]);
+    return .{
+        .text = try output.toOwnedSlice(allocator),
+        .next_start = match.start + replacement.len,
+    };
+}
+
+fn trailingNewlineMatchFrom(haystack: []const u8, needle: []const u8, start_offset: usize) ?TextMatch {
+    const match = trailingNewlineMatch(haystack, needle) orelse return null;
+    if (match.start < start_offset) return null;
+    return match;
+}
+
+fn fuzzyLineMatchFrom(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, start_offset: usize) !?TextMatch {
     var source_lines = std.ArrayList(PatchSourceLine).empty;
     defer source_lines.deinit(allocator);
     try collectPatchSourceLines(allocator, haystack, &source_lines);
@@ -1268,6 +1297,7 @@ fn fuzzyLineMatch(allocator: std.mem.Allocator, haystack: []const u8, needle: []
         const last_start = source_lines.items.len - pattern_lines.items.len;
         var source_index: usize = 0;
         while (source_index <= last_start) : (source_index += 1) {
+            if (source_lines.items[source_index].start < start_offset) continue;
             var matched = true;
             for (pattern_lines.items, 0..) |pattern_line, pattern_index| {
                 if (!try patchLinesEqual(allocator, source_lines.items[source_index + pattern_index].content, pattern_line, mode)) {
@@ -1285,6 +1315,19 @@ fn fuzzyLineMatch(allocator: std.mem.Allocator, haystack: []const u8, needle: []
     }
 
     return null;
+}
+
+fn changeContextFromMarker(directive: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, directive, "@@ ")) return null;
+    return directive["@@ ".len..];
+}
+
+fn findChangeContext(allocator: std.mem.Allocator, current: []const u8, context: []const u8, search_start: usize) !TextMatch {
+    var needle = std.ArrayList(u8).empty;
+    defer needle.deinit(allocator);
+    try needle.appendSlice(allocator, context);
+    try needle.append(allocator, '\n');
+    return (try fuzzyLineMatchFrom(allocator, current, needle.items, search_start)) orelse error.PatchContextNotFound;
 }
 
 fn collectPatchSourceLines(allocator: std.mem.Allocator, text: []const u8, lines: *std.ArrayList(PatchSourceLine)) !void {
@@ -1736,6 +1779,50 @@ test "apply_patch fuzzy matches Unicode punctuation" {
     const quotes_content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "unicode_quotes.txt", allocator, .limited(1024));
     defer allocator.free(quotes_content);
     try std.testing.expectEqualStrings("normalized\n", quotes_content);
+}
+
+test "apply_patch uses context markers to disambiguate updates" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "context.txt",
+        .data = "fn first()\n    pass\n\nfn second()\n    pass\n",
+    });
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: context.txt
+        \\@@ fn second()
+        \\-    pass
+        \\+    return 2
+        \\*** End Patch
+    ;
+    _ = try applyPatchInDir(allocator, dir.dir, patch);
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "context.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("fn first()\n    pass\n\nfn second()\n    return 2\n", content);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "missing_context.txt",
+        .data = "fn first()\n    pass\n",
+    });
+
+    const missing_context_patch =
+        \\*** Begin Patch
+        \\*** Update File: missing_context.txt
+        \\@@ fn missing()
+        \\-    pass
+        \\+    return 3
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.PatchContextNotFound, applyPatchInDir(allocator, dir.dir, missing_context_patch));
+
+    const missing_context = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "missing_context.txt", allocator, .limited(1024));
+    defer allocator.free(missing_context);
+    try std.testing.expectEqualStrings("fn first()\n    pass\n", missing_context);
 }
 
 test "apply_patch skips blank lines before first update chunk" {
