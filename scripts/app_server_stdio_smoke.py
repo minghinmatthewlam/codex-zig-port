@@ -8792,10 +8792,12 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\n",
             encoding="utf-8",
         )
         (search_root / "ignored.txt").write_text("ignored file\n", encoding="utf-8")
+        (search_root / "#literal-comment-name.txt").write_text("escaped comment file\n", encoding="utf-8")
+        (search_root / "!literal-bang-name.txt").write_text("escaped bang file\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "ignored-dir").mkdir()
         (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
@@ -8933,6 +8935,34 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert "ignored.txt" not in ignored_paths
         assert "ignored-dir" not in ignored_paths
         assert "ignored-dir/nested.txt" not in ignored_paths
+
+        escaped_comment_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-escaped-comment",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "literalcommentname", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert escaped_comment_search["id"] == "fuzzy-search-escaped-comment"
+        escaped_comment_paths = {item["path"] for item in escaped_comment_search["result"]["files"]}
+        assert "#literal-comment-name.txt" not in escaped_comment_paths
+
+        escaped_bang_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-escaped-bang",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "literalbangname", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert escaped_bang_search["id"] == "fuzzy-search-escaped-bang"
+        escaped_bang_paths = {item["path"] for item in escaped_bang_search["result"]["files"]}
+        assert "!literal-bang-name.txt" not in escaped_bang_paths
 
         info_excluded_search = request_stdio_app_server(
             binary,

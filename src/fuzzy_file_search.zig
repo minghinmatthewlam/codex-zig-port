@@ -435,7 +435,9 @@ fn loadIgnoreRulesFromPath(
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
         var pattern = trimmed;
-        const negated = pattern[0] == '!';
+        const escaped_leading_marker = pattern.len >= 2 and pattern[0] == '\\' and (pattern[1] == '#' or pattern[1] == '!');
+        if (escaped_leading_marker) pattern = pattern[1..];
+        const negated = !escaped_leading_marker and pattern[0] == '!';
         if (negated) {
             pattern = pattern[1..];
             if (pattern.len == 0) continue;
@@ -905,13 +907,15 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".git/info/exclude",
         .data = "info-excluded.txt\n",
     });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "#literal-comment-name.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "!literal-bang-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored-dir/nested.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/extensions.json", .data = "{}\n" });
@@ -934,6 +938,14 @@ test "fuzzy search respects local gitignore rules in git context" {
     try std.testing.expect(!resultContainsPath(ignored, "ignored.txt"));
     try std.testing.expect(!resultContainsPath(ignored, "ignored-dir"));
     try std.testing.expect(!resultContainsPath(ignored, "ignored-dir/nested.txt"));
+
+    var escaped_comment = try search(allocator, "literalcommentname", &roots);
+    defer escaped_comment.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(escaped_comment, "#literal-comment-name.txt"));
+
+    var escaped_bang = try search(allocator, "literalbangname", &roots);
+    defer escaped_bang.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(escaped_bang, "!literal-bang-name.txt"));
 
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);
