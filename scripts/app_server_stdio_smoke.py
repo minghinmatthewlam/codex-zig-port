@@ -20721,6 +20721,134 @@ def write_json_line_to_socket(writer, payload: dict) -> None:
     writer.flush()
 
 
+def exercise_unix_socket_client(socket_path: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                exercise_json_rpc(
+                    lambda payload: write_json_line_to_socket(writer, payload),
+                    lambda: read_json_line_from_socket(reader),
+                )
+
+
+def exercise_unix_socket_initialize(socket_path: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "second-client-initialize",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "app-server-smoke",
+                                "version": "0",
+                            },
+                            "capabilities": {},
+                        },
+                    },
+                )
+                initialize = read_json_line_from_socket(reader)
+                assert initialize["id"] == "second-client-initialize"
+                assert (
+                    initialize["result"]["serverInfo"]["name"]
+                    == "codex-zig-app-server"
+                )
+
+
+def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "connection-reset-initialize-first",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "app-server-smoke",
+                                "version": "0",
+                            },
+                            "capabilities": {},
+                        },
+                    },
+                )
+                initialize = read_json_line_from_socket(reader)
+                assert initialize["id"] == "connection-reset-initialize-first"
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "connection-reset-thread-start",
+                        "method": "thread/start",
+                        "params": {"ephemeral": True},
+                    },
+                )
+                thread_start = read_json_line_from_socket(reader)
+                assert thread_start["id"] == "connection-reset-thread-start"
+                thread_id = thread_start["result"]["thread"]["id"]
+                started = read_json_line_from_socket(reader)
+                assert started["method"] == "thread/started"
+                assert started["params"]["thread"]["id"] == thread_id
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "connection-reset-initialize-second",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "app-server-smoke",
+                                "version": "0",
+                            },
+                            "capabilities": {},
+                        },
+                    },
+                )
+                initialize = read_json_line_from_socket(reader)
+                assert initialize["id"] == "connection-reset-initialize-second"
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "connection-reset-thread-read",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": False},
+                    },
+                )
+                thread_read = read_json_line_from_socket(reader)
+                assert thread_read["id"] == "connection-reset-thread-read"
+                assert thread_read["result"]["thread"]["id"] == thread_id
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "connection-reset-unsubscribe",
+                        "method": "thread/unsubscribe",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                unsubscribe = read_json_line_from_socket(reader)
+                assert unsubscribe["id"] == "connection-reset-unsubscribe"
+                assert unsubscribe["result"] == {"status": "notSubscribed"}
+
+
 def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: dict[str, str] | None = None) -> None:
     proc = subprocess.Popen(
         [str(binary), "app-server", "--listen", listen_url],
@@ -20732,18 +20860,17 @@ def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: 
     )
     try:
         wait_for_socket(socket_path, proc, 5)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(5)
-            client.connect(str(socket_path))
-            with client.makefile("r", encoding="utf-8", newline="\n") as reader:
-                with client.makefile("w", encoding="utf-8", newline="\n") as writer:
-                    exercise_json_rpc(
-                        lambda payload: write_json_line_to_socket(writer, payload),
-                        lambda: read_json_line_from_socket(reader),
-                    )
+        exercise_unix_socket_client(socket_path)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after first Unix client: {proc.stderr.read()}")
+        exercise_unix_socket_initialize(socket_path)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after second Unix client: {proc.stderr.read()}")
+        exercise_unix_socket_connection_state_reset(socket_path)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after Unix connection-state reset smoke: {proc.stderr.read()}")
+        proc.terminate()
         proc.wait(timeout=5)
-        if proc.returncode != 0:
-            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -21229,11 +21356,13 @@ def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
                 raise AssertionError(
                     f"app-server proxy exited {proxy.returncode}: {proxy.stderr.read()}"
                 )
-            server.wait(timeout=5)
-            if server.returncode != 0:
+            if server.poll() is not None:
                 raise AssertionError(
-                    f"app-server exited {server.returncode}: {server.stderr.read()}"
+                    f"app-server exited after proxy client: {server.stderr.read()}"
                 )
+            exercise_unix_socket_initialize(socket_path)
+            server.terminate()
+            server.wait(timeout=5)
         finally:
             if proxy is not None and proxy.poll() is None:
                 proxy.kill()
