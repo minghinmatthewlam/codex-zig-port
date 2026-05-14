@@ -25,26 +25,27 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25860483310` passed for
-  `3a9c767 Document app-server reasoning coverage`; prior push runs
-  `25860011324` and `25859779287` also passed for the thread-compacted and raw
-  response item notification slices. Local pre-push verification for the latest
-  slice included Python compilation, whitespace checks, `zig build`, the focused
-  app-server reasoning-notification smoke, `zig build test`, and
-  `zig build e2e`.
-- Source hygiene: current tracked-file scans after the app-server reasoning
+  Checked push run `25864096047` passed for
+  `a7fd78d Document terminal interaction coverage`; prior push runs
+  `25863630822`, `25863144266`, `25862794523`, and `25862306400` also passed
+  for the patch-update, MCP progress, command output, and MCP startup-status
+  notification slices. Local pre-push verification for the latest slice included
+  Python compilation, whitespace checks, `zig build`, the focused app-server
+  terminal-interaction smoke, `zig build test`, and `zig build e2e`.
+- Source hygiene: current tracked-file scans after the terminal-interaction
   notification commits found no provider-shaped tokens, GitHub tokens, Slack
   tokens, AWS access keys, private-key blocks, or JWT-shaped blobs.
   Keyword/path scans found public docs, test fixtures, mocked auth/token flows
   such as `test-api-key`, and temporary-path examples rather than checked-in
   local credentials. Current ignored-file scans only found local build output,
   Python bytecode, ignored demo scratch files, and ignored local `plans/`
-  content. Git-history regex
-  scans found no real provider-shaped secrets, private-key blocks, or
-  JWT-shaped blobs; the only provider-shaped history match is an old dummy
-  `sk-proj-*` test fixture added by commit `820d156` and removed by commit
-  `0383594`. `gitleaks` was not installed on the local machine during the
-  latest check, so the local scan used repository `rg` patterns.
+  content; provider-shaped secret scans over ignored non-build files also found
+  no matches. Git-history regex scans found no real provider-shaped secrets,
+  private-key blocks, or JWT-shaped blobs; the only provider-shaped history
+  match is the old dummy `sk-proj-1234567890ABCDE` test fixture added by commit
+  `820d156` and removed by commit `0383594`, and it is not present at `HEAD`.
+  `gitleaks` was not installed on the local machine during the latest check, so
+  the local scan used repository `rg` and `git grep` patterns.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
