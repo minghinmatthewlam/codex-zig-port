@@ -14563,6 +14563,20 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert missing_write_payload["error"]["code"] == -32602
         assert "requires deltaBase64 or closeStdin" in missing_write_payload["error"]["message"]
 
+        empty_id_missing_write_payload = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-write-empty-id-missing-payload",
+                "method": "command/exec/write",
+                "params": {"processId": ""},
+            },
+            env,
+        )
+        assert empty_id_missing_write_payload["id"] == "command-exec-write-empty-id-missing-payload"
+        assert empty_id_missing_write_payload["error"]["code"] == -32602
+        assert "requires deltaBase64 or closeStdin" in empty_id_missing_write_payload["error"]["message"]
+
         bad_write_delta = request_stdio_app_server(
             binary,
             {
@@ -14591,6 +14605,20 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert followup["error"]["code"] == -32600
         assert 'no active command/exec for process id "proc-1"' in followup["error"]["message"]
 
+        empty_id_followup = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-write-empty-id",
+                "method": "command/exec/write",
+                "params": {"processId": "", "deltaBase64": "", "closeStdin": True},
+            },
+            env,
+        )
+        assert empty_id_followup["id"] == "command-exec-write-empty-id"
+        assert empty_id_followup["error"]["code"] == -32600
+        assert 'no active command/exec for process id ""' in empty_id_followup["error"]["message"]
+
         terminate = request_stdio_app_server(
             binary,
             {
@@ -14604,6 +14632,20 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert terminate["id"] == "command-exec-terminate"
         assert terminate["error"]["code"] == -32600
         assert 'no active command/exec for process id "proc-1"' in terminate["error"]["message"]
+
+        empty_id_terminate = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-terminate-empty-id",
+                "method": "command/exec/terminate",
+                "params": {"processId": ""},
+            },
+            env,
+        )
+        assert empty_id_terminate["id"] == "command-exec-terminate-empty-id"
+        assert empty_id_terminate["error"]["code"] == -32600
+        assert 'no active command/exec for process id ""' in empty_id_terminate["error"]["message"]
 
         bad_resize = request_stdio_app_server(
             binary,
@@ -14619,6 +14661,20 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert bad_resize["error"]["code"] == -32602
         assert "rows and cols must be greater than 0" in bad_resize["error"]["message"]
 
+        empty_id_bad_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-resize-empty-id-bad-size",
+                "method": "command/exec/resize",
+                "params": {"processId": "", "size": {"rows": 0, "cols": 80}},
+            },
+            env,
+        )
+        assert empty_id_bad_resize["id"] == "command-exec-resize-empty-id-bad-size"
+        assert empty_id_bad_resize["error"]["code"] == -32602
+        assert "rows and cols must be greater than 0" in empty_id_bad_resize["error"]["message"]
+
         resize = request_stdio_app_server(
             binary,
             {
@@ -14632,6 +14688,20 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert resize["id"] == "command-exec-resize"
         assert resize["error"]["code"] == -32600
         assert 'no active command/exec for process id "proc-1"' in resize["error"]["message"]
+
+        empty_id_resize = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-resize-empty-id",
+                "method": "command/exec/resize",
+                "params": {"processId": "", "size": {"rows": 24, "cols": 80}},
+            },
+            env,
+        )
+        assert empty_id_resize["id"] == "command-exec-resize-empty-id"
+        assert empty_id_resize["error"]["code"] == -32600
+        assert 'no active command/exec for process id ""' in empty_id_resize["error"]["message"]
     finally:
         if network_server is not None:
             network_server.shutdown()
