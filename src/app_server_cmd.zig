@@ -5241,6 +5241,7 @@ const TURN_START_PARAMS_TS =
     \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { ReasoningSummary } from "../ReasoningSummary";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { SandboxPolicy } from "./SandboxPolicy";
     \\import type { UserInput } from "./UserInput";
     \\
     \\export interface TurnStartParams {
@@ -5256,6 +5257,7 @@ const TURN_START_PARAMS_TS =
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
     \\  approvalsReviewer?: ApprovalsReviewer | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
+    \\  sandboxPolicy?: SandboxPolicy | null;
     \\  outputSchema?: unknown | null;
     \\}
     \\
@@ -16381,6 +16383,12 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\    "sandboxPolicy": {
+    \\      "oneOf": [
+    \\        { "$ref": "SandboxPolicy.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
     \\    "outputSchema": true
     \\  },
     \\  "$defs": {
@@ -21821,6 +21829,12 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\        "sandboxPolicy": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/SandboxPolicy" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
     \\        "outputSchema": true
     \\      },
     \\      "additionalProperties": true
@@ -25587,11 +25601,28 @@ fn applyTurnStartRuntimeOverrides(
         thread.runtime_overrides.approvals_reviewer = true;
     }
 
-    const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
-    cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
-    if (optionalStringParam(params, "sandbox")) |sandbox| {
-        try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
-        thread.runtime_overrides.sandbox_mode = true;
+    if (params.get("sandboxPolicy")) |sandbox_policy| {
+        if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
+        if (sandbox_policy != .null) {
+            const sandbox_mode = parseTurnStartSandboxPolicyMode(sandbox_policy) catch return error.InvalidTurnContextOverride;
+            cfg.sandbox_mode = sandbox_mode;
+            try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox_mode.label());
+            thread.runtime_overrides.sandbox_mode = true;
+        } else {
+            const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
+            cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
+            if (optionalStringParam(params, "sandbox")) |sandbox| {
+                try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
+                thread.runtime_overrides.sandbox_mode = true;
+            }
+        }
+    } else {
+        const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
+        cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
+        if (optionalStringParam(params, "sandbox")) |sandbox| {
+            try replaceOwnedString(allocator, &thread.sandbox_mode, sandbox);
+            thread.runtime_overrides.sandbox_mode = true;
+        }
     }
 
     if (optionalStringParam(params, "modelProvider")) |model_provider| {
@@ -25647,6 +25678,43 @@ fn applyTurnStartRuntimeOverrides(
     } else {
         cfg.personality = null;
     }
+}
+
+fn parseTurnStartSandboxPolicyMode(value: std.json.Value) !config.SandboxMode {
+    if (value != .object) return error.InvalidTurnContextOverride;
+    const type_value = value.object.get("type") orelse return error.InvalidTurnContextOverride;
+    if (type_value != .string) return error.InvalidTurnContextOverride;
+    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .danger_full_access;
+    if (std.mem.eql(u8, type_value.string, "readOnly")) {
+        try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
+        return .read_only;
+    }
+    if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
+        try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
+        try expectTurnStartSandboxPolicyEmptyWritableRoots(value.object);
+        try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeTmpdirEnvVar");
+        try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeSlashTmp");
+        return .workspace_write;
+    }
+    return error.InvalidTurnContextOverride;
+}
+
+fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void {
+    const value = object.get("networkAccess") orelse return;
+    if (value == .null) return;
+    if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
+}
+
+fn expectTurnStartSandboxPolicyEmptyWritableRoots(object: std.json.ObjectMap) !void {
+    const value = object.get("writableRoots") orelse return;
+    if (value == .null) return;
+    if (value != .array or value.array.items.len != 0) return error.InvalidTurnContextOverride;
+}
+
+fn expectTurnStartSandboxPolicyBoolDefaultFalse(object: std.json.ObjectMap, field: []const u8) !void {
+    const value = object.get(field) orelse return;
+    if (value == .null) return;
+    if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
 }
 
 fn applyLoadedThreadRuntimeConfig(
