@@ -51,7 +51,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - set and persist the current thread title with `/rename`
 - enable native Responses web search with `--search` or `web_search = "live"`
 - accept modern `exec_command` tool calls for one-shot command execution and
-  PTY-backed `write_stdin` session input
+  PTY-backed `write_stdin` session input, including Rust-shaped yield bounds
+  and `background_terminal_max_timeout`
 - accept `update_plan` tool calls and surface task progress in the TUI
 - run explicit local TUI shell commands with `!COMMAND`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
