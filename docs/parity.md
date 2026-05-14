@@ -160,10 +160,11 @@ TypeScript and JSON Schema artifacts now include `WarningNotification`,
 the top-level `ServerNotification` `"warning"`, `"guardianWarning"`,
 `"deprecationNotice"`, `"configWarning"`, and
 `"windows/worldWritableWarning"` union variants. Runtime emission for those
-warning and notice notifications mostly remains planned; generic `warning`
-notification emission is now covered for config-enabled under-development
-features and deprecated `on-failure` approval-policy configuration during
-app-server thread startup.
+warning and notice notifications mostly remains planned; runtime emission is
+now covered for `deprecationNotice` on deprecated
+`experimental_instructions_file` config and for generic `warning`
+notifications on config-enabled under-development features and deprecated
+`on-failure` approval-policy configuration during app-server thread startup.
 
 Additional app-server hook-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `HookExecutionMode`,
