@@ -139,6 +139,9 @@ Full Rust generator parity remains planned.
 Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
 client response and error envelopes for server-request replies and ignores
 unmatched request IDs until full pending server-request tracking is implemented.
+Unix-socket app-server listeners keep accepting sequential clients after a
+client disconnects, including the direct `unix://` listener, default control
+socket, app-server proxy, and hidden stdio-to-UDS relay smoke paths.
 
 Additional app-server error-notification generation coverage: the generated
 TypeScript and JSON Schema artifacts now include `ErrorNotification` with

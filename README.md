@@ -122,7 +122,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
-  an `initialize` handshake
+  an `initialize` handshake, keeping Unix socket listeners alive for sequential
+  clients
 - generate minimal app-server TypeScript bindings and JSON Schema bundles with
   `app-server generate-ts -o DIR [--experimental]` and
   `app-server generate-json-schema -o DIR [--experimental]`, including
@@ -291,9 +292,11 @@ inline, then launches `codex-zig app-server` as a subprocess and verifies
 newline-delimited JSON-RPC initialize requests and unsupported-method errors
 over stdio, verifies `memory/reset` against temporary memory roots plus
 partial-reset refusal cases, then checks an explicit Unix socket and the default
-`CODEX_HOME/app-server-control/app-server-control.sock` socket. The same smoke
-script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
-hidden `stdio-to-uds` relay command, verifies app-server local and git-backed
+`CODEX_HOME/app-server-control/app-server-control.sock` socket, including
+sequential client connections after the first client disconnects. The same
+smoke script also proxies JSON-RPC over `app-server proxy --sock`, verifies the
+hidden `stdio-to-uds` relay command with a persistent Unix listener, verifies
+app-server local and git-backed
 marketplace add/list/repeat/upgrade/remove RPC behavior, including git revision
 metadata, local app-server
 `plugin/list` marketplace discovery from repo, home, and configured local roots, remote
