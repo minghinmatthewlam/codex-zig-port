@@ -247,11 +247,13 @@ const FsWatchSnapshotEntry = struct {
 const FuzzySearchSessionEntry = struct {
     session_id: []const u8,
     roots: []const []const u8,
+    last_query: ?[]const u8 = null,
 
     fn deinit(self: *FuzzySearchSessionEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         for (self.roots) |root| allocator.free(root);
         allocator.free(self.roots);
+        if (self.last_query) |query| allocator.free(query);
     }
 };
 
@@ -31370,7 +31372,16 @@ fn handleFuzzyFileSearchSessionUpdate(
         defer allocator.free(message);
         return renderJsonRpcError(allocator, id_value, -32600, message);
     };
-    const session = state.fuzzy_search_sessions.items[index];
+    var session = &state.fuzzy_search_sessions.items[index];
+    if (session.last_query) |last_query| {
+        if (std.mem.eql(u8, last_query, query_value.string)) {
+            return renderJsonRpcResult(allocator, id_value, "{}");
+        }
+    }
+
+    const owned_query = try allocator.dupe(u8, query_value.string);
+    var owned_query_moved = false;
+    errdefer if (!owned_query_moved) allocator.free(owned_query);
 
     var results = try fuzzy_file_search.search(allocator, query_value.string, session.roots);
     defer results.deinit(allocator);
@@ -31386,6 +31397,10 @@ fn handleFuzzyFileSearchSessionUpdate(
     errdefer if (!completed_moved) allocator.free(completed);
     try state.pending_notifications.append(allocator, completed);
     completed_moved = true;
+
+    if (session.last_query) |last_query| allocator.free(last_query);
+    session.last_query = owned_query;
+    owned_query_moved = true;
 
     return renderJsonRpcResult(allocator, id_value, "{}");
 }

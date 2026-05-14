@@ -9493,6 +9493,21 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "fuzzy-session-repeat-update",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-1", "query": "ALP"},
+                },
+            )
+            repeat_update = read_json_line(proc, 5)
+            assert repeat_update["id"] == "fuzzy-session-repeat-update"
+            assert repeat_update["result"] == {}
+
+            # The next read would see a stale notification if the repeat update
+            # queued duplicate sessionUpdated/sessionCompleted messages.
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "fuzzy-session-empty-update",
                     "method": "fuzzyFileSearch/sessionUpdate",
                     "params": {"sessionId": "session-1", "query": "zzzz"},
