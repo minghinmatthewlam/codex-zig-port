@@ -34718,7 +34718,7 @@ fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_v
 
     const env_map = if (child_env) |*map| map else null;
     const stream_output = stream_stdout_stderr or tty;
-    if (tty or stream_stdin) {
+    if (state.deferred_command_exec_stdio and (tty or stream_stdin or stream_output)) {
         return startDeferredProcessSpawn(
             allocator,
             state,

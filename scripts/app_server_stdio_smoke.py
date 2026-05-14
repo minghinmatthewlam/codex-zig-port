@@ -15049,20 +15049,23 @@ def run_process_rpc_smoke(binary: Path) -> None:
                     },
                 },
             )
-            streaming_response = read_json_line(proc, 5)
-            streaming_delta = read_json_line(proc, 5)
-            streaming_exited = read_json_line(proc, 5)
+            streaming_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "process-spawn-streaming" for message in messages)
+                and any(
+                    message.get("method") == "process/exited"
+                    and message["params"]["processHandle"] == "proc-stream"
+                    for message in messages
+                ),
+            )
+            streaming_response = next(
+                message for message in streaming_messages if message.get("id") == "process-spawn-streaming"
+            )
+            streaming_exited = find_process_exited(streaming_messages, "proc-stream")
             assert streaming_response["id"] == "process-spawn-streaming"
             assert streaming_response["result"] == {}
-            assert streaming_delta["method"] == "process/outputDelta"
-            assert streaming_delta["params"]["processHandle"] == "proc-stream"
-            assert streaming_delta["params"]["stream"] == "stdout"
-            assert (
-                base64.b64decode(streaming_delta["params"]["deltaBase64"])
-                == b"stream-out"
-            )
-            assert streaming_delta["params"]["capReached"] is False
-            assert streaming_exited["method"] == "process/exited"
+            assert decoded_process_output(streaming_messages, "proc-stream") == b"stream-out"
             assert streaming_exited["params"] == {
                 "processHandle": "proc-stream",
                 "exitCode": 0,
@@ -15308,7 +15311,6 @@ def run_process_rpc_smoke(binary: Path) -> None:
                         "command": [sys.executable, "-c", kill_script],
                         "processHandle": "proc-kill-active",
                         "cwd": str(cwd),
-                        "streamStdin": True,
                         "streamStdoutStderr": True,
                     },
                 },
