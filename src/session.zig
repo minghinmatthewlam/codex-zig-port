@@ -277,6 +277,12 @@ pub const TurnOptions = struct {
     input_images: []const []const u8 = &.{},
     include_tools: bool = true,
     plan_mode: bool = false,
+    plan_update_callback: ?PlanUpdateCallback = null,
+};
+
+pub const PlanUpdateCallback = struct {
+    ctx: *anyopaque,
+    on_plan_updated: *const fn (ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -494,6 +500,11 @@ fn runToolCall(
     if (std.mem.eql(u8, call.name, "update_plan")) {
         var update = try plan_tool.applyUpdate(allocator, &transcript.plan, call.arguments);
         defer update.deinit(allocator);
+        if (update.applied) {
+            if (options.plan_update_callback) |callback| {
+                try callback.on_plan_updated(callback.ctx, &transcript.plan);
+            }
+        }
         if (!options.json_events) {
             std.debug.print("{s}", .{update.output});
         }

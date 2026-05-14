@@ -25,6 +25,7 @@ const mcp_runtime = @import("mcp_runtime.zig");
 const model_catalog = @import("model_catalog.zig");
 const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
+const plan_tool = @import("plan_tool.zig");
 const remote_plugin = @import("remote_plugin.zig");
 const sandbox_mod = @import("sandbox.zig");
 const session_mod = @import("session.zig");
@@ -25808,6 +25809,18 @@ fn handleTurnStart(
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
+    var plan_update_notifications = std.ArrayList([]const u8).empty;
+    defer {
+        for (plan_update_notifications.items) |notification| allocator.free(notification);
+        plan_update_notifications.deinit(allocator);
+    }
+    var plan_update_context = PlanUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "turn/plan/updated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &plan_update_notifications,
+    };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
@@ -25817,6 +25830,10 @@ fn handleTurnStart(
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
         .plan_mode = std.mem.eql(u8, thread.collaboration_mode, "plan"),
+        .plan_update_callback = .{
+            .ctx = &plan_update_context,
+            .on_plan_updated = handleSessionPlanUpdated,
+        },
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
@@ -25853,6 +25870,7 @@ fn handleTurnStart(
             try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
         }
     }
+    try movePendingPlanUpdateNotifications(allocator, state, &plan_update_notifications);
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
         const assistant_item = thread.transcript.history.items[assistant_item_index];
         try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, assistant_item, assistant_item_index, "startedAtMs", started_at_ms);
@@ -27408,6 +27426,74 @@ fn renderTurnNotification(
     try appendTurnJson(allocator, &notification, turn_id, status, started_at, completed_at);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
+}
+
+const PlanUpdateNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
+fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
+    const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.enabled) return;
+    const notification = try renderTurnPlanUpdatedNotification(context.allocator, context.thread_id, context.turn_id, plan);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn movePendingPlanUpdateNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    notifications: *std.ArrayList([]const u8),
+) !void {
+    while (notifications.items.len > 0) {
+        const notification = notifications.orderedRemove(0);
+        errdefer allocator.free(notification);
+        try state.pending_notifications.append(allocator, notification);
+    }
+}
+
+fn renderTurnPlanUpdatedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    plan: *const plan_tool.State,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/plan/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"explanation\":");
+    try appendOptionalJsonString(allocator, &notification, plan.explanation);
+    try notification.appendSlice(allocator, ",\"plan\":[");
+    for (plan.items.items, 0..) |item, index| {
+        if (index > 0) try notification.append(allocator, ',');
+        try notification.appendSlice(allocator, "{\"step\":");
+        try appendJsonString(allocator, &notification, item.step);
+        try notification.appendSlice(allocator, ",\"status\":");
+        try appendPlanStepStatusJson(allocator, &notification, item.status);
+        try notification.append(allocator, '}');
+    }
+    try notification.appendSlice(allocator, "]}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn appendPlanStepStatusJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    status: plan_tool.Status,
+) !void {
+    const label = switch (status) {
+        .pending => "pending",
+        .in_progress => "inProgress",
+        .completed => "completed",
+    };
+    try appendJsonString(allocator, out, label);
 }
 
 fn appendTurnJson(

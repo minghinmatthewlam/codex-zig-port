@@ -103,6 +103,7 @@ pub const State = struct {
 };
 
 pub const UpdateResult = struct {
+    applied: bool,
     summary: []const u8,
     output: []const u8,
 
@@ -171,11 +172,12 @@ pub fn applyUpdate(allocator: std.mem.Allocator, state: *State, args_json: []con
     errdefer allocator.free(summary);
     const output = try state.render(allocator);
     errdefer allocator.free(output);
-    return .{ .summary = summary, .output = output };
+    return .{ .applied = true, .summary = summary, .output = output };
 }
 
 fn invalidResult(allocator: std.mem.Allocator, message: []const u8) !UpdateResult {
     return .{
+        .applied = false,
         .summary = try allocator.dupe(u8, "invalid plan"),
         .output = try allocator.dupe(u8, message),
     };
@@ -192,6 +194,7 @@ test "applies update_plan state and renders progress" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("plan updated 1/3", result.summary);
+    try std.testing.expect(result.applied);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[x] Inspect repo") != null);
 
     const progress = (try state.progressLabel(allocator)).?;
@@ -210,5 +213,6 @@ test "rejects invalid update_plan status without mutating state" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("invalid plan", result.summary);
+    try std.testing.expect(!result.applied);
     try std.testing.expectEqual(@as(usize, 0), state.items.items.len);
 }
