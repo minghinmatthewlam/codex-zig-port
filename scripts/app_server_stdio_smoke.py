@@ -5338,6 +5338,277 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     fork_after_permissions["result"]["thread"],
                 )
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-collaboration-mode",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "collaborationMode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "reasoning_effort": "medium",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "invalid collaboration mode",
+                                },
+                            ],
+                        },
+                    },
+                )
+                invalid_collaboration_mode = read_json_line(proc, 5)
+                assert (
+                    invalid_collaboration_mode["id"]
+                    == "turn-start-invalid-collaboration-mode"
+                )
+                assert invalid_collaboration_mode["error"]["code"] == -32602
+                assert (
+                    invalid_collaboration_mode["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 18
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-default-collaboration-mode",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "model": "ignored-explicit-model",
+                            "effort": "low",
+                            "collaborationMode": {
+                                "mode": "default",
+                                "settings": {
+                                    "model": "gpt-collab-default",
+                                    "reasoning_effort": "high",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use default collaboration mode",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-default-collaboration-mode"
+                )
+                assert server.request_paths == ["/responses"] * 19
+                default_collaboration_request = server.request_bodies[-1]
+                assert default_collaboration_request["model"] == "gpt-collab-default"
+                assert default_collaboration_request["reasoning"]["effort"] == "high"
+                assert (
+                    "Work in default coding mode"
+                    in default_collaboration_request["instructions"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sticky-collaboration-mode",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "keep default collaboration mode",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-sticky-collaboration-mode"
+                )
+                assert server.request_paths == ["/responses"] * 20
+                sticky_collaboration_request = server.request_bodies[-1]
+                assert sticky_collaboration_request["model"] == "gpt-collab-default"
+                assert sticky_collaboration_request["reasoning"]["effort"] == "high"
+                assert (
+                    "Work in default coding mode"
+                    in sticky_collaboration_request["instructions"]
+                )
+
+                server.response_payloads.append(
+                    b'data: {"type":"response.output_text.delta","delta":"<proposed_plan>\\n1. Inspect\\n2. Verify\\n</proposed_plan>"}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-plan-collaboration-mode",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "model": "ignored-plan-model",
+                            "effort": "low",
+                            "collaborationMode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "model": "gpt-collab-plan",
+                                    "reasoning_effort": "medium",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use plan collaboration mode",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-plan-collaboration-mode"
+                )
+                assert server.request_paths == ["/responses"] * 21
+                plan_collaboration_request = server.request_bodies[-1]
+                assert plan_collaboration_request["model"] == "gpt-collab-plan"
+                assert plan_collaboration_request["reasoning"]["effort"] == "medium"
+                assert (
+                    "Work in plan mode"
+                    in plan_collaboration_request["instructions"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-plan-collaboration-mode",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_plan_collaboration = read_json_line(proc, 5)
+                assert read_after_plan_collaboration["id"] == (
+                    "thread-read-after-plan-collaboration-mode"
+                )
+                plan_agent_text = read_after_plan_collaboration["result"]["thread"][
+                    "turns"
+                ][-1]["items"][0]["text"]
+                assert plan_agent_text == "proposed plan:\n1. Inspect\n2. Verify\n"
+
+                server.response_payloads.append(
+                    b'data: {"type":"response.output_text.delta","delta":"<proposed_plan>\\n- Sticky plan\\n</proposed_plan>"}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sticky-plan-collaboration-mode",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "keep plan collaboration mode",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-sticky-plan-collaboration-mode"
+                )
+                assert server.request_paths == ["/responses"] * 22
+                sticky_plan_request = server.request_bodies[-1]
+                assert sticky_plan_request["model"] == "gpt-collab-plan"
+                assert sticky_plan_request["reasoning"]["effort"] == "medium"
+                assert "Work in plan mode" in sticky_plan_request["instructions"]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-sticky-plan-collaboration-mode",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_sticky_plan = read_json_line(proc, 5)
+                assert read_after_sticky_plan["id"] == (
+                    "thread-read-after-sticky-plan-collaboration-mode"
+                )
+                sticky_plan_text = read_after_sticky_plan["result"]["thread"]["turns"][
+                    -1
+                ]["items"][0]["text"]
+                assert sticky_plan_text == "proposed plan:\n- Sticky plan\n"
+
+                server.response_payloads.append(
+                    b'data: {"type":"response.output_text.delta","delta":"<proposed_plan>\\n- Default mode keeps raw tags\\n</proposed_plan>"}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-clear-collaboration-instructions",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "collaborationMode": {
+                                "mode": "default",
+                                "settings": {
+                                    "model": "gpt-collab-cleared",
+                                    "reasoning_effort": None,
+                                    "developer_instructions": "",
+                                },
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "clear collaboration instructions",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-clear-collaboration-instructions"
+                )
+                assert server.request_paths == ["/responses"] * 23
+                clear_collaboration_request = server.request_bodies[-1]
+                assert clear_collaboration_request["model"] == "gpt-collab-cleared"
+                assert clear_collaboration_request["reasoning"]["effort"] == "medium"
+                assert "<collaboration_mode>" not in clear_collaboration_request[
+                    "instructions"
+                ]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-clear-collaboration-instructions",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_clear_collaboration = read_json_line(proc, 5)
+                assert read_after_clear_collaboration["id"] == (
+                    "thread-read-after-clear-collaboration-instructions"
+                )
+                clear_agent_text = read_after_clear_collaboration["result"]["thread"][
+                    "turns"
+                ][-1]["items"][0]["text"]
+                assert "<proposed_plan>" in clear_agent_text
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -21494,6 +21765,18 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert turn_start_params_schema["required"] == ["threadId", "input"]
         assert turn_start_params_schema["properties"]["input"]["type"] == "array"
+        assert (
+            turn_start_params_schema["properties"]["collaborationMode"]["oneOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/TurnStartCollaborationMode"
+        )
+        assert turn_start_params_schema["$defs"]["TurnStartCollaborationMode"][
+            "required"
+        ] == ["mode", "settings"]
+        assert turn_start_params_schema["$defs"][
+            "TurnStartCollaborationModeSettings"
+        ]["required"] == ["model", "reasoning_effort", "developer_instructions"]
         assert turn_start_params_schema["properties"]["effort"]["enum"] == [
             "none",
             "minimal",
@@ -23125,6 +23408,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["TurnStartParams"]["properties"]["input"]["items"]["$ref"]
             == "#/$defs/UserInput"
         )
+        assert (
+            bundle["$defs"]["TurnStartParams"]["properties"]["collaborationMode"][
+                "oneOf"
+            ][0]["$ref"]
+            == "#/$defs/TurnStartCollaborationMode"
+        )
+        assert "TurnStartCollaborationMode" in bundle["$defs"]
+        assert "TurnStartCollaborationModeSettings" in bundle["$defs"]
         assert (
             bundle["$defs"]["TurnStartParams"]["properties"]["sandboxPolicy"]["oneOf"][
                 0
@@ -26297,6 +26588,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "export interface TurnStartParams" in turn_start_params
         assert "threadId: string;" in turn_start_params
         assert "input: UserInput[];" in turn_start_params
+        assert 'import type { CollaborationMode } from "../CollaborationMode";' in (
+            turn_start_params
+        )
+        assert "collaborationMode?: CollaborationMode | null;" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
         assert "summary?: ReasoningSummary | null;" in turn_start_params
         assert "personality?: Personality | null;" in turn_start_params
