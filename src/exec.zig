@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
@@ -471,7 +472,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-")) {
-            std.debug.print("unknown exec option: {s}\n", .{arg});
+            if (!builtin.is_test) std.debug.print("unknown exec option: {s}\n", .{arg});
             return error.UnknownExecOption;
         }
 
