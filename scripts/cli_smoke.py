@@ -957,6 +957,33 @@ prefix_rule(pattern = ["git"], not_match = ["git status"])
         assert invalid_example_result.returncode != 0
         assert "ExecPolicyExampleDidMatch" in invalid_example_result.stderr
 
+        cross_rule_example_rules_path = temp_root / "cross-rule-example.rules"
+        cross_rule_example_rules_path.write_text(
+            """
+prefix_rule(pattern = ["git", "commit"], match = [["git", "status"]])
+prefix_rule(pattern = ["git", "status"])
+""",
+            encoding="utf-8",
+        )
+        cross_rule_example_result = subprocess.run(
+            [
+                str(binary),
+                "execpolicy",
+                "check",
+                "--rules",
+                str(cross_rule_example_rules_path),
+                "git",
+                "status",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert cross_rule_example_result.returncode != 0
+        assert "ExecPolicyExampleDidNotMatch" in cross_rule_example_result.stderr
+
         help_result = subprocess.run(
             [str(binary), "help", "execpolicy"],
             text=True,

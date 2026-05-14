@@ -84,6 +84,8 @@ const ParsedPrefixRule = struct {
 };
 
 const PendingExampleValidation = struct {
+    rule_start: usize,
+    rule_end: usize,
     match_examples: ?Examples = null,
     not_match_examples: ?Examples = null,
 
@@ -268,9 +270,12 @@ fn parsePolicy(
                         if (parsed.not_match_examples) |examples| freeExamples(allocator, examples);
                     }
                 }
+                const rule_start = rules.items.len;
                 try rules.append(allocator, parsed.rule);
                 rule_appended = true;
                 try pending_validations.append(allocator, .{
+                    .rule_start = rule_start,
+                    .rule_end = rules.items.len,
                     .match_examples = parsed.match_examples,
                     .not_match_examples = parsed.not_match_examples,
                 });
@@ -642,14 +647,15 @@ fn validatePendingExamples(
     validations: []const PendingExampleValidation,
 ) !void {
     for (validations) |validation| {
+        const scoped_rules = rules[validation.rule_start..validation.rule_end];
         if (validation.match_examples) |examples| {
             for (examples) |example| {
-                if (!anyRuleMatches(rules, host_executables, example)) return error.ExecPolicyExampleDidNotMatch;
+                if (!anyRuleMatches(scoped_rules, host_executables, example)) return error.ExecPolicyExampleDidNotMatch;
             }
         }
         if (validation.not_match_examples) |examples| {
             for (examples) |example| {
-                if (anyRuleMatches(rules, host_executables, example)) return error.ExecPolicyExampleDidMatch;
+                if (anyRuleMatches(scoped_rules, host_executables, example)) return error.ExecPolicyExampleDidMatch;
             }
         }
     }
@@ -1480,6 +1486,17 @@ test "execpolicy parser rejects failing match examples" {
     );
 }
 
+test "execpolicy parser validates match examples against declaring rule only" {
+    const allocator = std.testing.allocator;
+    try expectPolicyParseError(
+        allocator,
+        error.ExecPolicyExampleDidNotMatch,
+        \\prefix_rule(pattern = ["git", "commit"], match = [["git", "status"]])
+        \\prefix_rule(pattern = ["git", "status"])
+        ,
+    );
+}
+
 test "execpolicy parser rejects matching not match examples" {
     const allocator = std.testing.allocator;
     try expectPolicyParseError(
@@ -1487,6 +1504,27 @@ test "execpolicy parser rejects matching not match examples" {
         error.ExecPolicyExampleDidMatch,
         \\prefix_rule(pattern = ["git"], not_match = ["git status"])
         ,
+    );
+}
+
+test "execpolicy parser validates not match examples against declaring rule only" {
+    const allocator = std.testing.allocator;
+    const rules_bytes =
+        \\prefix_rule(pattern = ["git", "commit"], not_match = [["git", "status"]])
+        \\prefix_rule(pattern = ["git", "status"])
+    ;
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    try parseRules(allocator, rules_bytes, &rules);
+
+    const command = [_][]const u8{ "git", "status" };
+    const rendered = try evaluateRules(allocator, rules.items, &.{}, command[0..], .{});
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(
+        "{\"decision\":\"allow\",\"matchedRules\":[{\"prefixRuleMatch\":{\"matchedPrefix\":[\"git\",\"status\"],\"decision\":\"allow\"}}]}",
+        rendered,
     );
 }
 
