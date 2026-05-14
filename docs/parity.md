@@ -641,8 +641,8 @@ rejects invalid reasoning-effort labels before issuing a provider request,
 stores the selected effort on the loaded-thread runtime state, and applies
 that effort to the current and subsequent Responses requests. The
 generated TypeScript and JSON schemas include `TurnStartParams.effort`. Rust
-`summary`, collaboration mode, permission-profile, and
-`sandboxPolicy` turn-context overrides remain planned.
+collaboration mode, permission-profile, and `sandboxPolicy` turn-context
+overrides remain planned.
 
 Additional app-server turn-start approvals-reviewer override coverage:
 `turn/start` now accepts Rust-compatible `approvalsReviewer` overrides for
@@ -658,8 +658,16 @@ threads, rejects invalid personality labels before issuing a provider request,
 stores the selected personality on the loaded-thread runtime state, and applies
 it to the current and subsequent Responses request instructions. The generated
 TypeScript and JSON schemas include `TurnStartParams.personality`. Rust
-`summary`, collaboration mode, permission-profile, and `sandboxPolicy`
-turn-context overrides remain planned.
+collaboration mode, permission-profile, and `sandboxPolicy` turn-context
+overrides remain planned.
+
+Additional app-server turn-start reasoning-summary override coverage:
+`turn/start` now accepts Rust-compatible `summary` overrides for
+already-loaded threads, rejects invalid reasoning-summary labels before
+issuing a provider request, stores the selected summary mode on the
+loaded-thread runtime state, and applies that summary mode to the current and
+subsequent Responses requests. The generated TypeScript and JSON schemas
+include `TurnStartParams.summary`.
 
 Additional app-server thread status coverage: `turn/start` now emits
 Rust-shaped `thread/status/changed` notifications for the active state before
