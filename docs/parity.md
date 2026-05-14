@@ -205,9 +205,12 @@ included in the top-level `ServerNotification` `"item/plan/delta"`,
 `"item/commandExecution/outputDelta"`,
 `"item/commandExecution/terminalInteraction"`,
 `"item/fileChange/outputDelta"`, and `"item/fileChange/patchUpdated"` union
-variants. Runtime emission for current item-stream notifications remains
-planned; the legacy file-change output-delta notification is generation-covered
-for source compatibility even though the Rust app server no longer emits it.
+variants. Runtime `item/commandExecution/outputDelta` emission is now covered
+for the model-visible output from model-requested shell tools during app-server
+`turn/start`. Runtime emission for the remaining current item-stream
+notifications remains planned; the legacy file-change output-delta notification
+is generation-covered for source compatibility even though the Rust app server
+no longer emits it.
 
 Additional app-server raw response-item notification generation coverage:
 generated TypeScript and JSON Schema artifacts now include
