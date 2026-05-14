@@ -128,6 +128,15 @@ const PatchStats = struct {
     deleted: usize = 0,
 };
 
+const PatchPath = struct {
+    value: []const u8,
+    owned: bool,
+
+    fn deinit(self: PatchPath, allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.value);
+    }
+};
+
 pub const Policy = struct {
     approval_policy: config.ApprovalPolicy = .on_request,
     sandbox_mode: config.SandboxMode = .workspace_write,
@@ -911,6 +920,9 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
     var lines = std.ArrayList([]const u8).empty;
     defer lines.deinit(allocator);
 
+    const root_path = try root.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root_path);
+
     const patch_text = normalizePatchText(patch);
     var raw_lines = std.mem.splitScalar(u8, patch_text, '\n');
     while (raw_lines.next()) |raw_line| {
@@ -931,28 +943,28 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
         }
 
         if (std.mem.startsWith(u8, line, "*** Add File: ")) {
-            const path = line["*** Add File: ".len..];
-            try validateRelativePath(path);
+            const path = try resolvePatchPath(allocator, root_path, line["*** Add File: ".len..]);
+            defer path.deinit(allocator);
             index += 1;
-            try addFileFromPatch(allocator, root, path, lines.items, &index);
+            try addFileFromPatch(allocator, root, path.value, lines.items, &index);
             stats.added += 1;
             continue;
         }
 
         if (std.mem.startsWith(u8, line, "*** Update File: ")) {
-            const path = line["*** Update File: ".len..];
-            try validateRelativePath(path);
+            const path = try resolvePatchPath(allocator, root_path, line["*** Update File: ".len..]);
+            defer path.deinit(allocator);
             index += 1;
-            try updateFileFromPatch(allocator, root, path, lines.items, &index);
+            try updateFileFromPatch(allocator, root, root_path, path.value, lines.items, &index);
             stats.updated += 1;
             continue;
         }
 
         if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
-            const path = line["*** Delete File: ".len..];
-            try validateRelativePath(path);
+            const path = try resolvePatchPath(allocator, root_path, line["*** Delete File: ".len..]);
+            defer path.deinit(allocator);
             if (index + 1 >= lines.items.len or !isPatchSection(lines.items[index + 1])) return error.InvalidPatch;
-            try root.deleteFile(std.Io.Threaded.global_single_threaded.io(), path);
+            try root.deleteFile(std.Io.Threaded.global_single_threaded.io(), path.value);
             stats.deleted += 1;
             index += 1;
             continue;
@@ -1024,16 +1036,21 @@ fn addFileFromPatch(
 fn updateFileFromPatch(
     allocator: std.mem.Allocator,
     root: std.Io.Dir,
+    root_path: []const u8,
     path: []const u8,
     lines: []const []const u8,
     index: *usize,
 ) !void {
     var target_path = path;
+    var owned_target_path: ?[]const u8 = null;
+    defer if (owned_target_path) |value| allocator.free(value);
+
     if (index.* < lines.len) {
         const directive = patchDirective(lines[index.*]);
         if (std.mem.startsWith(u8, directive, "*** Move to: ")) {
-            target_path = directive["*** Move to: ".len..];
-            try validateRelativePath(target_path);
+            const resolved = try resolvePatchPath(allocator, root_path, directive["*** Move to: ".len..]);
+            if (resolved.owned) owned_target_path = resolved.value;
+            target_path = resolved.value;
             index.* += 1;
         }
     }
@@ -1186,6 +1203,18 @@ fn ensureParentDir(root: std.Io.Dir, path: []const u8) !void {
     const parent = std.fs.path.dirname(path) orelse return;
     if (parent.len == 0 or std.mem.eql(u8, parent, ".")) return;
     try root.createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
+}
+
+fn resolvePatchPath(allocator: std.mem.Allocator, root_path: []const u8, raw_path: []const u8) !PatchPath {
+    if (!std.fs.path.isAbsolute(raw_path)) {
+        try validateRelativePath(raw_path);
+        return .{ .value = raw_path, .owned = false };
+    }
+
+    const relative = try std.fs.path.relative(allocator, root_path, null, root_path, raw_path);
+    errdefer allocator.free(relative);
+    try validateRelativePath(relative);
+    return .{ .value = relative, .owned = true };
 }
 
 fn validateRelativePath(path: []const u8) !void {
@@ -1619,6 +1648,108 @@ test "apply_patch add overwrites existing file" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "duplicate.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("new content\n", content);
+}
+
+test "apply_patch accepts absolute paths under root" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const absolute_add = try std.fs.path.join(allocator, &.{ root, "absolute-add.txt" });
+    defer allocator.free(absolute_add);
+    const absolute_delete = try std.fs.path.join(allocator, &.{ root, "absolute-delete.txt" });
+    defer allocator.free(absolute_delete);
+    const absolute_update = try std.fs.path.join(allocator, &.{ root, "absolute-update.txt" });
+    defer allocator.free(absolute_update);
+    const absolute_move_source = try std.fs.path.join(allocator, &.{ root, "absolute-move-source.txt" });
+    defer allocator.free(absolute_move_source);
+    const absolute_move_target = try std.fs.path.join(allocator, &.{ root, "absolute-move-target.txt" });
+    defer allocator.free(absolute_move_target);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "absolute-delete.txt",
+        .data = "delete me\n",
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "absolute-update.txt",
+        .data = "old\n",
+    });
+
+    const patch = try std.fmt.allocPrint(
+        allocator,
+        \\*** Begin Patch
+        \\*** Add File: {s}
+        \\+absolute add
+        \\*** Delete File: {s}
+        \\*** Update File: {s}
+        \\@@
+        \\-old
+        \\+new
+        \\*** End Patch
+    ,
+        .{ absolute_add, absolute_delete, absolute_update },
+    );
+    defer allocator.free(patch);
+
+    const stats = try applyPatchInDir(allocator, dir.dir, patch);
+    try std.testing.expectEqual(@as(usize, 1), stats.added);
+    try std.testing.expectEqual(@as(usize, 1), stats.deleted);
+    try std.testing.expectEqual(@as(usize, 1), stats.updated);
+
+    const added = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "absolute-add.txt", allocator, .limited(1024));
+    defer allocator.free(added);
+    try std.testing.expectEqualStrings("absolute add\n", added);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "absolute-delete.txt", .{}));
+    const updated = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "absolute-update.txt", allocator, .limited(1024));
+    defer allocator.free(updated);
+    try std.testing.expectEqualStrings("new\n", updated);
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "absolute-move-source.txt",
+        .data = "move old\n",
+    });
+    const move_patch = try std.fmt.allocPrint(
+        allocator,
+        \\*** Begin Patch
+        \\*** Update File: {s}
+        \\*** Move to: {s}
+        \\@@
+        \\-move old
+        \\+move new
+        \\*** End Patch
+    ,
+        .{ absolute_move_source, absolute_move_target },
+    );
+    defer allocator.free(move_patch);
+
+    const move_stats = try applyPatchInDir(allocator, dir.dir, move_patch);
+    try std.testing.expectEqual(@as(usize, 1), move_stats.updated);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "absolute-move-source.txt", .{}));
+    const moved = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "absolute-move-target.txt", allocator, .limited(1024));
+    defer allocator.free(moved);
+    try std.testing.expectEqualStrings("move new\n", moved);
+
+    var outside_dir = std.testing.tmpDir(.{});
+    defer outside_dir.cleanup();
+    const outside_root = try outside_dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(outside_root);
+    const outside_path = try std.fs.path.join(allocator, &.{ outside_root, "outside.txt" });
+    defer allocator.free(outside_path);
+    const outside_patch = try std.fmt.allocPrint(
+        allocator,
+        \\*** Begin Patch
+        \\*** Add File: {s}
+        \\+outside
+        \\*** End Patch
+    ,
+        .{outside_path},
+    );
+    defer allocator.free(outside_patch);
+
+    try std.testing.expectError(error.InvalidPatchPath, applyPatchInDir(allocator, dir.dir, outside_patch));
+    try std.testing.expectError(error.FileNotFound, outside_dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "outside.txt", .{}));
 }
 
 test "apply_patch accepts heredoc-wrapped patch text" {
