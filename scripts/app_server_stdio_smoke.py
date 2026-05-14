@@ -8876,7 +8876,7 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         by_accent_path = {item["path"]: item for item in accent_search["result"]["files"]}
         assert by_accent_path[accent_name]["root"] == str(search_root)
         assert by_accent_path[accent_name]["match_type"] == "file"
-        assert by_accent_path[accent_name]["indices"] == [0, 1, 3, 4, 5, 6]
+        assert by_accent_path[accent_name]["indices"] == [0, 1, 2, 3, 4, 5]
 
         empty_query = request_stdio_app_server(
             binary,
