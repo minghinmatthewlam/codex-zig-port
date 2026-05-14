@@ -21079,6 +21079,165 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_initialize_config_warning_smoke(binary: Path) -> None:
+    binary = binary.resolve()
+
+    def toml_string(value: Path) -> str:
+        return json.dumps(str(value))
+
+    def start_server(codex_home: Path, cwd: Path) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(cwd),
+        )
+
+    def close_server(proc: subprocess.Popen[str]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            assert proc.stderr is not None
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-home-", dir="/tmp")).resolve()
+    project_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-project-", dir="/tmp")).resolve()
+    opt_out_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-opt-out-home-", dir="/tmp")).resolve()
+    opt_out_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-opt-out-project-", dir="/tmp")).resolve()
+    trusted_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-trusted-home-", dir="/tmp")).resolve()
+    trusted_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-trusted-project-", dir="/tmp")).resolve()
+    proc: subprocess.Popen[str] | None = None
+    opt_out_proc: subprocess.Popen[str] | None = None
+    trusted_proc: subprocess.Popen[str] | None = None
+    try:
+        (project_root / ".codex").mkdir()
+        (project_root / ".codex" / "config.toml").write_text(
+            'model = "project-local-model"\n',
+            encoding="utf-8",
+        )
+        proc = start_server(codex_home, project_root)
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize-config-warning"
+        warning = read_json_line(proc, 5)
+        assert warning["jsonrpc"] == "2.0"
+        assert warning["method"] == "configWarning"
+        assert warning["params"]["details"] is None
+        summary = warning["params"]["summary"]
+        assert summary.startswith(
+            "Project-local config, hooks, and exec policies are disabled in the following folders "
+        )
+        assert f"    1. {project_root / '.codex'}\n" in summary
+        assert (
+            "       To load project-local config, hooks, and exec policies, "
+            f"add {project_root} as a trusted project in {codex_home / 'config.toml'}.\n"
+        ) in summary
+        close_server(proc)
+        proc = None
+
+        (opt_out_project / ".codex").mkdir()
+        (opt_out_project / ".codex" / "config.toml").write_text(
+            'model = "project-local-model"\n',
+            encoding="utf-8",
+        )
+        opt_out_proc = start_server(opt_out_home, opt_out_project)
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning-opt-out",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": ["configWarning"],
+                    },
+                },
+            },
+        )
+        opt_out_initialized = read_json_line(opt_out_proc, 5)
+        assert opt_out_initialized["id"] == "initialize-config-warning-opt-out"
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-after-config-warning-opt-out",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded = read_json_line(opt_out_proc, 5)
+        assert loaded["id"] == "loaded-after-config-warning-opt-out"
+        assert loaded["result"] == {"data": [], "nextCursor": None}
+        close_server(opt_out_proc)
+        opt_out_proc = None
+
+        (trusted_project / ".codex").mkdir()
+        (trusted_project / ".codex" / "config.toml").write_text(
+            'model = "project-local-model"\n',
+            encoding="utf-8",
+        )
+        (trusted_home / "config.toml").write_text(
+            f"[projects.{toml_string(trusted_project)}]\ntrust_level = \"trusted\"\n",
+            encoding="utf-8",
+        )
+        trusted_proc = start_server(trusted_home, trusted_project)
+        write_json_line(
+            trusted_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning-trusted",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        trusted_initialized = read_json_line(trusted_proc, 5)
+        assert trusted_initialized["id"] == "initialize-config-warning-trusted"
+        write_json_line(
+            trusted_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-after-config-warning-trusted",
+                "method": "thread/loaded/list",
+            },
+        )
+        trusted_loaded = read_json_line(trusted_proc, 5)
+        assert trusted_loaded["id"] == "loaded-after-config-warning-trusted"
+        assert trusted_loaded["result"] == {"data": [], "nextCursor": None}
+        close_server(trusted_proc)
+        trusted_proc = None
+    finally:
+        for running_proc in (proc, opt_out_proc, trusted_proc):
+            if running_proc is not None and running_proc.poll() is None:
+                running_proc.kill()
+                running_proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(project_root, ignore_errors=True)
+        shutil.rmtree(opt_out_home, ignore_errors=True)
+        shutil.rmtree(opt_out_project, ignore_errors=True)
+        shutil.rmtree(trusted_home, ignore_errors=True)
+        shutil.rmtree(trusted_project, ignore_errors=True)
+
+
 def run_legacy_feature_deprecation_notice_smoke(binary: Path) -> None:
     summary = "`[features].collab` is deprecated. Use `[features].multi_agent` instead."
     details = "Enable it with `--enable multi_agent` or `[features].multi_agent` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details."
@@ -31388,6 +31547,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_initialize_config_warning_smoke(binary)
+    print("app-server-initialize-config-warning-e2e: ok")
     run_legacy_feature_deprecation_notice_smoke(binary)
     print("app-server-legacy-feature-deprecation-notice-e2e: ok")
     run_deprecated_instructions_file_notice_smoke(binary)

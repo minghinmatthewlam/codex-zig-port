@@ -25268,6 +25268,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const method = method_value.string;
     if (std.mem.eql(u8, method, "initialize")) {
         try updateOptOutNotificationMethods(allocator, state, object.get("params"));
+        try queueInitializeConfigWarningNotifications(allocator, state);
         const result = try renderInitializeResult(allocator);
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
@@ -30831,6 +30832,163 @@ fn renderDeprecationNoticeNotification(allocator: std.mem.Allocator, summary: []
     try appendOptionalJsonString(allocator, &result, details);
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
+}
+
+fn queueInitializeConfigWarningNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+) !void {
+    if (notificationMethodOptedOut(state, "configWarning")) return;
+
+    const summary = try projectConfigDisabledWarningSummary(allocator) orelse return;
+    defer allocator.free(summary);
+    try queueConfigWarningNotification(allocator, state, summary, null);
+}
+
+fn queueConfigWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    summary: []const u8,
+    details: ?[]const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "configWarning")) return;
+
+    const notification = try renderConfigWarningNotification(allocator, summary, details);
+    errdefer allocator.free(notification);
+    try state.pending_notifications.append(allocator, notification);
+}
+
+fn renderConfigWarningNotification(allocator: std.mem.Allocator, summary: []const u8, details: ?[]const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"configWarning\",\"params\":{\"summary\":");
+    try appendJsonString(allocator, &result, summary);
+    try result.appendSlice(allocator, ",\"details\":");
+    try appendOptionalJsonString(allocator, &result, details);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
+}
+
+const project_config_disabled_summary_prefix = "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n";
+const project_config_gated_features = "project-local config, hooks, and exec policies";
+
+fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator) !?[]u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd_z = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return null;
+    defer allocator.free(cwd_z);
+    const cwd: []const u8 = cwd_z;
+
+    const codex_home = config.resolveCodexHome(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer allocator.free(codex_home);
+    const user_config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(user_config_path);
+    const user_config_bytes = config.readConfigTomlFile(allocator, user_config_path) catch null;
+    defer if (user_config_bytes) |bytes| allocator.free(bytes);
+    const user_bytes = user_config_bytes orelse "";
+    const default_codex_home = try defaultUserCodexHome(allocator);
+    defer if (default_codex_home) |path| allocator.free(path);
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var current: []const u8 = cwd;
+    var disabled_count: usize = 0;
+    while (true) {
+        const dot_codex_folder = try std.fs.path.join(allocator, &.{ current, ".codex" });
+        defer allocator.free(dot_codex_folder);
+
+        const is_user_codex_folder = std.mem.eql(u8, dot_codex_folder, codex_home) or
+            (default_codex_home != null and std.mem.eql(u8, dot_codex_folder, default_codex_home.?));
+        const has_project_codex = if (is_user_codex_folder)
+            false
+        else
+            dirExists(io, dot_codex_folder) catch false;
+        if (has_project_codex and !try projectTrustedBySelfOrAncestor(allocator, user_bytes, current)) {
+            if (disabled_count == 0) {
+                try result.appendSlice(allocator, project_config_disabled_summary_prefix);
+            }
+            disabled_count += 1;
+            try appendProjectConfigDisabledEntry(
+                allocator,
+                &result,
+                disabled_count,
+                dot_codex_folder,
+                current,
+                user_config_path,
+                user_bytes,
+            );
+        }
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len) break;
+        current = parent;
+    }
+
+    if (disabled_count == 0) {
+        result.deinit(allocator);
+        return null;
+    }
+    const owned = try result.toOwnedSlice(allocator);
+    return owned;
+}
+
+fn defaultUserCodexHome(allocator: std.mem.Allocator) !?[]u8 {
+    const home = try env.getOwned(allocator, "HOME") orelse return null;
+    defer allocator.free(home);
+    const path = try std.fs.path.join(allocator, &.{ home, ".codex" });
+    return path;
+}
+
+fn appendProjectConfigDisabledEntry(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    index: usize,
+    dot_codex_folder: []const u8,
+    project_path: []const u8,
+    user_config_path: []const u8,
+    user_config_bytes: []const u8,
+) !void {
+    try result.appendSlice(allocator, "    ");
+    try appendInt(allocator, result, index);
+    try result.appendSlice(allocator, ". ");
+    try result.appendSlice(allocator, dot_codex_folder);
+    try result.appendSlice(allocator, "\n       ");
+
+    const trust_level = try config.namedSectionStringValue(allocator, user_config_bytes, "projects.", project_path, "trust_level");
+    defer if (trust_level) |value| allocator.free(value);
+    if (trust_level) |value| {
+        if (std.mem.eql(u8, value, "untrusted")) {
+            try result.appendSlice(allocator, project_path);
+            try result.appendSlice(allocator, " is marked as untrusted in ");
+            try result.appendSlice(allocator, user_config_path);
+            try result.appendSlice(allocator, ". To load ");
+            try result.appendSlice(allocator, project_config_gated_features);
+            try result.appendSlice(allocator, ", mark it trusted.\n");
+            return;
+        }
+    }
+
+    try result.appendSlice(allocator, "To load ");
+    try result.appendSlice(allocator, project_config_gated_features);
+    try result.appendSlice(allocator, ", add ");
+    try result.appendSlice(allocator, project_path);
+    try result.appendSlice(allocator, " as a trusted project in ");
+    try result.appendSlice(allocator, user_config_path);
+    try result.appendSlice(allocator, ".\n");
+}
+
+fn projectTrustedBySelfOrAncestor(allocator: std.mem.Allocator, user_config_bytes: []const u8, project_path: []const u8) !bool {
+    var current: []const u8 = project_path;
+    while (true) {
+        if (try configReadProjectTrusted(allocator, user_config_bytes, current)) return true;
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len) break;
+        current = parent;
+    }
+    return false;
 }
 
 const deprecated_on_failure_approval_policy_warning = "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs.";
