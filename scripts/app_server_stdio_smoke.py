@@ -27,6 +27,9 @@ EXPERIMENTAL_API_CAPABILITIES = {
     "experimentalApi": True,
     "optOutNotificationMethods": ["configWarning"],
 }
+EXPERIMENTAL_API_STABLE_GATE_CAPABILITIES = {
+    "optOutNotificationMethods": ["thread/started", "configWarning"],
+}
 EXPERIMENTAL_API_METHODS = [
     "memory/reset",
     "fuzzyFileSearch/sessionStart",
@@ -51,6 +54,153 @@ EXPERIMENTAL_API_METHODS = [
     "thread/realtime/stop",
     "thread/realtime/listVoices",
 ]
+
+GRANULAR_APPROVAL_POLICY = {
+    "granular": {
+        "sandbox_approval": True,
+        "rules": False,
+        "request_permissions": True,
+        "mcp_elicitations": False,
+    }
+}
+
+
+def experimental_api_field_cases(thread_id: str):
+    permission_profile = {"type": "profile", "id": ":workspace"}
+    turn_input = [{"type": "text", "text": "field gate"}]
+    return [
+        (
+            "thread/start",
+            {"approvalPolicy": GRANULAR_APPROVAL_POLICY},
+            "askForApproval.granular",
+        ),
+        (
+            "thread/start",
+            {"permissions": permission_profile},
+            "thread/start.permissions",
+        ),
+        ("thread/start", {"environments": []}, "thread/start.environments"),
+        ("thread/start", {"dynamicTools": []}, "thread/start.dynamicTools"),
+        (
+            "thread/start",
+            {"mockExperimentalField": "mock"},
+            "thread/start.mockExperimentalField",
+        ),
+        (
+            "thread/start",
+            {"experimentalRawEvents": True},
+            "thread/start.experimentalRawEvents",
+        ),
+        (
+            "thread/start",
+            {"persistExtendedHistory": True},
+            "thread/start.persistFullHistory",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "history": []},
+            "thread/resume.history",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "path": "/tmp/codex-zig-missing-rollout.jsonl"},
+            "thread/resume.path",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "approvalPolicy": GRANULAR_APPROVAL_POLICY},
+            "askForApproval.granular",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "permissions": permission_profile},
+            "thread/resume.permissions",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "excludeTurns": True},
+            "thread/resume.excludeTurns",
+        ),
+        (
+            "thread/resume",
+            {"threadId": thread_id, "persistExtendedHistory": True},
+            "thread/resume.persistFullHistory",
+        ),
+        (
+            "thread/fork",
+            {"threadId": thread_id, "path": "/tmp/codex-zig-missing-rollout.jsonl"},
+            "thread/fork.path",
+        ),
+        (
+            "thread/fork",
+            {"threadId": thread_id, "approvalPolicy": GRANULAR_APPROVAL_POLICY},
+            "askForApproval.granular",
+        ),
+        (
+            "thread/fork",
+            {"threadId": thread_id, "permissions": permission_profile},
+            "thread/fork.permissions",
+        ),
+        (
+            "thread/fork",
+            {"threadId": thread_id, "excludeTurns": True},
+            "thread/fork.excludeTurns",
+        ),
+        (
+            "thread/fork",
+            {"threadId": thread_id, "persistExtendedHistory": True},
+            "thread/fork.persistFullHistory",
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": turn_input,
+                "responsesapiClientMetadata": {"surface": "smoke"},
+            },
+            "turn/start.responsesapiClientMetadata",
+        ),
+        (
+            "turn/start",
+            {"threadId": thread_id, "input": turn_input, "environments": []},
+            "turn/start.environments",
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": turn_input,
+                "approvalPolicy": GRANULAR_APPROVAL_POLICY,
+            },
+            "askForApproval.granular",
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": turn_input,
+                "permissions": permission_profile,
+            },
+            "turn/start.permissions",
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": turn_input,
+                "collaborationMode": {
+                    "mode": "plan",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": "medium",
+                        "developer_instructions": None,
+                    },
+                },
+            },
+            "turn/start.collaborationMode",
+        ),
+    ]
+
 
 EXPECTED_REALTIME_VOICES = {
     "v1": [
@@ -7274,7 +7424,7 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                     "method": "initialize",
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                        "capabilities": {},
+                        "capabilities": EXPERIMENTAL_API_STABLE_GATE_CAPABILITIES,
                     },
                 },
             )
@@ -7303,6 +7453,39 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "stable-thread-start-control",
+                    "method": "thread/start",
+                    "params": {"model": "gpt-field-gate-control"},
+                },
+            )
+            stable_start = read_json_line(proc, 5)
+            assert stable_start["id"] == "stable-thread-start-control"
+            stable_thread_id = stable_start["result"]["thread"]["id"]
+
+            for method, params, reason in experimental_api_field_cases(stable_thread_id):
+                reason_slug = reason.replace("/", "-").replace(".", "-")
+                request_id = f"experimental-field-gate-{reason_slug}"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": params,
+                    },
+                )
+                gated = read_json_line(proc, 5)
+                assert gated["id"] == request_id
+                assert gated["error"]["code"] == -32600
+                assert (
+                    gated["error"]["message"]
+                    == f"{reason} requires experimentalApi capability"
+                )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "initialize-experimental-client",
                     "method": "initialize",
                     "params": {
@@ -7312,6 +7495,24 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                 },
             )
             assert read_json_line(proc, 5)["id"] == "initialize-experimental-client"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-dynamic-tools-with-experimental-api",
+                    "method": "thread/start",
+                    "params": {
+                        "model": "gpt-field-gate-experimental",
+                        "dynamicTools": [],
+                    },
+                },
+            )
+            field_ungated = read_json_line(proc, 5)
+            assert field_ungated["id"] == "thread-start-dynamic-tools-with-experimental-api"
+            assert field_ungated["result"]["model"] == "gpt-field-gate-experimental"
+            started = read_json_line(proc, 5)
+            assert started["method"] == "thread/started"
 
             write_json_line(
                 proc,

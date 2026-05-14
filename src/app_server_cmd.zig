@@ -25280,9 +25280,12 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (experimentalReasonForRequestMethod(method)) |reason| {
         if (!state.experimental_api_enabled) {
-            const message = try std.fmt.allocPrint(allocator, "{s} requires experimentalApi capability", .{reason});
-            defer allocator.free(message);
-            return try renderJsonRpcError(allocator, id_value, -32600, message);
+            return try renderExperimentalApiRequiredError(allocator, id_value, reason);
+        }
+    }
+    if (experimentalReasonForRequestFields(method, object.get("params"))) |reason| {
+        if (!state.experimental_api_enabled) {
+            return try renderExperimentalApiRequiredError(allocator, id_value, reason);
         }
     }
     if (std.mem.eql(u8, method, "memory/reset")) {
@@ -32649,6 +32652,99 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
     }
     return null;
+}
+
+fn renderExperimentalApiRequiredError(
+    allocator: std.mem.Allocator,
+    id_value: ?std.json.Value,
+    reason: []const u8,
+) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "{s} requires experimentalApi capability", .{reason});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn experimentalReasonForRequestFields(method: []const u8, params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return null;
+    const object = params.object;
+
+    if (std.mem.eql(u8, method, "thread/start")) return experimentalReasonForThreadStartFields(object);
+    if (std.mem.eql(u8, method, "thread/resume")) return experimentalReasonForThreadResumeFields(object);
+    if (std.mem.eql(u8, method, "thread/fork")) return experimentalReasonForThreadForkFields(object);
+    if (std.mem.eql(u8, method, "turn/start")) return experimentalReasonForTurnStartFields(object);
+    return null;
+}
+
+fn experimentalReasonForThreadStartFields(object: std.json.ObjectMap) ?[]const u8 {
+    if (experimentalReasonForApprovalPolicy(object)) |reason| return reason;
+    inline for (&.{
+        .{ .field = "permissions", .reason = "thread/start.permissions" },
+        .{ .field = "environments", .reason = "thread/start.environments" },
+        .{ .field = "dynamicTools", .reason = "thread/start.dynamicTools" },
+        .{ .field = "mockExperimentalField", .reason = "thread/start.mockExperimentalField" },
+    }) |gate| {
+        if (optionalExperimentalFieldIsSet(object, gate.field)) return gate.reason;
+    }
+    if (boolExperimentalFieldIsEnabled(object, "experimentalRawEvents")) return "thread/start.experimentalRawEvents";
+    if (boolExperimentalFieldIsEnabled(object, "persistExtendedHistory")) return "thread/start.persistFullHistory";
+    return null;
+}
+
+fn experimentalReasonForThreadResumeFields(object: std.json.ObjectMap) ?[]const u8 {
+    inline for (&.{
+        .{ .field = "history", .reason = "thread/resume.history" },
+        .{ .field = "path", .reason = "thread/resume.path" },
+    }) |gate| {
+        if (optionalExperimentalFieldIsSet(object, gate.field)) return gate.reason;
+    }
+    if (experimentalReasonForApprovalPolicy(object)) |reason| return reason;
+    if (optionalExperimentalFieldIsSet(object, "permissions")) return "thread/resume.permissions";
+    if (boolExperimentalFieldIsEnabled(object, "excludeTurns")) return "thread/resume.excludeTurns";
+    if (boolExperimentalFieldIsEnabled(object, "persistExtendedHistory")) return "thread/resume.persistFullHistory";
+    return null;
+}
+
+fn experimentalReasonForThreadForkFields(object: std.json.ObjectMap) ?[]const u8 {
+    if (optionalExperimentalFieldIsSet(object, "path")) return "thread/fork.path";
+    if (experimentalReasonForApprovalPolicy(object)) |reason| return reason;
+    if (optionalExperimentalFieldIsSet(object, "permissions")) return "thread/fork.permissions";
+    if (boolExperimentalFieldIsEnabled(object, "excludeTurns")) return "thread/fork.excludeTurns";
+    if (boolExperimentalFieldIsEnabled(object, "persistExtendedHistory")) return "thread/fork.persistFullHistory";
+    return null;
+}
+
+fn experimentalReasonForTurnStartFields(object: std.json.ObjectMap) ?[]const u8 {
+    inline for (&.{
+        .{ .field = "responsesapiClientMetadata", .reason = "turn/start.responsesapiClientMetadata" },
+        .{ .field = "environments", .reason = "turn/start.environments" },
+    }) |gate| {
+        if (optionalExperimentalFieldIsSet(object, gate.field)) return gate.reason;
+    }
+    if (experimentalReasonForApprovalPolicy(object)) |reason| return reason;
+    if (optionalExperimentalFieldIsSet(object, "permissions")) return "turn/start.permissions";
+    if (optionalExperimentalFieldIsSet(object, "collaborationMode")) return "turn/start.collaborationMode";
+    return null;
+}
+
+fn experimentalReasonForApprovalPolicy(object: std.json.ObjectMap) ?[]const u8 {
+    const value = object.get("approvalPolicy") orelse return null;
+    if (value != .object) return null;
+    if (value.object.get("granular")) |granular| {
+        if (granular != .null) return "askForApproval.granular";
+    }
+    return null;
+}
+
+fn optionalExperimentalFieldIsSet(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value != .null;
+}
+
+fn boolExperimentalFieldIsEnabled(object: std.json.ObjectMap, field: []const u8) bool {
+    const value = object.get(field) orelse return false;
+    return value == .bool and value.bool;
 }
 
 fn clearOptOutNotificationMethods(allocator: std.mem.Allocator, state: *AppServerState) void {
