@@ -216,6 +216,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - emit app-server `turn/diff/updated` notifications when `turn/start` runs a
   successful model-requested `apply_patch` edit in a git-backed loaded thread
   cwd
+- emit app-server `item/fileChange/patchUpdated` notifications when
+  `turn/start` runs successful model-requested `apply_patch` edits
 - emit app-server `item/commandExecution/outputDelta` notifications when
   `turn/start` runs model-requested shell tools
 - emit app-server `rawResponseItem/completed` notifications for raw Responses
