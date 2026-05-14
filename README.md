@@ -209,7 +209,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - emit app-server startup warnings for user/plugin hook-load warnings
 - emit app-server `initialize` config warnings when project-local `.codex`
   config, hooks, and exec policies are disabled until the project is trusted,
-  plus ignored unsupported project-local config keys
+  for ignored unsupported project-local config keys, and for malformed user or
+  trusted project-local execpolicy rules
 - parse Rust-compatible interactive remote app-server flags with `--remote` and
   `--remote-auth-token-env` while remote TUI transport remains unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
@@ -282,8 +283,9 @@ features, suppression with `suppress_unstable_features_warning = true`, legacy
 feature-key deprecation notices, deprecated `experimental_instructions_file`
 notices, deprecated `on-failure` approval-policy warnings, initialize-time
 project-local config warnings for disabled project config and ignored
-unsupported keys, hook-load startup warnings, and root default-off feature
-clearing, checks `help [COMMAND]`,
+unsupported keys plus malformed user/trusted project execpolicy rules,
+hook-load startup warnings, and root default-off feature clearing, checks
+`help [COMMAND]`,
 verifies exact generated shell completion output for bash, elvish, fish,
 powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
