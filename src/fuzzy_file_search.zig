@@ -344,13 +344,75 @@ fn loadGitInfoExcludeRules(
     relative_dir: []const u8,
     ignore_stack: *IgnoreStack,
 ) !void {
-    const path = if (relative_dir.len == 0)
-        try std.fs.path.join(allocator, &.{ root, ".git", "info", "exclude" })
-    else
-        try std.fs.path.join(allocator, &.{ root, relative_dir, ".git", "info", "exclude" });
+    const git_dir = (try resolveGitDirFromMarker(allocator, io, root, relative_dir)) orelse return;
+    defer allocator.free(git_dir);
+
+    const common_dir = try resolveCommonGitDir(allocator, io, git_dir);
+    defer allocator.free(common_dir);
+
+    const path = try std.fs.path.join(allocator, &.{ common_dir, "info", "exclude" });
     defer allocator.free(path);
 
     try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, ignore_stack);
+}
+
+fn resolveGitDirFromMarker(allocator: std.mem.Allocator, io: std.Io, root: []const u8, relative_dir: []const u8) !?[]const u8 {
+    const marker_parent = if (relative_dir.len == 0)
+        try allocator.dupe(u8, root)
+    else
+        try std.fs.path.join(allocator, &.{ root, relative_dir });
+    defer allocator.free(marker_parent);
+
+    const marker = if (relative_dir.len == 0)
+        try std.fs.path.join(allocator, &.{ root, ".git" })
+    else
+        try std.fs.path.join(allocator, &.{ root, relative_dir, ".git" });
+    defer allocator.free(marker);
+
+    const stat = std.Io.Dir.cwd().statFile(io, marker, .{ .follow_symlinks = false }) catch return null;
+    return switch (stat.kind) {
+        .directory => try allocator.dupe(u8, marker),
+        .file => try resolveGitDirFile(allocator, io, marker_parent, marker),
+        else => null,
+    };
+}
+
+fn resolveGitDirFile(allocator: std.mem.Allocator, io: std.Io, marker_parent: []const u8, marker: []const u8) !?[]const u8 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, marker, allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound, error.IsDir => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    const prefix = "gitdir:";
+    if (!std.mem.startsWith(u8, trimmed, prefix)) return null;
+    const raw_gitdir = std.mem.trim(u8, trimmed[prefix.len..], " \t\r\n");
+    if (raw_gitdir.len == 0) return null;
+
+    return if (std.fs.path.isAbsolute(raw_gitdir))
+        try allocator.dupe(u8, raw_gitdir)
+    else
+        try std.fs.path.join(allocator, &.{ marker_parent, raw_gitdir });
+}
+
+fn resolveCommonGitDir(allocator: std.mem.Allocator, io: std.Io, git_dir: []const u8) ![]const u8 {
+    const commondir_path = try std.fs.path.join(allocator, &.{ git_dir, "commondir" });
+    defer allocator.free(commondir_path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, commondir_path, allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound, error.IsDir => return allocator.dupe(u8, git_dir),
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    const raw_common_dir = std.mem.trim(u8, bytes, " \t\r\n");
+    if (raw_common_dir.len == 0) return allocator.dupe(u8, git_dir);
+
+    return if (std.fs.path.isAbsolute(raw_common_dir))
+        try allocator.dupe(u8, raw_common_dir)
+    else
+        try std.fs.path.join(allocator, &.{ git_dir, raw_common_dir });
 }
 
 fn loadIgnoreRulesFromPath(
@@ -876,6 +938,43 @@ test "fuzzy search respects local gitignore rules in git context" {
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);
     try std.testing.expect(!resultContainsPath(info_excluded, "info-excluded.txt"));
+}
+
+test "fuzzy search resolves gitdir file excludes for worktrees" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "main/.git/info");
+    try dir.dir.createDirPath(io, "main/.git/worktrees/linked");
+    try dir.dir.createDirPath(io, "worktree");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "main/.git/info/exclude",
+        .data = "worktree-excluded.txt\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "main/.git/worktrees/linked/commondir",
+        .data = "../..\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "worktree/.git",
+        .data = "gitdir: ../main/.git/worktrees/linked\n",
+    });
+    try dir.dir.writeFile(io, .{ .sub_path = "worktree/worktree-visible.txt", .data = "visible\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "worktree/worktree-excluded.txt", .data = "excluded\n" });
+
+    const root = try dir.dir.realPathFileAlloc(io, "worktree", allocator);
+    defer allocator.free(root);
+    const roots = [_][]const u8{root};
+
+    var visible = try search(allocator, "worktreevisible", &roots);
+    defer visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(visible, "worktree-visible.txt"));
+
+    var excluded = try search(allocator, "worktreeexcluded", &roots);
+    defer excluded.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(excluded, "worktree-excluded.txt"));
 }
 
 fn resultContainsPath(results: Results, path: []const u8) bool {

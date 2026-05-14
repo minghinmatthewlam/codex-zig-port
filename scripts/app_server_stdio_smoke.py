@@ -8806,6 +8806,25 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         no_git_root.mkdir()
         (no_git_root / ".gitignore").write_text("package.json\n", encoding="utf-8")
         (no_git_root / "package.json").write_text("{\"name\":\"demo\"}\n", encoding="utf-8")
+        worktree_root = root / "worktree-root"
+        worktree_root.mkdir()
+        worktree_git_dir = root / "main" / ".git"
+        (worktree_git_dir / "info").mkdir(parents=True)
+        (worktree_git_dir / "worktrees" / "linked").mkdir(parents=True)
+        (worktree_git_dir / "info" / "exclude").write_text(
+            "worktree-excluded.txt\n",
+            encoding="utf-8",
+        )
+        (worktree_git_dir / "worktrees" / "linked" / "commondir").write_text(
+            "../..\n",
+            encoding="utf-8",
+        )
+        (worktree_root / ".git").write_text(
+            f"gitdir: {worktree_git_dir / 'worktrees' / 'linked'}\n",
+            encoding="utf-8",
+        )
+        (worktree_root / "worktree-visible.txt").write_text("visible\n", encoding="utf-8")
+        (worktree_root / "worktree-excluded.txt").write_text("excluded\n", encoding="utf-8")
         (search_root / "abc").write_text("prefix non-match\n", encoding="utf-8")
         (search_root / "abcde").write_text("spread match\n", encoding="utf-8")
         (search_root / "abexy").write_text("best match\n", encoding="utf-8")
@@ -8970,6 +8989,34 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert no_git_context_search["id"] == "fuzzy-search-no-git-context"
         no_git_context_paths = {item["path"] for item in no_git_context_search["result"]["files"]}
         assert "package.json" in no_git_context_paths
+
+        worktree_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-worktree-visible",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "worktreevisible", "roots": [str(worktree_root)]},
+            },
+            env,
+        )
+        assert worktree_visible_search["id"] == "fuzzy-search-worktree-visible"
+        worktree_visible_paths = {item["path"] for item in worktree_visible_search["result"]["files"]}
+        assert "worktree-visible.txt" in worktree_visible_paths
+
+        worktree_excluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-worktree-excluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "worktreeexcluded", "roots": [str(worktree_root)]},
+            },
+            env,
+        )
+        assert worktree_excluded_search["id"] == "fuzzy-search-worktree-excluded"
+        worktree_excluded_paths = {item["path"] for item in worktree_excluded_search["result"]["files"]}
+        assert "worktree-excluded.txt" not in worktree_excluded_paths
 
         empty_query = request_stdio_app_server(
             binary,
