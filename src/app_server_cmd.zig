@@ -33,6 +33,7 @@ const session_mod = @import("session.zig");
 const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
 const thread_state = @import("thread_state.zig");
+const tool_runner = @import("tools.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
@@ -25942,6 +25943,7 @@ fn handleTurnStart(
             .on_startup_status = handleSessionMcpStartupStatus,
         },
         .workdir = thread.cwd,
+        .background_terminal_owner = thread.id,
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
@@ -28559,6 +28561,7 @@ fn handleThreadMethod(
         if (findLoadedThread(state, thread_id) == null) {
             return renderThreadNotFound(allocator, id_value, thread_id);
         }
+        _ = tool_runner.stopExecSessionsForOwner(thread_id);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/increment_elicitation") or

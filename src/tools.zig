@@ -58,6 +58,7 @@ const ShellArgs = struct {
 const ExecSession = struct {
     id: u64,
     kind: ExecSessionKind,
+    owner: ?[]const u8,
     io_instance: std.Io.Threaded,
     child: std.process.Child,
     stdin_file: ?std.Io.File,
@@ -78,6 +79,7 @@ const ExecSession = struct {
         } else {
             self.closeOpenFiles();
         }
+        if (self.owner) |owner| session_allocator.free(owner);
         self.io_instance.deinit();
     }
 
@@ -146,6 +148,7 @@ pub const Policy = struct {
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
     workdir: ?[]const u8 = null,
+    background_terminal_owner: ?[]const u8 = null,
 };
 
 const ToolKind = enum {
@@ -291,6 +294,7 @@ fn runExecCommand(
             .include_cwd_write_root = policy.include_cwd_write_root,
             .network_enabled = policy.network_enabled,
             .workdir = args.workdir orelse policy.workdir,
+            .owner = policy.background_terminal_owner,
             .yield_time_ms = args.yield_time_ms orelse 1000,
             .max_output_tokens = args.max_output_tokens,
             .pty = true,
@@ -313,6 +317,7 @@ const ExecSessionOptions = struct {
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
+    owner: ?[]const u8 = null,
     yield_time_ms: u64 = 1000,
     max_output_tokens: ?usize = null,
     pty: bool = false,
@@ -444,9 +449,12 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     const id = next_exec_session_id;
     next_exec_session_id += 1;
     const kind: ExecSessionKind = if (pty_master != null) .pty else .pipes;
+    const owner = if (options.owner) |value| try session_allocator.dupe(u8, value) else null;
+    errdefer if (owner) |value| session_allocator.free(value);
     var session = ExecSession{
         .id = id,
         .kind = kind,
+        .owner = owner,
         .io_instance = io_instance,
         .child = child,
         .stdin_file = if (pty_master) |file| file else child.stdin,
@@ -811,6 +819,24 @@ pub fn stopAllExecSessions() usize {
     const count = exec_sessions.items.len;
     while (exec_sessions.items.len > 0) {
         removeExecSession(exec_sessions.items.len - 1);
+    }
+    return count;
+}
+
+pub fn stopExecSessionsForOwner(owner: []const u8) usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (index < exec_sessions.items.len) {
+        const session_owner = exec_sessions.items[index].owner orelse {
+            index += 1;
+            continue;
+        };
+        if (!std.mem.eql(u8, session_owner, owner)) {
+            index += 1;
+            continue;
+        }
+        removeExecSession(index);
+        count += 1;
     }
     return count;
 }
@@ -1590,6 +1616,47 @@ test "exec sessions can be listed and stopped" {
 
     try std.testing.expectEqual(@as(usize, 1), activeExecSessionCount());
     try std.testing.expectEqual(@as(usize, 1), stopAllExecSessions());
+    try std.testing.expectEqual(@as(usize, 0), activeExecSessionCount());
+}
+
+test "exec sessions can be stopped by owner" {
+    const allocator = std.testing.allocator;
+    defer _ = stopAllExecSessions();
+
+    const first_call = api.FunctionCall{
+        .call_id = "exec-owned-a",
+        .name = "exec_command",
+        .arguments = "{\"cmd\":\"printf A; sleep 30\",\"tty\":true,\"yield_time_ms\":200,\"max_output_tokens\":100}",
+    };
+    const first_result = try runFunctionCall(allocator, first_call, .{
+        .auto_approve = true,
+        .background_terminal_owner = "thread-a",
+    });
+    defer first_result.deinit(allocator);
+
+    const second_call = api.FunctionCall{
+        .call_id = "exec-owned-b",
+        .name = "exec_command",
+        .arguments = "{\"cmd\":\"printf B; sleep 30\",\"tty\":true,\"yield_time_ms\":200,\"max_output_tokens\":100}",
+    };
+    const second_result = try runFunctionCall(allocator, second_call, .{
+        .auto_approve = true,
+        .background_terminal_owner = "thread-b",
+    });
+    defer second_result.deinit(allocator);
+
+    try std.testing.expect(std.mem.startsWith(u8, first_result.summary, "session "));
+    try std.testing.expect(std.mem.startsWith(u8, second_result.summary, "session "));
+    const first_session_id = try std.fmt.parseInt(u64, first_result.summary["session ".len..], 10);
+    const second_session_id = try std.fmt.parseInt(u64, second_result.summary["session ".len..], 10);
+
+    try std.testing.expectEqual(@as(usize, 2), activeExecSessionCount());
+    try std.testing.expectEqual(@as(usize, 1), stopExecSessionsForOwner("thread-a"));
+    try std.testing.expect(findExecSessionIndex(first_session_id) == null);
+    try std.testing.expect(findExecSessionIndex(second_session_id) != null);
+    try std.testing.expectEqual(@as(usize, 1), activeExecSessionCount());
+    try std.testing.expectEqual(@as(usize, 0), stopExecSessionsForOwner("missing-thread"));
+    try std.testing.expectEqual(@as(usize, 1), stopExecSessionsForOwner("thread-b"));
     try std.testing.expectEqual(@as(usize, 0), activeExecSessionCount());
 }
 

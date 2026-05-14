@@ -289,6 +289,7 @@ pub const TurnOptions = struct {
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
     workdir: ?[]const u8 = null,
+    background_terminal_owner: ?[]const u8 = null,
 };
 
 pub const PlanUpdateCallback = struct {
@@ -650,6 +651,7 @@ fn runToolCall(
         .auto_approve = options.auto_approve,
         .prompt_for_approval = options.prompt_for_approval,
         .workdir = options.workdir,
+        .background_terminal_owner = options.background_terminal_owner,
     });
     errdefer tool_result.deinit(allocator);
 
