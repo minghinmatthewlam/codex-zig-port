@@ -676,6 +676,16 @@ fn globMatchesAt(pattern: []const u8, value: []const u8) bool {
     while (pattern_index < pattern.len) {
         const token = pattern[pattern_index];
         if (token == '*') {
+            if (pattern_index + 2 < pattern.len and pattern[pattern_index + 1] == '*' and pattern[pattern_index + 2] == '/') {
+                const rest = pattern[pattern_index + 3 ..];
+                if (globMatchesAt(rest, value[value_index..])) return true;
+                var end = value_index;
+                while (end < value.len) : (end += 1) {
+                    if (value[end] == '/' and globMatchesAt(rest, value[end + 1 ..])) return true;
+                }
+                return false;
+            }
+
             var allow_slash = false;
             while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
                 if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == '*') {
@@ -1148,9 +1158,11 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, ".git/info");
     try dir.dir.createDirPath(io, ".vscode");
     try dir.dir.createDirPath(io, "ignored-dir");
+    try dir.dir.createDirPath(io, "glob-nested");
+    try dir.dir.createDirPath(io, "parent/zz");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n**/double-star-root.txt\nparent/**/double-star-child.txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".ignore",
@@ -1170,6 +1182,11 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.writeFile(io, .{ .sub_path = "digit-x.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "letter-x.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "letter-7.txt", .data = "visible\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "double-star-root.txt", .data = "ignored root\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "glob-nested/double-star-root.txt", .data = "ignored nested\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "parent/double-star-child.txt", .data = "ignored zero dir\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "parent/zz/double-star-child.txt", .data = "ignored nested dir\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "double-star-ok.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-reincluded.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignore-over-gitignore.txt", .data = "ignored\n" });
@@ -1230,6 +1247,20 @@ test "fuzzy search respects local gitignore rules in git context" {
     var letter_visible = try search(allocator, "letter7", &roots);
     defer letter_visible.deinit(allocator);
     try std.testing.expect(resultContainsPath(letter_visible, "letter-7.txt"));
+
+    var double_star_root = try search(allocator, "doublestarroot", &roots);
+    defer double_star_root.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(double_star_root, "double-star-root.txt"));
+    try std.testing.expect(!resultContainsPath(double_star_root, "glob-nested/double-star-root.txt"));
+
+    var double_star_child = try search(allocator, "doublestarchild", &roots);
+    defer double_star_child.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(double_star_child, "parent/double-star-child.txt"));
+    try std.testing.expect(!resultContainsPath(double_star_child, "parent/zz/double-star-child.txt"));
+
+    var double_star_visible = try search(allocator, "doublestarok", &roots);
+    defer double_star_visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(double_star_visible, "double-star-ok.txt"));
 
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);

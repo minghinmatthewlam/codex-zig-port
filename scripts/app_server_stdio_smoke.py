@@ -8800,7 +8800,7 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n**/double-star-root.txt\nparent/**/double-star-child.txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\nliteral\\*.txt\n",
             encoding="utf-8",
         )
         (search_root / ".ignore").write_text(
@@ -8817,6 +8817,23 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "digit-x.txt").write_text("bracket digit visible\n", encoding="utf-8")
         (search_root / "letter-x.txt").write_text("bracket negated ignored\n", encoding="utf-8")
         (search_root / "letter-7.txt").write_text("bracket negated visible\n", encoding="utf-8")
+        (search_root / "double-star-root.txt").write_text("double star root ignored\n", encoding="utf-8")
+        (search_root / "glob-nested").mkdir()
+        (search_root / "glob-nested" / "double-star-root.txt").write_text(
+            "double star nested ignored\n",
+            encoding="utf-8",
+        )
+        (search_root / "parent").mkdir()
+        (search_root / "parent" / "zz").mkdir()
+        (search_root / "parent" / "double-star-child.txt").write_text(
+            "double star zero-dir ignored\n",
+            encoding="utf-8",
+        )
+        (search_root / "parent" / "zz" / "double-star-child.txt").write_text(
+            "double star nested-dir ignored\n",
+            encoding="utf-8",
+        )
+        (search_root / "double-star-ok.txt").write_text("double star visible\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "info-reincluded.txt").write_text("info reincluded file\n", encoding="utf-8")
         (search_root / "global-excluded.txt").write_text("global excluded file\n", encoding="utf-8")
@@ -9100,6 +9117,50 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert bracket_negated_visible_search["id"] == "fuzzy-search-bracket-negated-visible"
         bracket_negated_visible_paths = {item["path"] for item in bracket_negated_visible_search["result"]["files"]}
         assert "letter-7.txt" in bracket_negated_visible_paths
+
+        double_star_root_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-double-star-root",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "doublestarroot", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert double_star_root_search["id"] == "fuzzy-search-double-star-root"
+        double_star_root_paths = {item["path"] for item in double_star_root_search["result"]["files"]}
+        assert "double-star-root.txt" not in double_star_root_paths
+        assert "glob-nested/double-star-root.txt" not in double_star_root_paths
+
+        double_star_child_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-double-star-child",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "doublestarchild", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert double_star_child_search["id"] == "fuzzy-search-double-star-child"
+        double_star_child_paths = {item["path"] for item in double_star_child_search["result"]["files"]}
+        assert "parent/double-star-child.txt" not in double_star_child_paths
+        assert "parent/zz/double-star-child.txt" not in double_star_child_paths
+
+        double_star_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-double-star-ok",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "doublestarok", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert double_star_visible_search["id"] == "fuzzy-search-double-star-ok"
+        double_star_visible_paths = {item["path"] for item in double_star_visible_search["result"]["files"]}
+        assert "double-star-ok.txt" in double_star_visible_paths
 
         info_excluded_search = request_stdio_app_server(
             binary,
