@@ -418,17 +418,10 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             var server = UnixServer{ .allocator = allocator, .socket_path = path };
             try server.run();
         },
-        .websocket => {
-            const label = try formatTransportLabel(allocator, transport);
-            defer allocator.free(label);
-            const message = try std.fmt.allocPrint(
-                allocator,
-                "app-server listen transport is parsed but not implemented yet: {s}\n",
-                .{label},
-            );
-            defer allocator.free(message);
-            try cli_utils.writeStderr(message);
-            return error.AppServerListenTransportNotImplemented;
+        .websocket => |address| {
+            if (options.websocket_auth.ws_auth != null) return error.AppServerWebsocketAuthNotImplemented;
+            var server = WebSocketServer{ .allocator = allocator, .address = address };
+            try server.run();
         },
     }
 }
@@ -24719,6 +24712,228 @@ const UnixServer = struct {
     }
 };
 
+const WebSocketServer = struct {
+    allocator: std.mem.Allocator,
+    address: WebSocketListen,
+
+    fn run(self: *WebSocketServer) !void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var address = net.IpAddress.parse(self.address.host, self.address.port) catch return error.UnsupportedAppServerListenUrl;
+        var server = try address.listen(io, .{ .reuse_address = true });
+        defer server.deinit(io);
+
+        const actual_port = server.socket.address.getPort();
+        const bind_message = try std.fmt.allocPrint(self.allocator, "app-server websocket listening on ws://{s}:{d}\n", .{ self.address.host, actual_port });
+        defer self.allocator.free(bind_message);
+        try cli_utils.writeStderr(bind_message);
+
+        var state = AppServerState{};
+        defer state.deinit(self.allocator);
+
+        while (true) {
+            var stream = try server.accept(io);
+            self.handleConnection(&state, io, &stream) catch |err| {
+                const message = std.fmt.allocPrint(
+                    self.allocator,
+                    "[app-server] websocket connection error: {s}\n",
+                    .{@errorName(err)},
+                ) catch null;
+                if (message) |stderr_message| {
+                    defer self.allocator.free(stderr_message);
+                    cli_utils.writeStderr(stderr_message) catch {};
+                }
+                stream.close(io);
+                continue;
+            };
+            stream.close(io);
+        }
+    }
+
+    fn handleConnection(
+        self: *WebSocketServer,
+        state: *AppServerState,
+        io: std.Io,
+        stream: *net.Stream,
+    ) !void {
+        var input_buffer: [64 * 1024]u8 = undefined;
+        var output_buffer: [64 * 1024]u8 = undefined;
+        var reader = stream.reader(io, &input_buffer);
+        var writer = stream.writer(io, &output_buffer);
+        var http_server: std.http.Server = .init(&reader.interface, &writer.interface);
+        var request = http_server.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing => return,
+            else => return err,
+        };
+
+        if (std.mem.eql(u8, request.head.target, "/readyz") or std.mem.eql(u8, request.head.target, "/healthz")) {
+            try request.respond("OK\n", .{
+                .status = .ok,
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "text/plain; charset=utf-8" },
+                    .{ .name = "Connection", .value = "close" },
+                },
+            });
+            return;
+        }
+
+        if (request.head.method != .GET) {
+            try request.respond("Not Found\n", .{ .status = .not_found });
+            return;
+        }
+
+        const websocket_key = websocketHeaderValue(&request, "sec-websocket-key") orelse {
+            try request.respond("Bad Request\n", .{ .status = .bad_request });
+            return;
+        };
+        if (!websocketHeaderEquals(&request, "upgrade", "websocket") or
+            !websocketConnectionIncludesUpgrade(&request) or
+            !websocketHeaderEquals(&request, "sec-websocket-version", "13"))
+        {
+            try request.respond("Bad Request\n", .{ .status = .bad_request });
+            return;
+        }
+        const accept = try websocketAcceptValue(self.allocator, websocket_key);
+        defer self.allocator.free(accept);
+
+        try writer.interface.print(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n\r\n",
+            .{accept},
+        );
+        try writer.interface.flush();
+
+        while (true) {
+            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface) orelse return;
+            defer self.allocator.free(payload);
+            const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+            if (trimmed.len == 0) continue;
+
+            const response = handleJsonRpcLine(self.allocator, state, trimmed) catch |err| {
+                const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle websocket message: {s}\n", .{@errorName(err)});
+                defer self.allocator.free(message);
+                try cli_utils.writeStderr(message);
+                continue;
+            };
+            try writePreResponseNotificationsWebSocket(self.allocator, state, &writer.interface);
+            if (response) |payload_response| {
+                defer self.allocator.free(payload_response);
+                try writeWebSocketTextFrame(&writer.interface, payload_response);
+            }
+            try queueExternalFsWatchNotifications(self.allocator, state);
+            try writePendingNotificationsWebSocket(self.allocator, state, &writer.interface);
+        }
+    }
+};
+
+fn websocketHeaderValue(request: *const std.http.Server.Request, name: []const u8) ?[]const u8 {
+    var iter = request.iterateHeaders();
+    while (iter.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return std.mem.trim(u8, header.value, " \t\r\n");
+    }
+    return null;
+}
+
+fn websocketHeaderEquals(request: *const std.http.Server.Request, name: []const u8, expected: []const u8) bool {
+    const value = websocketHeaderValue(request, name) orelse return false;
+    return std.ascii.eqlIgnoreCase(value, expected);
+}
+
+fn websocketConnectionIncludesUpgrade(request: *const std.http.Server.Request) bool {
+    const value = websocketHeaderValue(request, "connection") orelse return false;
+    var parts = std.mem.splitScalar(u8, value, ',');
+    while (parts.next()) |part| {
+        const token = std.mem.trim(u8, part, " \t\r\n");
+        if (std.ascii.eqlIgnoreCase(token, "upgrade")) return true;
+    }
+    return false;
+}
+
+fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
+    const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ key, magic });
+    defer allocator.free(combined);
+    var digest: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+    std.crypto.hash.Sha1.hash(combined, &digest, .{});
+    const encoded_len = std.base64.standard.Encoder.calcSize(digest.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(encoded, &digest);
+    return encoded;
+}
+
+fn readWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !?[]const u8 {
+    while (true) {
+        const first = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return null,
+            else => return err,
+        };
+        const second = try reader.takeByte();
+        const fin = (first & 0x80) != 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) != 0;
+        var payload_len: u64 = second & 0x7f;
+        if (payload_len == 126) {
+            payload_len = try reader.takeInt(u16, .big);
+        } else if (payload_len == 127) {
+            payload_len = try reader.takeInt(u64, .big);
+        }
+        if (!fin) return error.UnsupportedWebSocketFragment;
+        if (!masked) return error.UnmaskedWebSocketClientFrame;
+        if (payload_len > 16 * 1024 * 1024) return error.WebSocketFrameTooLarge;
+
+        const mask = try reader.takeArray(4);
+        const payload = try allocator.alloc(u8, @intCast(payload_len));
+        errdefer allocator.free(payload);
+        try reader.readSliceAll(payload);
+        for (payload, 0..) |*byte, index| {
+            byte.* ^= mask[index % 4];
+        }
+
+        switch (opcode) {
+            0x1 => return payload,
+            0x8 => {
+                try writeWebSocketFrame(writer, 0x8, payload);
+                allocator.free(payload);
+                return null;
+            },
+            0x9 => {
+                try writeWebSocketFrame(writer, 0xA, payload);
+                allocator.free(payload);
+                continue;
+            },
+            0xA => {
+                allocator.free(payload);
+                continue;
+            },
+            else => {
+                allocator.free(payload);
+                return error.UnsupportedWebSocketOpcode;
+            },
+        }
+    }
+}
+
+fn writeWebSocketTextFrame(writer: *std.Io.Writer, payload: []const u8) !void {
+    try writeWebSocketFrame(writer, 0x1, payload);
+}
+
+fn writeWebSocketFrame(writer: *std.Io.Writer, opcode: u8, payload: []const u8) !void {
+    try writer.writeByte(0x80 | (opcode & 0x0f));
+    if (payload.len <= 125) {
+        try writer.writeByte(@intCast(payload.len));
+    } else if (payload.len <= std.math.maxInt(u16)) {
+        try writer.writeByte(126);
+        try writer.writeInt(u16, @intCast(payload.len), .big);
+    } else {
+        try writer.writeByte(127);
+        try writer.writeInt(u64, @intCast(payload.len), .big);
+    }
+    try writer.writeAll(payload);
+    try writer.flush();
+}
+
 fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line: []const u8) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
@@ -46017,6 +46232,15 @@ fn writePreResponseNotificationsStream(allocator: std.mem.Allocator, state: *App
     }
 }
 
+fn writePreResponseNotificationsWebSocket(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    var notifications = state.pre_response_notifications;
+    state.pre_response_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeWebSocketTextFrame(writer, payload);
+    }
+}
+
 fn writePendingNotificationsStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
     var notifications = state.pending_notifications;
     state.pending_notifications = .empty;
@@ -46032,6 +46256,15 @@ fn writePendingNotificationsStream(allocator: std.mem.Allocator, state: *AppServ
     defer freePendingNotifications(allocator, &notifications);
     for (notifications.items) |payload| {
         try writeStreamLine(writer, payload);
+    }
+}
+
+fn writePendingNotificationsWebSocket(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    var notifications = state.pending_notifications;
+    state.pending_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try writeWebSocketTextFrame(writer, payload);
     }
 }
 
