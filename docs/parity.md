@@ -641,8 +641,8 @@ rejects invalid reasoning-effort labels before issuing a provider request,
 stores the selected effort on the loaded-thread runtime state, and applies
 that effort to the current and subsequent Responses requests. The
 generated TypeScript and JSON schemas include `TurnStartParams.effort`. Rust
-collaboration mode, permission-profile, and `sandboxPolicy` turn-context
-overrides remain planned.
+collaboration mode and permission-profile turn-context overrides remain
+planned.
 
 Additional app-server turn-start approvals-reviewer override coverage:
 `turn/start` now accepts Rust-compatible `approvalsReviewer` overrides for
@@ -658,8 +658,8 @@ threads, rejects invalid personality labels before issuing a provider request,
 stores the selected personality on the loaded-thread runtime state, and applies
 it to the current and subsequent Responses request instructions. The generated
 TypeScript and JSON schemas include `TurnStartParams.personality`. Rust
-collaboration mode, permission-profile, and `sandboxPolicy` turn-context
-overrides remain planned.
+collaboration mode and permission-profile turn-context overrides remain
+planned.
 
 Additional app-server turn-start reasoning-summary override coverage:
 `turn/start` now accepts Rust-compatible `summary` overrides for
@@ -668,6 +668,17 @@ issuing a provider request, stores the selected summary mode on the
 loaded-thread runtime state, and applies that summary mode to the current and
 subsequent Responses requests. The generated TypeScript and JSON schemas
 include `TurnStartParams.summary`.
+
+Additional app-server turn-start sandbox-policy override coverage:
+`turn/start` now accepts Rust-compatible `sandboxPolicy` objects that map
+cleanly to the current loaded-thread sandbox modes, rejects conflicts with the
+legacy `sandbox` field before issuing a provider request, rejects rich
+root/network variants the current runtime cannot preserve yet, stores the
+selected mode on the loaded-thread runtime state, and preserves it across
+subsequent thread lifecycle responses. The generated TypeScript and JSON
+schemas include `TurnStartParams.sandboxPolicy`. Full preservation and
+enforcement of custom writable roots, network-enabled sandbox policies, and
+`externalSandbox` turn-context policies remain planned.
 
 Additional app-server thread status coverage: `turn/start` now emits
 Rust-shaped `thread/status/changed` notifications for the active state before
