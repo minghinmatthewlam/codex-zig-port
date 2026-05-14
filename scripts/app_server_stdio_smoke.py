@@ -1172,6 +1172,7 @@ def assert_turn_start_rpc_completed(
 ) -> dict:
     response = read_json_line(proc, 5)
     assert response["id"] == response_id
+    assert "result" in response, response
     assert response["result"]["turn"]["status"] == "inProgress"
     assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
     assert read_json_line(proc, 5)["method"] == "turn/started"
@@ -5608,6 +5609,90 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "turns"
                 ][-1]["items"][0]["text"]
                 assert "<proposed_plan>" in clear_agent_text
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-external-sandbox-policy",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "externalSandbox",
+                                "networkAccess": "invalid",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "invalid external sandbox policy",
+                                },
+                            ],
+                        },
+                    },
+                )
+                invalid_external_sandbox = read_json_line(proc, 5)
+                assert (
+                    invalid_external_sandbox["id"]
+                    == "turn-start-invalid-external-sandbox-policy"
+                )
+                assert invalid_external_sandbox["error"]["code"] == -32602
+                assert (
+                    invalid_external_sandbox["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 23
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-external-sandbox-policy",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "externalSandbox",
+                                "networkAccess": "enabled",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use external sandbox policy",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-external-sandbox-policy"
+                )
+                assert server.request_paths == ["/responses"] * 24
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-external-sandbox",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_external_sandbox = read_json_line(proc, 5)
+                assert fork_after_external_sandbox["id"] == (
+                    "thread-fork-after-external-sandbox"
+                )
+                assert fork_after_external_sandbox["result"]["sandbox"] == {
+                    "type": "dangerFullAccess"
+                }
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_external_sandbox["result"]["thread"],
+                )
 
             assert proc.stdin is not None
             proc.stdin.close()

@@ -680,14 +680,16 @@ include `TurnStartParams.summary`.
 
 Additional app-server turn-start sandbox-policy override coverage:
 `turn/start` now accepts Rust-compatible `sandboxPolicy` objects that map
-cleanly to the current loaded-thread sandbox modes, rejects conflicts with the
-legacy `sandbox` field before issuing a provider request, rejects rich
-root/network variants the current runtime cannot preserve yet, stores the
-selected mode on the loaded-thread runtime state, and preserves it across
-subsequent thread lifecycle responses. The generated TypeScript and JSON
-schemas include `TurnStartParams.sandboxPolicy`. Full preservation and
-enforcement of custom writable roots, network-enabled sandbox policies, and
-`externalSandbox` turn-context policies remain planned.
+cleanly to the current loaded-thread sandbox modes, including
+`externalSandbox` network-access hints lowered to the current
+danger-full-access runtime mode. It rejects conflicts with the legacy
+`sandbox` field before issuing a provider request, rejects rich root/network
+variants the current runtime cannot preserve yet, stores the selected mode on
+the loaded-thread runtime state, and preserves it across subsequent thread
+lifecycle responses. The generated TypeScript and JSON schemas include
+`TurnStartParams.sandboxPolicy`. Full preservation and enforcement of custom
+writable roots and network-enabled non-external sandbox policies remain
+planned.
 
 Additional app-server turn-start permissions override coverage:
 `turn/start` now accepts Rust-compatible `permissions` profile selections for
