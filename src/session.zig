@@ -281,6 +281,8 @@ pub const TurnOptions = struct {
     diff_update_callback: ?DiffUpdateCallback = null,
     raw_response_item_callback: ?RawResponseItemCallback = null,
     reasoning_event_callback: ?ReasoningEventCallback = null,
+    server_model_callback: ?ServerModelCallback = null,
+    model_verification_callback: ?ModelVerificationCallback = null,
     workdir: ?[]const u8 = null,
 };
 
@@ -302,6 +304,16 @@ pub const RawResponseItemCallback = struct {
 pub const ReasoningEventCallback = struct {
     ctx: *anyopaque,
     on_reasoning_event: *const fn (ctx: *anyopaque, event: api.ReasoningEvent) anyerror!void,
+};
+
+pub const ServerModelCallback = struct {
+    ctx: *anyopaque,
+    on_server_model: *const fn (ctx: *anyopaque, model: []const u8) anyerror!void,
+};
+
+pub const ModelVerificationCallback = struct {
+    ctx: *anyopaque,
+    on_model_verifications: *const fn (ctx: *anyopaque, verifications: []const api.ModelVerification) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -446,6 +458,8 @@ pub fn runTurnWithOptions(
 
     var final_text = std.ArrayList(u8).empty;
     errdefer final_text.deinit(allocator);
+    var last_reported_server_model: ?[]const u8 = null;
+    defer if (last_reported_server_model) |model| allocator.free(model);
 
     var mcp_catalog = try mcp_runtime.loadCatalog(allocator, cfg.codex_home);
     defer mcp_catalog.deinit(allocator);
@@ -479,6 +493,26 @@ pub fn runTurnWithOptions(
         if (options.reasoning_event_callback) |callback| {
             for (response.reasoning_events) |event| {
                 try callback.on_reasoning_event(callback.ctx, event);
+            }
+        }
+        if (response.server_model) |server_model| {
+            if (options.server_model_callback) |callback| {
+                const changed = if (last_reported_server_model) |last|
+                    !std.ascii.eqlIgnoreCase(last, server_model)
+                else
+                    true;
+                if (changed) {
+                    const copy = try allocator.dupe(u8, server_model);
+                    errdefer allocator.free(copy);
+                    try callback.on_server_model(callback.ctx, server_model);
+                    if (last_reported_server_model) |last| allocator.free(last);
+                    last_reported_server_model = copy;
+                }
+            }
+        }
+        if (response.model_verifications.len > 0) {
+            if (options.model_verification_callback) |callback| {
+                try callback.on_model_verifications(callback.ctx, response.model_verifications);
             }
         }
 

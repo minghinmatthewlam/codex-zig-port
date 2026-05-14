@@ -36,11 +36,23 @@ pub const ReasoningEvent = struct {
     }
 };
 
+pub const ModelVerification = enum {
+    trusted_access_for_cyber,
+
+    pub fn label(self: ModelVerification) []const u8 {
+        return switch (self) {
+            .trusted_access_for_cyber => "trustedAccessForCyber",
+        };
+    }
+};
+
 pub const ParsedResponse = struct {
     text: []const u8,
     function_calls: []FunctionCall,
     raw_response_items: []const []const u8,
     reasoning_events: []const ReasoningEvent,
+    server_model: ?[]const u8,
+    model_verifications: []const ModelVerification,
 
     pub fn deinit(self: *ParsedResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
@@ -50,6 +62,8 @@ pub const ParsedResponse = struct {
         allocator.free(self.raw_response_items);
         for (self.reasoning_events) |event| event.deinit(allocator);
         allocator.free(self.reasoning_events);
+        if (self.server_model) |server_model| allocator.free(server_model);
+        allocator.free(self.model_verifications);
     }
 };
 
@@ -723,6 +737,10 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         for (reasoning_events.items) |event| event.deinit(allocator);
         reasoning_events.deinit(allocator);
     }
+    var server_model: ?[]const u8 = null;
+    errdefer if (server_model) |model| allocator.free(model);
+    var model_verifications = std.ArrayList(ModelVerification).empty;
+    errdefer model_verifications.deinit(allocator);
 
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
@@ -739,6 +757,13 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         };
         const event_type = object.get("type") orelse continue;
         if (event_type != .string) continue;
+
+        if (server_model == null) {
+            server_model = try parseServerModel(allocator, object);
+        }
+        if (std.mem.eql(u8, event_type.string, "response.metadata")) {
+            try appendModelVerifications(&model_verifications, allocator, object);
+        }
 
         if (std.mem.eql(u8, event_type.string, "response.output_text.delta")) {
             if (object.get("delta")) |delta| {
@@ -778,7 +803,81 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         .function_calls = try calls.toOwnedSlice(allocator),
         .raw_response_items = try raw_response_items.toOwnedSlice(allocator),
         .reasoning_events = try reasoning_events.toOwnedSlice(allocator),
+        .server_model = server_model,
+        .model_verifications = try model_verifications.toOwnedSlice(allocator),
     };
+}
+
+fn parseServerModel(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    if (object.get("response")) |response| {
+        if (response == .object) {
+            if (try parseServerModelFromObject(allocator, response.object)) |model| return model;
+        }
+    }
+    return parseServerModelFromObject(allocator, object);
+}
+
+fn parseServerModelFromObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    const headers = object.get("headers") orelse return null;
+    if (headers != .object) return null;
+
+    var iterator = headers.object.iterator();
+    while (iterator.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (!std.ascii.eqlIgnoreCase(name, "openai-model") and
+            !std.ascii.eqlIgnoreCase(name, "x-openai-model"))
+        {
+            continue;
+        }
+        const model = jsonStringOrFirstArrayString(entry.value_ptr.*) orelse continue;
+        if (model.len == 0) continue;
+        return try allocator.dupe(u8, model);
+    }
+    return null;
+}
+
+fn jsonStringOrFirstArrayString(value: std.json.Value) ?[]const u8 {
+    switch (value) {
+        .string => |string| return string,
+        .array => |array| {
+            if (array.items.len == 0) return null;
+            const first = array.items[0];
+            if (first != .string) return null;
+            return first.string;
+        },
+        else => return null,
+    }
+}
+
+fn appendModelVerifications(
+    verifications: *std.ArrayList(ModelVerification),
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !void {
+    const metadata = object.get("metadata") orelse return;
+    if (metadata != .object) return;
+    const recommendation = metadata.object.get("openai_verification_recommendation") orelse return;
+    if (recommendation != .array) return;
+
+    for (recommendation.array.items) |item| {
+        if (item != .string) continue;
+        const verification = parseModelVerification(item.string) orelse continue;
+        if (containsModelVerification(verifications.items, verification)) continue;
+        try verifications.append(allocator, verification);
+    }
+}
+
+fn parseModelVerification(raw: []const u8) ?ModelVerification {
+    if (std.mem.eql(u8, raw, "trusted_access_for_cyber")) return .trusted_access_for_cyber;
+    if (std.mem.eql(u8, raw, "trustedAccessForCyber")) return .trusted_access_for_cyber;
+    return null;
+}
+
+fn containsModelVerification(verifications: []const ModelVerification, needle: ModelVerification) bool {
+    for (verifications) |verification| {
+        if (verification == needle) return true;
+    }
+    return false;
 }
 
 fn parseReasoningEvent(
@@ -985,6 +1084,20 @@ test "parses SSE reasoning events" {
     try std.testing.expectEqualStrings("thinking", parsed.reasoning_events[1].delta);
     try std.testing.expectEqual(ReasoningEventKind.text_delta, parsed.reasoning_events[2].kind);
     try std.testing.expectEqual(@as(i64, 2), parsed.reasoning_events[2].index);
+}
+
+test "parses SSE model metadata" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.created\",\"response\":{\"headers\":{\"OpenAI-Model\":\"gpt-rerouted\"}}}\n" ++
+        "data: {\"type\":\"response.metadata\",\"metadata\":{\"openai_verification_recommendation\":[\"trusted_access_for_cyber\",\"unknown\",\"trusted_access_for_cyber\"]}}\n" ++
+        "data: [DONE]\n";
+    var parsed = try parseSseResponse(allocator, body);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("gpt-rerouted", parsed.server_model.?);
+    try std.testing.expectEqual(@as(usize, 1), parsed.model_verifications.len);
+    try std.testing.expectEqual(ModelVerification.trusted_access_for_cyber, parsed.model_verifications[0]);
 }
 
 test "parses SSE failed response as API failure" {

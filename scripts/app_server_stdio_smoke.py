@@ -6328,6 +6328,166 @@ def run_turn_reasoning_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_model_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-requested-model"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-model-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-model",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-model"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                model_events = [
+                    {
+                        "type": "response.created",
+                        "response": {
+                            "headers": {
+                                "OpenAI-Model": "gpt-rerouted-model",
+                            },
+                        },
+                    },
+                    {
+                        "type": "response.metadata",
+                        "metadata": {
+                            "openai_verification_recommendation": [
+                                "trusted_access_for_cyber",
+                                "unknown",
+                                "trusted_access_for_cyber",
+                            ],
+                        },
+                    },
+                    {
+                        "type": "response.output_text.delta",
+                        "delta": "model checked reply",
+                    },
+                ]
+                payload = "".join(
+                    f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                    for event in model_events
+                )
+                server.response_payloads.append((payload + "data: [DONE]\n\n").encode())
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-model",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "show model notifications"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-model"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+
+                assert read_json_line(proc, 5) == {
+                    "jsonrpc": "2.0",
+                    "method": "model/rerouted",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "fromModel": "gpt-requested-model",
+                        "toModel": "gpt-rerouted-model",
+                        "reason": "highRiskCyberActivity",
+                    },
+                }
+                assert read_json_line(proc, 5) == {
+                    "jsonrpc": "2.0",
+                    "method": "model/verification",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "verifications": ["trustedAccessForCyber"],
+                    },
+                }
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "model checked reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == "model checked reply"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == ["/responses"]
+                assert server.request_bodies[0]["model"] == "gpt-requested-model"
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_tool_cwd_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-tool-cwd-home-", dir="/tmp"))
@@ -32491,6 +32651,8 @@ def main() -> None:
     print("app-server-turn-plan-updated-notification-e2e: ok")
     run_turn_reasoning_notification_smoke(binary)
     print("app-server-turn-reasoning-notification-e2e: ok")
+    run_turn_model_notification_smoke(binary)
+    print("app-server-turn-model-notification-e2e: ok")
     run_turn_tool_cwd_smoke(binary)
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_diff_opt_out_smoke(binary)

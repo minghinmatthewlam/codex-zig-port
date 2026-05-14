@@ -25846,6 +25846,15 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var model_notification_context = ModelNotificationContext{
+        .allocator = allocator,
+        .rerouted_enabled = !notificationMethodOptedOut(state, "model/rerouted"),
+        .verification_enabled = !notificationMethodOptedOut(state, "model/verification"),
+        .requested_model = cfg.model,
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
@@ -25870,6 +25879,14 @@ fn handleTurnStart(
         .reasoning_event_callback = .{
             .ctx = &reasoning_event_context,
             .on_reasoning_event = handleSessionReasoningEvent,
+        },
+        .server_model_callback = .{
+            .ctx = &model_notification_context,
+            .on_server_model = handleSessionServerModel,
+        },
+        .model_verification_callback = .{
+            .ctx = &model_notification_context,
+            .on_model_verifications = handleSessionModelVerifications,
         },
         .workdir = thread.cwd,
     }) catch |err| {
@@ -27531,6 +27548,16 @@ const ReasoningEventNotificationContext = struct {
     notifications: *std.ArrayList([]const u8),
 };
 
+const ModelNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    rerouted_enabled: bool,
+    verification_enabled: bool,
+    requested_model: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void {
     const context: *PlanUpdateNotificationContext = @ptrCast(@alignCast(ctx));
     if (!context.enabled) return;
@@ -27576,6 +27603,26 @@ fn handleSessionReasoningEvent(ctx: *anyopaque, event: api.ReasoningEvent) anyer
     try context.notifications.append(context.allocator, notification);
 }
 
+fn handleSessionServerModel(ctx: *anyopaque, model: []const u8) anyerror!void {
+    const context: *ModelNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.rerouted_enabled) return;
+    if (std.ascii.eqlIgnoreCase(context.requested_model, model)) return;
+
+    const notification = try renderModelReroutedNotification(context.allocator, context.thread_id, context.turn_id, context.requested_model, model);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionModelVerifications(ctx: *anyopaque, verifications: []const api.ModelVerification) anyerror!void {
+    const context: *ModelNotificationContext = @ptrCast(@alignCast(ctx));
+    if (!context.verification_enabled) return;
+    if (verifications.len == 0) return;
+
+    const notification = try renderModelVerificationNotification(context.allocator, context.thread_id, context.turn_id, verifications);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
+}
+
 fn movePendingTurnUpdateNotifications(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -27617,6 +27664,48 @@ fn renderReasoningEventNotification(
         .summary_part_added => renderReasoningSummaryPartAddedNotification(allocator, thread_id, turn_id, event.item_id, event.index),
         .text_delta => renderReasoningTextDeltaNotification(allocator, thread_id, turn_id, event.item_id, event.delta, event.index),
     };
+}
+
+fn renderModelReroutedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    from_model: []const u8,
+    to_model: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"model/rerouted\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"fromModel\":");
+    try appendJsonString(allocator, &notification, from_model);
+    try notification.appendSlice(allocator, ",\"toModel\":");
+    try appendJsonString(allocator, &notification, to_model);
+    try notification.appendSlice(allocator, ",\"reason\":\"highRiskCyberActivity\"}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderModelVerificationNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    verifications: []const api.ModelVerification,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"model/verification\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"verifications\":[");
+    for (verifications, 0..) |verification, index| {
+        if (index > 0) try notification.appendSlice(allocator, ",");
+        try appendJsonString(allocator, &notification, verification.label());
+    }
+    try notification.appendSlice(allocator, "]}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn renderReasoningSummaryTextDeltaNotification(
