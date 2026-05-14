@@ -7198,6 +7198,257 @@ def run_turn_terminal_interaction_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_background_terminal_clean_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-background-clean-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-background-clean"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-background-clean-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-background-clean",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-background-clean"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                start_event = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "background-tty-start",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "read line; printf '%s\\n' \"$line\"",
+                                "tty": True,
+                                "yield_time_ms": 100,
+                                "max_output_tokens": 1000,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(start_event, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"started background terminal"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-background-terminal",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "start a background terminal"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-background-terminal"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+
+                raw_start_item_completed = read_json_line(proc, 5)
+                assert raw_start_item_completed["method"] == "rawResponseItem/completed"
+                assert (
+                    raw_start_item_completed["params"]["item"]["call_id"]
+                    == "background-tty-start"
+                )
+                start_output_delta = read_json_line(proc, 5)
+                assert start_output_delta["method"] == "item/commandExecution/outputDelta"
+                assert start_output_delta["params"]["itemId"] == "background-tty-start"
+                assert "Process running with session ID 1000" in start_output_delta["params"]["delta"]
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "started background terminal"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-clean-after-pty",
+                        "method": "thread/backgroundTerminals/clean",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                clean = read_json_line(proc, 5)
+                assert clean["id"] == "thread-background-clean-after-pty"
+                assert clean["result"] == {}
+
+                stdin_event = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "background-tty-stdin-after-clean",
+                        "name": "write_stdin",
+                        "arguments": json.dumps(
+                            {
+                                "session_id": 1000,
+                                "chars": "after-clean\n",
+                                "yield_time_ms": 100,
+                                "max_output_tokens": 1000,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(stdin_event, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"cleaned background terminal"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-write-after-background-clean",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "write after cleanup"}],
+                        },
+                    },
+                )
+                second_turn = read_json_line(proc, 5)
+                assert second_turn["id"] == "turn-write-after-background-clean"
+                assert isinstance(second_turn["result"]["turn"]["id"], str)
+                assert second_turn["result"]["turn"]["id"]
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+
+                raw_stdin_item_completed = read_json_line(proc, 5)
+                assert raw_stdin_item_completed["method"] == "rawResponseItem/completed"
+                assert (
+                    raw_stdin_item_completed["params"]["item"]["call_id"]
+                    == "background-tty-stdin-after-clean"
+                )
+                stdin_output_delta = read_json_line(proc, 5)
+                assert stdin_output_delta["method"] == "item/commandExecution/outputDelta"
+                assert stdin_output_delta["params"]["itemId"] == "background-tty-stdin-after-clean"
+                assert "unknown exec session: 1000" in stdin_output_delta["params"]["delta"]
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "cleaned background terminal"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == [
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                    "/responses",
+                ]
+                second_request = server.request_bodies[1]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "background-tty-start"
+                    and "Process running with session ID 1000" in item.get("output", "")
+                    for item in second_request["input"]
+                )
+                fourth_request = server.request_bodies[3]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "background-tty-stdin-after-clean"
+                    and "unknown exec session: 1000" in item.get("output", "")
+                    for item in fourth_request["input"]
+                )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_diff_opt_out_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-diff-opt-out-home-", dir="/tmp"))
@@ -33171,6 +33422,8 @@ def main() -> None:
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
+    run_thread_background_terminal_clean_smoke(binary)
+    print("app-server-thread-background-terminal-clean-e2e: ok")
     run_turn_diff_opt_out_smoke(binary)
     print("app-server-turn-diff-opt-out-e2e: ok")
     run_turn_control_rpc_smoke(binary)
