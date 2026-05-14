@@ -200,7 +200,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - persist feature flags and Rust legacy aliases globally or per profile with
   `features enable|disable`, including Rust-like root clearing for default-off
   flags, under-development warnings for direct root enables, and app-server
-  startup warnings for config-enabled under-development features
+  startup warnings for config-enabled under-development features plus
+  deprecation notices for legacy feature keys
 - emit app-server startup deprecation notices for
   `experimental_instructions_file`
 - emit app-server startup warnings for deprecated `on-failure` approval-policy
@@ -273,10 +274,10 @@ The `e2e` step starts a local mock Responses server, launches the real
 runtime feature toggles through `features list`, profile-scoped feature
 persistence, Rust legacy feature aliases, direct under-development enable
 warnings, app-server startup warnings for config-enabled under-development
-features, suppression with `suppress_unstable_features_warning = true`,
-deprecated `experimental_instructions_file` notices, deprecated `on-failure`
-approval-policy warnings, and root default-off feature clearing, checks
-`help [COMMAND]`,
+features, suppression with `suppress_unstable_features_warning = true`, legacy
+feature-key deprecation notices, deprecated `experimental_instructions_file`
+notices, deprecated `on-failure` approval-policy warnings, and root default-off
+feature clearing, checks `help [COMMAND]`,
 verifies exact generated shell completion output for bash, elvish, fish,
 powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
