@@ -445,7 +445,10 @@ post-response `process/outputDelta` notifications for `streamStdoutStderr`, and
 post-response `process/exited` notifications.
 Follow-up methods validate params and base64 payloads, then return
 Rust-shaped inactive-process errors until true async process lifecycle, PTY,
-stdin streaming, kill, and resize support are implemented.
+stdin streaming, kill, and resize support are implemented. Empty
+`processHandle` values on follow-up calls preserve Rust validation order:
+payload/size errors win first, otherwise the inactive-process error includes
+the empty handle.
 
 Current app-server Windows sandbox RPC coverage includes generated TypeScript
 and JSON Schema artifacts for `windowsSandbox/readiness`,
