@@ -232,7 +232,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `collaborationMode/list`, and `fuzzyFileSearch/session*`
 - require `initialize.params.capabilities.experimentalApi` for implemented
   Rust experimental app-server request fields on `thread/start`,
-  `thread/resume`, `thread/fork`, and `turn/start`
+  `thread/resume`, `thread/fork`, `turn/start`, `turn/steer`,
+  `command/exec`, and `account/login/start`
 - suppress implemented Rust experimental app-server server notifications,
   including `thread/goal/*` and `process/*`, until the client enables
   `experimentalApi`
