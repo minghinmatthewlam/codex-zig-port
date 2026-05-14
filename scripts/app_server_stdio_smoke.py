@@ -9527,6 +9527,25 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "fuzzy-session-cleared-query",
+                    "method": "fuzzyFileSearch/sessionUpdate",
+                    "params": {"sessionId": "session-1", "query": ""},
+                },
+            )
+            cleared_query = read_json_line(proc, 5)
+            assert cleared_query["id"] == "fuzzy-session-cleared-query"
+            assert cleared_query["result"] == {}
+            cleared_updated = read_json_line(proc, 5)
+            assert cleared_updated["method"] == "fuzzyFileSearch/sessionUpdated"
+            assert cleared_updated["params"] == {"sessionId": "session-1", "query": "", "files": []}
+            cleared_completed = read_json_line(proc, 5)
+            assert cleared_completed["method"] == "fuzzyFileSearch/sessionCompleted"
+            assert cleared_completed["params"]["sessionId"] == "session-1"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "fuzzy-session-stop",
                     "method": "fuzzyFileSearch/sessionStop",
                     "params": {"sessionId": "session-1"},
