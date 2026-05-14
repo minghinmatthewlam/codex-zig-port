@@ -5142,6 +5142,202 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     fork_after_sandbox_policy["result"]["thread"],
                 )
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-sandbox-policy-conflict",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {"type": "readOnly"},
+                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "conflicting permissions and sandbox policy",
+                                },
+                            ],
+                        },
+                    },
+                )
+                permissions_sandbox_policy_conflict = read_json_line(proc, 5)
+                assert (
+                    permissions_sandbox_policy_conflict["id"]
+                    == "turn-start-permissions-sandbox-policy-conflict"
+                )
+                assert permissions_sandbox_policy_conflict["error"]["code"] == -32602
+                assert (
+                    permissions_sandbox_policy_conflict["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 16
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-sandbox-conflict",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandbox": "workspace-write",
+                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "conflicting permissions and sandbox",
+                                },
+                            ],
+                        },
+                    },
+                )
+                permissions_sandbox_conflict = read_json_line(proc, 5)
+                assert (
+                    permissions_sandbox_conflict["id"]
+                    == "turn-start-permissions-sandbox-conflict"
+                )
+                assert permissions_sandbox_conflict["error"]["code"] == -32602
+                assert (
+                    permissions_sandbox_conflict["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 16
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-permissions",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "permissions": {
+                                "type": "profile",
+                                "id": ":read-only",
+                                "modifications": [
+                                    {
+                                        "type": "additionalWritableRoot",
+                                        "path": "relative-root",
+                                    },
+                                ],
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "invalid permissions modification",
+                                },
+                            ],
+                        },
+                    },
+                )
+                invalid_permissions = read_json_line(proc, 5)
+                assert invalid_permissions["id"] == "turn-start-invalid-permissions"
+                assert invalid_permissions["error"]["code"] == -32602
+                assert (
+                    invalid_permissions["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 16
+
+                permission_root = codex_home / "turn-permissions-root"
+                permission_root.mkdir()
+                permission_file = permission_root / "allowed.txt"
+                permission_script = (
+                    "from pathlib import Path; "
+                    f"Path({str(permission_file)!r}).write_text('allowed-by-turn-permissions'); "
+                    "print('turn permissions write ok')"
+                )
+                permission_command = f"python3 -c {json.dumps(permission_script)}"
+                permission_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": permission_command,
+                                "workdir": cwd,
+                            }
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(permission_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-read-only-extra-root",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": ":read-only",
+                                "modifications": [
+                                    {
+                                        "type": "additionalWritableRoot",
+                                        "path": str(permission_root),
+                                    },
+                                ],
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use permissions extra root",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-read-only-extra-root"
+                )
+                assert server.request_paths == ["/responses"] * 18
+                permissions_followup_request = server.request_bodies[-1]
+                permission_tool_output = next(
+                    item
+                    for item in permissions_followup_request["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-permissions"
+                )
+                assert "turn permissions write ok" in permission_tool_output["output"], (
+                    permission_tool_output["output"]
+                )
+                assert permission_file.read_text(encoding="utf-8") == (
+                    "allowed-by-turn-permissions"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-permissions",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_permissions = read_json_line(proc, 5)
+                assert fork_after_permissions["id"] == "thread-fork-after-permissions"
+                assert fork_after_permissions["result"]["sandbox"]["type"] == (
+                    "workspaceWrite"
+                )
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_permissions["result"]["thread"],
+                )
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -21332,6 +21528,30 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             == "SandboxPolicy.json"
         )
+        assert (
+            turn_start_params_schema["properties"]["permissions"]["oneOf"][0]["$ref"]
+            == "PermissionProfileSelectionParams.json"
+        )
+        permission_selection_schema = json.loads(
+            (out_dir / "PermissionProfileSelectionParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permission_selection_schema["oneOf"][0]["required"] == ["type", "id"]
+        assert (
+            permission_selection_schema["oneOf"][0]["properties"]["modifications"][
+                "oneOf"
+            ][0]["items"]["$ref"]
+            == "PermissionProfileModificationParams.json"
+        )
+        permission_modification_schema = json.loads(
+            (out_dir / "PermissionProfileModificationParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permission_modification_schema["oneOf"][0]["properties"]["path"][
+            "$ref"
+        ] == "AbsolutePathBuf.json"
         turn_start_response_schema = json.loads(
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
@@ -22911,6 +23131,20 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/SandboxPolicy"
         )
+        assert (
+            bundle["$defs"]["TurnStartParams"]["properties"]["permissions"]["oneOf"][0][
+                "$ref"
+            ]
+            == "#/$defs/PermissionProfileSelectionParams"
+        )
+        assert "PermissionProfileSelectionParams" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["PermissionProfileSelectionParams"]["oneOf"][0][
+                "properties"
+            ]["modifications"]["oneOf"][0]["items"]["$ref"]
+            == "#/$defs/PermissionProfileModificationParams"
+        )
+        assert "PermissionProfileModificationParams" in bundle["$defs"]
         assert bundle["$defs"]["UserInput"]["oneOf"][0]["properties"]["type"]["const"] == "text"
         assert bundle["$defs"]["UserInput"]["oneOf"][4]["properties"]["type"]["const"] == "mention"
         assert "NonSteerableTurnKind" in bundle["$defs"]
@@ -23314,6 +23548,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'import type { ApprovalsReviewer } from "./ApprovalsReviewer";' in (
             turn_start_params
+        )
+        assert (
+            'import type { PermissionProfileSelectionParams } from "./PermissionProfileSelectionParams";'
+            in turn_start_params
         )
         assert 'import type { SandboxPolicy } from "./SandboxPolicy";' in (
             turn_start_params
@@ -26064,6 +26302,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         assert "sandboxPolicy?: SandboxPolicy | null;" in turn_start_params
+        assert (
+            "permissions?: PermissionProfileSelectionParams | null;"
+            in turn_start_params
+        )
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
