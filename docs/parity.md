@@ -237,8 +237,10 @@ generated TypeScript and JSON Schema artifacts now include
 `ContextCompactedNotification`, exported through `v2/index.ts` and included in
 the top-level `ServerNotification` `"item/reasoning/summaryTextDelta"`,
 `"item/reasoning/summaryPartAdded"`, `"item/reasoning/textDelta"`, and
-`"thread/compacted"` union variants. Runtime emission for reasoning deltas and
-the deprecated compacted notification remains planned.
+`"thread/compacted"` union variants. Runtime emission for the deprecated
+`thread/compacted` notification is now covered after successful loaded-thread
+`thread/compact/start` compactions. Runtime emission for reasoning deltas
+remains planned.
 
 Additional app-server control/status notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include
@@ -792,8 +794,9 @@ Additional app-server loaded-thread compaction coverage:
 no-tools compact turn through the configured Responses provider, replaces and
 persists the loaded transcript with a compacted summary, refreshes loaded-thread
 preview/turns, and emits Rust-shaped `turn/*` plus `contextCompaction`
-`item/started` / `item/completed` notifications. True async return-before-work
-semantics, remote compaction variants, hooks, analytics, and complete
+`item/started` / `item/completed` notifications, followed by the deprecated
+`thread/compacted` notification. True async return-before-work semantics,
+remote compaction variants, hooks, analytics, and complete
 compaction/context reconstruction remain planned.
 
 Additional app-server thread item-injection coverage: `thread/inject_items` validates `threadId` and `items` array shape, returns Rust-shaped `thread not found` responses for unloaded threads before response-item validation, appends supported raw message/function-call/function-call-output response items to already-loaded threads, persists the updated Zig transcript, includes injected items in subsequent `turn/start` model requests, and is included in current TypeScript and JSON schema generation as an opaque item-list request. Full raw response-item schema parity remains planned.
