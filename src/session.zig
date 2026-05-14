@@ -279,6 +279,7 @@ pub const TurnOptions = struct {
     plan_mode: bool = false,
     plan_update_callback: ?PlanUpdateCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
+    raw_response_item_callback: ?RawResponseItemCallback = null,
     workdir: ?[]const u8 = null,
 };
 
@@ -290,6 +291,11 @@ pub const PlanUpdateCallback = struct {
 pub const DiffUpdateCallback = struct {
     ctx: *anyopaque,
     on_diff_updated: *const fn (ctx: *anyopaque) anyerror!void,
+};
+
+pub const RawResponseItemCallback = struct {
+    ctx: *anyopaque,
+    on_raw_response_item: *const fn (ctx: *anyopaque, item_json: []const u8) anyerror!void,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -457,6 +463,12 @@ pub fn runTurnWithOptions(
 
         if (response.text.len > 0) {
             try final_text.appendSlice(allocator, response.text);
+        }
+
+        if (options.raw_response_item_callback) |callback| {
+            for (response.raw_response_items) |item_json| {
+                try callback.on_raw_response_item(callback.ctx, item_json);
+            }
         }
 
         if (response.function_calls.len == 0) {

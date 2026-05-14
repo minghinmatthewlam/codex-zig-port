@@ -1216,7 +1216,12 @@ def assert_turn_start_rpc_completed(
     assert read_json_line(proc, 5)["method"] == "turn/started"
     assert read_json_line(proc, 5)["method"] == "item/started"
     assert read_json_line(proc, 5)["method"] == "item/completed"
-    assert read_json_line(proc, 5)["method"] == "item/started"
+    next_notification = read_json_line(proc, 5)
+    while next_notification["method"] == "rawResponseItem/completed":
+        assert next_notification["jsonrpc"] == "2.0"
+        assert next_notification["params"]["threadId"] == thread_id
+        next_notification = read_json_line(proc, 5)
+    assert next_notification["method"] == "item/started"
     assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
     assert read_json_line(proc, 5)["method"] == "item/completed"
     assert read_json_line(proc, 5)["method"] == "turn/completed"
@@ -6082,6 +6087,14 @@ def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
                 user_item_completed = read_json_line(proc, 5)
                 assert user_item_completed["method"] == "item/completed"
 
+                raw_plan_item_completed = read_json_line(proc, 5)
+                assert raw_plan_item_completed["method"] == "rawResponseItem/completed"
+                assert raw_plan_item_completed["params"]["threadId"] == thread_id
+                assert raw_plan_item_completed["params"]["turnId"] == "turn-0"
+                assert raw_plan_item_completed["params"]["item"]["type"] == "function_call"
+                assert raw_plan_item_completed["params"]["item"]["call_id"] == "plan-call-1"
+                assert raw_plan_item_completed["params"]["item"]["name"] == "update_plan"
+
                 plan_updated = read_json_line(proc, 5)
                 assert plan_updated == {
                     "jsonrpc": "2.0",
@@ -6264,6 +6277,25 @@ def run_turn_tool_cwd_smoke(binary: Path) -> None:
                 assert read_json_line(proc, 5)["method"] == "item/started"
                 assert read_json_line(proc, 5)["method"] == "item/completed"
 
+                raw_patch_item_completed = read_json_line(proc, 5)
+                assert raw_patch_item_completed["method"] == "rawResponseItem/completed"
+                assert raw_patch_item_completed["params"]["threadId"] == thread_id
+                assert raw_patch_item_completed["params"]["turnId"] == "turn-0"
+                assert raw_patch_item_completed["params"]["item"]["type"] == "function_call"
+                assert (
+                    raw_patch_item_completed["params"]["item"]["call_id"]
+                    == "cwd-patch-call"
+                )
+                raw_pwd_item_completed = read_json_line(proc, 5)
+                assert raw_pwd_item_completed["method"] == "rawResponseItem/completed"
+                assert raw_pwd_item_completed["params"]["threadId"] == thread_id
+                assert raw_pwd_item_completed["params"]["turnId"] == "turn-0"
+                assert raw_pwd_item_completed["params"]["item"]["type"] == "function_call"
+                assert (
+                    raw_pwd_item_completed["params"]["item"]["call_id"]
+                    == "cwd-pwd-call"
+                )
+
                 diff_updated = read_json_line(proc, 5)
                 assert diff_updated["method"] == "turn/diff/updated"
                 assert diff_updated["params"]["threadId"] == thread_id
@@ -6348,7 +6380,10 @@ def run_turn_diff_opt_out_smoke(binary: Path) -> None:
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
                         "capabilities": {
-                            "optOutNotificationMethods": ["turn/diff/updated"]
+                            "optOutNotificationMethods": [
+                                "rawResponseItem/completed",
+                                "turn/diff/updated",
+                            ]
                         },
                     },
                 },

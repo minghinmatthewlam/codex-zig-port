@@ -21,11 +21,14 @@ pub const FunctionCall = struct {
 pub const ParsedResponse = struct {
     text: []const u8,
     function_calls: []FunctionCall,
+    raw_response_items: []const []const u8,
 
     pub fn deinit(self: *ParsedResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
         for (self.function_calls) |call| call.deinit(allocator);
         allocator.free(self.function_calls);
+        for (self.raw_response_items) |item| allocator.free(item);
+        allocator.free(self.raw_response_items);
     }
 };
 
@@ -689,6 +692,11 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         for (calls.items) |call| call.deinit(allocator);
         calls.deinit(allocator);
     }
+    var raw_response_items = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (raw_response_items.items) |item| allocator.free(item);
+        raw_response_items.deinit(allocator);
+    }
 
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
@@ -715,6 +723,11 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         } else if (std.mem.eql(u8, event_type.string, "response.output_item.done")) {
             const item_value = object.get("item") orelse continue;
             if (item_value != .object) continue;
+            const item_json = try std.json.Stringify.valueAlloc(allocator, item_value, .{});
+            var item_json_moved = false;
+            errdefer if (!item_json_moved) allocator.free(item_json);
+            try raw_response_items.append(allocator, item_json);
+            item_json_moved = true;
             const item = item_value.object;
             const item_type = item.get("type") orelse continue;
             if (item_type != .string) continue;
@@ -735,6 +748,7 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
     return .{
         .text = try text.toOwnedSlice(allocator),
         .function_calls = try calls.toOwnedSlice(allocator),
+        .raw_response_items = try raw_response_items.toOwnedSlice(allocator),
     };
 }
 
@@ -874,6 +888,8 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("hi", parsed.text);
     try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
+    try std.testing.expectEqual(@as(usize, 1), parsed.raw_response_items.len);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.raw_response_items[0], "\"call_id\":\"c1\"") != null);
 }
 
 test "parses SSE failed response as API failure" {
