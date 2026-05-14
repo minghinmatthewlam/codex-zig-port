@@ -228,11 +228,10 @@ TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
 `ModelVerificationNotification`, exported through `v2/index.ts` and included in
 the top-level `ServerNotification` `"model/rerouted"` and
 `"model/verification"` union variants. Runtime emission is now covered for
-Responses stream-reported model headers that differ from the requested model
-and for `response.metadata` `openai_verification_recommendation` entries
-observed during app-server `turn/start`. Exact HTTP response-header capture
-remains planned because the current Zig fetch wrapper only exposes status and
-body to the session parser.
+Responses HTTP response headers or stream-reported model headers that differ
+from the requested model, and for `response.metadata`
+`openai_verification_recommendation` entries observed during app-server
+`turn/start`.
 
 Additional app-server reasoning and compaction notification generation coverage:
 generated TypeScript and JSON Schema artifacts now include
