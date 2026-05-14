@@ -168,6 +168,23 @@ fn runCheck(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !voi
     try cli_utils.writeStdout("\n");
 }
 
+pub fn validateRulesFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const contents = try readRulesFile(allocator, path);
+    defer allocator.free(contents);
+
+    var rules = std.ArrayList(PrefixRule).empty;
+    defer rules.deinit(allocator);
+    defer deinitRules(allocator, rules.items);
+    var host_executables = std.ArrayList(HostExecutable).empty;
+    defer host_executables.deinit(allocator);
+    defer deinitHostExecutables(allocator, host_executables.items);
+    var network_rules = std.ArrayList(NetworkRule).empty;
+    defer network_rules.deinit(allocator);
+    defer deinitNetworkRules(allocator, network_rules.items);
+
+    try parsePolicy(allocator, contents, &rules, &host_executables, &network_rules);
+}
+
 fn parseCheckOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !CheckOptions {
     var options = CheckOptions{};
     errdefer options.deinit(allocator);

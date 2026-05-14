@@ -21239,10 +21239,19 @@ def run_initialize_config_warning_smoke(binary: Path) -> None:
     trusted_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-trusted-project-", dir="/tmp")).resolve()
     ignored_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-ignored-home-", dir="/tmp")).resolve()
     ignored_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-ignored-project-", dir="/tmp")).resolve()
+    user_rules_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-user-rules-home-", dir="/tmp")).resolve()
+    user_rules_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-user-rules-project-", dir="/tmp")).resolve()
+    trusted_rules_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-trusted-rules-home-", dir="/tmp")).resolve()
+    trusted_rules_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-trusted-rules-project-", dir="/tmp")).resolve()
+    untrusted_rules_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-untrusted-rules-home-", dir="/tmp")).resolve()
+    untrusted_rules_project = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-warning-untrusted-rules-project-", dir="/tmp")).resolve()
     proc: subprocess.Popen[str] | None = None
     opt_out_proc: subprocess.Popen[str] | None = None
     trusted_proc: subprocess.Popen[str] | None = None
     ignored_proc: subprocess.Popen[str] | None = None
+    user_rules_proc: subprocess.Popen[str] | None = None
+    trusted_rules_proc: subprocess.Popen[str] | None = None
+    untrusted_rules_proc: subprocess.Popen[str] | None = None
     try:
         (project_root / ".codex").mkdir()
         (project_root / ".codex" / "config.toml").write_text(
@@ -21415,8 +21424,103 @@ def run_initialize_config_warning_smoke(binary: Path) -> None:
         assert ignored_loaded["result"] == {"data": [], "nextCursor": None}
         close_server(ignored_proc)
         ignored_proc = None
+
+        (user_rules_home / "rules").mkdir()
+        user_rules_path = user_rules_home / "rules" / "broken.rules"
+        user_rules_path.write_text("prefix_rule(", encoding="utf-8")
+        user_rules_proc = start_server(user_rules_home, user_rules_project)
+        write_json_line(
+            user_rules_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning-user-rules",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        user_rules_initialized = read_json_line(user_rules_proc, 5)
+        assert user_rules_initialized["id"] == "initialize-config-warning-user-rules"
+        user_rules_warning = read_json_line(user_rules_proc, 5)
+        assert user_rules_warning["jsonrpc"] == "2.0"
+        assert user_rules_warning["method"] == "configWarning"
+        assert user_rules_warning["params"]["summary"] == "Error parsing rules; custom rules not applied."
+        assert user_rules_warning["params"]["path"] == str(user_rules_path)
+        assert f"failed to parse rules file {user_rules_path}" in user_rules_warning["params"]["details"]
+        close_server(user_rules_proc)
+        user_rules_proc = None
+
+        (trusted_rules_project / ".codex" / "rules").mkdir(parents=True)
+        trusted_rules_path = trusted_rules_project / ".codex" / "rules" / "broken.rules"
+        trusted_rules_path.write_text("prefix_rule(", encoding="utf-8")
+        (trusted_rules_home / "config.toml").write_text(
+            f"[projects.{toml_string(trusted_rules_project)}]\ntrust_level = \"trusted\"\n",
+            encoding="utf-8",
+        )
+        trusted_rules_proc = start_server(trusted_rules_home, trusted_rules_project)
+        write_json_line(
+            trusted_rules_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning-trusted-rules",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        trusted_rules_initialized = read_json_line(trusted_rules_proc, 5)
+        assert trusted_rules_initialized["id"] == "initialize-config-warning-trusted-rules"
+        trusted_rules_warning = read_json_line(trusted_rules_proc, 5)
+        assert trusted_rules_warning["jsonrpc"] == "2.0"
+        assert trusted_rules_warning["method"] == "configWarning"
+        assert trusted_rules_warning["params"]["summary"] == "Error parsing rules; custom rules not applied."
+        assert trusted_rules_warning["params"]["path"] == str(trusted_rules_path)
+        assert f"failed to parse rules file {trusted_rules_path}" in trusted_rules_warning["params"]["details"]
+        close_server(trusted_rules_proc)
+        trusted_rules_proc = None
+
+        (untrusted_rules_project / ".codex" / "rules").mkdir(parents=True)
+        untrusted_rules_path = untrusted_rules_project / ".codex" / "rules" / "broken.rules"
+        untrusted_rules_path.write_text("prefix_rule(", encoding="utf-8")
+        untrusted_rules_proc = start_server(untrusted_rules_home, untrusted_rules_project)
+        write_json_line(
+            untrusted_rules_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-config-warning-untrusted-rules",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        untrusted_rules_initialized = read_json_line(untrusted_rules_proc, 5)
+        assert untrusted_rules_initialized["id"] == "initialize-config-warning-untrusted-rules"
+        untrusted_rules_warning = read_json_line(untrusted_rules_proc, 5)
+        assert untrusted_rules_warning["jsonrpc"] == "2.0"
+        assert untrusted_rules_warning["method"] == "configWarning"
+        assert untrusted_rules_warning["params"]["details"] is None
+        assert untrusted_rules_warning["params"]["summary"].startswith(
+            "Project-local config, hooks, and exec policies are disabled in the following folders "
+        )
+        assert "Error parsing rules" not in untrusted_rules_warning["params"]["summary"]
+        close_server(untrusted_rules_proc)
+        untrusted_rules_proc = None
     finally:
-        for running_proc in (proc, opt_out_proc, trusted_proc, ignored_proc):
+        for running_proc in (
+            proc,
+            opt_out_proc,
+            trusted_proc,
+            ignored_proc,
+            user_rules_proc,
+            trusted_rules_proc,
+            untrusted_rules_proc,
+        ):
             if running_proc is not None and running_proc.poll() is None:
                 running_proc.kill()
                 running_proc.wait(timeout=5)
@@ -21428,6 +21532,12 @@ def run_initialize_config_warning_smoke(binary: Path) -> None:
         shutil.rmtree(trusted_project, ignore_errors=True)
         shutil.rmtree(ignored_home, ignore_errors=True)
         shutil.rmtree(ignored_project, ignore_errors=True)
+        shutil.rmtree(user_rules_home, ignore_errors=True)
+        shutil.rmtree(user_rules_project, ignore_errors=True)
+        shutil.rmtree(trusted_rules_home, ignore_errors=True)
+        shutil.rmtree(trusted_rules_project, ignore_errors=True)
+        shutil.rmtree(untrusted_rules_home, ignore_errors=True)
+        shutil.rmtree(untrusted_rules_project, ignore_errors=True)
 
 
 def run_legacy_feature_deprecation_notice_smoke(binary: Path) -> None:

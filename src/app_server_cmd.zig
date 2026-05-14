@@ -9,6 +9,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const config_requirements_hooks = @import("config_requirements_hooks.zig");
 const env = @import("env.zig");
+const execpolicy_cmd = @import("execpolicy_cmd.zig");
 const feedback_logs = @import("feedback_logs.zig");
 const feedback_state = @import("feedback_state.zig");
 const feedback_upload = @import("feedback_upload.zig");
@@ -30847,6 +30848,7 @@ fn queueInitializeConfigWarningNotifications(
     var context = try loadProjectConfigWarningContext(allocator) orelse return;
     defer context.deinit(allocator);
 
+    try queueExecPolicyConfigWarningNotification(allocator, state, &context);
     if (try projectConfigDisabledWarningSummary(allocator, &context)) |summary| {
         defer allocator.free(summary);
         try queueConfigWarningNotification(allocator, state, summary, null);
@@ -30860,20 +30862,34 @@ fn queueConfigWarningNotification(
     summary: []const u8,
     details: ?[]const u8,
 ) !void {
+    try queueConfigWarningNotificationWithPath(allocator, state, summary, details, null);
+}
+
+fn queueConfigWarningNotificationWithPath(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    summary: []const u8,
+    details: ?[]const u8,
+    path: ?[]const u8,
+) !void {
     if (notificationMethodOptedOut(state, "configWarning")) return;
 
-    const notification = try renderConfigWarningNotification(allocator, summary, details);
+    const notification = try renderConfigWarningNotification(allocator, summary, details, path);
     errdefer allocator.free(notification);
     try state.pending_notifications.append(allocator, notification);
 }
 
-fn renderConfigWarningNotification(allocator: std.mem.Allocator, summary: []const u8, details: ?[]const u8) ![]const u8 {
+fn renderConfigWarningNotification(allocator: std.mem.Allocator, summary: []const u8, details: ?[]const u8, path: ?[]const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"configWarning\",\"params\":{\"summary\":");
     try appendJsonString(allocator, &result, summary);
     try result.appendSlice(allocator, ",\"details\":");
     try appendOptionalJsonString(allocator, &result, details);
+    if (path) |value| {
+        try result.appendSlice(allocator, ",\"path\":");
+        try appendJsonString(allocator, &result, value);
+    }
     try result.appendSlice(allocator, "}}");
     return result.toOwnedSlice(allocator);
 }
@@ -30931,6 +30947,107 @@ fn loadProjectConfigWarningContext(allocator: std.mem.Allocator) !?ProjectConfig
         .default_codex_home = default_codex_home,
     };
     return context;
+}
+
+const exec_policy_config_warning_summary = "Error parsing rules; custom rules not applied.";
+const exec_policy_rules_dir_name = "rules";
+const exec_policy_rules_extension = ".rules";
+
+fn queueExecPolicyConfigWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    context: *const ProjectConfigWarningContext,
+) !void {
+    if (notificationMethodOptedOut(state, "configWarning")) return;
+
+    var rule_paths = std.ArrayList([]const u8).empty;
+    defer {
+        for (rule_paths.items) |path| allocator.free(path);
+        rule_paths.deinit(allocator);
+    }
+
+    const user_rules_dir = try std.fs.path.join(allocator, &.{ context.codex_home, exec_policy_rules_dir_name });
+    defer allocator.free(user_rules_dir);
+    try collectExecPolicyRuleFiles(allocator, user_rules_dir, &rule_paths);
+    try collectProjectExecPolicyRuleFiles(allocator, context, &rule_paths);
+
+    for (rule_paths.items) |path| {
+        execpolicy_cmd.validateRulesFile(allocator, path) catch |err| {
+            const details = try std.fmt.allocPrint(allocator, "failed to parse rules file {s}: {s}", .{ path, @errorName(err) });
+            defer allocator.free(details);
+            try queueConfigWarningNotificationWithPath(allocator, state, exec_policy_config_warning_summary, details, path);
+            return;
+        };
+    }
+}
+
+fn collectProjectExecPolicyRuleFiles(
+    allocator: std.mem.Allocator,
+    context: *const ProjectConfigWarningContext,
+    rule_paths: *std.ArrayList([]const u8),
+) !void {
+    var projects = std.ArrayList([]const u8).empty;
+    defer projects.deinit(allocator);
+
+    var current: []const u8 = context.cwd;
+    while (true) {
+        try projects.append(allocator, current);
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len) break;
+        current = parent;
+    }
+
+    var index = projects.items.len;
+    while (index > 0) {
+        index -= 1;
+        const project_path = projects.items[index];
+        const dot_codex_folder = try std.fs.path.join(allocator, &.{ project_path, ".codex" });
+        defer allocator.free(dot_codex_folder);
+
+        if (context.isUserCodexFolder(dot_codex_folder) or
+            !try projectTrustedBySelfOrAncestor(allocator, context.userBytes(), project_path))
+        {
+            continue;
+        }
+
+        const rules_dir = try std.fs.path.join(allocator, &.{ dot_codex_folder, exec_policy_rules_dir_name });
+        defer allocator.free(rules_dir);
+        try collectExecPolicyRuleFiles(allocator, rules_dir, rule_paths);
+    }
+}
+
+fn collectExecPolicyRuleFiles(
+    allocator: std.mem.Allocator,
+    rules_dir: []const u8,
+    rule_paths: *std.ArrayList([]const u8),
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, rules_dir, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    const start_index = rule_paths.items.len;
+    var iter = dir.iterate();
+    while (true) {
+        const entry = (iter.next(io) catch return) orelse break;
+        if (!std.mem.endsWith(u8, entry.name, exec_policy_rules_extension)) continue;
+
+        const child_path = try std.fs.path.join(allocator, &.{ rules_dir, entry.name });
+        errdefer allocator.free(child_path);
+        const metadata = (statPathFollow(allocator, child_path) catch {
+            allocator.free(child_path);
+            continue;
+        }) orelse {
+            allocator.free(child_path);
+            continue;
+        };
+        const mode: u32 = @intCast(metadata.mode);
+        if (!std.c.S.ISREG(mode)) {
+            allocator.free(child_path);
+            continue;
+        }
+        try rule_paths.append(allocator, child_path);
+    }
+    std.mem.sort([]const u8, rule_paths.items[start_index..], {}, stringLessThan);
 }
 
 fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator, context: *const ProjectConfigWarningContext) !?[]u8 {
