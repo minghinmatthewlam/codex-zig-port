@@ -25801,6 +25801,16 @@ fn builtInTurnStartCollaborationInstructions(mode: []const u8) []const u8 {
     return defaultCollaborationDeveloperInstructions;
 }
 
+test "turn-start parses external sandbox policy" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"type\":\"externalSandbox\",\"networkAccess\":\"enabled\"}", .{});
+    defer parsed.deinit();
+
+    const policy = try parseTurnStartSandboxPolicy(parsed.value);
+    try std.testing.expectEqual(config.SandboxMode.danger_full_access, policy.mode);
+    try std.testing.expect(policy.network_enabled);
+}
+
 fn applyTurnStartRuntimeOverrides(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -25870,9 +25880,9 @@ fn applyTurnStartRuntimeOverrides(
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
-            const sandbox_mode = parseTurnStartSandboxPolicyMode(sandbox_policy) catch return error.InvalidTurnContextOverride;
-            cfg.sandbox_mode = sandbox_mode;
-            try resetLoadedThreadSandboxProfile(allocator, thread, sandbox_mode, sandbox_mode == .danger_full_access);
+            const sandbox_selection = parseTurnStartSandboxPolicy(sandbox_policy) catch return error.InvalidTurnContextOverride;
+            cfg.sandbox_mode = sandbox_selection.mode;
+            try resetLoadedThreadSandboxProfile(allocator, thread, sandbox_selection.mode, sandbox_selection.network_enabled);
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
@@ -25971,21 +25981,32 @@ fn applyTurnStartRuntimeOverrides(
     }
 }
 
-fn parseTurnStartSandboxPolicyMode(value: std.json.Value) !config.SandboxMode {
+const TurnStartSandboxPolicy = struct {
+    mode: config.SandboxMode,
+    network_enabled: bool,
+};
+
+fn parseTurnStartSandboxPolicy(value: std.json.Value) !TurnStartSandboxPolicy {
     if (value != .object) return error.InvalidTurnContextOverride;
     const type_value = value.object.get("type") orelse return error.InvalidTurnContextOverride;
     if (type_value != .string) return error.InvalidTurnContextOverride;
-    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .danger_full_access;
+    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .{ .mode = .danger_full_access, .network_enabled = true };
     if (std.mem.eql(u8, type_value.string, "readOnly")) {
         try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
-        return .read_only;
+        return .{ .mode = .read_only, .network_enabled = false };
+    }
+    if (std.mem.eql(u8, type_value.string, "externalSandbox")) {
+        return .{
+            .mode = .danger_full_access,
+            .network_enabled = parseCommandExecExternalSandboxPolicyNetworkAccess(value.object) catch return error.InvalidTurnContextOverride,
+        };
     }
     if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
         try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
         try expectTurnStartSandboxPolicyEmptyWritableRoots(value.object);
         try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeTmpdirEnvVar");
         try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeSlashTmp");
-        return .workspace_write;
+        return .{ .mode = .workspace_write, .network_enabled = false };
     }
     return error.InvalidTurnContextOverride;
 }
