@@ -31022,7 +31022,7 @@ fn collectExecPolicyRuleFiles(
     rule_paths: *std.ArrayList([]const u8),
 ) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var dir = std.Io.Dir.openDirAbsolute(io, rules_dir, .{ .iterate = true }) catch return;
+    var dir = openExecPolicyRulesDir(io, rules_dir) catch return;
     defer dir.close(io);
 
     const start_index = rule_paths.items.len;
@@ -31048,6 +31048,13 @@ fn collectExecPolicyRuleFiles(
         try rule_paths.append(allocator, child_path);
     }
     std.mem.sort([]const u8, rule_paths.items[start_index..], {}, stringLessThan);
+}
+
+fn openExecPolicyRulesDir(io: std.Io, path: []const u8) !std.Io.Dir {
+    return if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true })
+    else
+        std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
 }
 
 fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator, context: *const ProjectConfigWarningContext) !?[]u8 {
