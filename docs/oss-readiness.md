@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-13.
+Last checked: 2026-05-14.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -14,7 +14,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
 - GitHub community profile: 100%
-- Security settings: GitHub API checks on 2026-05-13 showed secret scanning,
+- Security settings: GitHub API checks on 2026-05-14 showed secret scanning,
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled. Dependabot and secret-scanning alert APIs
@@ -25,16 +25,16 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25779605349` passed for
-  `143586c Document plugin marketplace JSON schemas`.
+  Checked push run `25833817081` passed for
+  `0242d39 Document turn reasoning summary parity`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
-  JWT-shaped blobs, unignored local auth/env files, or unignored local artifacts. Broad
-  keyword/path scans only found test fixtures, docs, ignored local build output,
-  and temporary-path examples. Git-history regex scans found no provider-shaped
-  secrets, private-key blocks, or JWT-shaped blobs, and only an old dummy
-  `sk-proj-*` test fixture added by commit `820d156` and removed by commit
-  `0383594`; no real secret material was identified.
+  JWT-shaped blobs, unignored local auth/env files, or tracked local build
+  artifacts. Broad keyword/path scans only found test fixtures, docs, ignored
+  local build output, and temporary-path examples. Git-history regex scans found
+  no provider-shaped secrets, private-key blocks, or JWT-shaped blobs, and only
+  an old dummy `sk-proj-*` test fixture added by commit `820d156` and removed by
+  commit `0383594`; no real secret material was identified.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
