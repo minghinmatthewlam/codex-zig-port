@@ -136,12 +136,13 @@ Marketplace and plugin JSON Schema generation now includes the remaining
 list/read/install/share shapes and marketplace add/remove/upgrade shapes.
 Full Rust generator parity remains planned.
 
-Current app-server stdio/Unix JSON-RPC handling accepts well-formed standalone
-client response and error envelopes for server-request replies and ignores
-unmatched request IDs until full pending server-request tracking is implemented.
-Unix-socket app-server listeners keep accepting sequential clients after a
-client disconnects, including the direct `unix://` listener, default control
-socket, app-server proxy, and hidden stdio-to-UDS relay smoke paths.
+Current app-server stdio/Unix/websocket JSON-RPC handling accepts well-formed
+standalone client response and error envelopes for server-request replies and
+ignores unmatched request IDs until full pending server-request tracking is
+implemented. Unix-socket and websocket app-server listeners keep accepting
+sequential clients after a client disconnects, including connection-local
+subscription cleanup, the direct `unix://` listener, default control socket,
+app-server proxy, and hidden stdio-to-UDS relay smoke paths.
 
 Additional app-server error-notification generation coverage: the generated
 TypeScript and JSON Schema artifacts now include `ErrorNotification` with
@@ -438,11 +439,10 @@ deny, and workspace-write `sandboxPolicy` temp-root defaults plus
 `excludeTmpdirEnvVar` / `excludeSlashTmp` flags are enforced; implicit
 config-driven workspace-write command execution uses the same default temp
 roots. Non-stdio deferred command responses, non-stdio PTY lifecycle routing,
-connection-scoped websocket lifecycle cleanup, and full Rust async command
-session parity remain planned. Inactive follow-up calls still return
-Rust-shaped inactive-process errors. Empty `processId` values on follow-up calls
-preserve Rust validation order: payload/size errors win first, otherwise the
-inactive-command error includes the empty id.
+and full Rust async command session parity remain planned. Inactive follow-up
+calls still return Rust-shaped inactive-process errors. Empty `processId` values
+on follow-up calls preserve Rust validation order: payload/size errors win
+first, otherwise the inactive-command error includes the empty id.
 
 Current app-server experimental `process/*` coverage includes generated
 TypeScript and JSON Schema artifacts for `process/spawn`,

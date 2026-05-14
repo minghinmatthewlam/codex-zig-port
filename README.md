@@ -178,7 +178,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - accept Rust-compatible app-server `--analytics-default-enabled`, run plain
   websocket JSON-RPC, reject Origin-bearing websocket requests, and enforce
   websocket capability-token auth from `--ws-token-file` or `--ws-token-sha256`
-  plus HS256 signed-bearer auth with exp/nbf/issuer/audience validation
+  plus HS256 signed-bearer auth with exp/nbf/issuer/audience validation, keeping
+  websocket listeners alive for sequential clients with connection-local state
+  reset
 - apply the latest PR diff from a Codex agent task with `apply` / `a`
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
@@ -364,7 +366,9 @@ config-requirements RPCs against temporary config homes, including system
 requirements precedence and legacy managed-config requirements, and a mock
 backend, checks app-server experimental
 feature listing and runtime
-enablement patching against temporary config homes, verifies app-server
+enablement patching against temporary config homes, verifies websocket
+sequential-client lifecycle and connection-local subscription reset, verifies
+app-server
 TypeScript/JSON Schema generation including command-exec request/response,
 follow-up, and output-delta notification artifacts, verifies the hidden
 internal `RolloutLine.json` schema generator, and checks app-server flag
