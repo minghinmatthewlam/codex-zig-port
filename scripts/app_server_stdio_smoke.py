@@ -6136,6 +6136,175 @@ def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_tool_cwd_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-tool-cwd-home-", dir="/tmp"))
+    tool_file_name = f"app_server_tool_cwd_smoke_{os.getpid()}_{time.time_ns()}.txt"
+    repo_leak_path = Path(tool_file_name)
+    try:
+        assert not repo_leak_path.exists()
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-tool-cwd"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-tool-cwd-", dir="/tmp") as cwd:
+                cwd_path = Path(cwd)
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-tool-cwd",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-tool-cwd"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                patch = (
+                    "*** Begin Patch\n"
+                    f"*** Add File: {tool_file_name}\n"
+                    "+created in thread cwd\n"
+                    "*** End Patch\n"
+                )
+                tool_events = [
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "function_call",
+                            "call_id": "cwd-patch-call",
+                            "name": "apply_patch",
+                            "arguments": json.dumps({"patch": patch}, separators=(",", ":")),
+                        },
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "function_call",
+                            "call_id": "cwd-pwd-call",
+                            "name": "exec_command",
+                            "arguments": json.dumps(
+                                {"cmd": "pwd", "max_output_tokens": 1000},
+                                separators=(",", ":"),
+                            ),
+                        },
+                    },
+                ]
+                server.response_payloads.extend(
+                    [
+                        (
+                            "".join(
+                                f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                                for event in tool_events
+                            )
+                            + "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"cwd rooted reply"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-tool-cwd",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "exercise cwd-rooted tools"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-tool-cwd"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "cwd rooted reply"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                patched_file = cwd_path / tool_file_name
+                assert patched_file.read_text(encoding="utf-8") == "created in thread cwd\n"
+                assert not repo_leak_path.exists()
+
+                assert server.request_paths == ["/responses", "/responses"]
+                second_request = server.request_bodies[1]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "cwd-patch-call"
+                    and "applied patch" in item.get("output", "")
+                    for item in second_request["input"]
+                )
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "cwd-pwd-call"
+                    and cwd in item.get("output", "")
+                    for item in second_request["input"]
+                )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        repo_leak_path.unlink(missing_ok=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_control_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-control-", dir="/tmp"))
     try:
@@ -31949,6 +32118,8 @@ def main() -> None:
     print("app-server-turn-start-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
     print("app-server-turn-plan-updated-notification-e2e: ok")
+    run_turn_tool_cwd_smoke(binary)
+    print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_control_rpc_smoke(binary)
     print("app-server-turn-control-rpc-e2e: ok")
     run_thread_resume_rpc_smoke(binary)

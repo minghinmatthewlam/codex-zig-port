@@ -278,6 +278,7 @@ pub const TurnOptions = struct {
     include_tools: bool = true,
     plan_mode: bool = false,
     plan_update_callback: ?PlanUpdateCallback = null,
+    workdir: ?[]const u8 = null,
 };
 
 pub const PlanUpdateCallback = struct {
@@ -555,6 +556,7 @@ fn runToolCall(
         .network_enabled = options.network_enabled,
         .auto_approve = options.auto_approve,
         .prompt_for_approval = options.prompt_for_approval,
+        .workdir = options.workdir,
     });
 }
 

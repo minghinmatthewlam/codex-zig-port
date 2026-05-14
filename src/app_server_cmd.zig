@@ -25834,6 +25834,7 @@ fn handleTurnStart(
             .ctx = &plan_update_context,
             .on_plan_updated = handleSessionPlanUpdated,
         },
+        .workdir = thread.cwd,
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
@@ -27029,6 +27030,7 @@ fn handleLoadedThreadCompactStart(
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .include_tools = false,
+        .workdir = thread.cwd,
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "thread/compact/start failed to run compaction: {s}", .{@errorName(err)});
         defer allocator.free(error_message);

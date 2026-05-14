@@ -145,6 +145,7 @@ pub const Policy = struct {
     network_enabled: bool = true,
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
+    workdir: ?[]const u8 = null,
 };
 
 const ToolKind = enum {
@@ -194,7 +195,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ApplyPatchArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, false)) |result| return result;
-        return runApplyPatch(allocator, call.call_id, parsed.value.patch);
+        return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir);
     }
 
     return .{
@@ -289,7 +290,7 @@ fn runExecCommand(
             .additional_writable_roots = policy.additional_writable_roots,
             .include_cwd_write_root = policy.include_cwd_write_root,
             .network_enabled = policy.network_enabled,
-            .workdir = args.workdir,
+            .workdir = args.workdir orelse policy.workdir,
             .yield_time_ms = args.yield_time_ms orelse 1000,
             .max_output_tokens = args.max_output_tokens,
             .pty = true,
@@ -300,7 +301,7 @@ fn runExecCommand(
         .additional_writable_roots = policy.additional_writable_roots,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
-        .workdir = args.workdir,
+        .workdir = args.workdir orelse policy.workdir,
         .max_output_tokens = args.max_output_tokens,
         .unified_format = true,
     });
@@ -488,8 +489,19 @@ fn fileFromFd(fd: c_int) std.Io.File {
     };
 }
 
-fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8) !ToolResult {
-    const stats = try applyPatchInDir(allocator, std.Io.Dir.cwd(), patch);
+fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8, workdir: ?[]const u8) !ToolResult {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var opened_dir: ?std.Io.Dir = null;
+    defer if (opened_dir) |*dir| dir.close(io);
+    const root_dir = if (workdir) |path| blk: {
+        opened_dir = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.openDirAbsolute(io, path, .{})
+        else
+            try std.Io.Dir.cwd().openDir(io, path, .{});
+        break :blk opened_dir.?;
+    } else std.Io.Dir.cwd();
+
+    const stats = try applyPatchInDir(allocator, root_dir, patch);
     const summary = try std.fmt.allocPrint(
         allocator,
         "patched +{d} ~{d} -{d}",
@@ -522,6 +534,7 @@ fn runArgv(
         .additional_writable_roots = policy.additional_writable_roots,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
+        .workdir = policy.workdir,
     });
 }
 
