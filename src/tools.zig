@@ -1007,6 +1007,7 @@ fn updateFileFromPatch(
     }
 
     if (index.* >= lines.len or isPatchSection(lines[index.*])) return error.InvalidPatch;
+    try validateUpdatePatchShape(lines, index.*);
 
     var current = try root.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024));
     defer allocator.free(current);
@@ -1073,6 +1074,42 @@ fn updateFileFromPatch(
     if (!std.mem.eql(u8, path, target_path)) {
         try root.deleteFile(std.Io.Threaded.global_single_threaded.io(), path);
     }
+}
+
+fn validateUpdatePatchShape(lines: []const []const u8, start_index: usize) !void {
+    var index = start_index;
+    var saw_hunk = false;
+    var current_hunk_has_lines = false;
+
+    while (index < lines.len and !isPatchSection(lines[index])) {
+        const line = lines[index];
+        if (isHunkBoundary(line)) {
+            if (std.mem.eql(u8, patchDirective(line), "*** End of File")) {
+                if (!current_hunk_has_lines) return error.InvalidPatch;
+                current_hunk_has_lines = false;
+                index += 1;
+                continue;
+            }
+
+            current_hunk_has_lines = false;
+            index += 1;
+            if (index >= lines.len or isPatchSection(lines[index]) or isHunkBoundary(lines[index])) {
+                return error.InvalidPatch;
+            }
+            continue;
+        }
+
+        if (line.len == 0 or line[0] == ' ' or line[0] == '+' or line[0] == '-') {
+            saw_hunk = true;
+            current_hunk_has_lines = true;
+            index += 1;
+            continue;
+        }
+
+        return error.InvalidPatch;
+    }
+
+    if (!saw_hunk) return error.InvalidPatch;
 }
 
 fn appendToEnd(allocator: std.mem.Allocator, current: []const u8, addition: []const u8) ![]u8 {
@@ -1350,6 +1387,65 @@ test "apply_patch rejects empty update before reading target" {
         \\*** End Patch
     ;
     try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, patch));
+}
+
+test "apply_patch rejects empty marked update hunks before reading target" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const end_patch =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\@@
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, end_patch));
+
+    const eof_marker =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\@@
+        \\*** End of File
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, eof_marker));
+
+    const repeated_context =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\@@
+        \\@@
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, repeated_context));
+}
+
+test "apply_patch rejects malformed update hunks before reading target" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const invalid_line =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\@@
+        \\-old
+        \\bad
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, invalid_line));
+
+    const section_after_empty_context =
+        \\*** Begin Patch
+        \\*** Update File: missing.txt
+        \\@@
+        \\*** Update File: other.txt
+        \\@@
+        \\+new
+        \\*** End Patch
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, section_after_empty_context));
 }
 
 test "apply_patch treats blank hunk lines as empty context" {
