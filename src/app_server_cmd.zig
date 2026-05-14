@@ -50,6 +50,8 @@ const APP_SERVER_COMPACT_PROMPT =
     \\Be concise but specific. Do not include generic advice.
 ;
 const EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE = "External auth is active. Use account/login/start (chatgptAuthTokens) to update it or account/logout to clear it.";
+const WEBSOCKET_DEFAULT_MAX_CLOCK_SKEW_SECONDS: u64 = 30;
+const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
 
 const WebsocketAuthMode = enum {
@@ -419,7 +421,8 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             try server.run();
         },
         .websocket => |address| {
-            const auth_policy = try websocketAuthPolicyFromArgs(allocator, options.websocket_auth);
+            var auth_policy = try websocketAuthPolicyFromArgs(allocator, options.websocket_auth);
+            defer auth_policy.deinit(allocator);
             var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy };
             try server.run();
         },
@@ -478,6 +481,28 @@ fn validateSha256DigestArg(value: []const u8) !void {
 const WebsocketAuthPolicy = union(enum) {
     none,
     capability_token: [std.crypto.hash.sha2.Sha256.digest_length]u8,
+
+    signed_bearer_token: SignedWebsocketBearerPolicy,
+
+    fn deinit(self: *WebsocketAuthPolicy, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .signed_bearer_token => |*policy| policy.deinit(allocator),
+            else => {},
+        }
+    }
+};
+
+const SignedWebsocketBearerPolicy = struct {
+    shared_secret: []const u8,
+    issuer: ?[]const u8 = null,
+    audience: ?[]const u8 = null,
+    max_clock_skew_seconds: i64 = 30,
+
+    fn deinit(self: *SignedWebsocketBearerPolicy, allocator: std.mem.Allocator) void {
+        allocator.free(self.shared_secret);
+        if (self.issuer) |issuer| allocator.free(issuer);
+        if (self.audience) |audience| allocator.free(audience);
+    }
 };
 
 fn websocketAuthPolicyFromArgs(allocator: std.mem.Allocator, auth: WebsocketAuthArgs) !WebsocketAuthPolicy {
@@ -493,8 +518,36 @@ fn websocketAuthPolicyFromArgs(allocator: std.mem.Allocator, auth: WebsocketAuth
             std.crypto.hash.sha2.Sha256.hash(token, &digest, .{});
             return .{ .capability_token = digest };
         },
-        .signed_bearer_token => return error.AppServerWebsocketAuthNotImplemented,
+        .signed_bearer_token => {
+            const shared_secret_file = auth.ws_shared_secret_file orelse return error.AppServerWebsocketSharedSecretFileRequired;
+            const shared_secret = try readWebsocketAuthSecret(allocator, shared_secret_file);
+            errdefer allocator.free(shared_secret);
+            if (shared_secret.len < WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES) return error.AppServerWebsocketSignedBearerSecretTooShort;
+            const issuer = try dupeTrimmedOptionalWebsocketAuthString(allocator, auth.ws_issuer);
+            errdefer if (issuer) |value| allocator.free(value);
+            const audience = try dupeTrimmedOptionalWebsocketAuthString(allocator, auth.ws_audience);
+            errdefer if (audience) |value| allocator.free(value);
+            return .{ .signed_bearer_token = .{
+                .shared_secret = shared_secret,
+                .issuer = issuer,
+                .audience = audience,
+                .max_clock_skew_seconds = try websocketClockSkewI64(auth.ws_max_clock_skew_seconds orelse WEBSOCKET_DEFAULT_MAX_CLOCK_SKEW_SECONDS),
+            } };
+        },
     }
+}
+
+fn dupeTrimmedOptionalWebsocketAuthString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    const raw = value orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const owned = try allocator.dupe(u8, trimmed);
+    return owned;
+}
+
+fn websocketClockSkewI64(value: u64) !i64 {
+    if (value > std.math.maxInt(i64)) return error.AppServerWebsocketClockSkewOutOfRange;
+    return @intCast(value);
 }
 
 fn parseSha256DigestArg(value: []const u8) ![std.crypto.hash.sha2.Sha256.digest_length]u8 {
@@ -24841,7 +24894,7 @@ const WebSocketServer = struct {
             try request.respond("Bad Request\n", .{ .status = .bad_request });
             return;
         }
-        if (!websocketAuthorizeUpgrade(&request, self.auth_policy)) {
+        if (!websocketAuthorizeUpgrade(self.allocator, &request, self.auth_policy)) {
             try request.respond("Unauthorized\n", .{ .status = .unauthorized });
             return;
         }
@@ -24900,7 +24953,7 @@ fn websocketConnectionIncludesUpgrade(request: *const std.http.Server.Request) b
     return false;
 }
 
-fn websocketAuthorizeUpgrade(request: *const std.http.Server.Request, policy: WebsocketAuthPolicy) bool {
+fn websocketAuthorizeUpgrade(allocator: std.mem.Allocator, request: *const std.http.Server.Request, policy: WebsocketAuthPolicy) bool {
     switch (policy) {
         .none => return true,
         .capability_token => |expected_digest| {
@@ -24908,6 +24961,10 @@ fn websocketAuthorizeUpgrade(request: *const std.http.Server.Request, policy: We
             var actual_digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(token, &actual_digest, .{});
             return websocketConstantTimeEqual(&expected_digest, &actual_digest);
+        },
+        .signed_bearer_token => |signed_policy| {
+            const token = websocketBearerToken(request) orelse return false;
+            return websocketVerifySignedBearerToken(allocator, token, signed_policy) catch false;
         },
     }
 }
@@ -24923,11 +24980,127 @@ fn websocketBearerToken(request: *const std.http.Server.Request) ?[]const u8 {
 }
 
 fn websocketConstantTimeEqual(a: *const [std.crypto.hash.sha2.Sha256.digest_length]u8, b: *const [std.crypto.hash.sha2.Sha256.digest_length]u8) bool {
+    return websocketConstantTimeEqualBytes(a[0..], b[0..]);
+}
+
+fn websocketConstantTimeEqualBytes(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
     var difference: u8 = 0;
     for (a, b) |left, right| {
         difference |= left ^ right;
     }
     return difference == 0;
+}
+
+fn websocketVerifySignedBearerToken(allocator: std.mem.Allocator, token: []const u8, policy: SignedWebsocketBearerPolicy) !bool {
+    const first_dot = std.mem.indexOfScalar(u8, token, '.') orelse return false;
+    const second_dot_offset = std.mem.indexOfScalar(u8, token[first_dot + 1 ..], '.') orelse return false;
+    const second_dot = first_dot + 1 + second_dot_offset;
+    if (std.mem.indexOfScalar(u8, token[second_dot + 1 ..], '.') != null) return false;
+
+    const header_segment = token[0..first_dot];
+    const payload_segment = token[first_dot + 1 .. second_dot];
+    const signature_segment = token[second_dot + 1 ..];
+    if (!try websocketJwtHeaderIsHs256(allocator, header_segment)) return false;
+    if (!try websocketJwtSignatureMatches(allocator, token[0..second_dot], signature_segment, policy.shared_secret)) return false;
+    return try websocketJwtClaimsAreValid(allocator, payload_segment, policy);
+}
+
+fn websocketJwtHeaderIsHs256(allocator: std.mem.Allocator, segment: []const u8) !bool {
+    const decoded = websocketBase64UrlDecodeAlloc(allocator, segment) catch return false;
+    defer allocator.free(decoded);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, decoded, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const alg = websocketJsonStringField(parsed.value.object, "alg") orelse return false;
+    return std.mem.eql(u8, alg, "HS256");
+}
+
+fn websocketJwtSignatureMatches(allocator: std.mem.Allocator, signing_input: []const u8, signature_segment: []const u8, shared_secret: []const u8) !bool {
+    const signature = websocketBase64UrlDecodeAlloc(allocator, signature_segment) catch return false;
+    defer allocator.free(signature);
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    if (signature.len != HmacSha256.mac_length) return false;
+    var expected: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(expected[0..], signing_input, shared_secret);
+    return websocketConstantTimeEqualBytes(expected[0..], signature);
+}
+
+fn websocketJwtClaimsAreValid(allocator: std.mem.Allocator, segment: []const u8, policy: SignedWebsocketBearerPolicy) !bool {
+    const decoded = websocketBase64UrlDecodeAlloc(allocator, segment) catch return false;
+    defer allocator.free(decoded);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, decoded, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+
+    const exp = websocketJsonI64Field(object, "exp") orelse return false;
+    const now = websocketCurrentEpochSeconds();
+    if (now > websocketSaturatingAddNonNegative(exp, policy.max_clock_skew_seconds)) return false;
+    if (websocketJsonI64Field(object, "nbf")) |nbf| {
+        if (now < websocketSaturatingSubNonNegative(nbf, policy.max_clock_skew_seconds)) return false;
+    }
+    if (policy.issuer) |expected_issuer| {
+        const issuer = websocketJsonStringField(object, "iss") orelse return false;
+        if (!std.mem.eql(u8, issuer, expected_issuer)) return false;
+    }
+    if (policy.audience) |expected_audience| {
+        const audience = object.get("aud") orelse return false;
+        if (!websocketJwtAudienceMatches(audience, expected_audience)) return false;
+    }
+    return true;
+}
+
+fn websocketBase64UrlDecodeAlloc(allocator: std.mem.Allocator, segment: []const u8) ![]u8 {
+    const decoded_len = try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(segment);
+    const decoded = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(decoded);
+    try std.base64.url_safe_no_pad.Decoder.decode(decoded, segment);
+    return decoded;
+}
+
+fn websocketJsonStringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = object.get(key) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn websocketJsonI64Field(object: std.json.ObjectMap, key: []const u8) ?i64 {
+    const value = object.get(key) orelse return null;
+    if (value != .integer) return null;
+    return value.integer;
+}
+
+fn websocketJwtAudienceMatches(value: std.json.Value, expected: []const u8) bool {
+    switch (value) {
+        .string => |actual| return std.mem.eql(u8, actual, expected),
+        .array => |array| {
+            for (array.items) |item| {
+                if (item == .string and std.mem.eql(u8, item.string, expected)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn websocketCurrentEpochSeconds() i64 {
+    const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
+    const seconds = now.toSeconds();
+    if (seconds > std.math.maxInt(i64)) return std.math.maxInt(i64);
+    return @intCast(seconds);
+}
+
+fn websocketSaturatingAddNonNegative(value: i64, delta: i64) i64 {
+    if (delta <= 0) return value;
+    if (value > std.math.maxInt(i64) - delta) return std.math.maxInt(i64);
+    return value + delta;
+}
+
+fn websocketSaturatingSubNonNegative(value: i64, delta: i64) i64 {
+    if (delta <= 0) return value;
+    if (value < std.math.minInt(i64) + delta) return std.math.minInt(i64);
+    return value - delta;
 }
 
 fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
