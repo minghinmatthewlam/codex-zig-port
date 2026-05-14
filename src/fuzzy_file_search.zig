@@ -179,11 +179,15 @@ fn scanDir(
     ignore_stack: *IgnoreStack,
     parent_git_context: bool,
 ) !void {
-    const current_git_context = parent_git_context or try dirHasGitMarker(allocator, io, root, relative_dir);
+    const current_has_git_marker = try dirHasGitMarker(allocator, io, root, relative_dir);
+    const current_git_context = parent_git_context or current_has_git_marker;
     const previous_ignore_rule_len = ignore_stack.rules.items.len;
     defer ignore_stack.truncate(allocator, previous_ignore_rule_len);
     if (current_git_context) {
         try loadGitignoreRules(allocator, io, root, relative_dir, ignore_stack);
+    }
+    if (current_has_git_marker) {
+        try loadGitInfoExcludeRules(allocator, io, root, relative_dir, ignore_stack);
     }
 
     var iter = dir.iterate();
@@ -330,6 +334,32 @@ fn loadGitignoreRules(
         try std.fs.path.join(allocator, &.{ root, relative_dir, ".gitignore" });
     defer allocator.free(path);
 
+    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, ignore_stack);
+}
+
+fn loadGitInfoExcludeRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    relative_dir: []const u8,
+    ignore_stack: *IgnoreStack,
+) !void {
+    const path = if (relative_dir.len == 0)
+        try std.fs.path.join(allocator, &.{ root, ".git", "info", "exclude" })
+    else
+        try std.fs.path.join(allocator, &.{ root, relative_dir, ".git", "info", "exclude" });
+    defer allocator.free(path);
+
+    try loadIgnoreRulesFromPath(allocator, io, path, relative_dir, ignore_stack);
+}
+
+fn loadIgnoreRulesFromPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    relative_dir: []const u8,
+    ignore_stack: *IgnoreStack,
+) !void {
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
         error.FileNotFound, error.IsDir => return,
         else => return err,
@@ -808,13 +838,19 @@ test "fuzzy search respects local gitignore rules in git context" {
     defer dir.cleanup();
 
     try dir.dir.createDir(io, ".git", .default_dir);
+    try dir.dir.createDirPath(io, ".git/info");
     try dir.dir.createDirPath(io, ".vscode");
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
         .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
     });
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".git/info/exclude",
+        .data = "info-excluded.txt\n",
+    });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored-dir/nested.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/extensions.json", .data = "{}\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/settings.json", .data = "{}\n" });
@@ -836,6 +872,10 @@ test "fuzzy search respects local gitignore rules in git context" {
     try std.testing.expect(!resultContainsPath(ignored, "ignored.txt"));
     try std.testing.expect(!resultContainsPath(ignored, "ignored-dir"));
     try std.testing.expect(!resultContainsPath(ignored, "ignored-dir/nested.txt"));
+
+    var info_excluded = try search(allocator, "infoexcluded", &roots);
+    defer info_excluded.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(info_excluded, "info-excluded.txt"));
 }
 
 fn resultContainsPath(results: Results, path: []const u8) bool {

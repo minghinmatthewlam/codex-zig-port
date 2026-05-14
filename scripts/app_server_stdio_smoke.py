@@ -8786,11 +8786,17 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "beta.txt").write_text("not a match\n", encoding="utf-8")
         (search_root / "alpha_dir").mkdir()
         (search_root / ".git").mkdir()
+        (search_root / ".git" / "info").mkdir()
+        (search_root / ".git" / "info" / "exclude").write_text(
+            "info-excluded.txt\n",
+            encoding="utf-8",
+        )
         (search_root / ".gitignore").write_text(
             "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n",
             encoding="utf-8",
         )
         (search_root / "ignored.txt").write_text("ignored file\n", encoding="utf-8")
+        (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "ignored-dir").mkdir()
         (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
         (search_root / ".vscode").mkdir()
@@ -8908,6 +8914,20 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert "ignored.txt" not in ignored_paths
         assert "ignored-dir" not in ignored_paths
         assert "ignored-dir/nested.txt" not in ignored_paths
+
+        info_excluded_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-info-excluded",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "infoexcluded", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert info_excluded_search["id"] == "fuzzy-search-info-excluded"
+        info_excluded_paths = {item["path"] for item in info_excluded_search["result"]["files"]}
+        assert "info-excluded.txt" not in info_excluded_paths
 
         reincluded_search = request_stdio_app_server(
             binary,
