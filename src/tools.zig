@@ -918,15 +918,13 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
 
     if (lines.items.len < 2) return error.InvalidPatch;
     if (!std.mem.eql(u8, patchDirective(lines.items[0]), "*** Begin Patch")) return error.InvalidPatch;
+    try validatePatchTerminator(lines.items);
 
     var stats = PatchStats{};
     var index: usize = 1;
     while (index < lines.items.len) {
         const line = patchDirective(lines.items[index]);
         if (std.mem.eql(u8, line, "*** End Patch")) {
-            for (lines.items[index + 1 ..]) |trailing| {
-                if (trailing.len != 0) return error.InvalidPatch;
-            }
             if (stats.added == 0 and stats.updated == 0 and stats.deleted == 0) return error.InvalidPatch;
             return stats;
         }
@@ -962,6 +960,18 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
         return error.InvalidPatch;
     }
 
+    return error.InvalidPatch;
+}
+
+fn validatePatchTerminator(lines: []const []const u8) !void {
+    for (lines[1..], 1..) |line, index| {
+        if (std.mem.eql(u8, patchDirective(line), "*** End Patch")) {
+            for (lines[index + 1 ..]) |trailing| {
+                if (trailing.len != 0) return error.InvalidPatch;
+            }
+            return;
+        }
+    }
     return error.InvalidPatch;
 }
 
@@ -1654,6 +1664,39 @@ test "apply_patch rejects empty patch and trailing content" {
         \\extra
     ;
     try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, trailing_patch));
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "foo.txt", .{}));
+}
+
+test "apply_patch rejects missing end patch before mutating files" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const add_patch =
+        \\*** Begin Patch
+        \\*** Add File: created.txt
+        \\+new
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, add_patch));
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "created.txt", .{}));
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "existing.txt",
+        .data = "old\n",
+    });
+
+    const update_patch =
+        \\*** Begin Patch
+        \\*** Update File: existing.txt
+        \\@@
+        \\-old
+        \\+new
+    ;
+    try std.testing.expectError(error.InvalidPatch, applyPatchInDir(allocator, dir.dir, update_patch));
+
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "existing.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("old\n", content);
 }
 
 test "untrusted policy allows trusted read-only shell command without prompt" {
