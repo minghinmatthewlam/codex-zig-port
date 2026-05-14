@@ -716,11 +716,61 @@ fn globMatchesAt(pattern: []const u8, value: []const u8) bool {
             value_index += 1;
             continue;
         }
+        if (token == '[') {
+            const char_class = globCharClassMatch(pattern[pattern_index + 1 ..], value[value_index]);
+            if (char_class) |result| {
+                if (!result.matches or value[value_index] == '/') return false;
+                pattern_index += result.consumed + 1;
+                value_index += 1;
+                continue;
+            }
+        }
         if (token != value[value_index]) return false;
         pattern_index += 1;
         value_index += 1;
     }
     return value_index == value.len;
+}
+
+const GlobCharClassMatch = struct {
+    matches: bool,
+    consumed: usize,
+};
+
+fn globCharClassMatch(pattern: []const u8, value: u8) ?GlobCharClassMatch {
+    if (pattern.len == 0) return null;
+
+    var negated = false;
+    var index: usize = 0;
+    if (pattern[index] == '!' or pattern[index] == '^') {
+        negated = true;
+        index += 1;
+    }
+    if (index >= pattern.len) return null;
+
+    var matched = false;
+    var saw_entry = false;
+    while (index < pattern.len) {
+        if (pattern[index] == ']' and saw_entry) {
+            return .{
+                .matches = if (negated) !matched else matched,
+                .consumed = index + 1,
+            };
+        }
+
+        const start = pattern[index];
+        saw_entry = true;
+        if (index + 2 < pattern.len and pattern[index + 1] == '-' and pattern[index + 2] != ']') {
+            const end = pattern[index + 2];
+            if (start <= value and value <= end) matched = true;
+            index += 3;
+            continue;
+        }
+
+        if (value == start) matched = true;
+        index += 1;
+    }
+    return null;
 }
 
 fn fuzzyMatchPath(allocator: std.mem.Allocator, path: []const u8, query: []const u8) !?FuzzyMatch {
@@ -1110,7 +1160,7 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".ignore",
@@ -1124,6 +1174,10 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.writeFile(io, .{ .sub_path = "#literal-comment-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "!literal-bang-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "literal space.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "digit-7.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "digit-x.txt", .data = "visible\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "letter-x.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "letter-7.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-reincluded.txt", .data = "visible\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignore-over-gitignore.txt", .data = "ignored\n" });
@@ -1160,6 +1214,22 @@ test "fuzzy search respects local gitignore rules in git context" {
     var escaped_space = try search(allocator, "literalspace", &roots);
     defer escaped_space.deinit(allocator);
     try std.testing.expect(!resultContainsPath(escaped_space, "literal space.txt"));
+
+    var digit_ignored = try search(allocator, "digit7", &roots);
+    defer digit_ignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(digit_ignored, "digit-7.txt"));
+
+    var digit_visible = try search(allocator, "digitx", &roots);
+    defer digit_visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(digit_visible, "digit-x.txt"));
+
+    var letter_ignored = try search(allocator, "letterx", &roots);
+    defer letter_ignored.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(letter_ignored, "letter-x.txt"));
+
+    var letter_visible = try search(allocator, "letter7", &roots);
+    defer letter_visible.deinit(allocator);
+    try std.testing.expect(resultContainsPath(letter_visible, "letter-7.txt"));
 
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);

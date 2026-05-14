@@ -8800,7 +8800,7 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\ndigit-[0-9].txt\nletter-[!0-9].txt\n!.vscode/\n!.vscode/settings.json\n!info-reincluded.txt\n!ignore-over-gitignore.txt\nnested-repo/parent-gitignored.txt\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
             encoding="utf-8",
         )
         (search_root / ".ignore").write_text(
@@ -8811,6 +8811,10 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         (search_root / "#literal-comment-name.txt").write_text("escaped comment file\n", encoding="utf-8")
         (search_root / "!literal-bang-name.txt").write_text("escaped bang file\n", encoding="utf-8")
         (search_root / "literal space.txt").write_text("escaped space file\n", encoding="utf-8")
+        (search_root / "digit-7.txt").write_text("bracket digit ignored\n", encoding="utf-8")
+        (search_root / "digit-x.txt").write_text("bracket digit visible\n", encoding="utf-8")
+        (search_root / "letter-x.txt").write_text("bracket negated ignored\n", encoding="utf-8")
+        (search_root / "letter-7.txt").write_text("bracket negated visible\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "info-reincluded.txt").write_text("info reincluded file\n", encoding="utf-8")
         (search_root / "global-excluded.txt").write_text("global excluded file\n", encoding="utf-8")
@@ -9008,6 +9012,62 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert escaped_space_search["id"] == "fuzzy-search-escaped-space"
         escaped_space_paths = {item["path"] for item in escaped_space_search["result"]["files"]}
         assert "literal space.txt" not in escaped_space_paths
+
+        bracket_digit_ignored_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-bracket-digit-ignored",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "digit7", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert bracket_digit_ignored_search["id"] == "fuzzy-search-bracket-digit-ignored"
+        bracket_digit_ignored_paths = {item["path"] for item in bracket_digit_ignored_search["result"]["files"]}
+        assert "digit-7.txt" not in bracket_digit_ignored_paths
+
+        bracket_digit_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-bracket-digit-visible",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "digitx", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert bracket_digit_visible_search["id"] == "fuzzy-search-bracket-digit-visible"
+        bracket_digit_visible_paths = {item["path"] for item in bracket_digit_visible_search["result"]["files"]}
+        assert "digit-x.txt" in bracket_digit_visible_paths
+
+        bracket_negated_ignored_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-bracket-negated-ignored",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "letterx", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert bracket_negated_ignored_search["id"] == "fuzzy-search-bracket-negated-ignored"
+        bracket_negated_ignored_paths = {item["path"] for item in bracket_negated_ignored_search["result"]["files"]}
+        assert "letter-x.txt" not in bracket_negated_ignored_paths
+
+        bracket_negated_visible_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-bracket-negated-visible",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "letter7", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert bracket_negated_visible_search["id"] == "fuzzy-search-bracket-negated-visible"
+        bracket_negated_visible_paths = {item["path"] for item in bracket_negated_visible_search["result"]["files"]}
+        assert "letter-7.txt" in bracket_negated_visible_paths
 
         info_excluded_search = request_stdio_app_server(
             binary,
