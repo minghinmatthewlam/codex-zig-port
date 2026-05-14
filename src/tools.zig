@@ -911,7 +911,8 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
     var lines = std.ArrayList([]const u8).empty;
     defer lines.deinit(allocator);
 
-    var raw_lines = std.mem.splitScalar(u8, patch, '\n');
+    const patch_text = normalizePatchText(patch);
+    var raw_lines = std.mem.splitScalar(u8, patch_text, '\n');
     while (raw_lines.next()) |raw_line| {
         try lines.append(allocator, std.mem.trimEnd(u8, raw_line, "\r"));
     }
@@ -961,6 +962,27 @@ fn applyPatchInDir(allocator: std.mem.Allocator, root: std.Io.Dir, patch: []cons
     }
 
     return error.InvalidPatch;
+}
+
+fn normalizePatchText(patch: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, patch, " \t\r\n");
+    const first_newline = std.mem.indexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    const last_newline = std.mem.lastIndexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    if (first_newline >= last_newline) return trimmed;
+
+    const first_line = std.mem.trimEnd(u8, trimmed[0..first_newline], "\r");
+    if (!isHeredocStart(first_line)) return trimmed;
+
+    const last_line = std.mem.trimEnd(u8, trimmed[last_newline + 1 ..], "\r");
+    if (!std.mem.endsWith(u8, last_line, "EOF")) return trimmed;
+
+    return std.mem.trim(u8, trimmed[first_newline + 1 .. last_newline], " \t\r\n");
+}
+
+fn isHeredocStart(line: []const u8) bool {
+    return std.mem.eql(u8, line, "<<EOF") or
+        std.mem.eql(u8, line, "<<'EOF'") or
+        std.mem.eql(u8, line, "<<\"EOF\"");
 }
 
 fn validatePatchTerminator(lines: []const []const u8) !void {
@@ -1400,6 +1422,57 @@ test "apply_patch add overwrites existing file" {
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "duplicate.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("new content\n", content);
+}
+
+test "apply_patch accepts heredoc-wrapped patch text" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const bare_patch =
+        \\<<EOF
+        \\*** Begin Patch
+        \\*** Add File: heredoc.txt
+        \\+hello
+        \\*** End Patch
+        \\EOF
+    ;
+    const bare_stats = try applyPatchInDir(allocator, dir.dir, bare_patch);
+    try std.testing.expectEqual(@as(usize, 1), bare_stats.added);
+
+    const bare_content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "heredoc.txt", allocator, .limited(1024));
+    defer allocator.free(bare_content);
+    try std.testing.expectEqualStrings("hello\n", bare_content);
+
+    const quoted_patch =
+        \\<<'EOF'
+        \\*** Begin Patch
+        \\*** Add File: quoted.txt
+        \\+world
+        \\*** End Patch
+        \\EOF
+    ;
+    const quoted_stats = try applyPatchInDir(allocator, dir.dir, quoted_patch);
+    try std.testing.expectEqual(@as(usize, 1), quoted_stats.added);
+
+    const quoted_content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "quoted.txt", allocator, .limited(1024));
+    defer allocator.free(quoted_content);
+    try std.testing.expectEqualStrings("world\n", quoted_content);
+
+    const double_quoted_patch =
+        \\<<"EOF"
+        \\*** Begin Patch
+        \\*** Add File: double-quoted.txt
+        \\+again
+        \\*** End Patch
+        \\EOF
+    ;
+    const double_quoted_stats = try applyPatchInDir(allocator, dir.dir, double_quoted_patch);
+    try std.testing.expectEqual(@as(usize, 1), double_quoted_stats.added);
+
+    const double_quoted_content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "double-quoted.txt", allocator, .limited(1024));
+    defer allocator.free(double_quoted_content);
+    try std.testing.expectEqualStrings("again\n", double_quoted_content);
 }
 
 test "apply_patch rejects empty update before reading target" {
