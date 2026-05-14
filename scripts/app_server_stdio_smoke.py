@@ -21,6 +21,36 @@ from pathlib import Path
 from typing import Callable
 
 _OMIT = object()
+# Experimental one-shot clients initialize before the request under test; opt
+# out of unrelated config warnings so the next read is the request response.
+EXPERIMENTAL_API_CAPABILITIES = {
+    "experimentalApi": True,
+    "optOutNotificationMethods": ["configWarning"],
+}
+EXPERIMENTAL_API_METHODS = [
+    "memory/reset",
+    "fuzzyFileSearch/sessionStart",
+    "fuzzyFileSearch/sessionUpdate",
+    "fuzzyFileSearch/sessionStop",
+    "collaborationMode/list",
+    "process/spawn",
+    "process/writeStdin",
+    "process/kill",
+    "process/resizePty",
+    "thread/backgroundTerminals/clean",
+    "thread/increment_elicitation",
+    "thread/decrement_elicitation",
+    "thread/goal/set",
+    "thread/goal/get",
+    "thread/goal/clear",
+    "thread/memoryMode/set",
+    "thread/turns/list",
+    "thread/realtime/start",
+    "thread/realtime/appendAudio",
+    "thread/realtime/appendText",
+    "thread/realtime/stop",
+    "thread/realtime/listVoices",
+]
 
 EXPECTED_REALTIME_VOICES = {
     "v1": [
@@ -3453,7 +3483,12 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert shell_status_idle["params"]["status"] == {"type": "idle"}
 
 
-def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -> dict:
+def request_stdio_app_server(
+    binary: Path,
+    payload: dict,
+    env: dict[str, str],
+    capabilities: dict | None = None,
+) -> dict:
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -3463,6 +3498,25 @@ def request_stdio_app_server(binary: Path, payload: dict, env: dict[str, str]) -
         env=env,
     )
     try:
+        if capabilities is None and payload.get("method") in EXPERIMENTAL_API_METHODS:
+            capabilities = EXPERIMENTAL_API_CAPABILITIES
+
+        if capabilities is not None:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": capabilities,
+                    },
+                },
+            )
+            initialize = read_json_line(proc, 5)
+            assert initialize["id"] == "initialize"
+
         write_json_line(proc, payload)
         response = read_json_line(proc, 5)
         assert proc.stdin is not None
@@ -3948,7 +4002,7 @@ def run_unmaterialized_thread_history_smoke(binary: Path) -> None:
                 "method": "initialize",
                 "params": {
                     "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                    "capabilities": {},
+                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                 },
             },
         )
@@ -4052,7 +4106,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "method": "initialize",
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                        "capabilities": {},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                     },
                 },
             )
@@ -7198,7 +7252,7 @@ def run_turn_terminal_interaction_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
-def run_thread_background_terminal_clean_experimental_gate_smoke(binary: Path) -> None:
+def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-background-clean-gate-home-", dir="/tmp"))
     try:
         env = os.environ.copy()
@@ -7226,22 +7280,24 @@ def run_thread_background_terminal_clean_experimental_gate_smoke(binary: Path) -
             )
             assert read_json_line(proc, 5)["id"] == "initialize-stable-client"
 
-            write_json_line(
-                proc,
-                {
-                    "jsonrpc": "2.0",
-                    "id": "thread-background-clean-without-experimental-api",
-                    "method": "thread/backgroundTerminals/clean",
-                    "params": {"threadId": "00000000-0000-0000-0000-000000000004"},
-                },
-            )
-            gated = read_json_line(proc, 5)
-            assert gated["id"] == "thread-background-clean-without-experimental-api"
-            assert gated["error"]["code"] == -32600
-            assert (
-                "thread/backgroundTerminals/clean requires experimentalApi capability"
-                in gated["error"]["message"]
-            )
+            for method in EXPERIMENTAL_API_METHODS:
+                request_id = f"experimental-gate-{method.replace('/', '-')}"
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": {},
+                    },
+                )
+                gated = read_json_line(proc, 5)
+                assert gated["id"] == request_id
+                assert gated["error"]["code"] == -32600
+                assert (
+                    gated["error"]["message"]
+                    == f"{method} requires experimentalApi capability"
+                )
 
             write_json_line(
                 proc,
@@ -7251,7 +7307,7 @@ def run_thread_background_terminal_clean_experimental_gate_smoke(binary: Path) -
                     "method": "initialize",
                     "params": {
                         "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                        "capabilities": {"experimentalApi": True},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                     },
                 },
             )
@@ -8292,6 +8348,20 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             env=env,
         )
         try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
             write_json_line(
                 proc,
                 {
@@ -10362,6 +10432,20 @@ def run_goal_feature_gate_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-goal-get-disabled",
                     "method": "thread/goal/get",
                     "params": {"threadId": "00000000-0000-0000-0000-000000000011"},
@@ -10407,6 +10491,7 @@ def run_memory_reset_smoke(binary: Path) -> None:
             binary,
             {"jsonrpc": "2.0", "id": "memory-reset", "method": "memory/reset"},
             env,
+            EXPERIMENTAL_API_CAPABILITIES,
         )
         assert response["id"] == "memory-reset"
         assert response["result"] == {}
@@ -10429,6 +10514,7 @@ def run_memory_reset_smoke(binary: Path) -> None:
             binary,
             {"jsonrpc": "2.0", "id": "state-db", "method": "memory/reset"},
             env,
+            EXPERIMENTAL_API_CAPABILITIES,
         )
         assert response["id"] == "state-db"
         assert response["result"] == {}
@@ -10459,6 +10545,7 @@ def run_memory_reset_smoke(binary: Path) -> None:
             binary,
             {"jsonrpc": "2.0", "id": "symlink", "method": "memory/reset"},
             env,
+            EXPERIMENTAL_API_CAPABILITIES,
         )
         assert response["id"] == "symlink"
         assert response["error"]["code"] == -32603
@@ -11217,6 +11304,20 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             env=env,
         )
         try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
             write_json_line(
                 proc,
                 {
@@ -16820,6 +16921,20 @@ def run_process_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "process-spawn-basic",
                     "method": "process/spawn",
                     "params": {
@@ -18211,7 +18326,12 @@ def run_collaboration_mode_rpc_smoke(binary: Path) -> None:
         payload = {"jsonrpc": "2.0", "id": request_id, "method": "collaborationMode/list"}
         if params is not _OMIT:
             payload["params"] = params
-        return request_stdio_app_server(binary, payload, env)
+        return request_stdio_app_server(
+            binary,
+            payload,
+            env,
+            EXPERIMENTAL_API_CAPABILITIES,
+        )
 
     try:
         response = rpc("collaboration-mode-list", {})
@@ -20084,6 +20204,20 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         return read_json_line(proc, 5)
 
     try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                },
+            },
+        )
+        assert read_json_line(proc, 5)["id"] == "initialize"
+
         detect_default = rpc("external-agent-detect-default", "externalAgentConfig/detect", {})
         assert detect_default["id"] == "external-agent-detect-default"
         assert detect_default["result"] == {"items": []}
@@ -23697,7 +23831,7 @@ def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
                                 "name": "app-server-smoke",
                                 "version": "0",
                             },
-                            "capabilities": {},
+                            "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                         },
                     },
                 )
@@ -24044,7 +24178,7 @@ def exercise_websocket_connection_state_reset(host: str, port: int, bearer_token
                         "name": "app-server-smoke",
                         "version": "0",
                     },
-                    "capabilities": {},
+                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
                 },
             }
         )
@@ -33510,8 +33644,8 @@ def main() -> None:
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
-    run_thread_background_terminal_clean_experimental_gate_smoke(binary)
-    print("app-server-thread-background-terminal-clean-experimental-gate-e2e: ok")
+    run_app_server_experimental_api_gate_smoke(binary)
+    print("app-server-experimental-api-gate-e2e: ok")
     run_thread_background_terminal_clean_smoke(binary)
     print("app-server-thread-background-terminal-clean-e2e: ok")
     run_turn_diff_opt_out_smoke(binary)

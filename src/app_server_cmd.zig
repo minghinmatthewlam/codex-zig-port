@@ -32622,7 +32622,32 @@ fn updateInitializeCapabilities(allocator: std.mem.Allocator, state: *AppServerS
 }
 
 fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) return "thread/backgroundTerminals/clean";
+    inline for (&.{
+        "memory/reset",
+        "fuzzyFileSearch/sessionStart",
+        "fuzzyFileSearch/sessionUpdate",
+        "fuzzyFileSearch/sessionStop",
+        "collaborationMode/list",
+        "process/spawn",
+        "process/writeStdin",
+        "process/kill",
+        "process/resizePty",
+        "thread/backgroundTerminals/clean",
+        "thread/increment_elicitation",
+        "thread/decrement_elicitation",
+        "thread/goal/set",
+        "thread/goal/get",
+        "thread/goal/clear",
+        "thread/memoryMode/set",
+        "thread/turns/list",
+        "thread/realtime/start",
+        "thread/realtime/appendAudio",
+        "thread/realtime/appendText",
+        "thread/realtime/stop",
+        "thread/realtime/listVoices",
+    }) |experimental_method| {
+        if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
+    }
     return null;
 }
 
@@ -49268,6 +49293,7 @@ test "app-server fuzzy file search sessions emit update and complete notificatio
     defer allocator.free(root_json);
 
     var state = AppServerState{};
+    state.experimental_api_enabled = true;
     defer state.deinit(allocator);
 
     const start_line = try std.fmt.allocPrint(
@@ -49330,6 +49356,7 @@ test "app-server hooks list validates params" {
 test "app-server collaboration mode list returns built-in presets" {
     const allocator = std.testing.allocator;
     var state = AppServerState{};
+    state.experimental_api_enabled = true;
     defer state.deinit(allocator);
 
     const response = try handleJsonRpcLine(
