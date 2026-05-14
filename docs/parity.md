@@ -255,8 +255,11 @@ TypeScript and JSON Schema artifacts now include
 `RemoteControlStatusChangedNotification`, exported through `v2/index.ts` and
 included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
-`"remoteControl/status/changed"` union variants. Runtime emission for these
-control/status notifications remains planned.
+`"remoteControl/status/changed"` union variants. Runtime emission is now
+covered for `mcpServer/startupStatus/updated` starting, ready, and failed
+notifications while app-server `turn/start` discovers configured MCP tools.
+Runtime emission for the remaining control/status notifications remains
+planned.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
