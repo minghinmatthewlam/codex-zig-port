@@ -28287,6 +28287,7 @@ fn handleThreadStart(
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
     try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28332,6 +28333,7 @@ fn handleThreadResume(
             subscription_committed = true;
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
             try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+            try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
             return renderJsonRpcResult(allocator, id_value, result);
         }
@@ -28375,6 +28377,7 @@ fn handleThreadResume(
     subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
     try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -28458,6 +28461,7 @@ fn handleThreadForkWithSource(
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
     try queueUnstableFeaturesWarningNotification(allocator, state, cfg, thread.id);
+    try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
 
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -30750,7 +30754,31 @@ fn queueUnstableFeaturesWarningNotification(
     defer if (message) |value| allocator.free(value);
     const warning = message orelse return;
 
-    const notification = try renderWarningNotification(allocator, thread_id, warning);
+    try queueWarningNotification(allocator, state, thread_id, warning);
+}
+
+const deprecated_on_failure_approval_policy_warning = "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs.";
+
+fn queueDeprecatedApprovalPolicyWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *const LoadedThread,
+) !void {
+    if (notificationMethodOptedOut(state, "warning")) return;
+    if (!std.mem.eql(u8, thread.approval_policy, "on-failure")) return;
+
+    try queueWarningNotification(allocator, state, thread.id, deprecated_on_failure_approval_policy_warning);
+}
+
+fn queueWarningNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: ?[]const u8,
+    message: []const u8,
+) !void {
+    if (notificationMethodOptedOut(state, "warning")) return;
+
+    const notification = try renderWarningNotification(allocator, thread_id, message);
     errdefer allocator.free(notification);
     try state.pending_notifications.append(allocator, notification);
 }

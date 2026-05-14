@@ -21079,6 +21079,128 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_deprecated_approval_policy_warning_smoke(binary: Path) -> None:
+    warning_message = "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs."
+
+    def start_server(codex_home: Path) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+
+    def close_server(proc: subprocess.Popen[str]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            assert proc.stderr is not None
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-on-failure-warning-", dir="/tmp"))
+    opt_out_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-on-failure-opt-out-", dir="/tmp"))
+    proc: subprocess.Popen[str] | None = None
+    opt_out_proc: subprocess.Popen[str] | None = None
+    try:
+        (codex_home / "config.toml").write_text(
+            'approval_policy = "on-failure"\n',
+            encoding="utf-8",
+        )
+        proc = start_server(codex_home)
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-approval-thread-start",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-deprecated-approval",
+                    "modelProvider": "mock_provider",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "deprecated-approval-thread-start"
+        assert started["result"]["approvalPolicy"] == "on-failure"
+        thread = started["result"]["thread"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+        warning = read_json_line(proc, 5)
+        assert warning == {
+            "jsonrpc": "2.0",
+            "method": "warning",
+            "params": {"threadId": thread["id"], "message": warning_message},
+        }
+        close_server(proc)
+        proc = None
+
+        (opt_out_home / "config.toml").write_text(
+            'approval_policy = "on-failure"\n',
+            encoding="utf-8",
+        )
+        opt_out_proc = start_server(opt_out_home)
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-warning-opt-out",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": ["thread/started", "warning"],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(opt_out_proc, 5)
+        assert initialized["id"] == "initialize-warning-opt-out"
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-approval-thread-start-opted-out",
+                "method": "thread/start",
+                "params": {
+                    "model": "gpt-deprecated-approval",
+                    "modelProvider": "mock_provider",
+                    "sandbox": "danger-full-access",
+                    "ephemeral": True,
+                },
+            },
+        )
+        opted_out_start = read_json_line(opt_out_proc, 5)
+        assert opted_out_start["id"] == "deprecated-approval-thread-start-opted-out"
+        assert opted_out_start["result"]["approvalPolicy"] == "on-failure"
+        thread_id = opted_out_start["result"]["thread"]["id"]
+        write_json_line(
+            opt_out_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "deprecated-approval-loaded-after-opt-out",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded = read_json_line(opt_out_proc, 5)
+        assert loaded["id"] == "deprecated-approval-loaded-after-opt-out"
+        assert loaded["result"] == {"data": [thread_id], "nextCursor": None}
+        close_server(opt_out_proc)
+        opt_out_proc = None
+    finally:
+        for running_proc in (proc, opt_out_proc):
+            if running_proc is not None and running_proc.poll() is None:
+                running_proc.kill()
+                running_proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(opt_out_home, ignore_errors=True)
+
+
 def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -31068,6 +31190,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_deprecated_approval_policy_warning_smoke(binary)
+    print("app-server-deprecated-approval-policy-warning-e2e: ok")
     run_unix_path_smoke(binary)
     print("app-server-unix-path-e2e: ok")
     run_unix_default_smoke(binary)
