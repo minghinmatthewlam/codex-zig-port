@@ -4951,6 +4951,95 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 ]
                 assert "<personality_spec>" not in none_personality_instructions
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-invalid-summary",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "summary": "verbose",
+                            "input": [
+                                {"type": "text", "text": "invalid summary"},
+                            ],
+                        },
+                    },
+                )
+                invalid_summary = read_json_line(proc, 5)
+                assert invalid_summary["id"] == "turn-start-invalid-summary"
+                assert invalid_summary["error"]["code"] == -32602
+                assert (
+                    invalid_summary["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 12
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-detailed-summary",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "summary": "detailed",
+                            "input": [
+                                {"type": "text", "text": "use detailed summary"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-detailed-summary"
+                )
+                assert server.request_paths == ["/responses"] * 13
+                detailed_summary_request = server.request_bodies[-1]
+                assert detailed_summary_request["reasoning"]["summary"] == "detailed"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sticky-summary",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {"type": "text", "text": "keep detailed summary"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-sticky-summary"
+                )
+                assert server.request_paths == ["/responses"] * 14
+                sticky_summary_request = server.request_bodies[-1]
+                assert sticky_summary_request["reasoning"]["summary"] == "detailed"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-none-summary",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "summary": "none",
+                            "input": [
+                                {"type": "text", "text": "disable summary"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-none-summary"
+                )
+                assert server.request_paths == ["/responses"] * 15
+                none_summary_request = server.request_bodies[-1]
+                assert none_summary_request["reasoning"]["summary"] == "none"
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -21116,6 +21205,13 @@ def run_json_schema_smoke(binary: Path) -> None:
             "xhigh",
             None,
         ]
+        assert turn_start_params_schema["properties"]["summary"]["enum"] == [
+            "auto",
+            "concise",
+            "detailed",
+            "none",
+            None,
+        ]
         assert turn_start_params_schema["properties"]["approvalsReviewer"]["enum"] == [
             "user",
             "auto_review",
@@ -23096,6 +23192,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { ReasoningEffort } from "../ReasoningEffort";' in (
             turn_start_params
         )
+        assert 'import type { ReasoningSummary } from "../ReasoningSummary";' in (
+            turn_start_params
+        )
         assert 'import type { Personality } from "../Personality";' in (
             turn_start_params
         )
@@ -23105,6 +23204,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "summary?: ReasoningSummary | null;" in turn_start_params
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
@@ -25842,6 +25942,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
+        assert "summary?: ReasoningSummary | null;" in turn_start_params
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
