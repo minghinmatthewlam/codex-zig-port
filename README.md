@@ -339,7 +339,7 @@ execution shapes using Rust-shaped `fileSystem` / `network.enabled` payloads,
 managed permission-profile network enabled/restricted behavior,
 `streamStdoutStderr` output-delta notifications, external permission-profile
 and external sandbox-policy execution, sandbox-policy `networkAccess`
-enforcement, explicit unsupported stdin streaming and PTY modes,
+enforcement, stdio stdin streaming, PTY sessions, active PTY resize,
 workspace-write sandbox-policy temp-root defaults and exclude
 flags, implicit workspace-write temp-root defaults, required streaming
 `processId` validation, and follow-up command session validation/inactive-process

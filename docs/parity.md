@@ -410,10 +410,11 @@ reuse remain planned.
 Current app-server `command/exec` coverage includes buffered command execution,
 capture-time independent stdout/stderr output-cap truncation, disabled output
 caps, timeout exit-code responses with captured pre-timeout output,
-`streamStdoutStderr` output-delta
-notifications, stdio app-server deferred non-PTY command sessions with
-client-supplied `processId`, active `command/exec/write` stdin streaming, and
-active `command/exec/terminate` handling, plus Rust-shaped validation for
+`streamStdoutStderr` output-delta notifications, stdio app-server deferred
+command sessions with client-supplied `processId`, active `command/exec/write`
+stdin streaming, macOS PTY-backed `tty` command sessions with output deltas and
+active `command/exec/resize`, and active `command/exec/terminate` handling,
+plus Rust-shaped validation for
 request environment merge/override/null-unset behavior, negative
 `timeoutMs` values, output-cap/timeout disable conflicts, streaming `processId`
 requirements, terminal size rows and columns, and
@@ -433,12 +434,12 @@ read-only/workspace-write policies, including the Rust-shaped default network
 deny, and workspace-write `sandboxPolicy` temp-root defaults plus
 `excludeTmpdirEnvVar` / `excludeSlashTmp` flags are enforced; implicit
 config-driven workspace-write command execution uses the same default temp
-roots. PTY command sessions, `command/exec/resize`, non-stdio deferred command
-responses, connection-scoped websocket lifecycle cleanup, and full Rust async
-command session parity remain planned. Inactive follow-up calls still return
-Rust-shaped inactive-process errors. Empty `processId` values on follow-up
-calls preserve Rust validation order: payload/size errors win first, otherwise
-the inactive-command error includes the empty id.
+roots. Non-stdio deferred command responses, non-stdio PTY lifecycle routing,
+connection-scoped websocket lifecycle cleanup, and full Rust async command
+session parity remain planned. Inactive follow-up calls still return
+Rust-shaped inactive-process errors. Empty `processId` values on follow-up calls
+preserve Rust validation order: payload/size errors win first, otherwise the
+inactive-command error includes the empty id.
 
 Current app-server experimental `process/*` coverage includes generated
 TypeScript and JSON Schema artifacts for `process/spawn`,
