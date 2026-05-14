@@ -27735,6 +27735,10 @@ fn handleThreadStart(
     };
     defer cfg.deinit(allocator);
 
+    applyThreadStartProjectTrustAndConfig(allocator, &cfg, params) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load project config", err);
+    };
+
     var thread = createLoadedThreadFromStartParams(allocator, cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to create thread", err);
     };
@@ -27933,6 +27937,132 @@ fn threadStartObjectParams(params_value: ?std.json.Value) ?std.json.ObjectMap {
     const params = params_value orelse return null;
     if (params != .object) return null;
     return params.object;
+}
+
+fn applyThreadStartProjectTrustAndConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    params: ?std.json.ObjectMap,
+) !void {
+    const requested_cwd = optionalStringParam(params, "cwd") orelse return;
+    const cwd = try realPathFileAllocPlain(allocator, requested_cwd);
+    defer allocator.free(cwd);
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+
+    var user_config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (user_config_bytes) |bytes| allocator.free(bytes);
+
+    if (!(try threadStartProjectTrustedByConfig(allocator, user_config_bytes orelse "", cwd)) and
+        threadStartShouldTrustProject(params, cfg.*))
+    {
+        try persistThreadStartProjectTrust(allocator, config_path, user_config_bytes orelse "", cwd);
+        if (user_config_bytes) |bytes| allocator.free(bytes);
+        user_config_bytes = null;
+        user_config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    }
+
+    const bytes = user_config_bytes orelse return;
+    var project_layers = try loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, bytes);
+    defer project_layers.deinit(allocator);
+    try applyThreadStartProjectLayersToConfig(allocator, cfg, project_layers);
+}
+
+fn threadStartProjectTrustedByConfig(
+    allocator: std.mem.Allocator,
+    user_config_bytes: []const u8,
+    cwd: []const u8,
+) !bool {
+    var trusted_ancestors = try configReadTrustedProjectAncestors(allocator, cwd, user_config_bytes);
+    defer trusted_ancestors.deinit(allocator);
+    return trusted_ancestors.items.len > 0;
+}
+
+fn threadStartShouldTrustProject(params: ?std.json.ObjectMap, cfg: config.Config) bool {
+    if (optionalStringParam(params, "sandbox")) |sandbox| {
+        return std.mem.eql(u8, sandbox, "workspace-write") or
+            std.mem.eql(u8, sandbox, "danger-full-access");
+    }
+    return cfg.sandbox_mode == .workspace_write or cfg.sandbox_mode == .danger_full_access;
+}
+
+fn persistThreadStartProjectTrust(
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+    user_config_bytes: []const u8,
+    cwd: []const u8,
+) !void {
+    const trust_target = try resolveThreadStartProjectTrustTarget(allocator, cwd);
+    defer allocator.free(trust_target);
+
+    const key_path = try projectTrustKeyPath(allocator, trust_target);
+    defer allocator.free(key_path);
+
+    const updated = try config.updateTomlRawValueForKeyPath(allocator, user_config_bytes, key_path, "\"trusted\"");
+    defer allocator.free(updated);
+    try config.writeConfigTomlFile(config_path, updated);
+}
+
+fn resolveThreadStartProjectTrustTarget(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+    return (try findExternalAgentRepoRoot(allocator, cwd)) orelse try allocator.dupe(u8, cwd);
+}
+
+fn projectTrustKeyPath(allocator: std.mem.Allocator, trust_target: []const u8) ![]const u8 {
+    var key_path = std.ArrayList(u8).empty;
+    errdefer key_path.deinit(allocator);
+    try key_path.appendSlice(allocator, "projects.");
+    try appendTomlBasicStringLiteral(allocator, &key_path, trust_target);
+    try key_path.appendSlice(allocator, ".trust_level");
+    return key_path.toOwnedSlice(allocator);
+}
+
+fn appendTomlBasicStringLiteral(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    try output.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try output.appendSlice(allocator, "\\\""),
+            '\\' => try output.appendSlice(allocator, "\\\\"),
+            '\n' => try output.appendSlice(allocator, "\\n"),
+            '\r' => try output.appendSlice(allocator, "\\r"),
+            '\t' => try output.appendSlice(allocator, "\\t"),
+            else => try output.append(allocator, byte),
+        }
+    }
+    try output.append(allocator, '"');
+}
+
+fn applyThreadStartProjectLayersToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    project_layers: ConfigReadProjectLayers,
+) !void {
+    if (project_layers.model()) |value| try replaceConfigOwnedString(allocator, &cfg.model, value);
+    if (project_layers.approvalPolicy()) |value| cfg.approval_policy = value;
+    if (project_layers.sandboxMode()) |value| cfg.sandbox_mode = value;
+    if (project_layers.webSearchMode()) |value| cfg.web_search_mode = value;
+    if (project_layers.modelReasoningEffort()) |value| cfg.model_reasoning_effort = value;
+    if (project_layers.serviceTier()) |value| try replaceConfigOptionalString(allocator, &cfg.service_tier, value);
+    if (project_layers.forcedLoginMethod()) |value| cfg.forced_login_method = value;
+    if (project_layers.forcedChatGptWorkspaceId()) |value| {
+        try replaceConfigOptionalString(allocator, &cfg.forced_chatgpt_workspace_id, value);
+    }
+}
+
+fn replaceConfigOwnedString(allocator: std.mem.Allocator, slot: *[]const u8, value: []const u8) !void {
+    const copy = try allocator.dupe(u8, value);
+    allocator.free(slot.*);
+    slot.* = copy;
+}
+
+fn replaceConfigOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
+    const copy = try allocator.dupe(u8, value);
+    if (slot.*) |existing| allocator.free(existing);
+    slot.* = copy;
 }
 
 fn threadResumePath(allocator: std.mem.Allocator, codex_home: []const u8, params: std.json.ObjectMap) ![]const u8 {

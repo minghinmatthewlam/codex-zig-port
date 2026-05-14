@@ -3647,6 +3647,142 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
             proc.wait(timeout=5)
 
 
+def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
+    def rpc(codex_home: Path, request_id: str, params: dict) -> dict:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        return request_stdio_app_server(
+            binary,
+            {"jsonrpc": "2.0", "id": request_id, "method": "thread/start", "params": params},
+            env,
+        )
+
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-home-", dir="/tmp"))
+    workspace = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-workspace-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'approval_policy = "never"',
+                    'sandbox_mode = "read-only"',
+                    'model_reasoning_effort = "low"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        workspace.joinpath(".codex").mkdir()
+        workspace.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    'approval_policy = "on-request"',
+                    'model_reasoning_effort = "high"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        elevated = rpc(
+            codex_home,
+            "thread-start-elevated-trust",
+            {"cwd": str(workspace), "sandbox": "workspace-write", "ephemeral": True},
+        )
+        assert elevated["id"] == "thread-start-elevated-trust"
+        assert elevated["result"]["approvalPolicy"] == "on-request"
+        assert elevated["result"]["reasoningEffort"] == "high"
+        assert elevated["result"]["sandbox"] == {
+            "type": "workspaceWrite",
+            "writableRoots": [],
+            "networkAccess": False,
+            "excludeTmpdirEnvVar": False,
+            "excludeSlashTmp": False,
+        }
+
+        config_toml = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_workspace_section = f'[projects."{toml_quoted_key(str(workspace.resolve()))}"]'
+        assert trusted_workspace_section in config_toml
+        assert 'trust_level = "trusted"' in config_toml
+
+        followup = rpc(
+            codex_home,
+            "thread-start-followup-project-config",
+            {"cwd": str(workspace), "ephemeral": True},
+        )
+        assert followup["id"] == "thread-start-followup-project-config"
+        assert followup["result"]["approvalPolicy"] == "on-request"
+        assert followup["result"]["reasoningEffort"] == "high"
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    nested_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-nested-home-", dir="/tmp"))
+    repo_root = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-repo-", dir="/tmp"))
+    nested = repo_root / "nested" / "project"
+    try:
+        nested_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "read-only"\n',
+            encoding="utf-8",
+        )
+        repo_root.joinpath(".git").mkdir()
+        nested.mkdir(parents=True)
+
+        nested_start = rpc(
+            nested_home,
+            "thread-start-nested-git-trust",
+            {"cwd": str(nested), "sandbox": "workspace-write", "ephemeral": True},
+        )
+        assert nested_start["id"] == "thread-start-nested-git-trust"
+        nested_config_toml = nested_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_repo_section = f'[projects."{toml_quoted_key(str(repo_root.resolve()))}"]'
+        trusted_nested_section = f'[projects."{toml_quoted_key(str(nested.resolve()))}"]'
+        assert trusted_repo_section in nested_config_toml
+        assert trusted_nested_section not in nested_config_toml
+    finally:
+        shutil.rmtree(nested_home, ignore_errors=True)
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+    danger_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-danger-home-", dir="/tmp"))
+    danger_workspace = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-danger-", dir="/tmp"))
+    try:
+        danger_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "read-only"\n',
+            encoding="utf-8",
+        )
+        danger = rpc(
+            danger_home,
+            "thread-start-danger-full-access-trust",
+            {"cwd": str(danger_workspace), "sandbox": "danger-full-access", "ephemeral": True},
+        )
+        assert danger["id"] == "thread-start-danger-full-access-trust"
+        danger_config_toml = danger_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_danger_section = f'[projects."{toml_quoted_key(str(danger_workspace.resolve()))}"]'
+        assert trusted_danger_section in danger_config_toml
+    finally:
+        shutil.rmtree(danger_home, ignore_errors=True)
+        shutil.rmtree(danger_workspace, ignore_errors=True)
+
+    read_only_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-readonly-home-", dir="/tmp"))
+    read_only_workspace = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-readonly-", dir="/tmp"))
+    try:
+        read_only_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "read-only"\n',
+            encoding="utf-8",
+        )
+        read_only = rpc(
+            read_only_home,
+            "thread-start-read-only-no-trust",
+            {"cwd": str(read_only_workspace), "ephemeral": True},
+        )
+        assert read_only["id"] == "thread-start-read-only-no-trust"
+        read_only_config_toml = read_only_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert str(read_only_workspace.resolve()) not in read_only_config_toml
+        assert 'trust_level = "trusted"' not in read_only_config_toml
+    finally:
+        shutil.rmtree(read_only_home, ignore_errors=True)
+        shutil.rmtree(read_only_workspace, ignore_errors=True)
+
+
 def run_unmaterialized_thread_history_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-thread-history-", dir="/tmp"))
     codex_home = Path(
@@ -28622,6 +28758,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_thread_start_project_trust_rpc_smoke(binary)
+    print("app-server-thread-start-project-trust-rpc-e2e: ok")
     run_unmaterialized_thread_history_smoke(binary)
     print("app-server-unmaterialized-thread-history-e2e: ok")
     run_turn_start_rpc_smoke(binary)
