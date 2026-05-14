@@ -20636,9 +20636,10 @@ def websocket_handshake_status(host: str, port: int, headers: list[str]) -> int:
 
 
 class SmokeWebSocket:
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, bearer_token: str | None = None) -> None:
         self.sock = socket.create_connection((host, port), timeout=5)
         key = base64.b64encode(os.urandom(16)).decode("ascii")
+        auth_header = f"Authorization: Bearer {bearer_token}\r\n" if bearer_token is not None else ""
         self.sock.sendall(
             (
                 f"GET / HTTP/1.1\r\n"
@@ -20647,6 +20648,7 @@ class SmokeWebSocket:
                 "Connection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key}\r\n"
                 "Sec-WebSocket-Version: 13\r\n"
+                f"{auth_header}"
                 "\r\n"
             ).encode("ascii")
         )
@@ -20767,6 +20769,71 @@ def run_websocket_smoke(binary: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_websocket_capability_auth_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-auth-", dir="/tmp"))
+    token_file = codex_home / "app-server-token"
+    token_file.write_text("super-secret-token\n", encoding="utf-8")
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:0",
+            "--ws-auth",
+            "capability-token",
+            "--ws-token-file",
+            str(token_file),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    websocket = None
+    try:
+        host, port = wait_for_websocket_bind(proc, 5)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        upgrade_headers = [
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+        ]
+        assert websocket_handshake_status(host, port, upgrade_headers) == 401
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [
+                    *upgrade_headers,
+                    "Authorization: Bearer wrong-token",
+                ],
+            )
+            == 401
+        )
+        assert (
+            websocket_handshake_status(
+                host,
+                port,
+                [
+                    *upgrade_headers,
+                    "Authorization: Bearer super-secret-token",
+                    "Origin: https://evil.example",
+                ],
+            )
+            == 403
+        )
+        websocket = SmokeWebSocket(host, port, "super-secret-token")
+        exercise_json_rpc(websocket.write_json, websocket.read_json)
+    finally:
+        if websocket is not None:
+            websocket.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def run_relay_smoke(binary: Path, relay_args_for_socket) -> None:
@@ -29763,12 +29830,12 @@ def run_flag_compat_smoke(binary: Path) -> None:
     assert analytics.stdout == "app-server transport: off\n"
 
     digest = "ab" * 32
-    capability = subprocess.run(
+    capability = subprocess.Popen(
         [
             str(binary),
             "app-server",
             "--listen",
-            "ws://127.0.0.1:4500",
+            "ws://127.0.0.1:0",
             "--ws-auth",
             "capability-token",
             "--ws-token-sha256",
@@ -29778,12 +29845,16 @@ def run_flag_compat_smoke(binary: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=5,
-        check=False,
     )
-    assert capability.returncode != 0
-    assert "AppServerWebsocketAuthNotImplemented" in capability.stderr
-    assert "UnknownAppServerOption" not in capability.stderr
+    try:
+        wait_for_websocket_bind(capability, 5)
+        assert capability.poll() is None
+    finally:
+        if capability.poll() is None:
+            capability.kill()
+            capability.wait(timeout=5)
+    assert capability.stderr is not None
+    assert "UnknownAppServerOption" not in capability.stderr.read()
 
     signed_bearer = subprocess.run(
         [
@@ -29951,6 +30022,8 @@ def main() -> None:
     print("app-server-unix-default-e2e: ok")
     run_websocket_smoke(binary)
     print("app-server-websocket-e2e: ok")
+    run_websocket_capability_auth_smoke(binary)
+    print("app-server-websocket-capability-auth-e2e: ok")
     run_proxy_smoke(binary)
     print("app-server-proxy-e2e: ok")
     run_stdio_to_uds_smoke(binary)
