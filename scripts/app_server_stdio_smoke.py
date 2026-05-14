@@ -5040,6 +5040,108 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 none_summary_request = server.request_bodies[-1]
                 assert none_summary_request["reasoning"]["summary"] == "none"
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-sandbox-policy-conflict",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandbox": "read-only",
+                            "sandboxPolicy": {
+                                "type": "readOnly",
+                                "networkAccess": False,
+                            },
+                            "input": [
+                                {"type": "text", "text": "conflicting sandbox policy"},
+                            ],
+                        },
+                    },
+                )
+                sandbox_policy_conflict = read_json_line(proc, 5)
+                assert sandbox_policy_conflict["id"] == "turn-start-sandbox-policy-conflict"
+                assert sandbox_policy_conflict["error"]["code"] == -32602
+                assert (
+                    sandbox_policy_conflict["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 15
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-unsupported-sandbox-policy",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "readOnly",
+                                "networkAccess": True,
+                            },
+                            "input": [
+                                {"type": "text", "text": "unsupported sandbox policy"},
+                            ],
+                        },
+                    },
+                )
+                unsupported_sandbox_policy = read_json_line(proc, 5)
+                assert unsupported_sandbox_policy["id"] == "turn-start-unsupported-sandbox-policy"
+                assert unsupported_sandbox_policy["error"]["code"] == -32602
+                assert (
+                    unsupported_sandbox_policy["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert server.request_paths == ["/responses"] * 15
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-read-only-sandbox-policy",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "readOnly",
+                                "networkAccess": False,
+                            },
+                            "input": [
+                                {"type": "text", "text": "use read only sandbox policy"},
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-read-only-sandbox-policy"
+                )
+                assert server.request_paths == ["/responses"] * 16
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-sandbox-policy",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_sandbox_policy = read_json_line(proc, 5)
+                assert fork_after_sandbox_policy["id"] == "thread-fork-after-sandbox-policy"
+                assert fork_after_sandbox_policy["result"]["sandbox"] == {
+                    "type": "readOnly",
+                    "networkAccess": False,
+                }
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_sandbox_policy["result"]["thread"],
+                )
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -21224,6 +21326,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "pragmatic",
             None,
         ]
+        assert (
+            turn_start_params_schema["properties"]["sandboxPolicy"]["oneOf"][0][
+                "$ref"
+            ]
+            == "SandboxPolicy.json"
+        )
         turn_start_response_schema = json.loads(
             (out_dir / "TurnStartResponse.json").read_text(encoding="utf-8")
         )
@@ -22797,6 +22905,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             bundle["$defs"]["TurnStartParams"]["properties"]["input"]["items"]["$ref"]
             == "#/$defs/UserInput"
         )
+        assert (
+            bundle["$defs"]["TurnStartParams"]["properties"]["sandboxPolicy"]["oneOf"][
+                0
+            ]["$ref"]
+            == "#/$defs/SandboxPolicy"
+        )
         assert bundle["$defs"]["UserInput"]["oneOf"][0]["properties"]["type"]["const"] == "text"
         assert bundle["$defs"]["UserInput"]["oneOf"][4]["properties"]["type"]["const"] == "mention"
         assert "NonSteerableTurnKind" in bundle["$defs"]
@@ -23201,12 +23315,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { ApprovalsReviewer } from "./ApprovalsReviewer";' in (
             turn_start_params
         )
+        assert 'import type { SandboxPolicy } from "./SandboxPolicy";' in (
+            turn_start_params
+        )
         assert 'import type { UserInput } from "./UserInput";' in turn_start_params
         assert "input: UserInput[];" in turn_start_params
         assert "effort?: ReasoningEffort | null;" in turn_start_params
         assert "summary?: ReasoningSummary | null;" in turn_start_params
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
+        assert "sandboxPolicy?: SandboxPolicy | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
         )
@@ -25945,6 +26063,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "summary?: ReasoningSummary | null;" in turn_start_params
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
+        assert "sandboxPolicy?: SandboxPolicy | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
