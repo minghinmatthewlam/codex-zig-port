@@ -25,12 +25,14 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25833817081` passed for
-  `0242d39 Document turn reasoning summary parity`.
+  Checked push run `25837356714` passed for
+  `852c4e3 Keep expected parser errors quiet in tests`.
 - Source hygiene: current tracked-file scans found no provider-shaped tokens,
   GitHub tokens, Slack tokens, AWS access keys, private-key blocks,
   JWT-shaped blobs, unignored local auth/env files, or tracked local build
-  artifacts. Broad keyword/path scans only found test fixtures, docs, ignored
+  artifacts. Current ignored-file scans only found local build output,
+  Python bytecode, ignored demo scratch files, and ignored local `plans/`
+  content. Broad keyword/path scans only found test fixtures, docs, ignored
   local build output, and temporary-path examples. Git-history regex scans found
   no provider-shaped secrets, private-key blocks, or JWT-shaped blobs, and only
   an old dummy `sk-proj-*` test fixture added by commit `820d156` and removed by
