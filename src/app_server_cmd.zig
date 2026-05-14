@@ -30840,9 +30840,14 @@ fn queueInitializeConfigWarningNotifications(
 ) !void {
     if (notificationMethodOptedOut(state, "configWarning")) return;
 
-    const summary = try projectConfigDisabledWarningSummary(allocator) orelse return;
-    defer allocator.free(summary);
-    try queueConfigWarningNotification(allocator, state, summary, null);
+    var context = try loadProjectConfigWarningContext(allocator) orelse return;
+    defer context.deinit(allocator);
+
+    if (try projectConfigDisabledWarningSummary(allocator, &context)) |summary| {
+        defer allocator.free(summary);
+        try queueConfigWarningNotification(allocator, state, summary, null);
+    }
+    try queueProjectIgnoredConfigKeyWarningNotifications(allocator, state, &context);
 }
 
 fn queueConfigWarningNotification(
@@ -30872,41 +30877,74 @@ fn renderConfigWarningNotification(allocator: std.mem.Allocator, summary: []cons
 const project_config_disabled_summary_prefix = "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n";
 const project_config_gated_features = "project-local config, hooks, and exec policies";
 
-fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator) !?[]u8 {
+const ProjectConfigWarningContext = struct {
+    cwd: [:0]u8,
+    codex_home: []const u8,
+    user_config_path: []const u8,
+    user_config_bytes: ?[]const u8,
+    default_codex_home: ?[]const u8,
+
+    fn deinit(self: *ProjectConfigWarningContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwd);
+        allocator.free(self.codex_home);
+        allocator.free(self.user_config_path);
+        if (self.user_config_bytes) |bytes| allocator.free(bytes);
+        if (self.default_codex_home) |path| allocator.free(path);
+    }
+
+    fn userBytes(self: *const ProjectConfigWarningContext) []const u8 {
+        return self.user_config_bytes orelse "";
+    }
+
+    fn isUserCodexFolder(self: *const ProjectConfigWarningContext, path: []const u8) bool {
+        return std.mem.eql(u8, path, self.codex_home) or
+            (self.default_codex_home != null and std.mem.eql(u8, path, self.default_codex_home.?));
+    }
+};
+
+fn loadProjectConfigWarningContext(allocator: std.mem.Allocator) !?ProjectConfigWarningContext {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd_z = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return null;
-    defer allocator.free(cwd_z);
-    const cwd: []const u8 = cwd_z;
+    errdefer allocator.free(cwd_z);
 
     const codex_home = config.resolveCodexHome(allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return null,
     };
-    defer allocator.free(codex_home);
+    errdefer allocator.free(codex_home);
     const user_config_path = try config.configTomlPath(allocator, codex_home);
-    defer allocator.free(user_config_path);
+    errdefer allocator.free(user_config_path);
     const user_config_bytes = config.readConfigTomlFile(allocator, user_config_path) catch null;
-    defer if (user_config_bytes) |bytes| allocator.free(bytes);
-    const user_bytes = user_config_bytes orelse "";
+    errdefer if (user_config_bytes) |bytes| allocator.free(bytes);
     const default_codex_home = try defaultUserCodexHome(allocator);
-    defer if (default_codex_home) |path| allocator.free(path);
+    errdefer if (default_codex_home) |path| allocator.free(path);
 
+    const context = ProjectConfigWarningContext{
+        .cwd = cwd_z,
+        .codex_home = codex_home,
+        .user_config_path = user_config_path,
+        .user_config_bytes = user_config_bytes,
+        .default_codex_home = default_codex_home,
+    };
+    return context;
+}
+
+fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator, context: *const ProjectConfigWarningContext) !?[]u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
-    var current: []const u8 = cwd;
+    var current: []const u8 = context.cwd;
     var disabled_count: usize = 0;
     while (true) {
         const dot_codex_folder = try std.fs.path.join(allocator, &.{ current, ".codex" });
         defer allocator.free(dot_codex_folder);
 
-        const is_user_codex_folder = std.mem.eql(u8, dot_codex_folder, codex_home) or
-            (default_codex_home != null and std.mem.eql(u8, dot_codex_folder, default_codex_home.?));
-        const has_project_codex = if (is_user_codex_folder)
+        const has_project_codex = if (context.isUserCodexFolder(dot_codex_folder))
             false
         else
             dirExists(io, dot_codex_folder) catch false;
-        if (has_project_codex and !try projectTrustedBySelfOrAncestor(allocator, user_bytes, current)) {
+        if (has_project_codex and !try projectTrustedBySelfOrAncestor(allocator, context.userBytes(), current)) {
             if (disabled_count == 0) {
                 try result.appendSlice(allocator, project_config_disabled_summary_prefix);
             }
@@ -30917,8 +30955,8 @@ fn projectConfigDisabledWarningSummary(allocator: std.mem.Allocator) !?[]u8 {
                 disabled_count,
                 dot_codex_folder,
                 current,
-                user_config_path,
-                user_bytes,
+                context.user_config_path,
+                context.userBytes(),
             );
         }
 
@@ -30940,6 +30978,113 @@ fn defaultUserCodexHome(allocator: std.mem.Allocator) !?[]u8 {
     defer allocator.free(home);
     const path = try std.fs.path.join(allocator, &.{ home, ".codex" });
     return path;
+}
+
+const project_local_config_denylist = [_][]const u8{
+    "openai_base_url",
+    "chatgpt_base_url",
+    "model_provider",
+    "model_providers",
+    "notify",
+    "profile",
+    "profiles",
+    "experimental_realtime_ws_base_url",
+};
+
+fn queueProjectIgnoredConfigKeyWarningNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    context: *const ProjectConfigWarningContext,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var current: []const u8 = context.cwd;
+    while (true) {
+        const dot_codex_folder = try std.fs.path.join(allocator, &.{ current, ".codex" });
+        defer allocator.free(dot_codex_folder);
+
+        if (!context.isUserCodexFolder(dot_codex_folder) and
+            (dirExists(io, dot_codex_folder) catch false) and
+            try projectTrustedBySelfOrAncestor(allocator, context.userBytes(), current))
+        {
+            const config_path = try std.fs.path.join(allocator, &.{ dot_codex_folder, "config.toml" });
+            defer allocator.free(config_path);
+            const project_config_bytes = config.readConfigTomlFile(allocator, config_path) catch null;
+            defer if (project_config_bytes) |bytes| allocator.free(bytes);
+            if (project_config_bytes) |bytes| {
+                if (try projectIgnoredConfigKeysWarningSummary(allocator, config_path, bytes)) |message| {
+                    defer allocator.free(message);
+                    try queueConfigWarningNotification(allocator, state, message, null);
+                }
+            }
+        }
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len) break;
+        current = parent;
+    }
+}
+
+fn projectIgnoredConfigKeysWarningSummary(allocator: std.mem.Allocator, config_path: []const u8, config_bytes: []const u8) !?[]u8 {
+    var ignored = std.ArrayList([]const u8).empty;
+    defer ignored.deinit(allocator);
+    for (&project_local_config_denylist) |key| {
+        if (projectConfigHasRootKey(config_bytes, key)) {
+            try ignored.append(allocator, key);
+        }
+    }
+    if (ignored.items.len == 0) return null;
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "Ignored unsupported project-local config keys in ");
+    try result.appendSlice(allocator, config_path);
+    try result.appendSlice(allocator, ": ");
+    for (ignored.items, 0..) |key, index| {
+        if (index > 0) try result.appendSlice(allocator, ", ");
+        try result.appendSlice(allocator, key);
+    }
+    try result.appendSlice(allocator, ". If you want these settings to apply, manually set them in your user-level config.toml.");
+    const owned = try result.toOwnedSlice(allocator);
+    return owned;
+}
+
+fn projectConfigHasRootKey(config_bytes: []const u8, key: []const u8) bool {
+    var in_top_level = true;
+    var iter = std.mem.splitScalar(u8, config_bytes, '\n');
+    while (iter.next()) |line_raw| {
+        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+
+        if (line[0] == '[') {
+            in_top_level = false;
+            if (projectConfigSectionRootMatches(line, key)) return true;
+            continue;
+        }
+
+        if (!in_top_level) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const raw_key = std.mem.trim(u8, line[0..eq], " \t");
+        if (tomlKeyRootMatches(raw_key, key)) return true;
+    }
+    return false;
+}
+
+fn projectConfigSectionRootMatches(line: []const u8, key: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    return tomlKeyRootMatches(section, key);
+}
+
+fn tomlKeyRootMatches(raw_key: []const u8, key: []const u8) bool {
+    const root_end = std.mem.indexOfScalar(u8, raw_key, '.') orelse raw_key.len;
+    const root = raw_key[0..root_end];
+    if (std.mem.eql(u8, root, key)) return true;
+
+    if (root.len == key.len + 2 and root[0] == '"' and root[root.len - 1] == '"') {
+        return std.mem.eql(u8, root[1 .. root.len - 1], key);
+    }
+    return false;
 }
 
 fn appendProjectConfigDisabledEntry(
