@@ -641,8 +641,7 @@ rejects invalid reasoning-effort labels before issuing a provider request,
 stores the selected effort on the loaded-thread runtime state, and applies
 that effort to the current and subsequent Responses requests. The
 generated TypeScript and JSON schemas include `TurnStartParams.effort`. Rust
-collaboration mode and permission-profile turn-context overrides remain
-planned.
+collaboration-mode turn-context overrides remain planned.
 
 Additional app-server turn-start approvals-reviewer override coverage:
 `turn/start` now accepts Rust-compatible `approvalsReviewer` overrides for
@@ -658,8 +657,7 @@ threads, rejects invalid personality labels before issuing a provider request,
 stores the selected personality on the loaded-thread runtime state, and applies
 it to the current and subsequent Responses request instructions. The generated
 TypeScript and JSON schemas include `TurnStartParams.personality`. Rust
-collaboration mode and permission-profile turn-context overrides remain
-planned.
+collaboration-mode turn-context overrides remain planned.
 
 Additional app-server turn-start reasoning-summary override coverage:
 `turn/start` now accepts Rust-compatible `summary` overrides for
@@ -679,6 +677,23 @@ subsequent thread lifecycle responses. The generated TypeScript and JSON
 schemas include `TurnStartParams.sandboxPolicy`. Full preservation and
 enforcement of custom writable roots, network-enabled sandbox policies, and
 `externalSandbox` turn-context policies remain planned.
+
+Additional app-server turn-start permissions override coverage:
+`turn/start` now accepts Rust-compatible `permissions` profile selections for
+already-loaded threads, rejects conflicts with `sandbox` / `sandboxPolicy` and
+invalid `additionalWritableRoot` modifications before issuing a provider
+request, resolves supported built-in and custom permission profiles, stores the
+selected sandbox profile on the loaded-thread runtime state, preserves it
+across in-memory thread forks, and feeds the selected writable roots,
+cwd-write-root inclusion, and network policy into model-requested shell tool
+execution. Read-only profile selections with additional writable roots lower
+to the current macOS workspace-write seatbelt representation with cwd writes
+disabled. The generated TypeScript and JSON schemas include
+`TurnStartParams.permissions`, `PermissionProfileSelectionParams`, and
+`PermissionProfileModificationParams`. Full active-permission-profile response
+metadata, project/system/managed config-manager profile resolution, restricted
+network allow-list policy, and full custom filesystem profile enforcement
+remain planned.
 
 Additional app-server thread status coverage: `turn/start` now emits
 Rust-shaped `thread/status/changed` notifications for the active state before
