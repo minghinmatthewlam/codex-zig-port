@@ -261,8 +261,10 @@ included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"remoteControl/status/changed"` union variants. Runtime emission is now
 covered for `mcpServer/startupStatus/updated` starting, ready, and failed
 notifications while app-server `turn/start` discovers configured MCP tools.
-Runtime emission for the remaining control/status notifications remains
-planned.
+Runtime emission is also covered for `item/mcpToolCall/progress` calling and
+completed notifications around configured MCP tools invoked during app-server
+`turn/start`. Runtime emission for the remaining control/status notifications
+remains planned.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for

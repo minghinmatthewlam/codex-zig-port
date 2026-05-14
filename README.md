@@ -224,6 +224,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   events observed during `turn/start`
 - emit app-server model reroute and verification notifications for Responses
   model metadata observed during `turn/start`
+- emit app-server `item/mcpToolCall/progress` notifications around configured
+  MCP tool calls during `turn/start`
 - emit app-server MCP startup status notifications while `turn/start`
   discovers configured MCP tools
 - emit app-server `thread/compacted` notifications after successful loaded
