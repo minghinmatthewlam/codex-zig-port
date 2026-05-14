@@ -190,8 +190,11 @@ exported through `v2/index.ts` and included in the top-level
 `ServerNotification` `"turn/diff/updated"` and `"turn/plan/updated"` union
 variants. Runtime `turn/plan/updated` emission is now covered for
 app-server `turn/start` turns that receive a model-requested `update_plan`
-tool call through the shared session loop. Runtime emission for turn diff
-notifications and broader plan-update timing parity remains planned.
+tool call through the shared session loop. Runtime `turn/diff/updated`
+emission is now covered for app-server `turn/start` turns that run a
+successful model-requested `apply_patch` edit in a git-backed loaded thread
+cwd, including opt-out handling. Broader diff timing and plan-update timing
+parity remain planned.
 
 Additional app-server item-stream notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `PlanDeltaNotification`,

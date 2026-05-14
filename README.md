@@ -213,6 +213,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   trusted project-local execpolicy rules
 - emit app-server `turn/plan/updated` notifications when `turn/start` runs a
   model-requested `update_plan` tool call
+- emit app-server `turn/diff/updated` notifications when `turn/start` runs a
+  successful model-requested `apply_patch` edit in a git-backed loaded thread
+  cwd
 - root app-server `turn/start` model-requested shell tools and `apply_patch`
   edits in the loaded thread cwd when the tool call does not provide an
   explicit workdir
