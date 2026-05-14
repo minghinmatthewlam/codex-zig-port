@@ -124,6 +124,8 @@ const LoadedThread = struct {
     reasoning_effort: ?[]const u8,
     reasoning_summary: ?[]const u8,
     personality: ?[]const u8,
+    collaboration_mode: []const u8,
+    collaboration_developer_instructions: ?[]const u8,
     runtime_overrides: LoadedThreadRuntimeOverrides,
     ephemeral: bool,
     path: ?[]const u8,
@@ -162,6 +164,8 @@ const LoadedThread = struct {
         if (self.reasoning_effort) |value| allocator.free(value);
         if (self.reasoning_summary) |value| allocator.free(value);
         if (self.personality) |value| allocator.free(value);
+        allocator.free(self.collaboration_mode);
+        if (self.collaboration_developer_instructions) |value| allocator.free(value);
         if (self.path) |value| allocator.free(value);
         allocator.free(self.source);
         if (self.thread_source) |value| allocator.free(value);
@@ -189,6 +193,7 @@ const LoadedThreadRuntimeOverrides = struct {
     reasoning_effort: bool = false,
     reasoning_summary: bool = false,
     personality: bool = false,
+    collaboration_mode: bool = false,
 };
 
 const LoadedThreadGoal = struct {
@@ -5241,6 +5246,7 @@ const USER_INPUT_TS =
 
 const TURN_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { CollaborationMode } from "../CollaborationMode";
     \\import type { Personality } from "../Personality";
     \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { ReasoningSummary } from "../ReasoningSummary";
@@ -5252,6 +5258,7 @@ const TURN_START_PARAMS_TS =
     \\export interface TurnStartParams {
     \\  threadId: string;
     \\  input: UserInput[];
+    \\  collaborationMode?: CollaborationMode | null;
     \\  model?: string | null;
     \\  modelProvider?: string | null;
     \\  serviceTier?: string | null;
@@ -16426,6 +16433,12 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\  "properties": {
     \\    "threadId": { "type": "string" },
     \\    "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
+    \\    "collaborationMode": {
+    \\      "oneOf": [
+    \\        { "$ref": "#/$defs/TurnStartCollaborationMode" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
     \\    "model": { "type": ["string", "null"] },
     \\    "modelProvider": { "type": ["string", "null"] },
     \\    "serviceTier": { "type": ["string", "null"] },
@@ -16451,6 +16464,25 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\    "outputSchema": true
     \\  },
     \\  "$defs": {
+    \\    "TurnStartCollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["mode", "settings"],
+    \\      "properties": {
+    \\        "mode": { "enum": ["plan", "default"] },
+    \\        "settings": { "$ref": "#/$defs/TurnStartCollaborationModeSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnStartCollaborationModeSettings": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasoning_effort", "developer_instructions"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "reasoning_effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\        "developer_instructions": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ByteRange": {
     \\      "type": "object",
     \\      "required": ["start", "end"],
@@ -21913,6 +21945,12 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "properties": {
     \\        "threadId": { "type": "string" },
     \\        "input": { "type": "array", "items": { "$ref": "#/$defs/UserInput" } },
+    \\        "collaborationMode": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/TurnStartCollaborationMode" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
     \\        "model": { "type": ["string", "null"] },
     \\        "modelProvider": { "type": ["string", "null"] },
     \\        "serviceTier": { "type": ["string", "null"] },
@@ -22051,6 +22089,25 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "startedAt": { "type": ["number", "null"] },
     \\        "completedAt": { "type": ["number", "null"] },
     \\        "durationMs": { "type": ["number", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnStartCollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["mode", "settings"],
+    \\      "properties": {
+    \\        "mode": { "enum": ["plan", "default"] },
+    \\        "settings": { "$ref": "#/$defs/TurnStartCollaborationModeSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "TurnStartCollaborationModeSettings": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasoning_effort", "developer_instructions"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "reasoning_effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", null] },
+    \\        "developer_instructions": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -25231,6 +25288,7 @@ fn handleTurnStart(
         .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
+        .plan_mode = std.mem.eql(u8, thread.collaboration_mode, "plan"),
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
@@ -25675,15 +25733,94 @@ fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const sess
     return std.fmt.allocPrint(allocator, "turn-{d}", .{count});
 }
 
+const defaultCollaborationDeveloperInstructions =
+    "Work in default coding mode. Implement requested changes directly, keep edits focused, and verify the result before reporting completion.";
+const planCollaborationDeveloperInstructions =
+    "Work in plan mode. Clarify the approach before editing, present a concrete plan, and wrap plan responses in <proposed_plan>...</proposed_plan>.";
+
+const TurnStartCollaborationMode = struct {
+    mode: []const u8,
+    model: []const u8,
+    reasoning_effort: ?config.ReasoningEffort,
+    developer_instructions: []const u8,
+};
+
+fn parseTurnStartCollaborationMode(params: std.json.ObjectMap) !?TurnStartCollaborationMode {
+    const value = params.get("collaborationMode") orelse return null;
+    if (value == .null) return null;
+    if (value != .object) return error.InvalidTurnContextOverride;
+
+    const mode_value = value.object.get("mode") orelse return error.InvalidTurnContextOverride;
+    if (mode_value != .string) return error.InvalidTurnContextOverride;
+    const mode = normalizeTurnStartCollaborationMode(mode_value.string) orelse return error.InvalidTurnContextOverride;
+
+    const settings_value = value.object.get("settings") orelse return error.InvalidTurnContextOverride;
+    if (settings_value != .object) return error.InvalidTurnContextOverride;
+    const settings = settings_value.object;
+
+    const model_value = settings.get("model") orelse return error.InvalidTurnContextOverride;
+    if (model_value != .string or model_value.string.len == 0) return error.InvalidTurnContextOverride;
+
+    const reasoning_effort = parseTurnStartCollaborationReasoningEffort(settings.get("reasoning_effort")) catch return error.InvalidTurnContextOverride;
+    const developer_instructions = parseTurnStartCollaborationDeveloperInstructions(settings.get("developer_instructions"), mode) catch return error.InvalidTurnContextOverride;
+
+    return .{
+        .mode = mode,
+        .model = model_value.string,
+        .reasoning_effort = reasoning_effort,
+        .developer_instructions = developer_instructions,
+    };
+}
+
+fn normalizeTurnStartCollaborationMode(value: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, value, "plan")) return "plan";
+    if (std.mem.eql(u8, value, "default")) return "default";
+    if (std.mem.eql(u8, value, "code")) return "default";
+    if (std.mem.eql(u8, value, "pair_programming")) return "default";
+    if (std.mem.eql(u8, value, "execute")) return "default";
+    if (std.mem.eql(u8, value, "custom")) return "default";
+    return null;
+}
+
+fn parseTurnStartCollaborationReasoningEffort(value: ?std.json.Value) !?config.ReasoningEffort {
+    const raw = value orelse return null;
+    if (raw == .null) return null;
+    if (raw != .string) return error.InvalidTurnContextOverride;
+    return config.ReasoningEffort.parse(raw.string) catch error.InvalidTurnContextOverride;
+}
+
+fn parseTurnStartCollaborationDeveloperInstructions(value: ?std.json.Value, mode: []const u8) ![]const u8 {
+    const raw = value orelse return builtInTurnStartCollaborationInstructions(mode);
+    if (raw == .null) return builtInTurnStartCollaborationInstructions(mode);
+    if (raw != .string) return error.InvalidTurnContextOverride;
+    return raw.string;
+}
+
+fn builtInTurnStartCollaborationInstructions(mode: []const u8) []const u8 {
+    if (std.mem.eql(u8, mode, "plan")) return planCollaborationDeveloperInstructions;
+    return defaultCollaborationDeveloperInstructions;
+}
+
 fn applyTurnStartRuntimeOverrides(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
     thread: *LoadedThread,
     params: std.json.ObjectMap,
 ) !void {
-    const effective_model = optionalStringParam(params, "model") orelse thread.model;
+    const collaboration_mode = try parseTurnStartCollaborationMode(params);
+
+    const effective_model = if (collaboration_mode) |collaboration|
+        collaboration.model
+    else
+        optionalStringParam(params, "model") orelse thread.model;
     try replaceOwnedString(allocator, &cfg.model, effective_model);
-    if (optionalStringParam(params, "model")) |model| {
+    if (collaboration_mode) |collaboration| {
+        try replaceOwnedString(allocator, &thread.model, collaboration.model);
+        try replaceOwnedString(allocator, &thread.collaboration_mode, collaboration.mode);
+        try replaceOptionalOwnedString(allocator, &thread.collaboration_developer_instructions, collaboration.developer_instructions);
+        thread.runtime_overrides.model = true;
+        thread.runtime_overrides.collaboration_mode = true;
+    } else if (optionalStringParam(params, "model")) |model| {
         try replaceOwnedString(allocator, &thread.model, model);
         thread.runtime_overrides.model = true;
     }
@@ -25782,8 +25919,20 @@ fn applyTurnStartRuntimeOverrides(
         cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
     }
 
-    const requested_effort = optionalReasoningEffortParam(params, "effort") catch return error.InvalidTurnContextOverride;
-    if (requested_effort) |effort| {
+    const requested_effort = if (collaboration_mode) |collaboration|
+        collaboration.reasoning_effort
+    else
+        optionalReasoningEffortParam(params, "effort") catch return error.InvalidTurnContextOverride;
+    if (collaboration_mode != null) {
+        if (requested_effort) |effort| {
+            cfg.model_reasoning_effort = effort;
+            try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
+        } else {
+            cfg.model_reasoning_effort = null;
+            clearOptionalOwnedString(allocator, &thread.reasoning_effort);
+        }
+        thread.runtime_overrides.reasoning_effort = true;
+    } else if (requested_effort) |effort| {
         cfg.model_reasoning_effort = effort;
         try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
         thread.runtime_overrides.reasoning_effort = true;
@@ -25813,6 +25962,12 @@ fn applyTurnStartRuntimeOverrides(
         cfg.personality = config.Personality.parse(value) catch return error.InvalidTurnContextOverride;
     } else {
         cfg.personality = null;
+    }
+
+    if (cfg.developer_instructions) |existing| allocator.free(existing);
+    cfg.developer_instructions = null;
+    if (thread.collaboration_developer_instructions) |value| {
+        cfg.developer_instructions = try allocator.dupe(u8, value);
     }
 }
 
@@ -25987,6 +26142,11 @@ fn applyLoadedThreadRuntimeConfig(
         null;
     cfg.personality = if (thread.personality) |value|
         config.Personality.parse(value) catch return error.InvalidThreadRuntimeConfig
+    else
+        null;
+    if (cfg.developer_instructions) |existing| allocator.free(existing);
+    cfg.developer_instructions = if (thread.collaboration_developer_instructions) |value|
+        try allocator.dupe(u8, value)
     else
         null;
 }
@@ -28045,6 +28205,10 @@ fn createLoadedThreadFromStartParams(
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
+    const collaboration_mode = try allocator.dupe(u8, "default");
+    errdefer allocator.free(collaboration_mode);
+    const collaboration_developer_instructions: ?[]const u8 = null;
+
     const ephemeral = optionalBoolParam(params, "ephemeral") orelse false;
     const path = if (ephemeral)
         null
@@ -28086,6 +28250,8 @@ fn createLoadedThreadFromStartParams(
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
+        .collaboration_mode = collaboration_mode,
+        .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider"),
@@ -28177,6 +28343,10 @@ fn createLoadedThreadFromHistoryParams(
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
+    const collaboration_mode = try allocator.dupe(u8, "default");
+    errdefer allocator.free(collaboration_mode);
+    const collaboration_developer_instructions: ?[]const u8 = null;
+
     const path = try session_store.createSessionPathForId(allocator, cfg.codex_home, thread_id);
     errdefer allocator.free(path);
 
@@ -28205,6 +28375,8 @@ fn createLoadedThreadFromHistoryParams(
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
+        .collaboration_mode = collaboration_mode,
+        .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider"),
@@ -28318,6 +28490,10 @@ fn createLoadedThreadFromResumeParams(
     const personality = try threadPersonality(allocator, cfg, params);
     errdefer if (personality) |value| allocator.free(value);
 
+    const collaboration_mode = try allocator.dupe(u8, "default");
+    errdefer allocator.free(collaboration_mode);
+    const collaboration_developer_instructions: ?[]const u8 = null;
+
     const now = currentUnixSeconds();
     return .{
         .id = thread_id,
@@ -28337,6 +28513,8 @@ fn createLoadedThreadFromResumeParams(
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
+        .collaboration_mode = collaboration_mode,
+        .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
             .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
@@ -28465,6 +28643,14 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (personality) |value| allocator.free(value);
 
+    const collaboration_mode = try allocator.dupe(u8, source.collaboration_mode);
+    errdefer allocator.free(collaboration_mode);
+    const collaboration_developer_instructions = if (source.collaboration_developer_instructions) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (collaboration_developer_instructions) |value| allocator.free(value);
+
     const ephemeral = optionalBoolParam(params, "ephemeral") orelse false;
     const path = if (ephemeral)
         null
@@ -28505,6 +28691,8 @@ fn createLoadedThreadFromForkParams(
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
+        .collaboration_mode = collaboration_mode,
+        .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model") or source.runtime_overrides.model,
             .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
@@ -28515,6 +28703,7 @@ fn createLoadedThreadFromForkParams(
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
             .reasoning_summary = source.runtime_overrides.reasoning_summary,
             .personality = source.runtime_overrides.personality,
+            .collaboration_mode = source.runtime_overrides.collaboration_mode,
         },
         .ephemeral = ephemeral,
         .path = path,

@@ -754,17 +754,113 @@ const pragmaticPersonalityInstructions =
     "You are a deeply pragmatic, effective software engineer.";
 
 fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
-    const personality = cfg.personality orelse return allocator.dupe(u8, baseInstructions);
-    const message = switch (personality) {
-        .none => return allocator.dupe(u8, baseInstructions),
-        .friendly => friendlyPersonalityInstructions,
-        .pragmatic => pragmaticPersonalityInstructions,
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, baseInstructions);
+
+    if (cfg.personality) |personality| {
+        const message = switch (personality) {
+            .none => null,
+            .friendly => friendlyPersonalityInstructions,
+            .pragmatic => pragmaticPersonalityInstructions,
+        };
+        if (message) |text| {
+            try out.appendSlice(allocator, "\n<personality_spec>\nThe user has requested a new communication style. Future messages should adhere to the following personality:\n");
+            try out.appendSlice(allocator, text);
+            try out.appendSlice(allocator, "\n</personality_spec>\n");
+        }
+    }
+
+    if (cfg.developer_instructions) |developer_instructions| {
+        if (developer_instructions.len > 0) {
+            try out.appendSlice(allocator, "\n<collaboration_mode>\n");
+            try out.appendSlice(allocator, developer_instructions);
+            try out.appendSlice(allocator, "\n</collaboration_mode>\n");
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+test "developer instructions config adds collaboration mode instructions" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .developer_instructions = "Use plan mode.",
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
     };
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}\n<personality_spec>\nThe user has requested a new communication style. Future messages should adhere to the following personality:\n{s}\n</personality_spec>\n",
-        .{ baseInstructions, message },
-    );
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "<collaboration_mode>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "Use plan mode.") != null);
+}
+
+test "empty developer instructions do not add collaboration mode block" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .developer_instructions = "",
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "<collaboration_mode>") == null);
 }
 
 test "parses SSE text and function call" {

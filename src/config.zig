@@ -25,6 +25,7 @@ pub const Config = struct {
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
+    developer_instructions: ?[]const u8 = null,
     forced_login_method: ?ForcedLoginMethod = null,
     forced_chatgpt_workspace_id: ?[]const u8 = null,
     tui_status_line: ?StringList,
@@ -47,6 +48,7 @@ pub const Config = struct {
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
         if (self.syntax_theme) |value| allocator.free(value);
+        if (self.developer_instructions) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         if (self.tui_status_line) |*value| value.deinit(allocator);
         if (self.tui_terminal_title) |*value| value.deinit(allocator);
