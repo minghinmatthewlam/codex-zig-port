@@ -81,6 +81,15 @@ const IgnoreStack = struct {
     }
 };
 
+const ParsedIgnoreLine = struct {
+    pattern: []const u8,
+    negated: bool,
+
+    fn deinit(self: *ParsedIgnoreLine, allocator: std.mem.Allocator) void {
+        allocator.free(self.pattern);
+    }
+};
+
 const CharClass = enum {
     whitespace,
     non_word,
@@ -430,15 +439,11 @@ fn loadIgnoreRulesFromPath(
 
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line| {
-        const raw_without_cr = std.mem.trimEnd(u8, raw_line, "\r");
-        const trimmed = std.mem.trim(u8, raw_without_cr, " \t");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        var parsed = (try parseIgnoreLine(allocator, raw_line)) orelse continue;
+        defer parsed.deinit(allocator);
 
-        var pattern = trimmed;
-        const escaped_leading_marker = pattern.len >= 2 and pattern[0] == '\\' and (pattern[1] == '#' or pattern[1] == '!');
-        if (escaped_leading_marker) pattern = pattern[1..];
-        const negated = !escaped_leading_marker and pattern[0] == '!';
-        if (negated) {
+        var pattern = parsed.pattern;
+        if (parsed.negated) {
             pattern = pattern[1..];
             if (pattern.len == 0) continue;
         }
@@ -459,12 +464,61 @@ fn loadIgnoreRulesFromPath(
         try ignore_stack.rules.append(allocator, .{
             .base_dir = owned_base,
             .pattern = owned_pattern,
-            .negated = negated,
+            .negated = parsed.negated,
             .directory_only = directory_only,
             .anchored = anchored,
             .has_slash = std.mem.indexOfScalar(u8, pattern, '/') != null,
         });
     }
+}
+
+fn parseIgnoreLine(allocator: std.mem.Allocator, raw_line: []const u8) !?ParsedIgnoreLine {
+    const raw_without_cr = std.mem.trimEnd(u8, raw_line, "\r");
+    const left_trimmed = std.mem.trimStart(u8, raw_without_cr, " \t");
+    const trimmed = trimUnescapedTrailingWhitespace(left_trimmed);
+    if (trimmed.len == 0 or trimmed[0] == '#') return null;
+
+    const negated = trimmed[0] == '!';
+    const pattern = try unescapeIgnorePattern(allocator, trimmed);
+    errdefer allocator.free(pattern);
+    if (pattern.len == 0) {
+        allocator.free(pattern);
+        return null;
+    }
+    return .{
+        .pattern = pattern,
+        .negated = negated,
+    };
+}
+
+fn trimUnescapedTrailingWhitespace(value: []const u8) []const u8 {
+    var end = value.len;
+    while (end > 0 and (value[end - 1] == ' ' or value[end - 1] == '\t')) {
+        var backslash_count: usize = 0;
+        var index = end - 1;
+        while (index > 0 and value[index - 1] == '\\') {
+            backslash_count += 1;
+            index -= 1;
+        }
+        if (backslash_count % 2 == 1) break;
+        end -= 1;
+    }
+    return value[0..end];
+}
+
+fn unescapeIgnorePattern(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < value.len) {
+        if (value[index] == '\\' and index + 1 < value.len) {
+            index += 1;
+        }
+        try out.append(allocator, value[index]);
+        index += 1;
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn ruleMatches(rule: IgnoreRule, relative_path: []const u8, is_dir: bool) bool {
@@ -907,7 +961,7 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.createDirPath(io, "ignored-dir");
     try dir.dir.writeFile(io, .{
         .sub_path = ".gitignore",
-        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\n",
+        .data = "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
     });
     try dir.dir.writeFile(io, .{
         .sub_path = ".git/info/exclude",
@@ -916,6 +970,7 @@ test "fuzzy search respects local gitignore rules in git context" {
     try dir.dir.writeFile(io, .{ .sub_path = "ignored.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "#literal-comment-name.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "!literal-bang-name.txt", .data = "ignored\n" });
+    try dir.dir.writeFile(io, .{ .sub_path = "literal space.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "info-excluded.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = "ignored-dir/nested.txt", .data = "ignored\n" });
     try dir.dir.writeFile(io, .{ .sub_path = ".vscode/extensions.json", .data = "{}\n" });
@@ -946,6 +1001,10 @@ test "fuzzy search respects local gitignore rules in git context" {
     var escaped_bang = try search(allocator, "literalbangname", &roots);
     defer escaped_bang.deinit(allocator);
     try std.testing.expect(!resultContainsPath(escaped_bang, "!literal-bang-name.txt"));
+
+    var escaped_space = try search(allocator, "literalspace", &roots);
+    defer escaped_space.deinit(allocator);
+    try std.testing.expect(!resultContainsPath(escaped_space, "literal space.txt"));
 
     var info_excluded = try search(allocator, "infoexcluded", &roots);
     defer info_excluded.deinit(allocator);

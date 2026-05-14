@@ -8792,12 +8792,13 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
         (search_root / ".gitignore").write_text(
-            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\n",
+            "ignored.txt\nignored-dir/\n.vscode/*\n!.vscode/\n!.vscode/settings.json\n\\#literal-comment-name.txt\n\\!literal-bang-name.txt\nliteral\\ space.txt\n",
             encoding="utf-8",
         )
         (search_root / "ignored.txt").write_text("ignored file\n", encoding="utf-8")
         (search_root / "#literal-comment-name.txt").write_text("escaped comment file\n", encoding="utf-8")
         (search_root / "!literal-bang-name.txt").write_text("escaped bang file\n", encoding="utf-8")
+        (search_root / "literal space.txt").write_text("escaped space file\n", encoding="utf-8")
         (search_root / "info-excluded.txt").write_text("info excluded file\n", encoding="utf-8")
         (search_root / "ignored-dir").mkdir()
         (search_root / "ignored-dir" / "nested.txt").write_text("ignored nested\n", encoding="utf-8")
@@ -8963,6 +8964,20 @@ def run_fuzzy_file_search_rpc_smoke(binary: Path) -> None:
         assert escaped_bang_search["id"] == "fuzzy-search-escaped-bang"
         escaped_bang_paths = {item["path"] for item in escaped_bang_search["result"]["files"]}
         assert "!literal-bang-name.txt" not in escaped_bang_paths
+
+        escaped_space_search = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "fuzzy-search-escaped-space",
+                "method": "fuzzyFileSearch",
+                "params": {"query": "literalspace", "roots": [str(search_root)]},
+            },
+            env,
+        )
+        assert escaped_space_search["id"] == "fuzzy-search-escaped-space"
+        escaped_space_paths = {item["path"] for item in escaped_space_search["result"]["files"]}
+        assert "literal space.txt" not in escaped_space_paths
 
         info_excluded_search = request_stdio_app_server(
             binary,
