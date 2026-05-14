@@ -220,6 +220,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   output items observed during `turn/start`
 - emit app-server reasoning stream notifications for Responses reasoning
   events observed during `turn/start`
+- emit app-server model reroute and verification notifications for Responses
+  model metadata observed during `turn/start`
 - emit app-server `thread/compacted` notifications after successful loaded
   thread compactions
 - root app-server `turn/start` model-requested shell tools and `apply_patch`
