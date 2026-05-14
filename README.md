@@ -174,8 +174,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   feature enablement
 - proxy stdio JSON-RPC to the app-server Unix control socket with
   `app-server proxy`
-- accept Rust-compatible app-server `--analytics-default-enabled` and websocket
-  auth flags while websocket transport remains unimplemented
+- accept Rust-compatible app-server `--analytics-default-enabled`, run plain
+  websocket JSON-RPC, reject Origin-bearing websocket requests, and enforce
+  websocket capability-token auth from `--ws-token-file` or `--ws-token-sha256`
 - apply the latest PR diff from a Codex agent task with `apply` / `a`
 - send tool output back to the model
 - review current changes from the interactive TUI with `/review`
@@ -363,7 +364,8 @@ enablement patching against temporary config homes, verifies app-server
 TypeScript/JSON Schema generation including command-exec request/response,
 follow-up, and output-delta notification artifacts, verifies the hidden
 internal `RolloutLine.json` schema generator, and checks app-server flag
-compatibility for analytics defaults plus websocket auth parsing. It also runs
+compatibility for analytics defaults plus websocket transport and
+capability-token auth. It also runs
 CLI smokes for profile-scoped feature enablement writes and reads, `exec review`
 dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
 exec Git-repository guard, `exec resume` option placement, yolo

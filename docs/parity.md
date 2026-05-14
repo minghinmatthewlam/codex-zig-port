@@ -513,9 +513,11 @@ attachment collection remain planned.
 Additional app-server websocket transport coverage: `app-server --listen
 ws://127.0.0.1:0` now binds a plain websocket listener, reports the actual
 bound URL, serves `/readyz` and `/healthz` on the same listener, and exchanges
-JSON-RPC requests/responses as websocket text frames. Websocket auth
-enforcement, browser-origin policy, multi-connection lifecycle routing, and
-graceful shutdown parity remain planned.
+JSON-RPC requests/responses as websocket text frames. It rejects requests with
+an `Origin` header and enforces `--ws-auth capability-token` from either
+`--ws-token-file` or `--ws-token-sha256` against `Authorization: Bearer ...`
+during upgrade. Signed-bearer websocket auth, multi-connection lifecycle
+routing, and graceful shutdown parity remain planned.
 
 Additional app-server config reload coverage: `config/batchWrite` honors
 `reloadUserConfig` for already-loaded threads by refreshing default-derived
