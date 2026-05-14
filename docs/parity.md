@@ -558,7 +558,9 @@ TypeScript now includes the Rust-side `ClientRequest` methods for
 `plugin/install`, `plugin/uninstall`, `review/start`, `config/read`,
 `config/value/write`, `config/batchWrite`, and `configRequirements/read`, plus
 their current param helper artifacts and `serde_json/JsonValue`. Standalone JSON
-Schema files for these newly typed request params remain planned.
+Schema files now cover the newly typed marketplace, plugin, config, and review
+request params where the protocol carries params; full Rust schema parity
+remains planned.
 
 Additional app-server external-agent config coverage: `externalAgentConfig/detect`
 now validates `includeHome` and nullable/array `cwds` params, detects
