@@ -266,34 +266,62 @@ fn forwardResponsesRequest(
 
     var response_headers = std.ArrayList(std.http.Header).empty;
     defer deinitOwnedHeaders(allocator, &response_headers);
+    var dump_response_headers = std.ArrayList(std.http.Header).empty;
+    defer deinitOwnedHeaders(allocator, &dump_response_headers);
     var response_header_iter = upstream_response.head.iterateHeaders();
     while (response_header_iter.next()) |header| {
+        if (response_dump_path != null) try appendOwnedHeader(allocator, &dump_response_headers, header.name, header.value);
         if (isResponseHeaderManaged(header.name)) continue;
         try appendOwnedHeader(allocator, &response_headers, header.name, header.value);
     }
     try appendOwnedHeader(allocator, &response_headers, "Connection", "close");
+    const upstream_status = upstream_response.head.status;
+    const upstream_content_length = upstream_response.head.content_length;
 
-    var response_body: std.Io.Writer.Allocating = .init(allocator);
-    defer response_body.deinit();
-    var transfer_buffer: [1024]u8 = undefined;
-    const response_reader = upstream_response.reader(&transfer_buffer);
-    _ = response_reader.streamRemaining(&response_body.writer) catch |err| switch (err) {
-        error.ReadFailed => return upstream_response.bodyErr().?,
-        else => |e| return e,
-    };
-    const response_bytes = try response_body.toOwnedSlice();
-    defer allocator.free(response_bytes);
+    var downstream_buffer: [16 * 1024]u8 = undefined;
+    var downstream = try request.respondStreaming(&downstream_buffer, .{
+        .content_length = upstream_content_length,
+        .respond_options = .{
+            .status = upstream_status,
+            .extra_headers = response_headers.items,
+        },
+    });
 
-    if (response_dump_path) |path| {
-        dumpResponse(allocator, path, upstream_response.head.status, response_headers.items, response_bytes) catch |err| {
-            logDumpError(allocator, "response", err);
+    var response_dump_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_dump_body.deinit();
+    var response_dump_failed = false;
+
+    var transfer_buffer: [16 * 1024]u8 = undefined;
+    var response_reader = upstream_response.reader(&transfer_buffer);
+    while (true) {
+        const chunk = response_reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.ReadFailed => return upstream_response.bodyErr().?,
         };
+        try downstream.writer.writeAll(chunk);
+        try downstream.writer.flush();
+        try downstream.flush();
+
+        if (response_dump_path != null and !response_dump_failed) {
+            response_dump_body.writer.writeAll(chunk) catch |err| {
+                logDumpError(allocator, "response", err);
+                response_dump_failed = true;
+            };
+        }
+        response_reader.toss(chunk.len);
     }
 
-    try request.respond(response_bytes, .{
-        .status = upstream_response.head.status,
-        .extra_headers = response_headers.items,
-    });
+    if (response_dump_path) |path| {
+        if (!response_dump_failed) {
+            const response_bytes = try response_dump_body.toOwnedSlice();
+            defer allocator.free(response_bytes);
+            dumpResponse(allocator, path, upstream_status, dump_response_headers.items, response_bytes) catch |err| {
+                logDumpError(allocator, "response", err);
+            };
+        }
+    }
+
+    try downstream.end();
 }
 
 fn appendOwnedHeader(
