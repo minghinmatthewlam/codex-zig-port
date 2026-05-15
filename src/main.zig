@@ -1286,7 +1286,7 @@ fn printHelp() !void {
         \\  codex-zig --remote-auth-token-env ENV_VAR
         \\                          Read bearer token env var for remote app-server
         \\  codex-zig --remote-control
-        \\                          Parse local remote-control server mode
+        \\                          Start local remote-control server mode
         \\  codex-zig --remote-control-bind ADDR
         \\                          Bind local remote-control server
         \\  codex-zig --no-alt-screen
