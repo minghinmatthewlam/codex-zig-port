@@ -350,15 +350,21 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         std.debug.print("`--remote-control` cannot be combined with `--remote`.\n", .{});
         return error.RemoteControlCannotCombineWithRemote;
     }
-    if (options.resume_target != null or options.resume_picker or options.fork_target != null or options.fork_picker) {
-        std.debug.print("remote app-server TUI is parsed but not implemented yet for resume/fork\n", .{});
-        return error.RemoteAppServerSessionTuiNotImplemented;
-    }
 
     const parts = try validateRemoteUrl(remote);
     if (parts.scheme != .unix) {
         std.debug.print("remote app-server TUI is parsed but not implemented yet for websocket transport: {s}\n", .{remote});
         return error.RemoteAppServerTuiNotImplemented;
+    }
+    if (options.resume_picker or options.fork_picker) {
+        std.debug.print("remote app-server TUI does not support interactive resume/fork pickers yet\n", .{});
+        return error.RemoteAppServerSessionPickerNotImplemented;
+    }
+    if (options.fork_target) |target| {
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, target, " \t\r\n"), "last")) {
+            std.debug.print("remote app-server TUI does not support `fork --last` yet\n", .{});
+            return error.RemoteAppServerSessionTuiNotImplemented;
+        }
     }
     try validateRemoteTuiSupportedOptions(options);
 
@@ -383,18 +389,12 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     printRemoteHeader(remote, cwd);
 
     try writeRemoteLine(&writer.interface,
-        \\{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"clientInfo":{"name":"codex-zig-tui","version":"0.0.1"},"capabilities":{}}}
+        \\{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"clientInfo":{"name":"codex-zig-tui","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}
     );
     var initialize_response = try readRemoteResponse(allocator, &reader.interface, "initialize");
     initialize_response.deinit();
 
-    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
-    defer allocator.free(thread_start);
-    try writeRemoteLine(&writer.interface, thread_start);
-    var thread_response = try readRemoteResponse(allocator, &reader.interface, "thread-start");
-    defer thread_response.deinit();
-    const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
-    const thread_id = try allocator.dupe(u8, thread_id_raw);
+    const thread_id = try openRemoteThread(allocator, &writer.interface, &reader.interface, cwd, options);
     defer allocator.free(thread_id);
 
     var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
@@ -434,6 +434,48 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     }
 
     std.debug.print("\nbye\n", .{});
+}
+
+fn openRemoteThread(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    cwd: []const u8,
+    options: Options,
+) ![]const u8 {
+    if (options.resume_target) |target| {
+        return openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+    }
+    if (options.fork_target) |target| {
+        return openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+    }
+
+    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
+    defer allocator.free(thread_start);
+    try writeRemoteLine(writer, thread_start);
+    var thread_response = try readRemoteResponse(allocator, reader, "thread-start");
+    defer thread_response.deinit();
+    const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
+    return allocator.dupe(u8, thread_id_raw);
+}
+
+fn openRemoteLifecycleThread(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    request_id: []const u8,
+    method: []const u8,
+    target: []const u8,
+    cwd: []const u8,
+    overrides: config.RuntimeOverrides,
+) ![]const u8 {
+    const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, overrides);
+    defer allocator.free(request);
+    try writeRemoteLine(writer, request);
+    var response = try readRemoteResponse(allocator, reader, request_id);
+    defer response.deinit();
+    const thread_id_raw = try remoteNestedString(response.value, &.{ "result", "thread", "id" });
+    return allocator.dupe(u8, thread_id_raw);
 }
 
 fn validateRemoteTuiSupportedOptions(options: Options) !void {
@@ -478,13 +520,63 @@ fn renderRemoteThreadStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
-    if (overrides.model) |model| try appendJsonStringField(allocator, &out, &first, "model", model);
-    if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, &out, &first, "approvalPolicy", policy.label());
-    if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, &out, &first, "sandbox", sandbox.label());
-    if (overrides.service_tier) |service_tier| try appendJsonStringField(allocator, &out, &first, "serviceTier", service_tier);
-    if (overrides.personality) |personality| try appendJsonStringField(allocator, &out, &first, "personality", personality.label());
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
+}
+
+fn renderRemoteThreadLifecycleRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    method: []const u8,
+    target: []const u8,
+    cwd: []const u8,
+    overrides: config.RuntimeOverrides,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const target_path = try remoteThreadTargetPath(allocator, cwd, target);
+    defer if (target_path) |path| allocator.free(path);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":");
+    try appendJsonString(allocator, &out, method);
+    try out.appendSlice(allocator, ",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "threadId", target);
+    if (target_path) |path| try appendJsonStringField(allocator, &out, &first, "path", path);
+    try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
+    try appendJsonBoolField(allocator, &out, &first, "excludeTurns", true);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendRemoteThreadRuntimeOverrides(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    overrides: config.RuntimeOverrides,
+) !void {
+    if (overrides.model) |model| try appendJsonStringField(allocator, out, first, "model", model);
+    if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, out, first, "approvalPolicy", policy.label());
+    if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, out, first, "sandbox", sandbox.label());
+    if (overrides.service_tier) |service_tier| try appendJsonStringField(allocator, out, first, "serviceTier", service_tier);
+    if (overrides.personality) |personality| try appendJsonStringField(allocator, out, first, "personality", personality.label());
+}
+
+fn remoteThreadTargetLooksPath(target: []const u8) bool {
+    return std.fs.path.isAbsolute(target) or
+        std.mem.indexOfScalar(u8, target, '/') != null or
+        std.mem.indexOfScalar(u8, target, '\\') != null;
+}
+
+fn remoteThreadTargetPath(allocator: std.mem.Allocator, cwd: []const u8, target: []const u8) !?[]const u8 {
+    if (!remoteThreadTargetLooksPath(target)) return null;
+    if (std.mem.indexOfScalar(u8, target, 0) != null) return error.InvalidRemoteThreadPath;
+    if (std.fs.path.isAbsolute(target)) return try allocator.dupe(u8, target);
+    return try std.fs.path.join(allocator, &.{ cwd, target });
 }
 
 fn runRemotePrompt(
@@ -703,6 +795,24 @@ fn appendJsonStringFieldAfterExisting(
 ) !void {
     var first = false;
     try appendJsonStringField(allocator, out, &first, name, value);
+}
+
+fn appendJsonBoolField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: bool,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.append(allocator, '"');
+    try out.appendSlice(allocator, name);
+    try out.appendSlice(allocator, "\":");
+    try out.appendSlice(allocator, if (value) "true" else "false");
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
@@ -2619,6 +2729,42 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("read-only", thread_params.get("sandbox").?.string);
     try std.testing.expectEqualStrings("flex", thread_params.get("serviceTier").?.string);
     try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
+
+    const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
+        .model = "gpt-resume",
+        .sandbox_mode = .workspace_write,
+    });
+    defer allocator.free(thread_resume);
+
+    var parsed_resume = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume, .{});
+    defer parsed_resume.deinit();
+    try std.testing.expectEqualStrings("thread/resume", parsed_resume.value.object.get("method").?.string);
+    const resume_params = parsed_resume.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("/tmp/rollout.jsonl", resume_params.get("threadId").?.string);
+    try std.testing.expectEqualStrings("/tmp/rollout.jsonl", resume_params.get("path").?.string);
+    try std.testing.expectEqualStrings("/tmp/work", resume_params.get("cwd").?.string);
+    try std.testing.expect(resume_params.get("excludeTurns").?.bool);
+    try std.testing.expectEqualStrings("gpt-resume", resume_params.get("model").?.string);
+    try std.testing.expectEqualStrings("workspace-write", resume_params.get("sandbox").?.string);
+
+    const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{});
+    defer allocator.free(thread_resume_relative);
+
+    var parsed_resume_relative = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume_relative, .{});
+    defer parsed_resume_relative.deinit();
+    const resume_relative_params = parsed_resume_relative.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("./rollout.jsonl", resume_relative_params.get("threadId").?.string);
+    try std.testing.expectEqualStrings("/tmp/work/./rollout.jsonl", resume_relative_params.get("path").?.string);
+
+    const thread_fork = try renderRemoteThreadLifecycleRequest(allocator, "thread-fork", "thread/fork", "11111111-1111-4111-8111-111111111111", "/tmp/work", .{});
+    defer allocator.free(thread_fork);
+
+    var parsed_fork = try std.json.parseFromSlice(std.json.Value, allocator, thread_fork, .{});
+    defer parsed_fork.deinit();
+    const fork_params = parsed_fork.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", fork_params.get("threadId").?.string);
+    try std.testing.expect(fork_params.get("path") == null);
+    try std.testing.expect(fork_params.get("excludeTurns").?.bool);
 
     const images = [_][]const u8{"/tmp/image.png"};
     const turn_start = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &images, .{

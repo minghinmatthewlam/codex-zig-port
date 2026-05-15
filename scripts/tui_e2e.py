@@ -1572,6 +1572,76 @@ def run_remote_unix_tui_smoke(
         if exit_code != 0:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"remote TUI smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        resume_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "resume",
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+                "--last",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, resume_output, b"Codex Zig Remote", 5)
+        send_line(master_fd, "side question from remote resume")
+        wait_for(master_fd, resume_output, b"side answer", 8)
+        mark = len(resume_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, resume_output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = resume_output.decode(errors="replace")
+            raise AssertionError(f"remote TUI resume smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        session_files = sorted(remote_home.joinpath("sessions", "zig").glob("*.jsonl"))
+        if not session_files:
+            raise AssertionError("remote TUI smoke did not create a resumable session file")
+        relative_session_path = workspace / "remote-relative-session.jsonl"
+        shutil.copyfile(session_files[-1], relative_session_path)
+
+        fork_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "fork",
+                f"./{relative_session_path.name}",
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, fork_output, b"Codex Zig Remote", 5)
+        send_line(master_fd, "side question from remote fork")
+        wait_for(master_fd, fork_output, b"side answer", 8)
+        mark = len(fork_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, fork_output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = fork_output.decode(errors="replace")
+            raise AssertionError(f"remote TUI fork smoke exited with {exit_code}\n\n{rendered}")
     finally:
         if client is not None and client.poll() is None:
             client.terminate()
@@ -1601,6 +1671,24 @@ def run_remote_unix_tui_smoke(
     if not matching:
         rendered = output.decode(errors="replace")
         raise AssertionError(f"remote TUI did not send prompt through app-server:\n\n{rendered}")
+    resume_matching = [
+        body
+        for body in bodies
+        if "side question from remote resume" in latest_user_text(body.get("input", []))
+    ]
+    if not resume_matching:
+        raise AssertionError("remote TUI resume did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(resume_matching[-1]):
+        raise AssertionError("remote TUI resume did not include resumed transcript history")
+    fork_matching = [
+        body
+        for body in bodies
+        if "side question from remote fork" in latest_user_text(body.get("input", []))
+    ]
+    if not fork_matching:
+        raise AssertionError("remote TUI fork did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(fork_matching[-1]):
+        raise AssertionError("remote TUI fork did not include forked transcript history")
     image_matching = [
         body
         for body in bodies

@@ -256,8 +256,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   edits in the loaded thread cwd when the tool call does not provide an
   explicit workdir
 - run a minimal interactive remote app-server TUI over `--remote unix://PATH`
-  for new threads and text/local-image turns, while websocket remote TUI and remote
-  resume/fork remain unimplemented
+  for new threads, `resume --last`, explicit `resume TARGET`, explicit
+  `fork ID|PATH`, and text/local-image turns, while websocket remote TUI,
+  remote resume/fork pickers, and `fork --last` remain unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
   `--remote-control-bind` while the local remote-control server remains
   unimplemented
@@ -336,7 +337,7 @@ powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
 `network_rule` validation, and resolved host executable JSON output,
 interactive remote app-server flag parsing/rejection plus a real
-`--remote unix://PATH` TUI turn through a running app-server, verifies planned-but-unimplemented
+`--remote unix://PATH` TUI turn, resume, and fork through a running app-server, verifies planned-but-unimplemented
 Rust top-level command stubs, verifies local remote-control flag
 parsing/rejection, verifies session-local `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
