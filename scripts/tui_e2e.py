@@ -865,7 +865,6 @@ def run_unimplemented_command_smoke(
 ) -> None:
     for command in [
         "remote-control",
-        "app",
         "cloud",
         "cloud-tasks",
         "exec-server",

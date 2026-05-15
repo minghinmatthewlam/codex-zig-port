@@ -5,6 +5,7 @@ const modules = .{
     @import("account_nudge.zig"),
     @import("account_rate_limits.zig"),
     @import("apply_command.zig"),
+    @import("app_cmd.zig"),
     @import("app_server_cmd.zig"),
     @import("api.zig"),
     @import("auth.zig"),

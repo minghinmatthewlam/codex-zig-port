@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const apply_command = @import("apply_command.zig");
+const app_cmd = @import("app_cmd.zig");
 const app_server_cmd = @import("app_server_cmd.zig");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
@@ -435,6 +436,10 @@ fn mainInner(init: std.process.Init) !void {
             try plugin_cmd.run(allocator, &args);
             return;
         }
+        if (std.mem.eql(u8, cmd, "app")) {
+            try app_cmd.run(allocator, &args);
+            return;
+        }
         if (isRemovedTopLevelCommand(cmd)) {
             return error.RemovedTopLevelCommand;
         }
@@ -704,6 +709,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "debug") or
         std.mem.eql(u8, cmd, "execpolicy") or
         std.mem.eql(u8, cmd, "mcp") or
+        std.mem.eql(u8, cmd, "app") or
         std.mem.eql(u8, cmd, "app-server") or
         std.mem.eql(u8, cmd, "plugin") or
         std.mem.eql(u8, cmd, "update") or
@@ -723,7 +729,6 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
 
 fn isKnownUnimplementedCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "remote-control") or
-        std.mem.eql(u8, cmd, "app") or
         std.mem.eql(u8, cmd, "cloud") or
         std.mem.eql(u8, cmd, "cloud-tasks") or
         std.mem.eql(u8, cmd, "exec-server");
@@ -810,6 +815,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         app_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "plugin")) {
         plugin_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "app")) {
+        app_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "update")) {
         printUpdateHelp();
     } else if (std.mem.eql(u8, target, "responses-api-proxy")) {
@@ -1248,6 +1255,8 @@ fn printHelp() !void {
         \\                          Run Codex as a stdio MCP server
         \\  codex-zig app-server
         \\                          Run the app-server JSON-RPC stdio transport
+        \\  codex-zig app [PATH]
+        \\                          Open a workspace in Codex Desktop
         \\  codex-zig update       Update Codex to the latest version
         \\  codex-zig cloud        Recognized; not implemented yet
         \\  codex-zig exec-server  Recognized; not implemented yet
@@ -1755,6 +1764,7 @@ test "remote fork command requires a code and rejects session picker flags" {
 test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("exec"));
     try std.testing.expect(commandRejectsRootRemote("app-server"));
+    try std.testing.expect(commandRejectsRootRemote("app"));
     try std.testing.expect(commandRejectsRootRemote("plugin"));
     try std.testing.expect(commandRejectsRootRemote("remote-control"));
     try std.testing.expect(commandRejectsRootRemote("update"));
@@ -1767,11 +1777,11 @@ test "root remote is only accepted for interactive commands" {
 
 test "known unimplemented Rust commands are recognized" {
     try std.testing.expect(isKnownUnimplementedCommand("remote-control"));
-    try std.testing.expect(isKnownUnimplementedCommand("app"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud-tasks"));
     try std.testing.expect(isKnownUnimplementedCommand("exec-server"));
     try std.testing.expect(!isKnownUnimplementedCommand("plugin"));
+    try std.testing.expect(!isKnownUnimplementedCommand("app"));
     try std.testing.expect(!isKnownUnimplementedCommand("update"));
     try std.testing.expect(!isKnownUnimplementedCommand("responses-api-proxy"));
     try std.testing.expect(!isKnownUnimplementedCommand("write this prompt"));
