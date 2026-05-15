@@ -8,6 +8,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
+const local_remote_control = @import("local_remote_control.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
@@ -223,14 +224,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         return runRemoteTui(allocator, options, remote);
     }
     try validateLocalRemoteControlOptions(options.local_remote_control, options.remote_control_bind);
-    if (options.local_remote_control) {
-        if (options.remote_control_bind) |bind| {
-            std.debug.print("local remote control is parsed but not implemented yet: {s}\n", .{bind});
-        } else {
-            std.debug.print("local remote control is parsed but not implemented yet\n", .{});
-        }
-        return error.LocalRemoteControlNotImplemented;
-    }
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -322,6 +315,23 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     }
     try refreshTerminalTitle(allocator, cfg, cwd, &transcript, session_path, &state);
 
+    var local_remote_server: ?local_remote_control.Server = null;
+    defer if (local_remote_server) |*server| server.deinit(allocator);
+    if (options.local_remote_control) {
+        var snapshot_json: ?[]const u8 = try renderLocalRemoteControlSnapshotJson(allocator, cwd, &transcript);
+        errdefer if (snapshot_json) |value| allocator.free(value);
+        local_remote_server = try local_remote_control.start(allocator, options.remote_control_bind, snapshot_json.?);
+        snapshot_json = null;
+        if (local_remote_server) |*server| {
+            std.debug.print(
+                \\Remote control active
+                \\Controller link: {s}
+                \\Share link: {s}
+                \\
+            , .{ server.url, server.share_url });
+        }
+    }
+
     var pending_input_images: []const []const u8 = options.initial_input_images;
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
@@ -329,47 +339,204 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
+            refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
             pending_input_images = &.{};
         }
     }
 
-    var input_buffer: [16 * 1024]u8 = undefined;
-    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
-
+    var stdin_line = std.ArrayList(u8).empty;
+    defer stdin_line.deinit(allocator);
+    var stdin_read_buffer: [4096]u8 = undefined;
+    var prompt_visible = false;
     while (true) {
-        std.debug.print("\n› ", .{});
-        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
-        const line = line_opt orelse break;
-        const prompt = std.mem.trim(u8, line, " \t\r\n");
-        if (prompt.len == 0) continue;
-        if (std.mem.eql(u8, prompt, "q")) break;
-        if (parseBangShellCommand(prompt)) |command| {
-            runUserShellCommand(allocator, cfg, command, options.additional_writable_roots) catch |err| {
-                std.debug.print("shell error: {s}\n", .{@errorName(err)});
-            };
-            continue;
+        if (!prompt_visible) {
+            std.debug.print("\n› ", .{});
+            prompt_visible = true;
         }
-        const slash_action = handleSlashCommand(allocator, &cfg, &credentials, &transcript, &session_path, cwd, prompt, &state, options.additional_writable_roots) catch |err| {
-            std.debug.print("error: {s}\n", .{@errorName(err)});
-            continue;
-        };
-        if (slash_action) |action| {
-            switch (action) {
-                .handled => continue,
-                .quit => break,
+
+        var fds: [2]std.posix.pollfd = undefined;
+        fds[0] = .{ .fd = std.posix.STDIN_FILENO, .events = @intCast(std.posix.POLL.IN), .revents = 0 };
+        var fd_count: usize = 1;
+        const remote_fd_index: ?usize = if (local_remote_server) |*server| blk: {
+            fds[fd_count] = .{ .fd = server.prompt_read_fd, .events = @intCast(std.posix.POLL.IN), .revents = 0 };
+            fd_count += 1;
+            break :blk fd_count - 1;
+        } else null;
+
+        _ = try std.posix.poll(fds[0..fd_count], -1);
+
+        if (remote_fd_index) |index| {
+            if (local_remote_control.pollReventsInclude(fds[index].revents)) {
+                if (local_remote_server) |*server| {
+                    const remote_prompt_opt = server.readSubmittedPrompt(allocator) catch |err| {
+                        std.debug.print("\nremote control error: {s}\n", .{@errorName(err)});
+                        prompt_visible = false;
+                        continue;
+                    };
+                    if (remote_prompt_opt) |remote_prompt| {
+                        defer allocator.free(remote_prompt);
+                        std.debug.print("\nremote › {s}\n", .{remote_prompt});
+                        const input_images = pending_input_images;
+                        pending_input_images = &.{};
+                        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, remote_prompt, options.additional_writable_roots, &state, input_images) catch |err| {
+                            std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+                        };
+                        refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
+                        prompt_visible = false;
+                    }
+                }
             }
         }
 
-        const input_images = pending_input_images;
-        pending_input_images = &.{};
-        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, &state, input_images) catch |err| {
-            std.debug.print("\nerror: {s}\n", .{@errorName(err)});
-            continue;
-        };
+        if (local_remote_control.pollReventsInclude(fds[0].revents)) {
+            const read_len = try std.posix.read(std.posix.STDIN_FILENO, &stdin_read_buffer);
+            if (read_len == 0) {
+                if (stdin_line.items.len > 0) {
+                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images);
+                    refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
+                    if (should_quit) break;
+                }
+                break;
+            }
+            var should_quit = false;
+            for (stdin_read_buffer[0..read_len]) |byte| {
+                if (byte == '\n') {
+                    prompt_visible = false;
+                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images);
+                    refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
+                    stdin_line.clearRetainingCapacity();
+                    if (should_quit) break;
+                } else if (byte != '\r') {
+                    try stdin_line.append(allocator, byte);
+                }
+            }
+            if (should_quit) break;
+        }
     }
 
     if (state.terminal_title_items.items.len > 0) clearTerminalTitle();
     std.debug.print("\nbye\n", .{});
+}
+
+fn handleInteractivePromptLine(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    credentials: *auth.Credentials,
+    transcript: *session.Transcript,
+    session_path: *[]const u8,
+    cwd: []const u8,
+    line: []const u8,
+    state: *TuiState,
+    additional_writable_roots: []const []const u8,
+    pending_input_images: *[]const []const u8,
+) !bool {
+    const prompt = std.mem.trim(u8, line, " \t\r\n");
+    if (prompt.len == 0) return false;
+    if (std.mem.eql(u8, prompt, "q")) return true;
+    if (parseBangShellCommand(prompt)) |command| {
+        runUserShellCommand(allocator, cfg.*, command, additional_writable_roots) catch |err| {
+            std.debug.print("shell error: {s}\n", .{@errorName(err)});
+        };
+        return false;
+    }
+    const slash_action = handleSlashCommand(allocator, cfg, credentials, transcript, session_path, cwd, prompt, state, additional_writable_roots) catch |err| {
+        std.debug.print("error: {s}\n", .{@errorName(err)});
+        return false;
+    };
+    if (slash_action) |action| {
+        return switch (action) {
+            .handled => false,
+            .quit => true,
+        };
+    }
+
+    const input_images = pending_input_images.*;
+    pending_input_images.* = &.{};
+    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images) catch |err| {
+        std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+    };
+    return false;
+}
+
+fn refreshLocalRemoteControlSnapshot(
+    allocator: std.mem.Allocator,
+    server_opt: *?local_remote_control.Server,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+) void {
+    const server = if (server_opt.*) |*server| server else return;
+    const snapshot_json = renderLocalRemoteControlSnapshotJson(allocator, cwd, transcript) catch |err| {
+        std.debug.print("warning: could not update remote-control snapshot: {s}\n", .{@errorName(err)});
+        return;
+    };
+    server.updateSnapshot(allocator, snapshot_json);
+}
+
+fn renderLocalRemoteControlSnapshotJson(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+) ![]const u8 {
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const status_json = try std.json.Stringify.valueAlloc(allocator, "Connected to Codex", .{});
+    defer allocator.free(status_json);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.print(allocator, "{{\"cwd\":{s},\"status\":{s},\"messages\":[", .{ cwd_json, status_json });
+
+    var message_id: usize = 1;
+    for (transcript.history.items) |item| {
+        const text = switch (item.kind) {
+            .message => item.text orelse "",
+            .function_call => item.arguments orelse "",
+            .function_call_output => item.output orelse "",
+        };
+        const trimmed_text = std.mem.trim(u8, text, " \t\r\n");
+        if (trimmed_text.len == 0) continue;
+
+        const role = remoteControlRoleForItem(item);
+        {
+            const role_json = try std.json.Stringify.valueAlloc(allocator, role, .{});
+            defer allocator.free(role_json);
+            const text_json = try std.json.Stringify.valueAlloc(allocator, trimmed_text, .{});
+            defer allocator.free(text_json);
+
+            if (message_id > 1) try out.append(allocator, ',');
+            try out.print(
+                allocator,
+                "{{\"id\":{d},\"role\":{s},\"text\":{s}}}",
+                .{ message_id, role_json, text_json },
+            );
+        }
+        message_id += 1;
+    }
+
+    const thread_id_json = if (transcript.id) |thread_id|
+        try std.json.Stringify.valueAlloc(allocator, thread_id, .{})
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(thread_id_json);
+    const fork_available = transcript.id != null;
+    try out.print(
+        allocator,
+        "],\"fork\":{{\"available\":{s},\"threadId\":{s}}}}}",
+        .{ if (fork_available) "true" else "false", thread_id_json },
+    );
+    return out.toOwnedSlice(allocator);
+}
+
+fn remoteControlRoleForItem(item: api.HistoryItem) []const u8 {
+    return switch (item.kind) {
+        .message => blk: {
+            const role = item.role orelse break :blk "status";
+            if (std.mem.eql(u8, role, "user")) break :blk "user";
+            if (std.mem.eql(u8, role, "assistant")) break :blk "assistant";
+            break :blk "status";
+        },
+        .function_call, .function_call_output => "tool",
+    };
 }
 
 fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const u8) !void {
