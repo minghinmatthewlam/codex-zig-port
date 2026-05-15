@@ -15,6 +15,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 ALT_SCREEN_ENTER = b"\x1b[?1049h"
@@ -454,6 +455,101 @@ def wait_for_websocket_bind(proc: subprocess.Popen[str], timeout: float) -> tupl
                 host, port_text = token.removeprefix("ws://").rsplit(":", 1)
                 return host, int(port_text)
     raise AssertionError("timed out waiting for websocket bind address")
+
+
+def remote_control_url(output: bytearray) -> str:
+    rendered = output.decode(errors="replace")
+    for line in rendered.splitlines():
+        marker = "Controller link:"
+        if marker in line:
+            return line.split(marker, 1)[1].strip()
+    raise AssertionError(f"remote-control controller link not found:\n\n{rendered}")
+
+
+def remote_control_request(control_url: str, method: str, path: str, body: bytes = b"") -> str:
+    parsed = urlparse(control_url)
+    token = parse_qs(parsed.query).get("token", [None])[0]
+    if not parsed.port or not token:
+        raise AssertionError(f"invalid remote-control URL: {control_url}")
+    target = f"{path}?token={token}"
+    headers = [
+        f"{method} {target} HTTP/1.1",
+        "Host: 127.0.0.1",
+        "Connection: close",
+    ]
+    if body:
+        headers.append("Content-Type: application/json")
+        headers.append(f"Content-Length: {len(body)}")
+    request = ("\r\n".join(headers) + "\r\n\r\n").encode() + body
+    with socket.create_connection(("127.0.0.1", parsed.port), timeout=2) as sock:
+        sock.sendall(request)
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return b"".join(chunks).decode(errors="replace")
+
+
+def remote_control_state(control_url: str) -> dict[str, object]:
+    response = remote_control_request(control_url, "GET", "/api/state")
+    if not response.startswith("HTTP/1.1 200 OK"):
+        raise AssertionError(f"unexpected remote-control state response:\n{response}")
+    _, _, body = response.partition("\r\n\r\n")
+    return json.loads(body)
+
+
+def post_remote_control_message(control_url: str, message: str) -> None:
+    body = json.dumps({"message": message}, separators=(",", ":")).encode()
+    response = remote_control_request(control_url, "POST", "/api/message", body)
+    if not response.startswith("HTTP/1.1 202 Accepted"):
+        raise AssertionError(f"unexpected remote-control message response:\n{response}")
+
+
+def wait_for_remote_control_stop(control_url: str, timeout: float) -> None:
+    parsed = urlparse(control_url)
+    if not parsed.port:
+        raise AssertionError(f"invalid remote-control URL: {control_url}")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", parsed.port), timeout=0.1):
+                pass
+        except OSError:
+            return
+        time.sleep(0.05)
+    raise AssertionError("remote-control server still accepts connections after TUI exit")
+
+
+def wait_for_remote_control_messages(
+    control_url: str,
+    user_text: str,
+    assistant_text: str,
+    timeout: float,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout
+    last_state: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        last_state = remote_control_state(control_url)
+        messages = last_state.get("messages")
+        if isinstance(messages, list):
+            has_user = any(
+                isinstance(message, dict)
+                and message.get("role") == "user"
+                and message.get("text") == user_text
+                for message in messages
+            )
+            has_assistant = any(
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and message.get("text") == assistant_text
+                for message in messages
+            )
+            if has_user and has_assistant:
+                return last_state
+        time.sleep(0.05)
+    raise AssertionError(f"remote-control state did not include completed turn: {last_state!r}")
 
 
 def run_alt_screen_smoke(
@@ -1412,27 +1508,6 @@ def run_remote_flag_smoke(
             f"expected remote auth token env validation failure:\n{missing_remote_result.stderr}"
         )
 
-    local_remote_result = subprocess.run(
-        [
-            str(binary),
-            "--remote-control",
-            "--remote-control-bind",
-            "127.0.0.1:0",
-            "--no-alt-screen",
-        ],
-        cwd=workspace,
-        env=remote_env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if local_remote_result.returncode == 0:
-        raise AssertionError("local remote-control smoke unexpectedly succeeded")
-    if "local remote control is parsed but not implemented yet" not in local_remote_result.stderr:
-        raise AssertionError(
-            f"expected local remote-control not-implemented message:\n{local_remote_result.stderr}"
-        )
-
     missing_local_remote_result = subprocess.run(
         [
             str(binary),
@@ -1619,6 +1694,105 @@ def run_remote_websocket_tui_smoke(
                 app_server.kill()
                 app_server.wait(timeout=5)
         shutil.rmtree(remote_home, ignore_errors=True)
+
+
+def run_local_remote_control_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    image_path = workspace / "remote-control-tiny.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nremote-control-image-smoke\n")
+    output = bytearray()
+    proc = None
+    master_fd = -1
+    stalled_sock = None
+    body_start = len(server.request_bodies)
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--remote-control",
+                "--remote-control-bind",
+                "127.0.0.1:0",
+                "--no-alt-screen",
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+                "--image",
+                str(image_path),
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"Remote control active", 5)
+        control_url = remote_control_url(output)
+
+        state = remote_control_state(control_url)
+        if state.get("status") != "Connected to Codex":
+            raise AssertionError(f"unexpected remote-control state: {state!r}")
+
+        post_remote_control_message(control_url, "describe attached image")
+        wait_for(master_fd, output, b"remote \xe2\x80\xba describe attached image", 5)
+        wait_for(master_fd, output, b"image received", 8)
+
+        state_after = wait_for_remote_control_messages(
+            control_url,
+            "describe attached image",
+            "image received",
+            5,
+        )
+        messages = state_after.get("messages")
+        if not isinstance(messages, list):
+            raise AssertionError(f"remote-control state did not include messages: {state_after!r}")
+
+        parsed = urlparse(control_url)
+        if not parsed.port:
+            raise AssertionError(f"invalid remote-control URL: {control_url}")
+        stalled_sock = socket.create_connection(("127.0.0.1", parsed.port), timeout=2)
+        time.sleep(0.2)
+
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"local remote-control TUI exited with {exit_code}\n\n{rendered}")
+        wait_for_remote_control_stop(control_url, 3)
+        os.close(master_fd)
+        master_fd = -1
+
+        local_bodies = server.request_bodies[body_start:]
+        matching = [
+            body
+            for body in local_bodies
+            if "describe attached image" in latest_user_text(body.get("input", []))
+        ]
+        if not matching:
+            rendered = json.dumps(local_bodies, indent=2, sort_keys=True)
+            raise AssertionError(f"local remote-control prompt did not reach Responses mock:\n\n{rendered}")
+        images = latest_user_images(matching[-1].get("input", []))
+        if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
+            raise AssertionError(f"expected remote-control prompt to consume one PNG image, saw {images!r}")
+    finally:
+        if stalled_sock is not None:
+            stalled_sock.close()
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
 
 
 def run_remote_unix_tui_smoke(
@@ -2354,6 +2528,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
+            run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
             run_remote_initial_prompt_error_smoke(binary, env, workspace)
