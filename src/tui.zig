@@ -47,6 +47,7 @@ pub const Options = struct {
     additional_writable_roots: []const []const u8 = &.{},
     initial_prompt: ?[]const u8 = null,
     initial_input_images: []const []const u8 = &.{},
+    initial_input_image_paths: []const []const u8 = &.{},
     no_alt_screen: bool = false,
     remote: ?[]const u8 = null,
     remote_auth_token_env: ?[]const u8 = null,
@@ -393,12 +394,12 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     const thread_id = try allocator.dupe(u8, thread_id_raw);
     defer allocator.free(thread_id);
 
-    var pending_input_images: []const []const u8 = options.initial_input_images;
+    var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_images);
-            pending_input_images = &.{};
+            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths);
+            pending_input_image_paths = &.{};
         }
     }
 
@@ -419,9 +420,9 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
             std.debug.print("remote TUI slash command is parsed but not implemented yet: {s}\n", .{prompt});
             continue;
         }
-        const input_images = pending_input_images;
-        pending_input_images = &.{};
-        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_images) catch |err| {
+        const input_image_paths = pending_input_image_paths;
+        pending_input_image_paths = &.{};
+        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_image_paths) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -467,9 +468,9 @@ fn runRemotePrompt(
     reader: *std.Io.Reader,
     thread_id: []const u8,
     prompt: []const u8,
-    input_images: []const []const u8,
+    input_image_paths: []const []const u8,
 ) !void {
-    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_images);
+    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths);
     defer allocator.free(request);
 
     std.debug.print("\nassistant:\n", .{});
@@ -488,7 +489,7 @@ fn renderRemoteTurnStartRequest(
     allocator: std.mem.Allocator,
     thread_id: []const u8,
     prompt: []const u8,
-    input_images: []const []const u8,
+    input_image_paths: []const []const u8,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -498,9 +499,9 @@ fn renderRemoteTurnStartRequest(
     try out.appendSlice(allocator, ",\"input\":[{\"type\":\"text\",\"text\":");
     try appendJsonString(allocator, &out, prompt);
     try out.appendSlice(allocator, "}");
-    for (input_images) |image| {
-        try out.appendSlice(allocator, ",{\"type\":\"image\",\"url\":");
-        try appendJsonString(allocator, &out, image);
+    for (input_image_paths) |path| {
+        try out.appendSlice(allocator, ",{\"type\":\"localImage\",\"path\":");
+        try appendJsonString(allocator, &out, path);
         try out.appendSlice(allocator, "}");
     }
     try out.appendSlice(allocator, "]}}");

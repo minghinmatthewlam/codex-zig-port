@@ -626,6 +626,13 @@ fn runTuiWithImages(
     image_files: []const []const u8,
     options: tui.Options,
 ) !void {
+    if (options.remote != null) {
+        var next_options = options;
+        next_options.initial_input_image_paths = image_files;
+        try tui.runWithOptions(allocator, next_options);
+        return;
+    }
+
     var loaded_images = try input_images.load(allocator, image_files);
     defer loaded_images.deinit(allocator);
 

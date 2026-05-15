@@ -1473,6 +1473,8 @@ def run_remote_unix_tui_smoke(
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-remote-tui-sock-", dir="/tmp"))
     remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-tui-home-", dir="/tmp"))
     socket_path = socket_dir / "app-server.sock"
+    image_path = workspace / "remote-large.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"remote-image-smoke" * 5000))
     start_requests = server.request_count
 
     app_env = os.environ.copy()
@@ -1505,7 +1507,9 @@ def run_remote_unix_tui_smoke(
                 "--remote",
                 f"unix://{socket_path}",
                 "--no-alt-screen",
-                "side question from remote tui",
+                "--image",
+                str(image_path),
+                "describe attached image from remote tui",
             ],
             cwd=workspace,
             env=env,
@@ -1516,6 +1520,8 @@ def run_remote_unix_tui_smoke(
         )
         os.close(slave_fd)
         wait_for(master_fd, output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, output, b"image received", 8)
+        send_line(master_fd, "side question from remote tui")
         wait_for(master_fd, output, b"side answer", 8)
         if b"parsed but not implemented yet" in output:
             rendered = output.decode(errors="replace")
@@ -1556,6 +1562,18 @@ def run_remote_unix_tui_smoke(
     if not matching:
         rendered = output.decode(errors="replace")
         raise AssertionError(f"remote TUI did not send prompt through app-server:\n\n{rendered}")
+    image_matching = [
+        body
+        for body in bodies
+        if "describe attached image from remote tui"
+        in latest_user_text(body.get("input", []))
+    ]
+    if not image_matching:
+        rendered = output.decode(errors="replace")
+        raise AssertionError(f"remote TUI did not send image prompt through app-server:\n\n{rendered}")
+    images = latest_user_images(image_matching[-1].get("input", []))
+    if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
+        raise AssertionError(f"expected one remote PNG input_image, saw {images!r}")
 
 
 def run_session_command_option_smoke(
