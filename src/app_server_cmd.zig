@@ -44099,6 +44099,7 @@ fn handleConfigWriteEdits(
 
     const config_path = resolveConfigWritePath(allocator, params.get("filePath")) catch |err| switch (err) {
         error.InvalidConfigWritePath => return renderJsonRpcError(allocator, id_value, -32602, "filePath must be a non-empty string or null"),
+        error.ConfigWritePathReadonly => return renderJsonRpcError(allocator, id_value, -32602, "Only writes to the user config are allowed"),
         else => return err,
     };
     defer allocator.free(config_path);
@@ -44375,19 +44376,69 @@ fn optionalStringOrNull(object: std.json.ObjectMap, field: []const u8) OptionalS
 }
 
 fn resolveConfigWritePath(allocator: std.mem.Allocator, file_path_value: ?std.json.Value) ![]const u8 {
-    if (file_path_value) |value| {
-        if (value == .null) return resolveDefaultConfigWritePath(allocator);
-        if (value != .string or value.string.len == 0) return error.InvalidConfigWritePath;
-        if (!std.fs.path.isAbsolute(value.string)) return error.InvalidConfigWritePath;
-        return allocator.dupe(u8, value.string);
+    const default_path = try resolveDefaultConfigWritePath(allocator);
+    errdefer allocator.free(default_path);
+
+    const value = file_path_value orelse return default_path;
+    if (value == .null) return default_path;
+    if (value != .string or value.string.len == 0) return error.InvalidConfigWritePath;
+    if (!std.fs.path.isAbsolute(value.string)) return error.InvalidConfigWritePath;
+
+    const config_path = try std.fs.path.resolve(allocator, &.{value.string});
+    errdefer allocator.free(config_path);
+    if (!try configWritePathMatches(allocator, default_path, config_path)) {
+        return error.ConfigWritePathReadonly;
     }
-    return resolveDefaultConfigWritePath(allocator);
+    allocator.free(default_path);
+    return config_path;
 }
 
 fn resolveDefaultConfigWritePath(allocator: std.mem.Allocator) ![]const u8 {
     const codex_home = try resolveCodexHome(allocator);
     defer allocator.free(codex_home);
     return config.configTomlPath(allocator, codex_home);
+}
+
+fn configWritePathMatches(allocator: std.mem.Allocator, expected: []const u8, provided: []const u8) !bool {
+    if (std.mem.eql(u8, expected, provided)) return true;
+
+    const normalized_expected = try std.fs.path.resolve(allocator, &.{expected});
+    defer allocator.free(normalized_expected);
+    const normalized_provided = try std.fs.path.resolve(allocator, &.{provided});
+    defer allocator.free(normalized_provided);
+    if (std.mem.eql(u8, normalized_expected, normalized_provided)) return true;
+
+    if (try configWriteParentPathMatches(allocator, normalized_expected, normalized_provided)) return true;
+
+    const real_expected = realPathFileAllocPlain(allocator, normalized_expected) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    };
+    defer allocator.free(real_expected);
+    const real_provided = realPathFileAllocPlain(allocator, normalized_provided) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    };
+    defer allocator.free(real_provided);
+    return std.mem.eql(u8, real_expected, real_provided);
+}
+
+fn configWriteParentPathMatches(allocator: std.mem.Allocator, expected: []const u8, provided: []const u8) !bool {
+    if (!std.mem.eql(u8, std.fs.path.basename(expected), std.fs.path.basename(provided))) return false;
+    const expected_parent = std.fs.path.dirname(expected) orelse return false;
+    const provided_parent = std.fs.path.dirname(provided) orelse return false;
+
+    const real_expected_parent = realPathFileAllocPlain(allocator, expected_parent) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    };
+    defer allocator.free(real_expected_parent);
+    const real_provided_parent = realPathFileAllocPlain(allocator, provided_parent) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    };
+    defer allocator.free(real_provided_parent);
+    return std.mem.eql(u8, real_expected_parent, real_provided_parent);
 }
 
 fn renderTomlValue(allocator: std.mem.Allocator, value: std.json.Value) anyerror![]const u8 {
@@ -49606,6 +49657,36 @@ test "config/read user origin keys include active profile scalars" {
     try std.testing.expectEqualStrings("profile", keys[1]);
     try std.testing.expectEqualStrings("approval_policy", keys[2]);
     try std.testing.expectEqualStrings("sandbox_mode", keys[3]);
+}
+
+test "app-server config write path comparison normalizes Rust path aliases" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try configWritePathMatches(allocator, "/tmp/codex/config.toml", "/tmp/codex/./config.toml"));
+    try std.testing.expect(try configWritePathMatches(allocator, "/tmp/codex/config.toml", "/tmp//codex/config.toml/"));
+    try std.testing.expect(try configWritePathMatches(allocator, "/tmp/codex/config.toml", "/tmp/codex/config.toml/."));
+    try std.testing.expect(try configWritePathMatches(allocator, "/tmp/codex/config.toml", "/tmp/codex/nested/../config.toml"));
+    try std.testing.expect(!try configWritePathMatches(allocator, "/tmp/codex/config.toml", "/tmp/codex/other.toml"));
+}
+
+test "app-server config write path comparison matches missing leaf through symlinked parent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "real-home");
+    try dir.dir.symLink(io, "real-home", "linked-home", .{ .is_directory = true });
+
+    const temp_root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(temp_root);
+    const expected = try std.fs.path.join(allocator, &.{ temp_root, "linked-home", "config.toml" });
+    defer allocator.free(expected);
+    const provided = try std.fs.path.join(allocator, &.{ temp_root, "real-home", "config.toml" });
+    defer allocator.free(provided);
+
+    try std.testing.expect(try configWritePathMatches(allocator, expected, provided));
 }
 
 test "app-server transport parser accepts Rust listen URL forms" {
