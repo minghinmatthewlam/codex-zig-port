@@ -20,31 +20,29 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   validity checks as disabled. The current token received 404s from the
   code-scanning, secret-scanning alert, and Dependabot alert list endpoints, so
   this pass did not record a fresh alert count. CodeQL Python code scanning is
-  configured; the latest completed pre-current-slice CodeQL run `25911164524`
-  passed for `bee6089 Document app-server root feature overrides`.
+  configured; the latest completed pre-current-slice CodeQL run `25913281933`
+  passed for `Refresh OSS readiness audit`.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked pre-current-slice push run `25911164502` passed for
-  `bee6089 Document app-server root feature overrides`; prior push runs
-  `25910352507` and `25908888054` also passed for runtime and session slash
-  command slices. Local pre-push verification for the current config write
-  override metadata slice included Python compilation, whitespace checks,
-  `zig build`, focused config write override metadata smoke,
+  Checked pre-current-slice push run `25913281929` passed for
+  `Refresh OSS readiness audit`; prior push runs `25911164502`,
+  `25910352507`, and `25908888054` also passed for root-feature override,
+  runtime, and session slash command slices. Local pre-push verification for
+  the current config write path restriction slice included Python compilation,
+  whitespace checks, `zig build`, focused config write path restriction smoke,
   `zig build test --summary all`, full app-server stdio smoke,
   `zig build e2e --summary all`, and `codex review --uncommitted`.
 - Source hygiene: current tracked-file scans after the local config write
-  override metadata slice found no provider-shaped tokens, GitHub tokens, Slack
-  tokens, AWS access keys, or private-key blocks in tracked files;
+  path restriction slice found no provider-shaped tokens, GitHub tokens, Slack
+  tokens, AWS access keys, private-key blocks, JWT-shaped long tokens, session
+  token shapes, suspicious tracked token filenames, or untracked public files;
   the only current match is this document's historical dummy
-  `sk-proj-1234567890ABCDE` note. `git ls-files -o --exclude-standard` returned
-  no untracked public files. Ignored-file scans only found local build output,
-  Python bytecode, ignored demo scratch files, and ignored local `plans/`
-  content. `gitleaks` was not installed on the local machine during the latest
-  check, so the local scan used repository `git grep` patterns plus GitHub's
-  enabled secret-scanning state.
+  `sk-proj-1234567890ABCDE` note. `gitleaks` was not installed on the local
+  machine during the latest check, so the local scan used repository `git grep`
+  patterns plus GitHub's enabled secret-scanning state.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
