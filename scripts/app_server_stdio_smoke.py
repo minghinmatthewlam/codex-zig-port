@@ -8343,8 +8343,13 @@ def run_turn_control_rpc_smoke(binary: Path) -> None:
 
 
 def run_thread_resume_rpc_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
     try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-resume-smoke"\n',
+            encoding="utf-8",
+        )
         resume_thread_id = "11111111-1111-4111-8111-111111111111"
         sessions_dir = codex_home / "sessions" / "zig"
         sessions_dir.mkdir(parents=True)
@@ -8747,6 +8752,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
 
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
         proc = subprocess.Popen(
             [str(binary), "app-server"],
             stdin=subprocess.PIPE,
@@ -10457,6 +10464,51 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-fork-personality",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "personality": "friendly",
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            fork_personality = read_json_line(proc, 5)
+            assert fork_personality["id"] == "thread-fork-personality"
+            fork_personality_thread = fork_personality["result"]["thread"]
+            fork_personality_thread_id = fork_personality_thread["id"]
+            assert fork_personality_thread["forkedFromId"] == resume_thread_id
+            assert fork_personality_thread["turns"] == []
+            assert_thread_started_notification(read_json_line(proc, 5), fork_personality_thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-fork-personality",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": fork_personality_thread_id,
+                        "input": [
+                            {"type": "text", "text": "use fork personality"},
+                        ],
+                    },
+                },
+            )
+            assert_turn_start_rpc_completed(
+                proc, fork_personality_thread_id, "turn-start-fork-personality"
+            )
+            fork_personality_instructions = server.request_bodies[-1]["instructions"]
+            assert "<personality_spec>" in fork_personality_instructions
+            assert (
+                "You optimize for team morale and being a supportive teammate"
+                in fork_personality_instructions
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-fork-by-path",
                     "method": "thread/fork",
                     "params": {
@@ -10819,6 +10871,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc.kill()
                 proc.wait(timeout=5)
     finally:
+        server.shutdown()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -27737,6 +27790,12 @@ def run_json_schema_smoke(binary: Path) -> None:
             "string",
             "null",
         ]
+        assert thread_fork_params_schema["properties"]["personality"]["enum"] == [
+            "none",
+            "friendly",
+            "pragmatic",
+            None,
+        ]
         assert thread_fork_params_schema["properties"]["excludeTurns"]["type"] == "boolean"
         thread_fork_response_schema = json.loads(
             (out_dir / "ThreadForkResponse.json").read_text(encoding="utf-8")
@@ -29218,6 +29277,9 @@ def run_json_schema_smoke(binary: Path) -> None:
             "string",
             "null",
         ]
+        assert bundle["$defs"]["ThreadForkParams"]["properties"]["personality"][
+            "enum"
+        ] == ["none", "friendly", "pragmatic", None]
         assert "ThreadForkResponse" in bundle["$defs"]
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
@@ -32552,8 +32614,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             encoding="utf-8"
         )
         assert "export interface ThreadForkParams" in thread_fork_params
+        assert 'import type { Personality } from "../Personality";' in thread_fork_params
         assert "threadId: string;" in thread_fork_params
         assert "path?: string | null;" in thread_fork_params
+        assert "personality?: Personality | null;" in thread_fork_params
         assert "ephemeral?: boolean;" in thread_fork_params
         assert "excludeTurns?: boolean;" in thread_fork_params
         thread_fork_response = (out_dir / "v2" / "ThreadForkResponse.ts").read_text(

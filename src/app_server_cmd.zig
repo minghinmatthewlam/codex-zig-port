@@ -6609,6 +6609,8 @@ const THREAD_RESUME_RESPONSE_TS =
 
 const THREAD_FORK_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Personality } from "../Personality";
+    \\
     \\export interface ThreadForkParams {
     \\  threadId: string;
     \\  path?: string | null;
@@ -6622,6 +6624,7 @@ const THREAD_FORK_PARAMS_TS =
     \\  config?: Record<string, unknown> | null;
     \\  baseInstructions?: string | null;
     \\  developerInstructions?: string | null;
+    \\  personality?: Personality | null;
     \\  ephemeral?: boolean;
     \\  threadSource?: "user" | "subagent" | "memory_consolidation" | null;
     \\  excludeTurns?: boolean;
@@ -17716,6 +17719,7 @@ const THREAD_FORK_PARAMS_JSON_SCHEMA =
     \\    "config": { "type": ["object", "null"] },
     \\    "baseInstructions": { "type": ["string", "null"] },
     \\    "developerInstructions": { "type": ["string", "null"] },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "ephemeral": { "type": "boolean" },
     \\    "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] },
     \\    "excludeTurns": { "type": "boolean" }
@@ -22706,6 +22710,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "config": { "type": ["object", "null"] },
     \\        "baseInstructions": { "type": ["string", "null"] },
     \\        "developerInstructions": { "type": ["string", "null"] },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "ephemeral": { "type": "boolean" },
     \\        "threadSource": { "enum": ["user", "subagent", "memory_consolidation", null] },
     \\        "excludeTurns": { "type": "boolean" }
@@ -30365,7 +30370,10 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (reasoning_summary) |value| allocator.free(value);
 
-    const personality = if (source.personality) |value|
+    const personality = if (paramPresent(params, "personality")) blk: {
+        const requested = try optionalPersonalityParam(params, "personality");
+        break :blk if (requested) |value| try allocator.dupe(u8, value.label()) else null;
+    } else if (source.personality) |value|
         try allocator.dupe(u8, value)
     else
         null;
@@ -30431,7 +30439,7 @@ fn createLoadedThreadFromForkParams(
             .sandbox_mode = sandbox_override or source.runtime_overrides.sandbox_mode,
             .reasoning_effort = source.runtime_overrides.reasoning_effort,
             .reasoning_summary = source.runtime_overrides.reasoning_summary,
-            .personality = source.runtime_overrides.personality,
+            .personality = paramPresent(params, "personality") or source.runtime_overrides.personality,
             .collaboration_mode = source.runtime_overrides.collaboration_mode,
         },
         .ephemeral = ephemeral,
@@ -33470,6 +33478,11 @@ fn validateThreadForkParams(params_value: ?std.json.Value) ?[]const u8 {
     if (object.get("sandbox")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "read-only", "workspace-write", "danger-full-access" })) {
             return "sandbox must be read-only, workspace-write, danger-full-access, or null";
+        }
+    }
+    if (object.get("personality")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
+            return "personality must be none, friendly, pragmatic, or null";
         }
     }
     if (object.get("ephemeral")) |value| {
