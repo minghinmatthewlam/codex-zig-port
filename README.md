@@ -257,8 +257,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   explicit workdir
 - run a minimal interactive remote app-server TUI over `--remote unix://PATH`
   for new threads, `resume --last`, explicit `resume TARGET`, explicit
-  `fork ID|PATH`, and text/local-image turns, while websocket remote TUI,
-  remote resume/fork pickers, and `fork --last` remain unimplemented
+  `fork ID|PATH`, `fork --last`, and text/local-image turns, while websocket
+  remote TUI and remote resume/fork pickers remain unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
   `--remote-control-bind` while the local remote-control server remains
   unimplemented
