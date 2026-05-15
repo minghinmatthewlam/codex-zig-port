@@ -627,8 +627,10 @@ fn runTuiWithImages(
     options: tui.Options,
 ) !void {
     if (options.remote != null) {
+        const image_paths = try resolveImageFiles(allocator, image_files);
+        defer freeStringSlice(allocator, image_paths);
         var next_options = options;
-        next_options.initial_input_image_paths = image_files;
+        next_options.initial_input_image_paths = image_paths;
         try tui.runWithOptions(allocator, next_options);
         return;
     }
@@ -639,6 +641,31 @@ fn runTuiWithImages(
     var next_options = options;
     next_options.initial_input_images = loaded_images.data_urls;
     try tui.runWithOptions(allocator, next_options);
+}
+
+fn resolveImageFiles(allocator: std.mem.Allocator, image_files: []const []const u8) ![]const []const u8 {
+    if (image_files.len == 0) return &.{};
+
+    const resolved = try allocator.alloc([]const u8, image_files.len);
+    errdefer allocator.free(resolved);
+    var count: usize = 0;
+    errdefer {
+        for (resolved[0..count]) |path| allocator.free(path);
+    }
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    for (image_files) |path| {
+        const real_path = try std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
+        defer allocator.free(real_path);
+        resolved[count] = try allocator.dupe(u8, real_path);
+        count += 1;
+    }
+    return resolved;
+}
+
+fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    if (values.len > 0) allocator.free(values);
 }
 
 fn isHelpFlag(arg: []const u8) bool {

@@ -19,6 +19,7 @@ const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
 const mention_file_limit = 128 * 1024;
+const remote_line_limit = 16 * 1024 * 1024;
 const terminal_title_limit = 240;
 const default_status_line_ids = [_][]const u8{ "model-with-reasoning", "current-dir" };
 const init_prompt =
@@ -521,7 +522,9 @@ fn readRemoteResponse(
 ) !std.json.Parsed(std.json.Value) {
     var lines_read: usize = 0;
     while (lines_read < 512) : (lines_read += 1) {
-        const line = try readRemoteLine(reader) orelse return error.RemoteAppServerClosed;
+        const line_raw = try readRemoteLine(allocator, reader) orelse return error.RemoteAppServerClosed;
+        defer allocator.free(line_raw);
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
         if (parsed.value != .object) {
             parsed.deinit();
@@ -552,7 +555,9 @@ fn streamRemoteTurnUntilCompleted(
     var saw_delta = false;
     var lines_read: usize = 0;
     while (lines_read < 1024) : (lines_read += 1) {
-        const line = try readRemoteLine(reader) orelse return error.RemoteAppServerClosed;
+        const line_raw = try readRemoteLine(allocator, reader) orelse return error.RemoteAppServerClosed;
+        defer allocator.free(line_raw);
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
         defer parsed.deinit();
         if (parsed.value != .object) continue;
@@ -581,10 +586,22 @@ fn streamRemoteTurnUntilCompleted(
     return error.RemoteAppServerTurnIncomplete;
 }
 
-fn readRemoteLine(reader: *std.Io.Reader) !?[]const u8 {
-    const line_opt = try reader.takeDelimiter('\n');
-    const line = line_opt orelse return null;
-    return std.mem.trim(u8, line, " \t\r\n");
+fn readRemoteLine(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    while (out.items.len < remote_line_limit) {
+        const byte = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => {
+                if (out.items.len == 0) return null;
+                return try out.toOwnedSlice(allocator);
+            },
+            else => |e| return e,
+        };
+        if (byte == '\n') return try out.toOwnedSlice(allocator);
+        try out.append(allocator, byte);
+    }
+    return error.RemoteAppServerLineTooLong;
 }
 
 fn remoteNestedString(value: std.json.Value, path: []const []const u8) ![]const u8 {

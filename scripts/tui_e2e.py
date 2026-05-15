@@ -231,6 +231,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "side answer\n",
                 },
             )
+        elif "long remote answer" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "long remote answer start\n"
+                    + ("x" * 70000)
+                    + "\nlong remote answer tail\n",
+                },
+            )
         elif "track this checklist" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-plan"
         ):
@@ -1488,7 +1497,7 @@ def run_remote_unix_tui_smoke(
 
     app_server = subprocess.Popen(
         [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
-        cwd=workspace,
+        cwd=remote_home,
         env=app_env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -1508,7 +1517,7 @@ def run_remote_unix_tui_smoke(
                 f"unix://{socket_path}",
                 "--no-alt-screen",
                 "--image",
-                str(image_path),
+                image_path.name,
                 "describe attached image from remote tui",
             ],
             cwd=workspace,
@@ -1523,6 +1532,8 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, output, b"image received", 8)
         send_line(master_fd, "side question from remote tui")
         wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "long remote answer")
+        wait_for(master_fd, output, b"long remote answer tail", 8)
         if b"parsed but not implemented yet" in output:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"remote TUI still hit placeholder:\n\n{rendered}")
