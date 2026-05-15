@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-14.
+Last checked: 2026-05-15.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -14,23 +14,25 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
 - GitHub community profile: 100%
-- Security settings: GitHub API checks on 2026-05-14 showed secret scanning,
+- Security settings: GitHub API checks through 2026-05-15 showed secret scanning,
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
   validity checks as disabled. Dependabot and secret-scanning alert APIs
-  returned no open alerts; the code-scanning alerts API still reports no
-  analysis and additionally requires broader hook-admin scope for this token.
+  returned no open alerts. CodeQL Python code scanning is configured; push run
+  `25895326233` passed for `27b2f7e Tune CodeQL smoke fixture filters`, and the
+  code-scanning API returned no open alerts after fixing the initial
+  smoke-fixture findings.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25894492493` passed for
-  `796b44a Document lifecycle response filtering`; prior push runs
-  `25878096276` and `25877638204` also passed for the remaining request-field
-  and server-notification gating slices. Local pre-push verification for the
-  latest slice included Python compilation, whitespace checks, `zig build`, the
-  focused app-server experimental-gate smoke, the focused `turn/start` smoke,
+  Checked push run `25895326235` passed for
+  `27b2f7e Tune CodeQL smoke fixture filters`; prior push runs `25894492493`,
+  `25878096276`, and `25877638204` also passed for the lifecycle response,
+  remaining request-field, and server-notification gating slices. Local
+  pre-push verification for those implementation slices included Python
+  compilation, whitespace checks, `zig build`, focused app-server smokes,
   `zig build test`, and `zig build e2e`.
 - Source hygiene: current tracked-file scans after the lifecycle response
   filtering commits found no provider-shaped tokens, GitHub tokens, Slack
@@ -63,7 +65,6 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 ## Known Follow-Ups
 
 - Branch protection and repository rulesets are not enabled on `main` yet.
-- GitHub code scanning is not configured; the API returned no analysis.
 - GitHub wiki/projects are enabled; disable them if the project does not plan
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
