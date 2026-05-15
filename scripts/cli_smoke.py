@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import base64
 import difflib
 import hashlib
 import json
 import os
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -39,6 +42,34 @@ def header_value(headers: dict[str, str], name: str) -> Optional[str]:
         if key.lower() == name.lower():
             return value
     return None
+
+
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def child_process_statuses(parent_pid: int) -> list[str]:
+    result = subprocess.run(
+        ["ps", "-o", "pid=,ppid=,stat=,command=", "-A"],
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    statuses: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) >= 3 and parts[1] == str(parent_pid):
+            statuses.append(line)
+    return statuses
+
+
+def assert_no_zombie_children(parent_pid: int) -> None:
+    zombies = [line for line in child_process_statuses(parent_pid) if line.split(None, 3)[2].startswith("Z")]
+    assert zombies == []
 
 
 def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]:
@@ -746,6 +777,22 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert invalid_result.returncode != 0
         assert "unsupported --listen URL" in invalid_result.stderr
 
+        shell_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        path_workspace = temp_root / "path-workspace"
+        path_dir_bin = path_workspace / "path-dir-bin"
+        path_shadow_bin = path_workspace / "path-shadow-bin"
+        path_bin = path_workspace / "path-bin"
+        path_workspace.mkdir()
+        path_dir_bin.mkdir()
+        path_shadow_bin.mkdir()
+        path_bin.mkdir()
+        path_dir_probe = path_dir_bin / "path-probe"
+        path_dir_probe.mkdir()
+        path_shadow_probe = path_shadow_bin / "path-probe"
+        path_shadow_probe.write_text("#!/bin/sh\nprintf 'shadow\\n'\n", encoding="utf-8")
+        path_shadow_probe.chmod(0o644)
+        path_probe = path_bin / "path-probe"
+        path_probe.symlink_to("/bin/pwd")
         requests = [
             {"jsonrpc": "2.0", "id": "invalid-init", "method": "initialize", "params": {}},
             {
@@ -761,7 +808,179 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "params": {"clientName": "cli-smoke", "resumeSessionId": None},
             },
             {"jsonrpc": "2.0", "method": "initialized"},
-            {"jsonrpc": "2.0", "id": "unknown", "method": "process/start", "params": {}},
+            {"jsonrpc": "2.0", "id": "unknown", "method": "fs/readFile", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": "arg0-unsupported",
+                "method": "process/start",
+                "params": {
+                    "processId": "arg0-proc",
+                    "argv": ["/bin/sh", "-c", "printf bad"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": "custom-zero",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "write-missing",
+                "method": "process/write",
+                "params": {"processId": "missing-proc", "chunk": ""},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-echo",
+                "method": "process/start",
+                "params": {
+                    "processId": "echo-proc",
+                    "argv": ["/bin/sh", "-c", "printf 'ready\\n'"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-echo",
+                "method": "process/read",
+                "params": {"processId": "echo-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-echo-closed",
+                "method": "process/read",
+                "params": {"processId": "echo-proc", "afterSeq": 1, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "restart-echo",
+                "method": "process/start",
+                "params": {
+                    "processId": "echo-proc",
+                    "argv": ["/bin/sh", "-c", "printf 'reused\\n'"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "reread-echo",
+                "method": "process/read",
+                "params": {"processId": "echo-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-path",
+                "method": "process/start",
+                "params": {
+                    "processId": "path-proc",
+                    "argv": ["path-probe"],
+                    "cwd": str(path_workspace),
+                    "env": {"PATH": f"path-dir-bin{os.pathsep}path-shadow-bin{os.pathsep}path-bin"},
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-path",
+                "method": "process/read",
+                "params": {"processId": "path-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-big",
+                "method": "process/start",
+                "params": {
+                    "processId": "big-proc",
+                    "argv": [sys.executable, "-c", "import sys; sys.stdout.write('A' * 10000)"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-big-limited",
+                "method": "process/read",
+                "params": {"processId": "big-proc", "afterSeq": 0, "maxBytes": 10, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-after-big",
+                "method": "process/start",
+                "params": {
+                    "processId": "after-big-proc",
+                    "argv": ["/bin/sh", "-c", "true"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-big-rest",
+                "method": "process/read",
+                "params": {"processId": "big-proc", "afterSeq": 1, "maxBytes": 20000, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-cat",
+                "method": "process/start",
+                "params": {
+                    "processId": "cat-proc",
+                    "argv": ["/bin/sh", "-c", "while IFS= read -r line; do printf 'echo:%s\\n' \"$line\"; done"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": True,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "duplicate-cat",
+                "method": "process/start",
+                "params": {
+                    "processId": "cat-proc",
+                    "argv": ["/bin/sh", "-c", "printf duplicate"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "write-cat",
+                "method": "process/write",
+                "params": {"processId": "cat-proc", "chunk": base64.b64encode(b"hello\n").decode("ascii")},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-cat",
+                "method": "process/read",
+                "params": {"processId": "cat-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "terminate-cat",
+                "method": "process/terminate",
+                "params": {"processId": "cat-proc"},
+            },
             {
                 "jsonrpc": "2.0",
                 "id": "again",
@@ -783,7 +1002,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert stdio_result.stderr == ""
         responses = [json.loads(line) for line in stdio_result.stdout.splitlines()]
-        assert len(responses) == 5
+        assert len(responses) == 23
 
         invalid_initialize = responses[0]
         assert invalid_initialize["id"] == "invalid-init"
@@ -804,12 +1023,1266 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         unknown = responses[3]
         assert unknown["id"] == "unknown"
         assert unknown["error"]["code"] == -32601
-        assert "exec-server stub does not implement `process/start` yet" in unknown["error"]["message"]
+        assert "exec-server stub does not implement `fs/readFile` yet" in unknown["error"]["message"]
 
-        duplicate = responses[4]
+        arg0_unsupported = responses[4]
+        assert arg0_unsupported["id"] == "arg0-unsupported"
+        assert arg0_unsupported["error"]["code"] == -32600
+        assert "arg0 is not implemented yet" in arg0_unsupported["error"]["message"]
+
+        write_missing = responses[5]
+        assert write_missing["id"] == "write-missing"
+        assert write_missing["result"]["status"] == "unknownProcess"
+
+        start_echo = responses[6]
+        assert start_echo["id"] == "start-echo"
+        assert start_echo["result"]["processId"] == "echo-proc"
+
+        read_echo = responses[7]
+        assert read_echo["id"] == "read-echo"
+        echo_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in read_echo["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert echo_output == b"ready\n"
+
+        read_echo_closed = responses[8]
+        assert read_echo_closed["id"] == "read-echo-closed"
+        assert read_echo_closed["result"]["exited"] is True
+        assert read_echo_closed["result"]["closed"] is True
+        assert read_echo_closed["result"]["exitCode"] == 0
+
+        restart_echo = responses[9]
+        assert restart_echo["id"] == "restart-echo"
+        assert restart_echo["error"]["code"] == -32600
+        assert "process echo-proc already exists" in restart_echo["error"]["message"]
+
+        reread_echo = responses[10]
+        assert reread_echo["id"] == "reread-echo"
+        reread_echo_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in reread_echo["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert reread_echo_output == b"ready\n"
+
+        start_path = responses[11]
+        assert start_path["id"] == "start-path"
+        assert start_path["result"]["processId"] == "path-proc"
+
+        read_path = responses[12]
+        assert read_path["id"] == "read-path"
+        path_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in read_path["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert path_output == f"{path_workspace.resolve()}\n".encode()
+
+        start_big = responses[13]
+        assert start_big["id"] == "start-big"
+        assert start_big["result"]["processId"] == "big-proc"
+
+        read_big_limited = responses[14]
+        assert read_big_limited["id"] == "read-big-limited"
+        big_first = b"".join(base64.b64decode(chunk["chunk"]) for chunk in read_big_limited["result"]["chunks"])
+        assert len(big_first) < 10000
+
+        start_after_big = responses[15]
+        assert start_after_big["id"] == "start-after-big"
+        assert start_after_big["result"]["processId"] == "after-big-proc"
+
+        read_big_rest = responses[16]
+        assert read_big_rest["id"] == "read-big-rest"
+        big_rest = b"".join(base64.b64decode(chunk["chunk"]) for chunk in read_big_rest["result"]["chunks"])
+        assert big_first + big_rest == b"A" * 10000
+
+        start_cat = responses[17]
+        assert start_cat["id"] == "start-cat"
+        assert start_cat["result"]["processId"] == "cat-proc"
+
+        duplicate_cat = responses[18]
+        assert duplicate_cat["id"] == "duplicate-cat"
+        assert duplicate_cat["error"]["code"] == -32600
+        assert "process cat-proc already exists" in duplicate_cat["error"]["message"]
+
+        write_cat = responses[19]
+        assert write_cat["id"] == "write-cat"
+        assert write_cat["result"]["status"] == "accepted"
+
+        read_cat = responses[20]
+        assert read_cat["id"] == "read-cat"
+        cat_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in read_cat["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert cat_output == b"echo:hello\n"
+
+        terminate_cat = responses[21]
+        assert terminate_cat["id"] == "terminate-cat"
+        assert terminate_cat["result"]["running"] is True
+
+        duplicate = responses[22]
         assert duplicate["id"] == "again"
         assert duplicate["error"]["code"] == -32600
         assert "initialize may only be sent once" in duplicate["error"]["message"]
+
+        final_read_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "final-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-final-read"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "start-final",
+                "method": "process/start",
+                "params": {
+                    "processId": "final-proc",
+                    "argv": ["/bin/sh", "-c", "sleep 1; printf ok"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-final",
+                "method": "process/read",
+                "params": {"processId": "final-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 2000},
+            },
+        ]
+        final_read_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in final_read_requests)
+        final_read_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=final_read_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert final_read_result.stderr == ""
+        final_read_responses = [json.loads(line) for line in final_read_result.stdout.splitlines()]
+        assert len(final_read_responses) == 3
+        final_read = final_read_responses[2]
+        assert final_read["id"] == "read-final"
+        final_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in final_read["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert final_output == b"ok"
+
+        disconnect_pid_file = temp_root / "disconnect-child.pid"
+        disconnect = subprocess.Popen(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert disconnect.stdin is not None
+        assert disconnect.stdout is not None
+
+        def write_disconnect(message: dict[str, object]) -> None:
+            assert disconnect.stdin is not None
+            disconnect.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            disconnect.stdin.flush()
+
+        write_disconnect(
+            {
+                "jsonrpc": "2.0",
+                "id": "disconnect-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-disconnect"},
+            }
+        )
+        write_disconnect({"jsonrpc": "2.0", "method": "initialized"})
+        write_disconnect(
+            {
+                "jsonrpc": "2.0",
+                "id": "disconnect-start",
+                "method": "process/start",
+                "params": {
+                    "processId": "disconnect-proc",
+                    "argv": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf '%s\\n' \"$$\" > {shlex.quote(str(disconnect_pid_file))}; sleep 30",
+                    ],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            }
+        )
+        disconnect_init = json.loads(disconnect.stdout.readline())
+        assert disconnect_init["id"] == "disconnect-init"
+        disconnect_start = json.loads(disconnect.stdout.readline())
+        assert disconnect_start["id"] == "disconnect-start"
+        for _ in range(50):
+            if disconnect_pid_file.exists():
+                break
+            time.sleep(0.05)
+        assert disconnect_pid_file.exists()
+        disconnect_child_pid = int(disconnect_pid_file.read_text(encoding="utf-8").strip())
+        write_disconnect(
+            {
+                "jsonrpc": "2.0",
+                "id": "disconnect-read",
+                "method": "process/read",
+                "params": {"processId": "disconnect-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 5000},
+            }
+        )
+        disconnect.stdout.close()
+        disconnect.stdout = None
+        disconnect.stdin.close()
+        disconnect.stdin = None
+        disconnected_at = time.monotonic()
+        disconnect.wait(timeout=2)
+        assert time.monotonic() - disconnected_at < 2
+        disconnect_stderr = disconnect.stderr.read() if disconnect.stderr is not None else ""
+        assert disconnect_stderr == ""
+        time.sleep(0.2)
+        if process_exists(disconnect_child_pid):
+            os.kill(disconnect_child_pid, signal.SIGKILL)
+            raise AssertionError("exec-server disconnect left a child process alive")
+
+        argv0_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "argv0-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-argv0"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "start-argv0",
+                "method": "process/start",
+                "params": {
+                    "processId": "argv0-proc",
+                    "argv": ["sh", "-c", 'printf "%s" "$0"'],
+                    "cwd": str(temp_root),
+                    "env": {"PATH": "/bin:/usr/bin"},
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-argv0",
+                "method": "process/read",
+                "params": {"processId": "argv0-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+        ]
+        argv0_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in argv0_requests)
+        argv0_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=argv0_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert argv0_result.stderr == ""
+        argv0_responses = [json.loads(line) for line in argv0_result.stdout.splitlines()]
+        assert len(argv0_responses) == 3
+        argv0_read = argv0_responses[2]
+        assert argv0_read["id"] == "read-argv0"
+        argv0_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in argv0_read["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert argv0_output == b"sh"
+
+        silent_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "silent-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-silent"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "start-silent",
+                "method": "process/start",
+                "params": {
+                    "processId": "silent-proc",
+                    "argv": ["/bin/sh", "-c", "exec >/dev/null 2>&1; sleep 0.2"],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-silent",
+                "method": "process/read",
+                "params": {"processId": "silent-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+        ]
+        silent_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in silent_requests)
+        silent_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=silent_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert silent_result.stderr == ""
+        silent_responses = [json.loads(line) for line in silent_result.stdout.splitlines()]
+        assert len(silent_responses) == 3
+        silent_read = silent_responses[2]
+        assert silent_read["id"] == "read-silent"
+        assert silent_read["result"]["chunks"] == []
+        assert silent_read["result"]["exited"] is True
+        assert silent_read["result"]["closed"] is True
+
+        teardown_child_pid: Optional[int] = None
+        interactive = subprocess.Popen(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            assert interactive.stdin is not None
+            assert interactive.stdout is not None
+
+            def read_interactive_response(timeout: float = 2.0) -> dict:
+                assert interactive.stdout is not None
+                ready, _, _ = select.select([interactive.stdout], [], [], timeout)
+                if not ready:
+                    raise AssertionError("timed out waiting for exec-server RPC response")
+                line = interactive.stdout.readline()
+                if not line:
+                    raise AssertionError("exec-server closed before RPC response")
+                return json.loads(line)
+
+            def rpc(message: dict) -> dict:
+                interactive.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+                interactive.stdin.flush()
+                return read_interactive_response()
+
+            assert rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "interactive-init",
+                    "method": "initialize",
+                    "params": {"clientName": "cli-smoke-interactive"},
+                }
+            )["result"]["sessionId"]
+            start_before_initialized = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "start-before-initialized",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "start-before-initialized-proc",
+                        "argv": ["/bin/sh", "-c", "true"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert start_before_initialized["error"]["code"] == -32600
+            assert "initialized notification" in start_before_initialized["error"]["message"]
+            interactive.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+            interactive.stdin.flush()
+
+            nul_env_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "nul-env-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "nul-env-proc",
+                        "argv": ["/usr/bin/env"],
+                        "cwd": str(temp_root),
+                        "env": {"NUL_VALUE": "before\0after"},
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert nul_env_start["error"]["code"] == -32602
+            assert "env values must be strings without NUL" in nul_env_start["error"]["message"]
+
+            nul_argv_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "nul-argv-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "nul-argv-proc",
+                        "argv": ["/bin/sh", "-c", "printf bad\0arg"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert nul_argv_start["error"]["code"] == -32602
+
+            nul_cwd_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "nul-cwd-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "nul-cwd-proc",
+                        "argv": ["/bin/sh", "-c", "printf bad"],
+                        "cwd": str(temp_root) + "\0suffix",
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert nul_cwd_start["error"]["code"] == -32602
+
+            default_path_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "default-path-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "default-path-proc",
+                        "argv": ["true"],
+                        "cwd": str(temp_root),
+                        "env": {},
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert default_path_start["result"]["processId"] == "default-path-proc"
+            default_path_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "default-path-read",
+                    "method": "process/read",
+                    "params": {"processId": "default-path-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 500},
+                }
+            )
+            assert default_path_read["result"]["exited"] is True
+            assert default_path_read["result"]["closed"] is True
+
+            large_stdin_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "large-stdin-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "large-stdin-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            "import sys; data=sys.stdin.buffer.read(70000); print(len(data), flush=True)",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": True,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert large_stdin_started["result"]["processId"] == "large-stdin-proc"
+            large_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "large-stdin-write",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "large-stdin-proc",
+                        "chunk": base64.b64encode(b"x" * 70000).decode("ascii"),
+                    },
+                }
+            )
+            assert large_write["result"]["status"] == "accepted"
+            large_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "large-stdin-read",
+                    "method": "process/read",
+                    "params": {"processId": "large-stdin-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            large_output = b"".join(
+                base64.b64decode(chunk["chunk"])
+                for chunk in large_read["result"]["chunks"]
+                if chunk["stream"] == "stdout"
+            )
+            assert large_output == b"70000\n"
+
+            queued_stdin_file = temp_root / "queued-stdin.txt"
+            queued_stdin_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "queued-stdin-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "queued-stdin-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import pathlib, sys; "
+                                "data=sys.stdin.buffer.read(70000); "
+                                "line=sys.stdin.buffer.readline(); "
+                                f"pathlib.Path({str(queued_stdin_file)!r}).write_text("
+                                "'first:%d\\nsecond:%s' % (len(data), line.decode()), encoding='utf-8')"
+                            ),
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": True,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert queued_stdin_started["result"]["processId"] == "queued-stdin-proc"
+            queued_first_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "queued-stdin-write-1",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "queued-stdin-proc",
+                        "chunk": base64.b64encode(b"x" * 70000).decode("ascii"),
+                    },
+                }
+            )
+            assert queued_first_write["result"]["status"] == "accepted"
+            queued_second_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "queued-stdin-write-2",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "queued-stdin-proc",
+                        "chunk": base64.b64encode(b"queued\n").decode("ascii"),
+                    },
+                }
+            )
+            assert queued_second_write["result"]["status"] == "accepted"
+            for _ in range(50):
+                if queued_stdin_file.exists():
+                    break
+                time.sleep(0.05)
+            assert queued_stdin_file.read_text(encoding="utf-8") == "first:70000\nsecond:queued\n"
+
+            no_output_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "no-output-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "no-output-proc",
+                        "argv": ["/bin/sh", "-c", "true"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert no_output_started["result"]["processId"] == "no-output-proc"
+            no_output_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "no-output-read",
+                    "method": "process/read",
+                    "params": {"processId": "no-output-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            assert no_output_read["result"]["closed"] is True
+            assert no_output_read["result"]["nextSeq"] > 1
+
+            for index in range(3):
+                unreaped_start = rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"unreaped-start-{index}",
+                        "method": "process/start",
+                        "params": {
+                            "processId": f"unreaped-proc-{index}",
+                            "argv": ["/bin/sh", "-c", "true"],
+                            "cwd": str(temp_root),
+                            "env": shell_env,
+                            "tty": False,
+                            "pipeStdin": False,
+                            "arg0": None,
+                        },
+                    }
+                )
+                assert unreaped_start["result"]["processId"] == f"unreaped-proc-{index}"
+            time.sleep(0.5)
+            assert_no_zombie_children(interactive.pid)
+            reused_after_idle_reap = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unreaped-reuse",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "unreaped-proc-0",
+                        "argv": ["/bin/sh", "-c", "true"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert reused_after_idle_reap["error"]["code"] == -32600
+            assert "process unreaped-proc-0 already exists" in reused_after_idle_reap["error"]["message"]
+
+            high_output_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "high-output-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "high-output-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            "import sys, time; sys.stdout.write('H' * 100000); sys.stdout.flush(); time.sleep(5)",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert high_output_started["result"]["processId"] == "high-output-proc"
+            time.sleep(0.5)
+            high_output_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "high-output-read",
+                    "method": "process/read",
+                    "params": {
+                        "processId": "high-output-proc",
+                        "afterSeq": 0,
+                        "maxBytes": 200000,
+                        "waitMs": 1000,
+                    },
+                }
+            )
+            high_output = b"".join(
+                base64.b64decode(chunk["chunk"])
+                for chunk in high_output_read["result"]["chunks"]
+                if chunk["stream"] == "stdout"
+            )
+            assert high_output == b"H" * 100000
+            assert high_output_read["result"]["closed"] is False
+            high_output_stopped = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "high-output-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "high-output-proc"},
+                }
+            )
+            assert high_output_stopped["result"]["running"] is True
+
+            cap_process_count = 70
+            for index in range(cap_process_count):
+                capped_start = rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"cap-start-{index}",
+                        "method": "process/start",
+                        "params": {
+                            "processId": f"cap-proc-{index}",
+                            "argv": ["/bin/sh", "-c", "true"],
+                            "cwd": str(temp_root),
+                            "env": shell_env,
+                            "tty": False,
+                            "pipeStdin": False,
+                            "arg0": None,
+                        },
+                    }
+                )
+                assert capped_start["result"]["processId"] == f"cap-proc-{index}"
+            for index in range(cap_process_count):
+                capped_read = rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"cap-read-{index}",
+                        "method": "process/read",
+                        "params": {
+                            "processId": f"cap-proc-{index}",
+                            "afterSeq": 0,
+                            "maxBytes": 4096,
+                            "waitMs": 1000,
+                        },
+                    }
+                )
+                if "error" in capped_read:
+                    assert capped_read["error"]["code"] == -32600
+                    assert f"unknown process id cap-proc-{index}" in capped_read["error"]["message"]
+                else:
+                    assert capped_read["result"]["closed"] is True
+            capped_evicted = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cap-read-evicted",
+                    "method": "process/read",
+                    "params": {"processId": "cap-proc-0", "afterSeq": 0, "maxBytes": 4096, "waitMs": 0},
+                }
+            )
+            assert capped_evicted["error"]["code"] == -32600
+            assert "unknown process id cap-proc-0" in capped_evicted["error"]["message"]
+
+            long_read_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "long-read-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "long-read-proc",
+                        "argv": ["/bin/sh", "-c", "sleep 5"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert long_read_started["result"]["processId"] == "long-read-proc"
+            read_started_at = time.monotonic()
+            interactive.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "long-read",
+                        "method": "process/read",
+                        "params": {"processId": "long-read-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 2000},
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            interactive.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "long-read-stop",
+                        "method": "process/terminate",
+                        "params": {"processId": "long-read-proc"},
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            interactive.stdin.flush()
+            long_read_responses = [read_interactive_response() for _ in range(2)]
+            assert time.monotonic() - read_started_at < 1.0
+            assert {response["id"] for response in long_read_responses} == {"long-read", "long-read-stop"}
+            long_read = next(response for response in long_read_responses if response["id"] == "long-read")
+            long_read_stop = next(response for response in long_read_responses if response["id"] == "long-read-stop")
+            assert long_read["result"]["chunks"] == []
+            assert long_read["result"]["closed"] is False
+            assert long_read_stop["result"]["running"] is True
+
+            unrelated_read_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unrelated-read-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "unrelated-read-proc",
+                        "argv": ["/bin/sh", "-c", "sleep 5"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert unrelated_read_started["result"]["processId"] == "unrelated-read-proc"
+            unrelated_started_at = time.monotonic()
+            interactive.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unrelated-read",
+                        "method": "process/read",
+                        "params": {
+                            "processId": "unrelated-read-proc",
+                            "afterSeq": 0,
+                            "maxBytes": 4096,
+                            "waitMs": 2000,
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            interactive.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unrelated-start",
+                        "method": "process/start",
+                        "params": {
+                            "processId": "unrelated-start-proc",
+                            "argv": ["/bin/sh", "-c", "true"],
+                            "cwd": str(temp_root),
+                            "env": shell_env,
+                            "tty": False,
+                            "pipeStdin": False,
+                            "arg0": None,
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            interactive.stdin.flush()
+            unrelated_responses = [read_interactive_response() for _ in range(2)]
+            assert time.monotonic() - unrelated_started_at < 1.0
+            assert {response["id"] for response in unrelated_responses} == {"unrelated-read", "unrelated-start"}
+            unrelated_stop = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unrelated-read-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "unrelated-read-proc"},
+                }
+            )
+            assert unrelated_stop["result"]["running"] is True
+
+            blocked_write_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "blocked-write-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "blocked-write-proc",
+                        "argv": ["/bin/sh", "-c", "sleep 5"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": True,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert blocked_write_started["result"]["processId"] == "blocked-write-proc"
+            blocked_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "blocked-write",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "blocked-write-proc",
+                        "chunk": base64.b64encode(b"x" * 1024 * 1024).decode("ascii"),
+                    },
+                }
+            )
+            assert blocked_write["result"]["status"] == "accepted"
+            blocked_second_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "blocked-write-queued",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "blocked-write-proc",
+                        "chunk": base64.b64encode(b"queued").decode("ascii"),
+                    },
+                }
+            )
+            assert blocked_second_write["result"]["status"] == "accepted"
+            blocked_overflow_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "blocked-write-overflow",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "blocked-write-proc",
+                        "chunk": base64.b64encode(b"y" * (1024 * 1024 + 1)).decode("ascii"),
+                    },
+                }
+            )
+            assert blocked_overflow_write["error"]["code"] == -32603
+            assert "stdin write queue is full" in blocked_overflow_write["error"]["message"]
+            blocked_terminated = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "blocked-write-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "blocked-write-proc"},
+                }
+            )
+            assert blocked_terminated["result"]["running"] is True
+
+            descendant_stdin_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "descendant-stdin-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "descendant-stdin-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import subprocess, sys, time; "
+                                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], "
+                                "stdin=sys.stdin); "
+                                "time.sleep(0.2)"
+                            ),
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": True,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert descendant_stdin_started["result"]["processId"] == "descendant-stdin-proc"
+            descendant_stdin_write = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "descendant-stdin-write",
+                    "method": "process/write",
+                    "params": {
+                        "processId": "descendant-stdin-proc",
+                        "chunk": base64.b64encode(b"x" * 1024 * 1024).decode("ascii"),
+                    },
+                }
+            )
+            assert descendant_stdin_write["result"]["status"] == "accepted"
+            time.sleep(0.4)
+            descendant_read_started_at = time.monotonic()
+            interactive.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "descendant-stdin-read",
+                        "method": "process/read",
+                        "params": {
+                            "processId": "descendant-stdin-proc",
+                            "afterSeq": 0,
+                            "maxBytes": 4096,
+                            "waitMs": 500,
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            interactive.stdin.flush()
+            descendant_read = read_interactive_response(timeout=1.0)
+            assert time.monotonic() - descendant_read_started_at < 1.0
+            assert descendant_read["result"]["exited"] is True
+            assert descendant_read["result"]["closed"] is False
+            descendant_stdin_stop = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "descendant-stdin-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "descendant-stdin-proc"},
+                }
+            )
+            assert descendant_stdin_stop["result"]["running"] is True
+
+            group_pid_file = temp_root / "process-group-child.pid"
+            group_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "group-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "group-proc",
+                        "argv": [
+                            "/bin/sh",
+                            "-c",
+                            f"(trap '' TERM; sleep 30) & printf '%s\\n' \"$!\" > {shlex.quote(str(group_pid_file))}; wait",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert group_started["result"]["processId"] == "group-proc"
+            for _ in range(50):
+                if group_pid_file.exists():
+                    break
+                time.sleep(0.05)
+            assert group_pid_file.exists()
+            group_child_pid = int(group_pid_file.read_text(encoding="utf-8").strip())
+            group_terminated = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "group-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "group-proc"},
+                }
+            )
+            assert group_terminated["result"]["running"] is True
+            time.sleep(0.2)
+            if process_exists(group_child_pid):
+                os.kill(group_child_pid, signal.SIGKILL)
+                raise AssertionError("process/terminate left a child process alive")
+
+            ignore_term_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "ignore-term-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "ignore-term-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import signal, sys, time; "
+                                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                                "sys.stdout.write('ready\\n'); sys.stdout.flush(); "
+                                "time.sleep(30)"
+                            ),
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert ignore_term_started["result"]["processId"] == "ignore-term-proc"
+            ignore_term_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "ignore-term-read",
+                    "method": "process/read",
+                    "params": {"processId": "ignore-term-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            ignore_term_output = b"".join(
+                base64.b64decode(chunk["chunk"]) for chunk in ignore_term_read["result"]["chunks"]
+            )
+            assert ignore_term_output == b"ready\n"
+            ignore_term_stop_started_at = time.monotonic()
+            ignore_term_stopped = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "ignore-term-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "ignore-term-proc"},
+                }
+            )
+            assert time.monotonic() - ignore_term_stop_started_at < 1.5
+            assert ignore_term_stopped["result"]["running"] is True
+            ignore_term_closed = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "ignore-term-closed",
+                    "method": "process/read",
+                    "params": {"processId": "ignore-term-proc", "afterSeq": 1, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            assert ignore_term_closed["result"]["closed"] is True
+            assert ignore_term_closed["result"]["exitCode"] == -1
+
+            redirected_pid_file = temp_root / "process-redirected-child.pid"
+            redirected_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "redirected-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "redirected-proc",
+                        "argv": [
+                            "/bin/sh",
+                            "-c",
+                            f"(trap '' TERM; sleep 30) >/dev/null 2>&1 & printf '%s\\n' \"$!\" > {shlex.quote(str(redirected_pid_file))}; exit 0",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert redirected_started["result"]["processId"] == "redirected-proc"
+            for _ in range(50):
+                if redirected_pid_file.exists():
+                    break
+                time.sleep(0.05)
+            assert redirected_pid_file.exists()
+            redirected_child_pid = int(redirected_pid_file.read_text(encoding="utf-8").strip())
+            redirected_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "redirected-read",
+                    "method": "process/read",
+                    "params": {"processId": "redirected-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            assert redirected_read["result"]["exited"] is True
+            assert redirected_read["result"]["closed"] is True
+            time.sleep(0.2)
+            if process_exists(redirected_child_pid):
+                os.kill(redirected_child_pid, signal.SIGKILL)
+                raise AssertionError("closed process session left a redirected child alive")
+
+            started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "term-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "term-proc",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            "import sys, time; sys.stdout.write('B' * 10000); sys.stdout.flush(); time.sleep(5)",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert started["result"]["processId"] == "term-proc"
+            time.sleep(0.2)
+            terminated = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "term-stop",
+                    "method": "process/terminate",
+                    "params": {"processId": "term-proc"},
+                }
+            )
+            assert terminated["result"]["running"] is True
+            read_after_terminate = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "term-read",
+                    "method": "process/read",
+                    "params": {"processId": "term-proc", "afterSeq": 0, "maxBytes": 20000, "waitMs": 0},
+                }
+            )
+            terminated_output = b"".join(
+                base64.b64decode(chunk["chunk"]) for chunk in read_after_terminate["result"]["chunks"]
+            )
+            assert terminated_output == b"B" * 10000
+            assert read_after_terminate["result"]["closed"] is True
+            assert read_after_terminate["result"]["exitCode"] == -1
+
+            teardown_pid_file = temp_root / "process-teardown-child.pid"
+            teardown_started = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "teardown-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "teardown-proc",
+                        "argv": [
+                            "/bin/sh",
+                            "-c",
+                            f"(trap '' TERM; sleep 30) & printf '%s\\n' \"$!\" > {shlex.quote(str(teardown_pid_file))}; exit 0",
+                        ],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert teardown_started["result"]["processId"] == "teardown-proc"
+            for _ in range(50):
+                if teardown_pid_file.exists():
+                    break
+                time.sleep(0.05)
+            assert teardown_pid_file.exists()
+            teardown_child_pid = int(teardown_pid_file.read_text(encoding="utf-8").strip())
+            teardown_read_started_at = time.monotonic()
+            teardown_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "teardown-read",
+                    "method": "process/read",
+                    "params": {"processId": "teardown-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 500},
+                }
+            )
+            assert time.monotonic() - teardown_read_started_at < 1.0
+            assert teardown_read["result"]["exited"] is True
+            assert teardown_read["result"]["closed"] is False
+        finally:
+            if interactive.stdin is not None:
+                interactive.stdin.close()
+                interactive.stdin = None
+            try:
+                _, stderr = interactive.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                interactive.kill()
+                _, stderr = interactive.communicate(timeout=5)
+                raise AssertionError("exec-server did not exit after stdin closed")
+            assert stderr == ""
+            if teardown_child_pid is not None:
+                time.sleep(0.2)
+                if process_exists(teardown_child_pid):
+                    os.kill(teardown_child_pid, signal.SIGKILL)
+                    raise AssertionError("exec-server teardown left a child process alive")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
