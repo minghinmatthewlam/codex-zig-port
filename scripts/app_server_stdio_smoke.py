@@ -20307,6 +20307,43 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         assert after_feature["id"] == "config-read-after-feature-write"
         assert after_feature["result"]["config"]["features"]["goals"] is True
 
+        canonical_config_path = config_path.resolve()
+        canonical_write = rpc(
+            "config-write-canonical-path",
+            "config/value/write",
+            {
+                "filePath": str(canonical_config_path),
+                "keyPath": "model",
+                "value": "gpt-canonical",
+                "mergeStrategy": "replace",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert canonical_write["id"] == "config-write-canonical-path"
+        assert canonical_write["result"]["status"] == "ok"
+        assert canonical_write["result"]["filePath"] == str(canonical_config_path)
+
+        symlink_config_path = codex_home / "config-symlink.toml"
+        symlink_config_path.symlink_to(config_path)
+        symlink_write = rpc(
+            "config-write-symlink-path",
+            "config/value/write",
+            {
+                "filePath": str(symlink_config_path),
+                "keyPath": "model",
+                "value": "gpt-symlink",
+                "mergeStrategy": "replace",
+                "expectedVersion": canonical_write["result"]["version"],
+            },
+        )
+        assert symlink_write["id"] == "config-write-symlink-path"
+        assert symlink_write["result"]["status"] == "ok"
+        assert symlink_write["result"]["filePath"] == str(symlink_config_path)
+
+        after_path_aliases = rpc("config-read-after-path-alias-writes", "config/read", {})
+        assert after_path_aliases["id"] == "config-read-after-path-alias-writes"
+        assert after_path_aliases["result"]["config"]["model"] == "gpt-symlink"
+
         table_upsert = rpc(
             "config-write-table-upsert",
             "config/value/write",
@@ -20323,7 +20360,7 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
                     "url": "https://linear.example",
                 },
                 "mergeStrategy": "upsert",
-                "expectedVersion": write_feature["result"]["version"],
+                "expectedVersion": symlink_write["result"]["version"],
             },
         )
         assert table_upsert["id"] == "config-write-table-upsert"
@@ -20398,6 +20435,25 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_path["id"] == "config-write-invalid-path"
         assert invalid_path["error"]["code"] == -32602
+
+        readonly_path = codex_home / "readonly-target.toml"
+        readonly_path_write = rpc(
+            "config-write-readonly-path",
+            "config/value/write",
+            {
+                "filePath": str(readonly_path),
+                "keyPath": "model",
+                "value": "gpt-test",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert readonly_path_write["id"] == "config-write-readonly-path"
+        assert readonly_path_write["error"]["code"] == -32602
+        assert (
+            "Only writes to the user config are allowed"
+            in readonly_path_write["error"]["message"]
+        )
+        assert not readonly_path.exists()
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -20409,6 +20465,123 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         if proc.returncode != 0:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_config_first_write_path_alias_rpc_smoke(binary: Path) -> None:
+    cases = [
+        (
+            "config-first-value-write-dot-alias",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-first-value",
+                "mergeStrategy": "replace",
+            },
+            "gpt-first-value",
+            "./config.toml",
+            None,
+        ),
+        (
+            "config-first-batch-write-parent-alias",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "model",
+                        "value": "gpt-first-batch",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+            },
+            "gpt-first-batch",
+            "nested/../config.toml",
+            None,
+        ),
+        (
+            "config-first-value-write-canonical-parent-alias",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-first-canonical",
+                "mergeStrategy": "replace",
+            },
+            "gpt-first-canonical",
+            None,
+            "canonical",
+        ),
+        (
+            "config-first-value-write-symlink-parent-alias",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-first-symlink-parent",
+                "mergeStrategy": "replace",
+            },
+            "gpt-first-symlink-parent",
+            None,
+            "symlink-parent",
+        ),
+    ]
+    for request_id, method, params, expected_model, alias_suffix, alias_kind in cases:
+        cleanup_root = Path(
+            tempfile.mkdtemp(prefix="codex-zig-app-server-config-first-write-alias-", dir="/tmp")
+        )
+        if alias_kind == "symlink-parent":
+            codex_home = cleanup_root / "real-home"
+            codex_home.mkdir()
+            linked_home = cleanup_root / "linked-home"
+            linked_home.symlink_to(codex_home, target_is_directory=True)
+        else:
+            codex_home = cleanup_root
+        config_path = codex_home / "config.toml"
+        if alias_kind == "canonical":
+            file_path = str(config_path.resolve())
+            expected_file_path = file_path
+        elif alias_kind == "symlink-parent":
+            file_path = str(linked_home / "config.toml")
+            expected_file_path = file_path
+        else:
+            file_path = f"{codex_home}/{alias_suffix}"
+            expected_file_path = str(config_path)
+        params = {**params, "filePath": file_path}
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                },
+            )
+            response = read_json_line(proc, 5)
+            assert response["id"] == request_id
+            assert response["result"]["status"] == "ok"
+            assert response["result"]["filePath"] == expected_file_path
+            assert config_path.exists()
+            assert f'model = "{expected_model}"' in config_path.read_text(encoding="utf-8")
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+            shutil.rmtree(cleanup_root, ignore_errors=True)
 
 
 def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
@@ -20832,6 +21005,29 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_path["id"] == "config-batch-invalid-path"
         assert invalid_path["error"]["code"] == -32602
+
+        readonly_path = codex_home / "batch-readonly-target.toml"
+        readonly_path_batch = rpc(
+            "config-batch-readonly-path",
+            "config/batchWrite",
+            {
+                "filePath": str(readonly_path),
+                "edits": [
+                    {
+                        "keyPath": "model",
+                        "value": "gpt-test",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+            },
+        )
+        assert readonly_path_batch["id"] == "config-batch-readonly-path"
+        assert readonly_path_batch["error"]["code"] == -32602
+        assert (
+            "Only writes to the user config are allowed"
+            in readonly_path_batch["error"]["message"]
+        )
+        assert not readonly_path.exists()
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -34481,6 +34677,8 @@ def main() -> None:
     print("app-server-config-read-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
     print("app-server-config-value-write-rpc-e2e: ok")
+    run_config_first_write_path_alias_rpc_smoke(binary)
+    print("app-server-config-first-write-path-alias-rpc-e2e: ok")
     run_config_write_overridden_metadata_rpc_smoke(binary)
     print("app-server-config-write-overridden-metadata-rpc-e2e: ok")
     run_config_batch_write_rpc_smoke(binary)
