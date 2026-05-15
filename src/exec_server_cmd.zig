@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const net = std.Io.net;
 
@@ -11,6 +12,32 @@ const retained_closed_processes = 64;
 const max_stdin_write_queue_bytes = 2 * 1024 * 1024;
 const max_stdin_write_queue_chunks = 32;
 const max_buffered_input_read_wait_ms = 200;
+const default_env_exclude_patterns = [_][]const u8{ "*KEY*", "*SECRET*", "*TOKEN*" };
+const unix_core_env_vars = [_][]const u8{ "PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "USER" };
+const windows_core_env_vars = [_][]const u8{
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+    "COMSPEC",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "USERNAME",
+    "USERDOMAIN",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PROGRAMDATA",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "POWERSHELL",
+    "PWSH",
+};
 
 const Transport = union(enum) {
     stdio,
@@ -30,11 +57,32 @@ const ExecStartParams = struct {
     argv: []const []const u8,
     cwd: []const u8,
     env: std.json.Value,
+    env_policy: ?ExecEnvPolicy,
     pipe_stdin: bool,
 
     fn deinit(self: ExecStartParams, allocator: std.mem.Allocator) void {
+        if (self.env_policy) |policy| policy.deinit(allocator);
         allocator.free(self.argv);
     }
+};
+
+const ExecEnvPolicy = struct {
+    inherit: ExecEnvPolicyInherit,
+    ignore_default_excludes: bool,
+    exclude: []const []const u8,
+    set: std.json.Value,
+    include_only: []const []const u8,
+
+    fn deinit(self: ExecEnvPolicy, allocator: std.mem.Allocator) void {
+        allocator.free(self.exclude);
+        allocator.free(self.include_only);
+    }
+};
+
+const ExecEnvPolicyInherit = enum {
+    all,
+    core,
+    none,
 };
 
 const ProcessOutputChunk = struct {
@@ -373,7 +421,7 @@ const StdioServer = struct {
 
         const params = parseExecStartParams(self.allocator, params_value) catch |err| switch (err) {
             error.ExecServerTtyUnsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start tty is not implemented yet"),
-            error.ExecServerEnvPolicyUnsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start envPolicy is not implemented yet"),
+            error.InvalidExecServerEnvPolicy => return renderJsonRpcError(self.allocator, id_value, -32602, "envPolicy must include inherit, ignoreDefaultExcludes, exclude, set, and includeOnly"),
             error.ExecServerArg0Unsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start arg0 is not implemented yet"),
             else => return renderJsonRpcError(self.allocator, id_value, -32602, "process/start params must include processId, argv, cwd, env, and tty"),
         };
@@ -388,7 +436,7 @@ const StdioServer = struct {
             return try renderJsonRpcError(self.allocator, id_value, -32600, message);
         }
 
-        var child_env = execServerEnvironment(self.allocator, params.env) catch |err| switch (err) {
+        var child_env = execServerEnvironment(self.allocator, params.env, params.env_policy) catch |err| switch (err) {
             error.InvalidExecServerEnv => return renderJsonRpcError(self.allocator, id_value, -32602, "env must be an object"),
             error.InvalidExecServerEnvKey => return renderJsonRpcError(self.allocator, id_value, -32602, "env keys must be non-empty strings without NUL or '='"),
             error.InvalidExecServerEnvValue => return renderJsonRpcError(self.allocator, id_value, -32602, "env values must be strings without NUL"),
@@ -396,7 +444,7 @@ const StdioServer = struct {
         };
         defer child_env.deinit();
 
-        var resolved_argv = resolveExecArgv(self.allocator, params.argv, params.cwd, params.env) catch |err| switch (err) {
+        var resolved_argv = resolveExecArgv(self.allocator, params.argv, params.cwd, &child_env) catch |err| switch (err) {
             error.ExecServerExecutableNotFound => {
                 const message = try std.fmt.allocPrint(self.allocator, "failed to start process {s}: FileNotFound", .{params.process_id});
                 defer self.allocator.free(message);
@@ -748,9 +796,8 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
     const env = object.get("env") orelse return error.InvalidExecServerStartParams;
     const tty = try requiredBoolField(object, "tty");
     if (tty) return error.ExecServerTtyUnsupported;
-    if (object.get("envPolicy")) |env_policy| {
-        if (env_policy != .null) return error.ExecServerEnvPolicyUnsupported;
-    }
+    const env_policy = try parseExecEnvPolicy(allocator, object.get("envPolicy"));
+    errdefer if (env_policy) |policy| policy.deinit(allocator);
 
     if (object.get("arg0")) |arg0| {
         if (arg0 != .null and arg0 != .string) return error.InvalidExecServerStartParams;
@@ -762,8 +809,58 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
         .argv = argv,
         .cwd = cwd,
         .env = env,
+        .env_policy = env_policy,
         .pipe_stdin = try optionalBoolField(object, "pipeStdin", false),
     };
+}
+
+fn parseExecEnvPolicy(allocator: std.mem.Allocator, value: ?std.json.Value) !?ExecEnvPolicy {
+    const policy_value = value orelse return null;
+    if (policy_value == .null) return null;
+    if (policy_value != .object) return error.InvalidExecServerEnvPolicy;
+    const object = policy_value.object;
+
+    const inherit_value = object.get("inherit") orelse return error.InvalidExecServerEnvPolicy;
+    if (inherit_value != .string) return error.InvalidExecServerEnvPolicy;
+    const inherit: ExecEnvPolicyInherit = if (std.mem.eql(u8, inherit_value.string, "all"))
+        .all
+    else if (std.mem.eql(u8, inherit_value.string, "core"))
+        .core
+    else if (std.mem.eql(u8, inherit_value.string, "none"))
+        .none
+    else
+        return error.InvalidExecServerEnvPolicy;
+
+    const ignore_default_excludes_value = object.get("ignoreDefaultExcludes") orelse return error.InvalidExecServerEnvPolicy;
+    if (ignore_default_excludes_value != .bool) return error.InvalidExecServerEnvPolicy;
+
+    const exclude = try parseExecEnvPatternList(allocator, object.get("exclude") orelse return error.InvalidExecServerEnvPolicy);
+    errdefer allocator.free(exclude);
+    const include_only = try parseExecEnvPatternList(allocator, object.get("includeOnly") orelse return error.InvalidExecServerEnvPolicy);
+    errdefer allocator.free(include_only);
+
+    const set = object.get("set") orelse return error.InvalidExecServerEnvPolicy;
+    if (set != .object) return error.InvalidExecServerEnvPolicy;
+
+    return .{
+        .inherit = inherit,
+        .ignore_default_excludes = ignore_default_excludes_value.bool,
+        .exclude = exclude,
+        .set = set,
+        .include_only = include_only,
+    };
+}
+
+fn parseExecEnvPatternList(allocator: std.mem.Allocator, value: std.json.Value) ![]const []const u8 {
+    if (value != .array) return error.InvalidExecServerEnvPolicy;
+    const patterns = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(patterns);
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string) return error.InvalidExecServerEnvPolicy;
+        if (std.mem.indexOfScalar(u8, item.string, 0) != null) return error.InvalidExecServerEnvPolicy;
+        patterns[index] = item.string;
+    }
+    return patterns;
 }
 
 const ProcessReadParams = struct {
@@ -817,13 +914,13 @@ const ResolvedExecArgv = struct {
     }
 };
 
-fn resolveExecArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8, env_value: std.json.Value) !ResolvedExecArgv {
+fn resolveExecArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8, env: *const std.process.Environ.Map) !ResolvedExecArgv {
     const resolved = try allocator.alloc([]const u8, argv.len);
     errdefer allocator.free(resolved);
     @memcpy(resolved, argv);
 
     if (std.mem.indexOfScalar(u8, argv[0], '/') != null) return .{ .argv = resolved };
-    const path = execServerEnvString(env_value, "PATH") orelse defaultExecPath();
+    const path = env.get("PATH") orelse defaultExecPath();
     const resolved_executable = (try resolveExecutableOnPath(allocator, argv[0], cwd, path)) orelse {
         return error.ExecServerExecutableNotFound;
     };
@@ -845,13 +942,6 @@ fn pathLookupEnvBlock(allocator: std.mem.Allocator, path: []const u8) !std.proce
 fn defaultExecPath() []const u8 {
     const path = std.c.getenv("PATH") orelse return "/usr/bin:/bin";
     return std.mem.span(path);
-}
-
-fn execServerEnvString(value: std.json.Value, key: []const u8) ?[]const u8 {
-    if (value != .object) return null;
-    const field = value.object.get(key) orelse return null;
-    if (field != .string) return null;
-    return field.string;
 }
 
 fn resolveExecutableOnPath(allocator: std.mem.Allocator, executable: []const u8, cwd: []const u8, path: []const u8) !?[]const u8 {
@@ -935,10 +1025,78 @@ fn jsonIntegerAsU64(value: std.json.Value) ?u64 {
     };
 }
 
-fn execServerEnvironment(allocator: std.mem.Allocator, value: std.json.Value) !std.process.Environ.Map {
-    if (value != .object) return error.InvalidExecServerEnv;
+fn execServerEnvironment(allocator: std.mem.Allocator, value: std.json.Value, env_policy: ?ExecEnvPolicy) !std.process.Environ.Map {
+    var child_env = if (env_policy) |policy|
+        try inheritedExecEnvironment(allocator, policy.inherit)
+    else
+        std.process.Environ.Map.init(allocator);
+    errdefer child_env.deinit();
+
+    if (env_policy) |policy| {
+        if (!policy.ignore_default_excludes) {
+            removeExecEnvMatches(&child_env, default_env_exclude_patterns[0..]);
+        }
+        removeExecEnvMatches(&child_env, policy.exclude);
+        try applyExecEnvObject(&child_env, policy.set);
+        if (policy.include_only.len > 0) retainExecEnvMatches(&child_env, policy.include_only);
+    }
+
+    try applyExecEnvObject(&child_env, value);
+    return child_env;
+}
+
+fn inheritedExecEnvironment(allocator: std.mem.Allocator, inherit: ExecEnvPolicyInherit) !std.process.Environ.Map {
     var child_env = std.process.Environ.Map.init(allocator);
     errdefer child_env.deinit();
+
+    if (inherit != .none) {
+        try copyParentExecEnvironment(&child_env, inherit);
+    }
+
+    if (builtin.os.tag == .windows and !child_env.contains("PATHEXT")) {
+        try child_env.put("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+    }
+
+    return child_env;
+}
+
+fn copyParentExecEnvironment(child_env: *std.process.Environ.Map, inherit: ExecEnvPolicyInherit) !void {
+    switch (builtin.os.tag) {
+        .windows => {
+            var parent_env = try std.process.Environ.createMap(.{ .block = .global }, child_env.allocator);
+            defer parent_env.deinit();
+
+            var iterator = parent_env.iterator();
+            while (iterator.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (inherit == .core and !isCoreExecEnvVar(key)) continue;
+                try child_env.put(key, entry.value_ptr.*);
+            }
+        },
+        else => {
+            var index: usize = 0;
+            while (std.c.environ[index]) |entry| : (index += 1) {
+                const item = std.mem.span(entry);
+                const separator = std.mem.indexOfScalar(u8, item, '=') orelse continue;
+                const key = item[0..separator];
+                if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+                if (inherit == .core and !isCoreExecEnvVar(key)) continue;
+                try child_env.put(key, item[separator + 1 ..]);
+            }
+        },
+    }
+}
+
+fn isCoreExecEnvVar(key: []const u8) bool {
+    const core_vars = if (builtin.os.tag == .windows) windows_core_env_vars[0..] else unix_core_env_vars[0..];
+    for (core_vars) |core| {
+        if (std.ascii.eqlIgnoreCase(key, core)) return true;
+    }
+    return false;
+}
+
+fn applyExecEnvObject(child_env: *std.process.Environ.Map, value: std.json.Value) !void {
+    if (value != .object) return error.InvalidExecServerEnv;
 
     var iterator = value.object.iterator();
     while (iterator.next()) |entry| {
@@ -952,8 +1110,74 @@ fn execServerEnvironment(allocator: std.mem.Allocator, value: std.json.Value) !s
             else => return error.InvalidExecServerEnvValue,
         }
     }
+}
 
-    return child_env;
+fn removeExecEnvMatches(child_env: *std.process.Environ.Map, patterns: []const []const u8) void {
+    var index: usize = 0;
+    while (index < child_env.keys().len) {
+        const key = child_env.keys()[index];
+        if (execEnvMatchesAnyPattern(key, patterns)) {
+            _ = child_env.swapRemove(key);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn retainExecEnvMatches(child_env: *std.process.Environ.Map, patterns: []const []const u8) void {
+    var index: usize = 0;
+    while (index < child_env.keys().len) {
+        const key = child_env.keys()[index];
+        if (!execEnvMatchesAnyPattern(key, patterns)) {
+            _ = child_env.swapRemove(key);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn execEnvMatchesAnyPattern(name: []const u8, patterns: []const []const u8) bool {
+    for (patterns) |pattern| {
+        if (execEnvPatternMatches(pattern, name)) return true;
+    }
+    return false;
+}
+
+fn execEnvPatternMatches(pattern: []const u8, name: []const u8) bool {
+    var pattern_index: usize = 0;
+    var name_index: usize = 0;
+    var star_index: ?usize = null;
+    var star_name_index: usize = 0;
+
+    while (name_index < name.len) {
+        if (pattern_index < pattern.len and execEnvPatternCharMatches(pattern[pattern_index], name[name_index])) {
+            pattern_index += 1;
+            name_index += 1;
+            continue;
+        }
+        if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+            star_index = pattern_index;
+            pattern_index += 1;
+            star_name_index = name_index;
+            continue;
+        }
+        if (star_index) |star| {
+            pattern_index = star + 1;
+            star_name_index += 1;
+            name_index = star_name_index;
+            continue;
+        }
+        return false;
+    }
+
+    while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+        pattern_index += 1;
+    }
+    return pattern_index == pattern.len;
+}
+
+fn execEnvPatternCharMatches(pattern_char: u8, name_char: u8) bool {
+    return pattern_char == '?' or std.ascii.toLower(pattern_char) == std.ascii.toLower(name_char);
 }
 
 fn waitForProcessRead(
@@ -1457,4 +1681,47 @@ test "exec server validates initialize params" {
     var missing = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
     defer missing.deinit();
     try std.testing.expectError(error.InvalidExecServerInitializeParams, parseInitializeParams(missing.value));
+}
+
+test "exec server env policy applies set includeOnly and request env overlay" {
+    const allocator = std.testing.allocator;
+    var policy_json = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"inherit\":\"none\",\"ignoreDefaultExcludes\":false,\"exclude\":[],\"set\":{\"DROP_ME\":\"drop\",\"KEEP_ME\":\"set\",\"OVERLAY_ME\":\"policy\"},\"includeOnly\":[\"KEEP_*\",\"OVERLAY_*\"]}",
+        .{},
+    );
+    defer policy_json.deinit();
+    const policy = (try parseExecEnvPolicy(allocator, policy_json.value)).?;
+    defer policy.deinit(allocator);
+
+    var env_json = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"OVERLAY_ME\":\"request\",\"REQUEST_ONLY\":\"request\"}",
+        .{},
+    );
+    defer env_json.deinit();
+
+    var child_env = try execServerEnvironment(allocator, env_json.value, policy);
+    defer child_env.deinit();
+
+    try std.testing.expect(child_env.get("DROP_ME") == null);
+    try std.testing.expectEqualStrings("set", child_env.get("KEEP_ME").?);
+    try std.testing.expectEqualStrings("request", child_env.get("OVERLAY_ME").?);
+    try std.testing.expectEqualStrings("request", child_env.get("REQUEST_ONLY").?);
+}
+
+test "exec server env policy validates required wire fields" {
+    const allocator = std.testing.allocator;
+    var missing = try std.json.parseFromSlice(std.json.Value, allocator, "{\"inherit\":\"all\"}", .{});
+    defer missing.deinit();
+    try std.testing.expectError(error.InvalidExecServerEnvPolicy, parseExecEnvPolicy(allocator, missing.value));
+}
+
+test "exec server env policy patterns match Rust wildcard semantics" {
+    try std.testing.expect(execEnvPatternMatches("*KEY*", "OPENAI_API_KEY"));
+    try std.testing.expect(execEnvPatternMatches("foo?bar", "Foo1Bar"));
+    try std.testing.expect(execEnvPatternMatches("*", ""));
+    try std.testing.expect(!execEnvPatternMatches("foo?bar", "foobar"));
 }
