@@ -360,12 +360,6 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         std.debug.print("remote app-server TUI does not support interactive resume/fork pickers yet\n", .{});
         return error.RemoteAppServerSessionPickerNotImplemented;
     }
-    if (options.fork_target) |target| {
-        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, target, " \t\r\n"), "last")) {
-            std.debug.print("remote app-server TUI does not support `fork --last` yet\n", .{});
-            return error.RemoteAppServerSessionTuiNotImplemented;
-        }
-    }
     try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();

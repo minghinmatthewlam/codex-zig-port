@@ -1607,6 +1607,38 @@ def run_remote_unix_tui_smoke(
         os.close(master_fd)
         master_fd = -1
 
+        fork_last_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "fork",
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+                "--last",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, fork_last_output, b"Codex Zig Remote", 5)
+        send_line(master_fd, "side question from remote last-fork")
+        wait_for(master_fd, fork_last_output, b"side answer", 8)
+        mark = len(fork_last_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, fork_last_output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = fork_last_output.decode(errors="replace")
+            raise AssertionError(f"remote TUI fork --last smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
         session_files = sorted(remote_home.joinpath("sessions", "zig").glob("*.jsonl"))
         if not session_files:
             raise AssertionError("remote TUI smoke did not create a resumable session file")
@@ -1680,6 +1712,15 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI resume did not send prompt through app-server")
     if "describe attached image from remote tui" not in json.dumps(resume_matching[-1]):
         raise AssertionError("remote TUI resume did not include resumed transcript history")
+    fork_last_matching = [
+        body
+        for body in bodies
+        if "side question from remote last-fork" in latest_user_text(body.get("input", []))
+    ]
+    if not fork_last_matching:
+        raise AssertionError("remote TUI fork --last did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(fork_last_matching[-1]):
+        raise AssertionError("remote TUI fork --last did not include forked transcript history")
     fork_matching = [
         body
         for body in bodies
