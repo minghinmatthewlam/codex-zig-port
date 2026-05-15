@@ -1247,8 +1247,8 @@ fn printHelp() !void {
         \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
-        \\  codex-zig --remote ws://HOST:PORT
-        \\                          Parse remote app-server target for interactive TUI
+        \\  codex-zig --remote unix://PATH
+        \\                          Connect interactive TUI to a Unix app-server
         \\  codex-zig --remote-auth-token-env ENV_VAR
         \\                          Read bearer token env var for remote app-server
         \\  codex-zig --remote-control

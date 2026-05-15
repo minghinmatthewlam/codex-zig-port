@@ -5,6 +5,7 @@ import json
 import os
 import pty
 import select
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -414,6 +415,18 @@ def send_line(master_fd: int, line: str) -> None:
     os.write(master_fd, line.encode() + b"\n")
 
 
+def wait_for_path(path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        if proc.poll() is not None:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(f"process exited before {path} appeared:\n{stderr}")
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
 def run_alt_screen_smoke(
     binary: Path,
     env: dict[str, str],
@@ -660,7 +673,7 @@ def run_help_command_smoke(
         raise AssertionError(
             f"expected root help command in output:\n{root_result.stderr}"
         )
-    if "codex-zig --remote ws://HOST:PORT" not in root_result.stderr:
+    if "codex-zig --remote unix://PATH" not in root_result.stderr:
         raise AssertionError(f"expected remote flag help output:\n{root_result.stderr}")
     if "codex-zig --remote-control" not in root_result.stderr:
         raise AssertionError(f"expected remote-control flag help output:\n{root_result.stderr}")
@@ -1450,6 +1463,101 @@ def run_remote_flag_smoke(
         )
 
 
+def run_remote_unix_tui_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-remote-tui-sock-", dir="/tmp"))
+    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-tui-home-", dir="/tmp"))
+    socket_path = socket_dir / "app-server.sock"
+    start_requests = server.request_count
+
+    app_env = os.environ.copy()
+    app_env["CODEX_HOME"] = str(remote_home)
+    app_env["OPENAI_API_KEY"] = "remote-tui-api-key"
+    app_env.pop("CODEX_ACCESS_TOKEN", None)
+    remote_home.joinpath("config.toml").write_text(
+        f'openai_base_url = "http://127.0.0.1:{port}"\nmodel = "gpt-remote-tui"\n',
+        encoding="utf-8",
+    )
+
+    app_server = subprocess.Popen(
+        [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+        cwd=workspace,
+        env=app_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = bytearray()
+    client = None
+    master_fd = -1
+    try:
+        wait_for_path(socket_path, app_server, 5)
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+                "side question from remote tui",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, output, b"side answer", 8)
+        if b"parsed but not implemented yet" in output:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote TUI still hit placeholder:\n\n{rendered}")
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote TUI smoke exited with {exit_code}\n\n{rendered}")
+    finally:
+        if client is not None and client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+                client.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if app_server.poll() is None:
+            app_server.terminate()
+            try:
+                app_server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                app_server.kill()
+                app_server.wait(timeout=5)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(remote_home, ignore_errors=True)
+
+    bodies = server.request_bodies[start_requests:]
+    matching = [
+        body
+        for body in bodies
+        if "side question from remote tui" in latest_user_text(body.get("input", []))
+    ]
+    if not matching:
+        rendered = output.decode(errors="replace")
+        raise AssertionError(f"remote TUI did not send prompt through app-server:\n\n{rendered}")
+
+
 def run_session_command_option_smoke(
     binary: Path,
     env: dict[str, str],
@@ -1673,6 +1781,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
+            run_remote_unix_tui_smoke(binary, env, workspace, port, server)
             run_session_command_option_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
             run_plugin_marketplace_smoke(binary, env, workspace)
