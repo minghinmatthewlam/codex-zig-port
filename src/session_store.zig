@@ -818,10 +818,45 @@ pub fn resolveArchivedRolloutPath(allocator: std.mem.Allocator, codex_home: []co
 }
 
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
-    const sessions = try listSessions(allocator, codex_home, 1);
-    defer freeSessionSummaries(allocator, sessions);
-    if (sessions.len == 0) return null;
-    return try allocator.dupe(u8, sessions[0].path);
+    const dir_path = try sessionsDirPath(allocator, codex_home);
+    defer allocator.free(dir_path);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var best_name: ?[]const u8 = null;
+    var best_mtime: ?i128 = null;
+    errdefer if (best_name) |name| allocator.free(name);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (!isSessionFilename(entry.name)) continue;
+
+        const path = try sessionFilePath(allocator, codex_home, entry.name);
+        defer allocator.free(path);
+        const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch continue;
+        if (stat.kind != .file) continue;
+
+        const mtime: i128 = stat.mtime.nanoseconds;
+        const is_better = if (best_mtime) |current|
+            mtime > current or (mtime == current and newerSessionNameFirst({}, entry.name, best_name.?))
+        else
+            true;
+        if (!is_better) continue;
+
+        const next_name = try allocator.dupe(u8, entry.name);
+        if (best_name) |name| allocator.free(name);
+        best_name = next_name;
+        best_mtime = mtime;
+    }
+
+    const name = best_name orelse return null;
+    defer allocator.free(name);
+    return try sessionFilePath(allocator, codex_home, name);
 }
 
 pub fn listSessions(allocator: std.mem.Allocator, codex_home: []const u8, limit: usize) ![]SessionSummary {
@@ -1415,7 +1450,7 @@ test "thread git info appends Rust session metadata and clears missing git field
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"repository_url\":\"https://example.test/new.git\"") != null);
 }
 
-test "latest session path picks lexicographically newest rollout" {
+test "latest session path picks most recently modified rollout" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
@@ -1427,17 +1462,22 @@ test "latest session path picks lexicographically newest rollout" {
     defer transcript.deinit(allocator);
     try transcript.appendUserMessage(allocator, "first");
 
-    const older = try createSessionPathForId(allocator, root, "2024-01-01");
-    defer allocator.free(older);
-    try saveTranscript(allocator, older, &transcript);
+    const older_name_is_larger = try createSessionPathForId(allocator, root, "ffffffff-ffff-4fff-8fff-ffffffffffff");
+    defer allocator.free(older_name_is_larger);
+    try saveTranscript(allocator, older_name_is_larger, &transcript);
+    std.Io.sleep(
+        std.Io.Threaded.global_single_threaded.io(),
+        .{ .nanoseconds = 2 * std.time.ns_per_ms },
+        .awake,
+    ) catch return error.TestInterrupted;
 
-    const newer = try createSessionPathForId(allocator, root, "2024-01-02");
+    const newer = try createSessionPathForId(allocator, root, "00000000-0000-4000-8000-000000000000");
     defer allocator.free(newer);
     try saveTranscript(allocator, newer, &transcript);
 
     const latest = (try latestSessionPath(allocator, root)).?;
     defer allocator.free(latest);
-    try std.testing.expectEqualStrings("rollout-2024-01-02.jsonl", std.fs.path.basename(latest));
+    try std.testing.expectEqualStrings("rollout-00000000-0000-4000-8000-000000000000.jsonl", std.fs.path.basename(latest));
 }
 
 test "list sessions returns newest first and supports limits" {
