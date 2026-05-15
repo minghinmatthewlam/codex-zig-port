@@ -124,8 +124,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
 - run a minimal exec-server stdio JSON-RPC transport with a Rust-shaped
   `initialize` handshake, non-tty `process/start` / `process/read` /
-  `process/write` / `process/terminate` lifecycle, and explicit
-  partial-parity errors for resume handshakes and unsupported transports
+  `process/write` / `process/terminate` lifecycle, `envPolicy`-based child
+  environment filtering and overlays, and explicit partial-parity errors for
+  resume handshakes and unsupported transports
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
   clients
