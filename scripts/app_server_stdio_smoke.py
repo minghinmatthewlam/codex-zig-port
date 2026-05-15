@@ -20411,6 +20411,172 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-overridden-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    managed_config_path = codex_home / "managed_config.toml"
+    managed_config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-managed"',
+                'approval_policy = "never"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        write_same = rpc(
+            "config-write-managed-same",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-managed",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_same["id"] == "config-write-managed-same"
+        assert write_same["result"]["status"] == "ok"
+        assert write_same["result"]["overriddenMetadata"] is None
+
+        write_overridden = rpc(
+            "config-write-managed-overridden",
+            "config/value/write",
+            {
+                "keyPath": "approval_policy",
+                "value": "on-request",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_overridden["id"] == "config-write-managed-overridden"
+        assert write_overridden["result"]["status"] == "okOverridden"
+        metadata = write_overridden["result"]["overriddenMetadata"]
+        assert metadata["message"] == (
+            f"Overridden by legacy managed_config.toml: {managed_config_path}"
+        )
+        assert metadata["overridingLayer"]["name"] == {
+            "type": "legacyManagedConfigTomlFromFile",
+            "file": str(managed_config_path),
+        }
+        assert metadata["overridingLayer"]["version"].startswith("sha256:")
+        assert metadata["effectiveValue"] == "never"
+
+        after_write = rpc("config-read-after-overridden-write", "config/read", {})
+        assert after_write["id"] == "config-read-after-overridden-write"
+        assert after_write["result"]["config"]["approval_policy"] == "never"
+
+        batch = rpc(
+            "config-batch-managed-overridden",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "model",
+                        "value": "gpt-managed",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approval_policy",
+                        "value": None,
+                        "mergeStrategy": "replace",
+                    },
+                ],
+            },
+        )
+        assert batch["id"] == "config-batch-managed-overridden"
+        assert batch["result"]["status"] == "okOverridden"
+        assert batch["result"]["overriddenMetadata"]["effectiveValue"] == "never"
+        assert batch["result"]["overriddenMetadata"]["overridingLayer"]["name"] == {
+            "type": "legacyManagedConfigTomlFromFile",
+            "file": str(managed_config_path),
+        }
+
+        duplicate_final_same = rpc(
+            "config-batch-managed-duplicate-final-same",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "approval_policy",
+                        "value": "on-request",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approval_policy",
+                        "value": "never",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+            },
+        )
+        assert duplicate_final_same["id"] == "config-batch-managed-duplicate-final-same"
+        assert duplicate_final_same["result"]["status"] == "ok"
+        assert duplicate_final_same["result"]["overriddenMetadata"] is None
+
+        invalid_user_value = rpc(
+            "config-write-managed-invalid-user-value",
+            "config/value/write",
+            {
+                "keyPath": "approval_policy",
+                "value": "temporary-invalid-policy",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert invalid_user_value["id"] == "config-write-managed-invalid-user-value"
+        assert invalid_user_value["error"]["code"] == -32602
+        assert "InvalidApprovalPolicy" in invalid_user_value["error"]["message"]
+        config_contents = config_path.read_text(encoding="utf-8")
+        assert 'approval_policy = "never"' in config_contents
+        assert "temporary-invalid-policy" not in config_contents
+
+        invalid_user_type = rpc(
+            "config-write-managed-invalid-user-type",
+            "config/value/write",
+            {
+                "keyPath": "approval_policy",
+                "value": True,
+                "mergeStrategy": "replace",
+            },
+        )
+        assert invalid_user_type["id"] == "config-write-managed-invalid-user-type"
+        assert invalid_user_type["error"]["code"] == -32602
+        assert "InvalidConfigWriteScalarType" in invalid_user_type["error"]["message"]
+        config_contents = config_path.read_text(encoding="utf-8")
+        assert 'approval_policy = "never"' in config_contents
+        assert "approval_policy = true" not in config_contents
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_config_batch_write_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-batch-", dir="/tmp"))
     config_path = codex_home / "config.toml"
@@ -34315,6 +34481,8 @@ def main() -> None:
     print("app-server-config-read-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
     print("app-server-config-value-write-rpc-e2e: ok")
+    run_config_write_overridden_metadata_rpc_smoke(binary)
+    print("app-server-config-write-overridden-metadata-rpc-e2e: ok")
     run_config_batch_write_rpc_smoke(binary)
     print("app-server-config-batch-write-rpc-e2e: ok")
     run_external_agent_config_rpc_smoke(binary)
