@@ -598,7 +598,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var initialize_response = try readRemoteResponse(&transport, "initialize");
     initialize_response.deinit();
 
-    const thread_id = (try openRemoteThread(allocator, &transport, cwd, options)) orelse return;
+    var thread_id = (try openRemoteThread(allocator, &transport, cwd, options)) orelse return;
     defer allocator.free(thread_id);
 
     var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
@@ -620,13 +620,13 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         const line = line_opt orelse break;
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
-        if (std.mem.eql(u8, prompt, "q") or std.mem.eql(u8, prompt, "/quit")) break;
-        if (std.mem.eql(u8, prompt, "/help")) {
-            std.debug.print("commands:\n  /help\n  /quit\n", .{});
-            continue;
-        }
+        if (std.mem.eql(u8, prompt, "q")) break;
         if (std.mem.startsWith(u8, prompt, "/")) {
-            std.debug.print("remote TUI slash command is parsed but not implemented yet: {s}\n", .{prompt});
+            const action = handleRemoteSlashCommand(allocator, &transport, &thread_id, remote, cwd, options.runtime_overrides, &stdin_reader.interface, prompt) catch |err| {
+                std.debug.print("remote command error: {s}\n", .{@errorName(err)});
+                continue;
+            };
+            if (action == .quit) break;
             continue;
         }
         const input_image_paths = pending_input_image_paths;
@@ -638,6 +638,131 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     }
 
     std.debug.print("\nbye\n", .{});
+}
+
+const RemoteSlashAction = enum {
+    handled,
+    quit,
+};
+
+fn handleRemoteSlashCommand(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    thread_id: *[]const u8,
+    remote: []const u8,
+    cwd: []const u8,
+    overrides: config.RuntimeOverrides,
+    stdin_reader: *std.Io.Reader,
+    prompt: []const u8,
+) !RemoteSlashAction {
+    const parts = parseSlash(prompt) orelse return .handled;
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "quit") or
+        std.ascii.eqlIgnoreCase(parts.name, "exit") or
+        std.mem.eql(u8, parts.name, "q"))
+    {
+        return .quit;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "help")) {
+        printRemoteSlashHelp();
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
+        std.debug.print("remote: {s}\nthread: {s}\ncwd: {s}\n", .{ remote, thread_id.*, cwd });
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
+        const limit = try parseSessionListLimit(parts.args);
+        try printRemoteSessions(allocator, transport, limit);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "resume")) {
+        if (try switchRemoteThread(allocator, transport, thread_id, "resume", "thread/resume", cwd, overrides, stdin_reader, parts.args)) {
+            std.debug.print("resumed remote thread: {s}\n", .{thread_id.*});
+        } else {
+            std.debug.print("resume canceled\n", .{});
+        }
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "fork")) {
+        if (try switchRemoteThread(allocator, transport, thread_id, "fork", "thread/fork", cwd, overrides, stdin_reader, parts.args)) {
+            std.debug.print("forked remote thread: {s}\n", .{thread_id.*});
+        } else {
+            std.debug.print("fork canceled\n", .{});
+        }
+        return .handled;
+    }
+
+    std.debug.print("remote TUI slash command is parsed but not implemented yet: {s}\n", .{prompt});
+    return .handled;
+}
+
+fn printRemoteSlashHelp() void {
+    std.debug.print(
+        \\commands:
+        \\  /help
+        \\  /status
+        \\  /sessions [N]
+        \\  /resume [TARGET|last]
+        \\  /fork [TARGET|last]
+        \\  /quit
+        \\
+    , .{});
+}
+
+fn printRemoteSessions(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    limit: usize,
+) !void {
+    const request = try renderRemoteThreadListRequest(allocator, limit);
+    defer allocator.free(request);
+    try transport.writeJson(request);
+
+    var response = try readRemoteResponse(transport, "thread-list-picker");
+    defer response.deinit();
+    const sessions = try remoteThreadListItems(response.value);
+    if (sessions.len == 0) {
+        std.debug.print("remote sessions: none\n", .{});
+        return;
+    }
+
+    std.debug.print("remote sessions:\n", .{});
+    for (sessions, 0..) |entry, index| {
+        try printRemoteSessionSummary(index, entry);
+    }
+}
+
+fn switchRemoteThread(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    current_thread_id: *[]const u8,
+    action: []const u8,
+    method: []const u8,
+    cwd: []const u8,
+    overrides: config.RuntimeOverrides,
+    stdin_reader: *std.Io.Reader,
+    args: []const u8,
+) !bool {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    const target_owned = if (trimmed.len == 0)
+        try promptRemoteSessionPickerWithReader(allocator, transport, action, false, stdin_reader)
+    else if (std.mem.eql(u8, trimmed, "--all"))
+        try promptRemoteSessionPickerWithReader(allocator, transport, action, true, stdin_reader)
+    else
+        try allocator.dupe(u8, trimmed);
+    const target = target_owned orelse return false;
+    defer allocator.free(target);
+
+    const next_thread_id = try openRemoteLifecycleThread(allocator, transport, action, method, target, cwd, overrides);
+    allocator.free(current_thread_id.*);
+    current_thread_id.* = next_thread_id;
+    return true;
 }
 
 fn openRemoteThread(
@@ -689,6 +814,18 @@ fn promptRemoteSessionPicker(
     action: []const u8,
     show_all: bool,
 ) !?[]const u8 {
+    var input_buffer: [1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
+    return try promptRemoteSessionPickerWithReader(allocator, transport, action, show_all, &stdin_reader.interface);
+}
+
+fn promptRemoteSessionPickerWithReader(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    action: []const u8,
+    show_all: bool,
+    stdin_reader: *std.Io.Reader,
+) !?[]const u8 {
     const limit: usize = if (show_all) 100 else 10;
     const request = try renderRemoteThreadListRequest(allocator, limit);
     defer allocator.free(request);
@@ -708,9 +845,7 @@ fn promptRemoteSessionPicker(
     }
     std.debug.print("Select session [1-{d}] or press Enter to cancel: ", .{sessions.len});
 
-    var input_buffer: [1024]u8 = undefined;
-    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
-    const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+    const line_opt = try stdin_reader.takeDelimiter('\n');
     const line = line_opt orelse return null;
     const selection = try parseResumeSelection(line, sessions.len) orelse return null;
     const id = try remoteObjectString(sessions[selection], "id");
