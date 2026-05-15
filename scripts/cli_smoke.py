@@ -9,6 +9,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -667,6 +669,125 @@ def run_update_command_smoke(binary: Path) -> None:
         raise AssertionError(f"expected debug-build update message:\n{result.stderr}")
     if "parsed but not implemented yet" in result.stderr:
         raise AssertionError(f"update still used generic placeholder:\n{result.stderr}")
+
+
+def wait_for_json_file(path: Path, process: subprocess.Popen, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            return json.loads(path.read_text())
+        if process.poll() is not None:
+            stderr = process.stderr.read() if process.stderr else ""
+            raise AssertionError(f"process exited before {path} appeared:\n{stderr}")
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}; process still running")
+
+
+def run_responses_api_proxy_smoke(binary: Path) -> None:
+    help_result = subprocess.run(
+        [str(binary), "help", "responses-api-proxy"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert help_result.stdout == ""
+    assert "codex-zig responses-api-proxy" in help_result.stderr
+
+    with tempfile.TemporaryDirectory(prefix="codex-zig-responses-proxy.") as tmp:
+        tmp_path = Path(tmp)
+        upstream = ExecResponsesServer(("127.0.0.1", 0), ExecResponsesHandler)
+        upstream.request_paths = []
+        upstream.request_bodies = []
+        upstream.request_headers = []
+        upstream.response_statuses = []
+        upstream.response_payloads = [b'{"ok":true}']
+        upstream.response_delays = []
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            upstream_url = f"http://127.0.0.1:{upstream.server_port}/upstream-responses"
+            server_info = tmp_path / "server" / "info.json"
+            proxy = subprocess.Popen(
+                [
+                    str(binary),
+                    "responses-api-proxy",
+                    "--server-info",
+                    str(server_info),
+                    "--http-shutdown",
+                    "--upstream-url",
+                    upstream_url,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert proxy.stdin is not None
+            proxy.stdin.write("sk-proxy_123\n")
+            proxy.stdin.close()
+            try:
+                info = wait_for_json_file(server_info, proxy)
+                port = info["port"]
+                if not isinstance(port, int) or port <= 0:
+                    raise AssertionError(f"invalid proxy port in server info: {info!r}")
+                if not isinstance(info.get("pid"), int) or info["pid"] <= 0:
+                    raise AssertionError(f"invalid proxy pid in server info: {info!r}")
+
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/responses",
+                    data=b'{"model":"gpt-test","input":"hello"}',
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer caller-token",
+                        "X-Codex-Test": "proxy-smoke",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    if response.status != 200:
+                        raise AssertionError(f"unexpected proxy response status: {response.status}")
+                    if response.read() != b'{"ok":true}':
+                        raise AssertionError("unexpected proxy response body")
+
+                if upstream.request_paths != ["/upstream-responses"]:
+                    raise AssertionError(f"unexpected upstream paths: {upstream.request_paths!r}")
+                if upstream.request_bodies != [{"model": "gpt-test", "input": "hello"}]:
+                    raise AssertionError(f"unexpected upstream bodies: {upstream.request_bodies!r}")
+                forwarded_auth = header_value(upstream.request_headers[0], "Authorization")
+                if forwarded_auth != "Bearer sk-proxy_123":
+                    raise AssertionError(f"proxy did not replace Authorization: {forwarded_auth!r}")
+                if header_value(upstream.request_headers[0], "X-Codex-Test") != "proxy-smoke":
+                    raise AssertionError(f"proxy did not forward custom headers: {upstream.request_headers[0]!r}")
+
+                forbidden = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/not-responses",
+                    data=b"{}",
+                    method="POST",
+                )
+                try:
+                    urllib.request.urlopen(forbidden, timeout=5)
+                except urllib.error.HTTPError as error:
+                    if error.code != 403:
+                        raise AssertionError(f"unexpected forbidden status: {error.code}")
+                else:
+                    raise AssertionError("proxy accepted a non-/v1/responses request")
+
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=5) as response:
+                    if response.status != 200:
+                        raise AssertionError(f"unexpected shutdown status: {response.status}")
+                proxy.wait(timeout=5)
+                if proxy.returncode != 0:
+                    stderr = proxy.stderr.read() if proxy.stderr else ""
+                    raise AssertionError(f"proxy exited with {proxy.returncode}:\n{stderr}")
+            finally:
+                if proxy.poll() is None:
+                    proxy.terminate()
+                    proxy.wait(timeout=5)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
 
 
 def git(repo: Path, *args: str) -> None:
@@ -3203,6 +3324,7 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
     run_update_command_smoke(binary)
+    run_responses_api_proxy_smoke(binary)
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
@@ -3230,6 +3352,7 @@ def main() -> None:
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
     print("cli-update-e2e: ok")
+    print("cli-responses-api-proxy-e2e: ok")
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")

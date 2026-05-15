@@ -730,7 +730,6 @@ def run_unimplemented_command_smoke(
         "app",
         "cloud",
         "cloud-tasks",
-        "responses-api-proxy",
         "exec-server",
     ]:
         result = subprocess.run(
