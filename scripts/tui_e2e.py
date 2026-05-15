@@ -436,6 +436,26 @@ def wait_for_path(path: Path, proc: subprocess.Popen[str], timeout: float) -> No
     raise AssertionError(f"timed out waiting for {path}")
 
 
+def wait_for_websocket_bind(proc: subprocess.Popen[str], timeout: float) -> tuple[str, int]:
+    assert proc.stderr is not None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited before websocket bind: {proc.stderr.read()}")
+        remaining = max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([proc.stderr], [], [], min(remaining, 0.05))
+        if not ready:
+            continue
+        line = proc.stderr.readline()
+        if line:
+            for token in line.split():
+                if not token.startswith("ws://"):
+                    continue
+                host, port_text = token.removeprefix("ws://").rsplit(":", 1)
+                return host, int(port_text)
+    raise AssertionError("timed out waiting for websocket bind address")
+
+
 def run_alt_screen_smoke(
     binary: Path,
     env: dict[str, str],
@@ -1328,11 +1348,11 @@ def run_remote_flag_smoke(
 ) -> None:
     remote_env = env.copy()
     remote_env["CODEX_REMOTE_AUTH_TOKEN"] = "  remote-token  "
-    remote_result = subprocess.run(
+    wss_result = subprocess.run(
         [
             str(binary),
             "--remote",
-            "ws://127.0.0.1:4500",
+            "wss://example.com:443",
             "--remote-auth-token-env",
             "CODEX_REMOTE_AUTH_TOKEN",
             "--no-alt-screen",
@@ -1343,19 +1363,21 @@ def run_remote_flag_smoke(
         capture_output=True,
         check=False,
     )
-    if remote_result.returncode == 0:
-        raise AssertionError("remote TUI smoke unexpectedly succeeded")
-    if "remote app-server TUI is parsed but not implemented yet" not in remote_result.stderr:
+    if wss_result.returncode == 0:
+        raise AssertionError("wss remote TUI smoke unexpectedly succeeded")
+    if "remote app-server TUI does not support `wss://` transport yet" not in wss_result.stderr:
         raise AssertionError(
-            f"expected remote not-implemented message:\n{remote_result.stderr}"
+            f"expected wss not-implemented message:\n{wss_result.stderr}"
         )
 
-    resume_result = subprocess.run(
+    missing_token_result = subprocess.run(
         [
             str(binary),
-            "resume",
-            "--remote=ws://127.0.0.1:4500",
-            "--last",
+            "--remote",
+            "ws://127.0.0.1:4500",
+            "--remote-auth-token-env",
+            "CODEX_REMOTE_AUTH_TOKEN_MISSING",
+            "--no-alt-screen",
         ],
         cwd=workspace,
         env=remote_env,
@@ -1363,11 +1385,11 @@ def run_remote_flag_smoke(
         capture_output=True,
         check=False,
     )
-    if resume_result.returncode == 0:
-        raise AssertionError("remote resume smoke unexpectedly succeeded")
-    if "remote app-server TUI is parsed but not implemented yet" not in resume_result.stderr:
+    if missing_token_result.returncode == 0:
+        raise AssertionError("missing remote auth token smoke unexpectedly succeeded")
+    if "RemoteAuthTokenEnvNotSet" not in missing_token_result.stderr:
         raise AssertionError(
-            f"expected remote resume not-implemented message:\n{resume_result.stderr}"
+            f"expected missing remote auth token validation failure:\n{missing_token_result.stderr}"
         )
 
     missing_remote_result = subprocess.run(
@@ -1492,6 +1514,111 @@ def run_remote_flag_smoke(
             "expected unsupported remote override rejection before connecting:\n"
             f"{unsupported_remote_override.stderr}"
         )
+
+
+def run_remote_websocket_tui_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-ws-home-", dir="/tmp"))
+    token_file = remote_home / "app-server-token"
+    token_file.write_text("super-secret-token\n", encoding="utf-8")
+    app_env = os.environ.copy()
+    app_env["CODEX_HOME"] = str(remote_home)
+    app_env["OPENAI_API_KEY"] = "remote-websocket-api-key"
+    app_env.pop("CODEX_ACCESS_TOKEN", None)
+    remote_home.joinpath("config.toml").write_text(
+        f'openai_base_url = "http://127.0.0.1:{port}"\nmodel = "gpt-remote-websocket"\n',
+        encoding="utf-8",
+    )
+    app_server = subprocess.Popen(
+        [
+            str(binary),
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:0",
+            "--ws-auth",
+            "capability-token",
+            "--ws-token-file",
+            str(token_file),
+        ],
+        cwd=remote_home,
+        env=app_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    client = None
+    master_fd = -1
+    body_start = len(server.request_bodies)
+    try:
+        host, ws_port = wait_for_websocket_bind(app_server, 5)
+        client_env = env.copy()
+        client_env["CODEX_REMOTE_AUTH_TOKEN"] = "  super-secret-token  "
+        output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                f"ws://{host}:{ws_port}",
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "--no-alt-screen",
+                "side question from remote websocket",
+            ],
+            cwd=workspace,
+            env=client_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, output, b"side answer", 8)
+        if b"parsed but not implemented yet" in output:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote websocket TUI still hit placeholder:\n\n{rendered}")
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote websocket TUI smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        websocket_bodies = server.request_bodies[body_start:]
+        if not any(
+            "side question from remote websocket" in latest_user_text(body.get("input", []))
+            for body in websocket_bodies
+        ):
+            rendered = json.dumps(websocket_bodies, indent=2, sort_keys=True)
+            raise AssertionError(f"remote websocket TUI did not send prompt through app-server:\n\n{rendered}")
+    finally:
+        if client is not None and client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+                client.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if app_server.poll() is None:
+            app_server.terminate()
+            try:
+                app_server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                app_server.kill()
+                app_server.wait(timeout=5)
+        shutil.rmtree(remote_home, ignore_errors=True)
 
 
 def run_remote_unix_tui_smoke(
@@ -2045,9 +2172,9 @@ def run_session_command_option_smoke(
     )
     if resume_result.returncode == 0:
         raise AssertionError("resume option-placement smoke unexpectedly succeeded")
-    if "remote app-server TUI is parsed but not implemented yet" not in resume_result.stderr:
+    if "remote app-server TUI does not support `--profile` yet" not in resume_result.stderr:
         raise AssertionError(
-            f"expected resume remote not-implemented message:\n{resume_result.stderr}"
+            f"expected resume remote unsupported-option message:\n{resume_result.stderr}"
         )
 
     fork_result = subprocess.run(
@@ -2057,6 +2184,7 @@ def run_session_command_option_smoke(
             "--all",
             "--yolo",
             "--no-alt-screen",
+            "--search",
             "--remote=ws://127.0.0.1:4500",
         ],
         cwd=workspace,
@@ -2067,9 +2195,9 @@ def run_session_command_option_smoke(
     )
     if fork_result.returncode == 0:
         raise AssertionError("fork option-placement smoke unexpectedly succeeded")
-    if "remote app-server TUI is parsed but not implemented yet" not in fork_result.stderr:
+    if "remote app-server TUI does not support `--search` yet" not in fork_result.stderr:
         raise AssertionError(
-            f"expected fork remote not-implemented message:\n{fork_result.stderr}"
+            f"expected fork remote unsupported-option message:\n{fork_result.stderr}"
         )
 
 
@@ -2226,6 +2354,7 @@ def run_e2e(binary: Path) -> str:
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
+            run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
             run_remote_initial_prompt_error_smoke(binary, env, workspace)
             run_session_command_option_smoke(binary, env, workspace)
