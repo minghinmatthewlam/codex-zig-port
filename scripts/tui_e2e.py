@@ -1814,7 +1814,9 @@ def run_remote_unix_tui_smoke(
     app_env["OPENAI_API_KEY"] = "remote-tui-api-key"
     app_env.pop("CODEX_ACCESS_TOKEN", None)
     remote_home.joinpath("config.toml").write_text(
-        f'openai_base_url = "http://127.0.0.1:{port}"\nmodel = "gpt-remote-tui"\n',
+        f'openai_base_url = "http://127.0.0.1:{port}"\n'
+        'model = "gpt-remote-tui"\n'
+        'service_tier = "priority"\n',
         encoding="utf-8",
     )
 
@@ -1867,6 +1869,28 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, output, b"thread:", 5)
         send_line(master_fd, "/sessions 3")
         wait_for(master_fd, output, b"remote sessions:", 5)
+        send_line(master_fd, "/model gpt-remote-slashed")
+        wait_for(master_fd, output, b"model: gpt-remote-slashed", 5)
+        send_line(master_fd, "side question from remote slash model")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/fast status")
+        wait_for(master_fd, output, b"Fast mode is on.", 5)
+        send_line(master_fd, "/fast")
+        wait_for(master_fd, output, b"Fast mode is off.", 5)
+        send_line(master_fd, "side question from remote slash learned fast off")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/fast on")
+        wait_for(master_fd, output, b"Fast mode is on.", 5)
+        send_line(master_fd, "side question from remote slash fast")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/fast off")
+        wait_for(master_fd, output, b"Fast mode is off.", 5)
+        send_line(master_fd, "side question from remote slash fast off")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/personality pragmatic")
+        wait_for(master_fd, output, b"personality: pragmatic", 5)
+        send_line(master_fd, "side question from remote slash personality")
+        wait_for(master_fd, output, b"side answer", 8)
         os.write(master_fd, b"/fork\n1\n")
         wait_for(master_fd, output, b"forked remote thread:", 5)
         send_line(master_fd, "side question from remote slash picker fork")
@@ -2135,6 +2159,66 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI fork picker did not send prompt through app-server")
     if "describe attached image from remote tui" not in json.dumps(fork_picker_matching[-1]):
         raise AssertionError("remote TUI fork picker did not include forked transcript history")
+    slash_model_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash model" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_model_matching:
+        raise AssertionError("remote TUI slash model did not send prompt through app-server")
+    if slash_model_matching[-1].get("model") != "gpt-remote-slashed":
+        raise AssertionError(
+            "remote TUI slash model did not update model override: "
+            f"{slash_model_matching[-1].get('model')!r}"
+        )
+    slash_fast_matching = [
+        body
+        for body in bodies
+        if latest_user_text(body.get("input", [])) == "side question from remote slash fast"
+    ]
+    if not slash_fast_matching:
+        raise AssertionError("remote TUI slash fast did not send prompt through app-server")
+    if slash_fast_matching[-1].get("service_tier") != "priority":
+        raise AssertionError(
+            "remote TUI slash fast did not update service tier: "
+            f"{slash_fast_matching[-1].get('service_tier')!r}"
+        )
+    slash_learned_fast_off_matching = [
+        body
+        for body in bodies
+        if latest_user_text(body.get("input", []))
+        == "side question from remote slash learned fast off"
+    ]
+    if not slash_learned_fast_off_matching:
+        raise AssertionError("remote TUI slash learned fast off did not send prompt through app-server")
+    if slash_learned_fast_off_matching[-1].get("service_tier") is not None:
+        raise AssertionError(
+            "remote TUI slash learned fast off did not clear service tier: "
+            f"{slash_learned_fast_off_matching[-1].get('service_tier')!r}"
+        )
+    slash_fast_off_matching = [
+        body
+        for body in bodies
+        if latest_user_text(body.get("input", [])) == "side question from remote slash fast off"
+    ]
+    if not slash_fast_off_matching:
+        raise AssertionError("remote TUI slash fast off did not send prompt through app-server")
+    if slash_fast_off_matching[-1].get("service_tier") is not None:
+        raise AssertionError(
+            "remote TUI slash fast off did not clear service tier: "
+            f"{slash_fast_off_matching[-1].get('service_tier')!r}"
+        )
+    slash_personality_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash personality"
+        in latest_user_text(body.get("input", []))
+    ]
+    if not slash_personality_matching:
+        raise AssertionError("remote TUI slash personality did not send prompt through app-server")
+    personality_instructions = slash_personality_matching[-1].get("instructions", "")
+    if "deeply pragmatic" not in personality_instructions:
+        raise AssertionError("remote TUI slash personality did not update instructions")
     slash_fork_matching = [
         body
         for body in bodies
