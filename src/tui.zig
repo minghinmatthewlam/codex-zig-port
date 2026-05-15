@@ -388,9 +388,9 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     defer allocator.free(thread_start);
     try writeRemoteLine(&writer.interface, thread_start);
     var thread_response = try readRemoteResponse(allocator, &reader.interface, "thread-start");
+    defer thread_response.deinit();
     const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
     const thread_id = try allocator.dupe(u8, thread_id_raw);
-    thread_response.deinit();
     defer allocator.free(thread_id);
 
     var pending_input_images: []const []const u8 = options.initial_input_images;
@@ -476,9 +476,9 @@ fn runRemotePrompt(
     try writeRemoteLine(writer, request);
 
     var response = try readRemoteResponse(allocator, reader, "turn-start");
+    defer response.deinit();
     const turn_id_raw = try remoteNestedString(response.value, &.{ "result", "turn", "id" });
     const turn_id = try allocator.dupe(u8, turn_id_raw);
-    response.deinit();
     defer allocator.free(turn_id);
 
     try streamRemoteTurnUntilCompleted(allocator, reader, thread_id, turn_id);
