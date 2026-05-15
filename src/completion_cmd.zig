@@ -3,12 +3,12 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 
 const top_level_commands =
-    "a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update";
+    "a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update";
 const global_options =
     "--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
-    "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'e' 'exec' 'exec-server' 'execpolicy' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'review' 'resume' 'sandbox' 'sessions' 'update'";
+    "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'e' 'exec' 'exec-server' 'execpolicy' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'remote-fork' 'review' 'resume' 'sandbox' 'sessions' 'update'";
 const elvish_global_options =
     "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
@@ -245,6 +245,7 @@ test "completion renders bash by default shape" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "cloud-tasks") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "execpolicy") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-control") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-fork") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-auth-token-env") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-control-bind") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "powershell") != null);

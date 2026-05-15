@@ -1,6 +1,6 @@
 # fish completion for codex-zig
 complete -c codex-zig -f
-complete -c codex-zig -n '__fish_use_subcommand' -a 'a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update'
+complete -c codex-zig -n '__fish_use_subcommand' -a 'a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update'
 complete -c codex-zig -n '__fish_seen_subcommand_from completion' -a 'bash elvish fish powershell zsh'
 complete -c codex-zig -s h -l help -d 'Print help'
 complete -c codex-zig -s V -l version -d 'Print version'

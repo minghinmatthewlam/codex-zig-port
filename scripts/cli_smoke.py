@@ -20,6 +20,7 @@ COMPLETION_REQUIRED_VALUES = (
     "completion",
     "execpolicy",
     "remote-control",
+    "remote-fork",
     "--remote-auth-token-env",
     "--remote-control-bind",
     "bash elvish fish powershell zsh",

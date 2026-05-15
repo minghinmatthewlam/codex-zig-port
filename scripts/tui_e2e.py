@@ -158,6 +158,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        if self.path == "/remote-fork-claim" and self.server.remote_fork_bundle:
+            payload = self.server.remote_fork_bundle
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         payload = b'{"error":"not found"}'
         self.send_response(404)
         self.send_header("Content-Type", "application/json")
@@ -340,6 +349,7 @@ class MockResponsesServer(ThreadingHTTPServer):
     request_bodies: list[dict]
     get_paths: list[str]
     get_headers: list[dict[str, str]]
+    remote_fork_bundle: bytes
 
 
 def start_mock_server(port: int) -> MockResponsesServer:
@@ -348,6 +358,7 @@ def start_mock_server(port: int) -> MockResponsesServer:
     server.request_bodies = []
     server.get_paths = []
     server.get_headers = []
+    server.remote_fork_bundle = b""
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -695,7 +706,14 @@ def run_help_command_smoke(
         capture_output=True,
         check=True,
     )
-    for command in ['commands="a ', "app-server", "apply", "cloud-tasks", "remote-control"]:
+    for command in [
+        'commands="a ',
+        "app-server",
+        "apply",
+        "cloud-tasks",
+        "remote-control",
+        "remote-fork",
+    ]:
         if command not in completion_result.stdout:
             raise AssertionError(
                 f"expected {command} in bash completion:\n{completion_result.stdout}"
@@ -730,6 +748,96 @@ def run_unimplemented_command_smoke(
             raise AssertionError(
                 f"expected not-implemented message for {command}:\n{result.stderr}"
             )
+
+
+def run_remote_fork_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    thread_id = "00000000-0000-4000-8000-000000000456"
+    rollout_file_name = f"rollout-2026-05-15T00-00-00-{thread_id}.jsonl"
+    rollout_jsonl = "\n".join(
+        [
+            json.dumps(
+                {
+                    "timestamp": "2026-05-15T00:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": thread_id,
+                        "timestamp": "2026-05-15T00:00:00Z",
+                        "cwd": str(workspace),
+                        "originator": "codex",
+                        "cli_version": "0.0.0",
+                        "source": "cli",
+                        "thread_source": "user",
+                        "model_provider": "mock_provider",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                {
+                    "timestamp": "2026-05-15T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "remote hello"}],
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            "",
+        ]
+    )
+    server.remote_fork_bundle = json.dumps(
+        {
+            "protocolVersion": 1,
+            "threadId": thread_id,
+            "cwd": str(workspace),
+            "rolloutFileName": rollout_file_name,
+            "rolloutJsonl": rollout_jsonl,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+    remote_home = Path(env["CODEX_HOME"]) / "remote-fork-home"
+    remote_env = env.copy()
+    remote_env["CODEX_HOME"] = str(remote_home)
+    result = subprocess.run(
+        [
+            str(binary),
+            "--oss",
+            "--local-provider=ollama",
+            "--no-alt-screen",
+            "remote-fork",
+            f"http://127.0.0.1:{port}/remote-fork-claim",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"remote-fork smoke failed with {result.returncode}:\n{result.stderr}"
+        )
+
+    imported_path = remote_home / "sessions" / "remote-forks" / rollout_file_name
+    if imported_path.read_text() != rollout_jsonl:
+        raise AssertionError(f"unexpected remote-fork import at {imported_path}")
+    if "forked:" not in result.stderr or thread_id not in result.stderr:
+        raise AssertionError(f"expected forked TUI output:\n{result.stderr}")
+    if "remote-forks" not in result.stderr:
+        raise AssertionError(f"expected remote-forks source path:\n{result.stderr}")
+    if "/remote-fork-claim" not in server.get_paths:
+        raise AssertionError(f"expected remote fork claim request, saw {server.get_paths!r}")
 
 
 def write_marketplace_fixture(root: Path, name: str, plugin_name: str) -> None:
@@ -1574,6 +1682,7 @@ def run_e2e(binary: Path) -> str:
             run_debug_stub_smoke(binary, env, workspace, port)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
+            run_remote_fork_smoke(binary, env, workspace, port, server)
 
             master_fd, slave_fd = pty.openpty()
             proc = subprocess.Popen(

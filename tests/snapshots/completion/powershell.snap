@@ -1,7 +1,7 @@
 # PowerShell completion for codex-zig
 Register-ArgumentCompleter -Native -CommandName 'codex-zig' -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = 'a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control review resume sandbox sessions update'.Split(' ')
+    $commands = 'a app app-server apply auth-status cloud cloud-tasks completion debug e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update'.Split(' ')
     $globalOptions = '--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen'.Split(' ')
     $shells = 'bash elvish fish powershell zsh'.Split(' ')
     $tokens = @($commandAst.CommandElements | ForEach-Object { $_.ToString() })
