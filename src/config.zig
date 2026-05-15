@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const env = @import("env.zig");
 const model_catalog = @import("model_catalog.zig");
 
@@ -1169,9 +1170,26 @@ fn writeConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, bytes: 
 pub fn writeConfigTomlFile(path: []const u8, bytes: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     if (std.fs.path.dirname(path)) |parent| {
-        try std.Io.Dir.cwd().createDirPath(io, parent);
+        if (!try configDirExists(io, parent)) {
+            try std.Io.Dir.cwd().createDirPath(io, parent);
+        }
     }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
+}
+
+fn configDirExists(io: std.Io, path: []const u8) !bool {
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openDirAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return false,
+            else => return err,
+        }
+    else
+        std.Io.Dir.cwd().openDir(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return false,
+            else => return err,
+        };
+    defer dir.close(io);
+    return true;
 }
 
 const TomlEditSection = union(enum) {
@@ -3231,6 +3249,29 @@ test "oss provider validation matches supported providers" {
     try std.testing.expectEqualStrings("openai/gpt-oss-20b", OssProvider.lmstudio.defaultModel());
     try std.testing.expectError(error.RemovedOllamaChatProvider, OssProvider.parse("ollama-chat"));
     try std.testing.expectError(error.InvalidOssProvider, OssProvider.parse("other"));
+}
+
+test "write config toml file writes through symlinked parent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "real-home");
+    try dir.dir.symLink(io, "real-home", "linked-home", .{ .is_directory = true });
+
+    const temp_root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(temp_root);
+    const path = try std.fs.path.join(allocator, &.{ temp_root, "linked-home", "config.toml" });
+    defer allocator.free(path);
+
+    try writeConfigTomlFile(path, "model = \"gpt-symlink-parent\"\n");
+
+    const written = try dir.dir.readFileAlloc(io, "real-home/config.toml", allocator, .limited(1024));
+    defer allocator.free(written);
+    try std.testing.expectEqualStrings("model = \"gpt-symlink-parent\"\n", written);
 }
 
 test "toml string escapes are decoded" {
