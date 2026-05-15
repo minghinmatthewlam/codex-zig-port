@@ -356,10 +356,6 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         std.debug.print("remote app-server TUI is parsed but not implemented yet for websocket transport: {s}\n", .{remote});
         return error.RemoteAppServerTuiNotImplemented;
     }
-    if (options.resume_picker or options.fork_picker) {
-        std.debug.print("remote app-server TUI does not support interactive resume/fork pickers yet\n", .{});
-        return error.RemoteAppServerSessionPickerNotImplemented;
-    }
     try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -388,7 +384,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var initialize_response = try readRemoteResponse(allocator, &reader.interface, "initialize");
     initialize_response.deinit();
 
-    const thread_id = try openRemoteThread(allocator, &writer.interface, &reader.interface, cwd, options);
+    const thread_id = (try openRemoteThread(allocator, &writer.interface, &reader.interface, cwd, options)) orelse return;
     defer allocator.free(thread_id);
 
     var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
@@ -436,12 +432,32 @@ fn openRemoteThread(
     reader: *std.Io.Reader,
     cwd: []const u8,
     options: Options,
-) ![]const u8 {
+) !?[]const u8 {
+    if (options.resume_picker) {
+        const target = (try promptRemoteSessionPicker(allocator, writer, reader, "resume", options.resume_show_all)) orelse {
+            std.debug.print("resume canceled\n", .{});
+            return null;
+        };
+        defer allocator.free(target);
+        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        return thread_id;
+    }
+    if (options.fork_picker) {
+        const target = (try promptRemoteSessionPicker(allocator, writer, reader, "fork", options.fork_show_all)) orelse {
+            std.debug.print("fork canceled\n", .{});
+            return null;
+        };
+        defer allocator.free(target);
+        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        return thread_id;
+    }
     if (options.resume_target) |target| {
-        return openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        return thread_id;
     }
     if (options.fork_target) |target| {
-        return openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        return thread_id;
     }
 
     const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
@@ -450,7 +466,76 @@ fn openRemoteThread(
     var thread_response = try readRemoteResponse(allocator, reader, "thread-start");
     defer thread_response.deinit();
     const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
-    return allocator.dupe(u8, thread_id_raw);
+    const thread_id = try allocator.dupe(u8, thread_id_raw);
+    return thread_id;
+}
+
+fn promptRemoteSessionPicker(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    action: []const u8,
+    show_all: bool,
+) !?[]const u8 {
+    const limit: usize = if (show_all) 100 else 10;
+    const request = try renderRemoteThreadListRequest(allocator, limit);
+    defer allocator.free(request);
+    try writeRemoteLine(writer, request);
+
+    var response = try readRemoteResponse(allocator, reader, "thread-list-picker");
+    defer response.deinit();
+    const sessions = try remoteThreadListItems(response.value);
+    if (sessions.len == 0) {
+        std.debug.print("{s}: no saved remote sessions\n", .{action});
+        return null;
+    }
+
+    std.debug.print("{s} sessions:\n", .{action});
+    for (sessions, 0..) |entry, index| {
+        try printRemoteSessionSummary(index, entry);
+    }
+    std.debug.print("Select session [1-{d}] or press Enter to cancel: ", .{sessions.len});
+
+    var input_buffer: [1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
+    const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+    const line = line_opt orelse return null;
+    const selection = try parseResumeSelection(line, sessions.len) orelse return null;
+    const id = try remoteObjectString(sessions[selection], "id");
+    const owned_id = try allocator.dupe(u8, id);
+    return owned_id;
+}
+
+fn renderRemoteThreadListRequest(allocator: std.mem.Allocator, limit: usize) ![]const u8 {
+    return try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"thread-list-picker\",\"method\":\"thread/list\",\"params\":{{\"limit\":{d},\"sortKey\":\"updated_at\",\"sortDirection\":\"desc\",\"modelProviders\":[]}}}}",
+        .{limit},
+    );
+}
+
+fn remoteThreadListItems(value: std.json.Value) ![]std.json.Value {
+    if (value != .object) return error.InvalidRemoteAppServerResponse;
+    const result = value.object.get("result") orelse return error.InvalidRemoteAppServerResponse;
+    if (result != .object) return error.InvalidRemoteAppServerResponse;
+    const data = result.object.get("data") orelse return error.InvalidRemoteAppServerResponse;
+    if (data != .array) return error.InvalidRemoteAppServerResponse;
+    return data.array.items;
+}
+
+fn printRemoteSessionSummary(index: usize, entry: std.json.Value) !void {
+    const id = try remoteObjectString(entry, "id");
+    const preview = remoteObjectOptionalString(entry, "preview") orelse "";
+    const name = remoteObjectOptionalString(entry, "name");
+    const path = remoteObjectOptionalString(entry, "path");
+
+    if (name) |title| {
+        std.debug.print("  {d}. {s} - {s}\n", .{ index + 1, id, title });
+    } else {
+        std.debug.print("  {d}. {s}\n", .{ index + 1, id });
+    }
+    if (preview.len > 0) std.debug.print("     {s}\n", .{preview});
+    if (path) |session_path| std.debug.print("     {s}\n", .{session_path});
 }
 
 fn openRemoteLifecycleThread(
@@ -727,6 +812,20 @@ fn remoteNestedString(value: std.json.Value, path: []const []const u8) ![]const 
     }
     if (current != .string) return error.InvalidRemoteAppServerResponse;
     return current.string;
+}
+
+fn remoteObjectString(value: std.json.Value, key: []const u8) ![]const u8 {
+    if (value != .object) return error.InvalidRemoteAppServerResponse;
+    const field = value.object.get(key) orelse return error.InvalidRemoteAppServerResponse;
+    if (field != .string) return error.InvalidRemoteAppServerResponse;
+    return field.string;
+}
+
+fn remoteObjectOptionalString(value: std.json.Value, key: []const u8) ?[]const u8 {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    if (field != .string) return null;
+    return field.string;
 }
 
 fn remoteErrorMessage(object: std.json.ObjectMap) ?[]const u8 {
