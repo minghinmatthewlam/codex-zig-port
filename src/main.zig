@@ -86,10 +86,6 @@ pub fn main(init: std.process.Init) !void {
                 "error: upstream URL must include a host\n",
                 .{},
             ),
-            error.ResponsesApiProxyDumpDirUnsupported => std.debug.print(
-                "error: responses-api-proxy --dump-dir is parsed but not implemented yet\n",
-                .{},
-            ),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);

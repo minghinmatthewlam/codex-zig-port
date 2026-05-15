@@ -17,7 +17,7 @@ const Options = struct {
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
     const options = try parseArgs(args);
-    if (options.dump_dir != null) return error.ResponsesApiProxyDumpDirUnsupported;
+    if (options.dump_dir) |path| try ensureDirectory(path);
 
     const auth_header = try readAuthHeaderFromStdin(allocator);
     defer allocator.free(auth_header);
@@ -40,10 +40,11 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     );
     try cli_utils.writeStderr(listen_message);
 
+    var next_dump_sequence: u64 = 1;
     while (true) {
         var stream = try server.accept(io);
         var shutdown = false;
-        handleConnection(allocator, io, &stream, auth_header, upstream_uri, options.http_shutdown, &shutdown) catch |err| {
+        handleConnection(allocator, io, &stream, auth_header, upstream_uri, options.http_shutdown, options.dump_dir, &next_dump_sequence, &shutdown) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "responses-api-proxy connection error: {s}\n", .{@errorName(err)});
             defer allocator.free(message);
             try cli_utils.writeStderr(message);
@@ -149,7 +150,7 @@ fn bindLoopback(port: ?u16) !net.Server {
 fn writeServerInfo(allocator: std.mem.Allocator, path: []const u8, port: u16) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     if (std.fs.path.dirname(path)) |parent| {
-        if (parent.len > 0) try std.Io.Dir.cwd().createDirPath(io, parent);
+        if (parent.len > 0) try ensureDirectory(parent);
     }
     const data = try std.fmt.allocPrint(
         allocator,
@@ -162,6 +163,10 @@ fn writeServerInfo(allocator: std.mem.Allocator, path: []const u8, port: u16) !v
     try file.writeStreamingAll(io, data);
 }
 
+fn ensureDirectory(path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), path);
+}
+
 fn handleConnection(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -169,6 +174,8 @@ fn handleConnection(
     auth_header: []const u8,
     upstream_uri: std.Uri,
     http_shutdown: bool,
+    dump_dir: ?[]const u8,
+    next_dump_sequence: *u64,
     shutdown: *bool,
 ) !void {
     var input_buffer: [64 * 1024]u8 = undefined;
@@ -198,7 +205,7 @@ fn handleConnection(
         return;
     }
 
-    try forwardResponsesRequest(allocator, &request, auth_header, upstream_uri);
+    try forwardResponsesRequest(allocator, &request, auth_header, upstream_uri, dump_dir, next_dump_sequence);
 }
 
 fn forwardResponsesRequest(
@@ -206,12 +213,17 @@ fn forwardResponsesRequest(
     request: *std.http.Server.Request,
     auth_header: []const u8,
     upstream_uri: std.Uri,
+    dump_dir: ?[]const u8,
+    next_dump_sequence: *u64,
 ) !void {
     var forward_headers = std.ArrayList(std.http.Header).empty;
     defer deinitOwnedHeaders(allocator, &forward_headers);
+    var dump_request_headers = std.ArrayList(std.http.Header).empty;
+    defer deinitOwnedHeaders(allocator, &dump_request_headers);
 
     var iter = request.iterateHeaders();
     while (iter.next()) |header| {
+        if (dump_dir != null) try appendOwnedHeader(allocator, &dump_request_headers, header.name, header.value);
         if (isRequestHeaderReplaced(header.name)) continue;
         try appendOwnedHeader(allocator, &forward_headers, header.name, header.value);
     }
@@ -221,6 +233,15 @@ fn forwardResponsesRequest(
     const body_reader = try request.readerExpectContinue(&body_buffer);
     const body = try body_reader.allocRemaining(allocator, .limited(32 * 1024 * 1024));
     defer allocator.free(body);
+
+    const response_dump_path = if (dump_dir) |path|
+        dumpRequest(allocator, path, next_dump_sequence, dump_request_headers.items, body) catch |err| path: {
+            logDumpError(allocator, "request", err);
+            break :path null;
+        }
+    else
+        null;
+    defer if (response_dump_path) |path| allocator.free(path);
 
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -262,6 +283,12 @@ fn forwardResponsesRequest(
     };
     const response_bytes = try response_body.toOwnedSlice();
     defer allocator.free(response_bytes);
+
+    if (response_dump_path) |path| {
+        dumpResponse(allocator, path, upstream_response.head.status, response_headers.items, response_bytes) catch |err| {
+            logDumpError(allocator, "response", err);
+        };
+    }
 
     try request.respond(response_bytes, .{
         .status = upstream_response.head.status,
@@ -306,6 +333,135 @@ fn isResponseHeaderManaged(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "upgrade");
 }
 
+fn dumpRequest(
+    allocator: std.mem.Allocator,
+    dump_dir: []const u8,
+    next_sequence: *u64,
+    headers: []const std.http.Header,
+    body: []const u8,
+) ![]u8 {
+    const sequence = next_sequence.*;
+    next_sequence.* += 1;
+    const timestamp_ms = currentUnixMilliseconds();
+    const prefix = try std.fmt.allocPrint(allocator, "{d:0>6}-{d}", .{ sequence, timestamp_ms });
+    defer allocator.free(prefix);
+
+    const request_name = try std.fmt.allocPrint(allocator, "{s}-request.json", .{prefix});
+    defer allocator.free(request_name);
+    const request_path = try std.fs.path.join(allocator, &.{ dump_dir, request_name });
+    defer allocator.free(request_path);
+
+    const response_name = try std.fmt.allocPrint(allocator, "{s}-response.json", .{prefix});
+    defer allocator.free(response_name);
+    const response_path = try std.fs.path.join(allocator, &.{ dump_dir, response_name });
+    errdefer allocator.free(response_path);
+
+    const json = try renderRequestDumpJson(allocator, headers, body);
+    defer allocator.free(json);
+    try writeFile(request_path, json);
+    return response_path;
+}
+
+fn dumpResponse(
+    allocator: std.mem.Allocator,
+    response_path: []const u8,
+    status: std.http.Status,
+    headers: []const std.http.Header,
+    body: []const u8,
+) !void {
+    const json = try renderResponseDumpJson(allocator, @intCast(@intFromEnum(status)), headers, body);
+    defer allocator.free(json);
+    try writeFile(response_path, json);
+}
+
+fn renderRequestDumpJson(allocator: std.mem.Allocator, headers: []const std.http.Header, body: []const u8) ![]u8 {
+    const headers_json = try renderHeadersJson(allocator, headers);
+    defer allocator.free(headers_json);
+    const body_json = try renderBodyJson(allocator, body);
+    defer allocator.free(body_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"method\":\"POST\",\"url\":\"/v1/responses\",\"headers\":{s},\"body\":{s}}}\n",
+        .{ headers_json, body_json },
+    );
+}
+
+fn renderResponseDumpJson(
+    allocator: std.mem.Allocator,
+    status: u16,
+    headers: []const std.http.Header,
+    body: []const u8,
+) ![]u8 {
+    const headers_json = try renderHeadersJson(allocator, headers);
+    defer allocator.free(headers_json);
+    const body_json = try renderBodyJson(allocator, body);
+    defer allocator.free(body_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"status\":{d},\"headers\":{s},\"body\":{s}}}\n",
+        .{ status, headers_json, body_json },
+    );
+}
+
+fn renderHeadersJson(allocator: std.mem.Allocator, headers: []const std.http.Header) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    for (headers, 0..) |header, index| {
+        if (index > 0) try out.writer.writeAll(",");
+        const name_json = try std.json.Stringify.valueAlloc(allocator, header.name, .{});
+        defer allocator.free(name_json);
+        const value = if (shouldRedactHeader(header.name)) "[REDACTED]" else header.value;
+        const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(value_json);
+        try out.writer.print("{{\"name\":{s},\"value\":{s}}}", .{ name_json, value_json });
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn shouldRedactHeader(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "authorization") or
+        containsIgnoreCase(name, "cookie");
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var index: usize = 0;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn currentUnixMilliseconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+}
+
+fn renderBodyJson(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return std.json.Stringify.valueAlloc(allocator, body, .{});
+    };
+    defer parsed.deinit();
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+}
+
+fn writeFile(path: []const u8, bytes: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, bytes);
+}
+
+fn logDumpError(allocator: std.mem.Allocator, label: []const u8, err: anyerror) void {
+    const message = std.fmt.allocPrint(allocator, "responses-api-proxy failed to dump {s}: {s}\n", .{ label, @errorName(err) }) catch return;
+    defer allocator.free(message);
+    cli_utils.writeStderr(message) catch {};
+}
+
 fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
 }
@@ -322,7 +478,7 @@ pub fn printHelp() void {
         \\  --server-info FILE      Write startup JSON with port and pid
         \\  --http-shutdown         Enable GET /shutdown
         \\  --upstream-url URL      Upstream responses endpoint URL
-        \\  --dump-dir DIR          Recognized; dump writing is not implemented yet
+        \\  --dump-dir DIR          Write request/response JSON dumps
         \\  -h, --help              Show help
         \\
     , .{});
