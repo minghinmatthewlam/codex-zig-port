@@ -21,22 +21,28 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   returned no open alerts. CodeQL Python code scanning is configured; push run
   `25895326233` passed for `27b2f7e Tune CodeQL smoke fixture filters`, and the
   code-scanning API returned no open alerts after fixing the initial
-  smoke-fixture findings.
+  smoke-fixture findings. The current remote-control push also passed CodeQL
+  run `25907516640` for commit `3e52b91 Document local remote-control support`,
+  and fresh `state=open` API checks for code-scanning, secret-scanning, and
+  Dependabot alerts returned no open alerts.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25895326235` passed for
+  Checked push run `25907516624` passed for
+  `3e52b91 Document local remote-control support`; prior push run
+  `25895326235` passed for
   `27b2f7e Tune CodeQL smoke fixture filters`; prior push runs `25894492493`,
   `25878096276`, and `25877638204` also passed for the lifecycle response,
   remaining request-field, and server-notification gating slices. Local
-  pre-push verification for those implementation slices included Python
-  compilation, whitespace checks, `zig build`, focused app-server smokes,
-  `zig build test`, and `zig build e2e`.
-- Source hygiene: current tracked-file scans after the lifecycle response
-  filtering commits found no provider-shaped tokens, GitHub tokens, Slack
-  tokens, AWS access keys, private-key blocks, or JWT-shaped blobs.
+  pre-push verification for the current remote-control slice included Python
+  compilation, whitespace checks, `zig build`, `zig build test --summary all`,
+  a direct `scripts/tui_e2e.py` run against the rebuilt binary, `zig build e2e`,
+  and `codex-review`.
+- Source hygiene: current tracked-file scans after the local remote-control
+  slice found no provider-shaped tokens, GitHub tokens, Slack tokens, AWS access
+  keys, private-key blocks, or JWT-shaped blobs.
   Keyword/path scans found public docs, test fixtures, mocked auth/token flows
   such as `test-api-key`, and temporary-path examples rather than checked-in
   local credentials. Current ignored-file scans only found local build output,
