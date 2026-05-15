@@ -255,8 +255,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - root app-server `turn/start` model-requested shell tools and `apply_patch`
   edits in the loaded thread cwd when the tool call does not provide an
   explicit workdir
-- parse Rust-compatible interactive remote app-server flags with `--remote` and
-  `--remote-auth-token-env` while remote TUI transport remains unimplemented
+- run a minimal interactive remote app-server TUI over `--remote unix://PATH`
+  for new threads and text/image turns, while websocket remote TUI and remote
+  resume/fork remain unimplemented
 - parse Rust-compatible local remote-control flags with `--remote-control` and
   `--remote-control-bind` while the local remote-control server remains
   unimplemented
@@ -334,7 +335,8 @@ verifies exact generated shell completion output for bash, elvish, fish,
 powershell, and zsh, verifies
 `execpolicy check` prefix-rule JSON output, `match` / `not_match` validation,
 `network_rule` validation, and resolved host executable JSON output,
-interactive remote app-server flag parsing/rejection, verifies planned-but-unimplemented
+interactive remote app-server flag parsing/rejection plus a real
+`--remote unix://PATH` TUI turn through a running app-server, verifies planned-but-unimplemented
 Rust top-level command stubs, verifies local remote-control flag
 parsing/rejection, verifies session-local `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
