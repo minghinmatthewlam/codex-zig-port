@@ -28337,6 +28337,72 @@ fn serverNotificationShouldBeDropped(state: *const AppServerState, method: []con
     return notificationMethodOptedOut(state, method);
 }
 
+fn renderServerRequestForConnection(
+    allocator: std.mem.Allocator,
+    experimental_api_enabled: bool,
+    request_json: []const u8,
+) ![]const u8 {
+    if (experimental_api_enabled) return allocator.dupe(u8, request_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{});
+    defer parsed.deinit();
+    if (!serverRequestNeedsStableFieldFiltering(parsed.value)) {
+        return allocator.dupe(u8, request_json);
+    }
+
+    return renderServerRequestWithoutParamField(allocator, parsed.value.object, "additionalPermissions");
+}
+
+fn serverRequestNeedsStableFieldFiltering(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const method = value.object.get("method") orelse return false;
+    if (method != .string) return false;
+    return std.mem.eql(u8, method.string, "item/commandExecution/requestApproval");
+}
+
+fn renderServerRequestWithoutParamField(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    skip_param_field: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '{');
+    var first = true;
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        try appendJsonFieldName(allocator, &out, &first, entry.key_ptr.*);
+        if (std.mem.eql(u8, entry.key_ptr.*, "params") and entry.value_ptr.* == .object) {
+            try appendJsonObjectSkippingField(allocator, &out, entry.value_ptr.*.object, skip_param_field);
+        } else {
+            const value_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+            defer allocator.free(value_json);
+            try out.appendSlice(allocator, value_json);
+        }
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendJsonObjectSkippingField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    object: std.json.ObjectMap,
+    skip_field: []const u8,
+) !void {
+    try out.append(allocator, '{');
+    var first = true;
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, skip_field)) continue;
+        try appendJsonFieldName(allocator, out, &first, entry.key_ptr.*);
+        const value_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+        defer allocator.free(value_json);
+        try out.appendSlice(allocator, value_json);
+    }
+    try out.append(allocator, '}');
+}
+
 fn queueErrorNotification(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -49649,6 +49715,28 @@ test "app-server filters experimental server notifications by capability" {
     try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[0], "\"method\":\"thread/goal/cleared\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[1], "\"method\":\"process/outputDelta\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, experimental_state.pending_notifications.items[2], "\"method\":\"process/exited\"") != null);
+}
+
+test "app-server filters experimental server request fields by capability" {
+    const allocator = std.testing.allocator;
+    const request =
+        "{\"jsonrpc\":\"2.0\",\"id\":\"approval-1\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"itemId\":\"item-1\",\"command\":\"echo hi\",\"cwd\":\"/tmp\",\"additionalPermissions\":{\"network\":{\"enabled\":true}}}}";
+
+    const stable = try renderServerRequestForConnection(allocator, false, request);
+    defer allocator.free(stable);
+    try std.testing.expect(std.mem.indexOf(u8, stable, "\"method\":\"item/commandExecution/requestApproval\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stable, "\"command\":\"echo hi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stable, "additionalPermissions") == null);
+
+    const experimental = try renderServerRequestForConnection(allocator, true, request);
+    defer allocator.free(experimental);
+    try std.testing.expect(std.mem.indexOf(u8, experimental, "additionalPermissions") != null);
+
+    const other_request =
+        "{\"jsonrpc\":\"2.0\",\"id\":\"tool-1\",\"method\":\"item/tool/requestUserInput\",\"params\":{\"additionalPermissions\":{\"network\":{\"enabled\":true}},\"question\":{\"label\":\"Continue?\"}}}";
+    const other_stable = try renderServerRequestForConnection(allocator, false, other_request);
+    defer allocator.free(other_stable);
+    try std.testing.expect(std.mem.indexOf(u8, other_stable, "additionalPermissions") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
