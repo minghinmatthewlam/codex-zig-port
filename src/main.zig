@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const apply_command = @import("apply_command.zig");
 const app_server_cmd = @import("app_server_cmd.zig");
@@ -57,6 +58,14 @@ pub fn main(init: std.process.Init) !void {
             ),
             error.ModelProviderAuthConflict => std.debug.print(
                 "error: provider command auth cannot be combined with `env_key`, `experimental_bearer_token`, or `requires_openai_auth = true`\n",
+                .{},
+            ),
+            error.UpdateUnavailableDebugBuild => std.debug.print(
+                "error: `codex update` is not available in debug builds. Install a release build of Codex to use this command.\n",
+                .{},
+            ),
+            error.UpdateInstallMethodUnknown => std.debug.print(
+                "error: Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/\n",
                 .{},
             ),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
@@ -404,6 +413,10 @@ fn mainInner(init: std.process.Init) !void {
         if (isRemovedTopLevelCommand(cmd)) {
             return error.RemovedTopLevelCommand;
         }
+        if (std.mem.eql(u8, cmd, "update")) {
+            try runUpdateCommand(&args);
+            return;
+        }
         if (isKnownUnimplementedCommand(cmd)) {
             try runKnownUnimplementedCommand(cmd, &args);
             return;
@@ -630,6 +643,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mcp") or
         std.mem.eql(u8, cmd, "app-server") or
         std.mem.eql(u8, cmd, "plugin") or
+        std.mem.eql(u8, cmd, "update") or
         isKnownUnimplementedCommand(cmd) or
         std.mem.eql(u8, cmd, "stdio-to-uds") or
         std.mem.eql(u8, cmd, "help") or
@@ -646,7 +660,6 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
 fn isKnownUnimplementedCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "remote-control") or
         std.mem.eql(u8, cmd, "app") or
-        std.mem.eql(u8, cmd, "update") or
         std.mem.eql(u8, cmd, "cloud") or
         std.mem.eql(u8, cmd, "cloud-tasks") or
         std.mem.eql(u8, cmd, "responses-api-proxy") or
@@ -734,6 +747,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         app_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "plugin")) {
         plugin_cmd.printHelp();
+    } else if (std.mem.eql(u8, target, "update")) {
+        printUpdateHelp();
     } else if (isKnownUnimplementedCommand(target)) {
         printKnownUnimplementedHelp(target);
     } else if (std.mem.eql(u8, target, "completion")) {
@@ -786,6 +801,21 @@ fn runStdioToUdsCommand(allocator: std.mem.Allocator, args: *std.process.Args.It
     }
     if (args.next() != null) return error.UnexpectedStdioToUdsArgument;
     try app_server_cmd.runStdioToUnixSocket(allocator, socket_path);
+}
+
+fn runUpdateCommand(args: *std.process.Args.Iterator) !void {
+    if (args.next()) |value| {
+        if (isHelpFlag(value)) {
+            printUpdateHelp();
+            return;
+        }
+        return error.UnexpectedUpdateArgument;
+    }
+
+    if (builtin.mode == .Debug) {
+        return error.UpdateUnavailableDebugBuild;
+    }
+    return error.UpdateInstallMethodUnknown;
 }
 
 fn printStdioToUdsHelp() void {
@@ -1152,6 +1182,7 @@ fn printHelp() !void {
         \\                          Run Codex as a stdio MCP server
         \\  codex-zig app-server
         \\                          Run the app-server JSON-RPC stdio transport
+        \\  codex-zig update       Update Codex to the latest version
         \\  codex-zig cloud        Recognized; not implemented yet
         \\  codex-zig exec-server  Recognized; not implemented yet
         \\  codex-zig plugin marketplace <COMMAND>
@@ -1242,6 +1273,16 @@ fn printLogoutHelp() void {
         \\  codex-zig logout
         \\
         \\Removes the selected CODEX_HOME/auth.json file.
+        \\
+    , .{});
+}
+
+fn printUpdateHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig update
+        \\
+        \\Updates Codex to the latest version when the current installation method is supported.
         \\
     , .{});
 }
@@ -1650,6 +1691,7 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("app-server"));
     try std.testing.expect(commandRejectsRootRemote("plugin"));
     try std.testing.expect(commandRejectsRootRemote("remote-control"));
+    try std.testing.expect(commandRejectsRootRemote("update"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
@@ -1659,12 +1701,12 @@ test "root remote is only accepted for interactive commands" {
 test "known unimplemented Rust commands are recognized" {
     try std.testing.expect(isKnownUnimplementedCommand("remote-control"));
     try std.testing.expect(isKnownUnimplementedCommand("app"));
-    try std.testing.expect(isKnownUnimplementedCommand("update"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud-tasks"));
     try std.testing.expect(isKnownUnimplementedCommand("responses-api-proxy"));
     try std.testing.expect(isKnownUnimplementedCommand("exec-server"));
     try std.testing.expect(!isKnownUnimplementedCommand("plugin"));
+    try std.testing.expect(!isKnownUnimplementedCommand("update"));
     try std.testing.expect(!isKnownUnimplementedCommand("write this prompt"));
 }
 

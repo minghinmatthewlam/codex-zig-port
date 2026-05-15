@@ -641,6 +641,34 @@ def run_completion_snapshot_smoke(binary: Path) -> None:
         assert value in all_completion_text, f"expected {value!r} in completion snapshots"
 
 
+def run_update_command_smoke(binary: Path) -> None:
+    help_result = subprocess.run(
+        [str(binary), "help", "update"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert help_result.stdout == ""
+    assert "codex-zig update" in help_result.stderr
+
+    result = subprocess.run(
+        [str(binary), "update"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise AssertionError("update unexpectedly succeeded in debug build")
+    if "`codex update` is not available in debug builds" not in result.stderr:
+        raise AssertionError(f"expected debug-build update message:\n{result.stderr}")
+    if "parsed but not implemented yet" in result.stderr:
+        raise AssertionError(f"update still used generic placeholder:\n{result.stderr}")
+
+
 def git(repo: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args],
@@ -3174,6 +3202,7 @@ def run_debug_trace_reduce_smoke(binary: Path) -> None:
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
+    run_update_command_smoke(binary)
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
     run_exec_review_smoke(binary)
@@ -3200,6 +3229,7 @@ def main() -> None:
     run_debug_app_server_send_message_smoke(binary)
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
+    print("cli-update-e2e: ok")
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
     print("cli-exec-review-e2e: ok")

@@ -728,7 +728,6 @@ def run_unimplemented_command_smoke(
     for command in [
         "remote-control",
         "app",
-        "update",
         "cloud",
         "cloud-tasks",
         "responses-api-proxy",
