@@ -39,6 +39,13 @@ def header_value(headers: dict[str, str], name: str) -> Optional[str]:
     return None
 
 
+def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]:
+    for header in headers:
+        if header.get("name", "").lower() == name.lower():
+            return header.get("value")
+    return None
+
+
 class ExecResponsesHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         payload = b"ok\n"
@@ -709,6 +716,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
         try:
             upstream_url = f"http://127.0.0.1:{upstream.server_port}/upstream-responses"
             server_info = tmp_path / "server" / "info.json"
+            dump_dir = tmp_path / "dumps"
             proxy = subprocess.Popen(
                 [
                     str(binary),
@@ -718,6 +726,8 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     "--http-shutdown",
                     "--upstream-url",
                     upstream_url,
+                    "--dump-dir",
+                    str(dump_dir),
                 ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -741,6 +751,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": "Bearer caller-token",
+                        "Cookie": "session=caller-secret",
                         "X-Codex-Test": "proxy-smoke",
                     },
                     method="POST",
@@ -760,6 +771,25 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     raise AssertionError(f"proxy did not replace Authorization: {forwarded_auth!r}")
                 if header_value(upstream.request_headers[0], "X-Codex-Test") != "proxy-smoke":
                     raise AssertionError(f"proxy did not forward custom headers: {upstream.request_headers[0]!r}")
+
+                request_dumps = sorted(dump_dir.glob("*-request.json"))
+                response_dumps = sorted(dump_dir.glob("*-response.json"))
+                if len(request_dumps) != 1 or len(response_dumps) != 1:
+                    raise AssertionError(f"unexpected dump files: {sorted(path.name for path in dump_dir.iterdir())!r}")
+                request_dump = json.loads(request_dumps[0].read_text())
+                response_dump = json.loads(response_dumps[0].read_text())
+                if request_dump.get("method") != "POST" or request_dump.get("url") != "/v1/responses":
+                    raise AssertionError(f"unexpected request dump route: {request_dump!r}")
+                if request_dump.get("body") != {"model": "gpt-test", "input": "hello"}:
+                    raise AssertionError(f"unexpected request dump body: {request_dump!r}")
+                if dump_header_value(request_dump.get("headers", []), "Authorization") != "[REDACTED]":
+                    raise AssertionError(f"request dump did not redact authorization: {request_dump!r}")
+                if dump_header_value(request_dump.get("headers", []), "Cookie") != "[REDACTED]":
+                    raise AssertionError(f"request dump did not redact cookie: {request_dump!r}")
+                if response_dump.get("status") != 200:
+                    raise AssertionError(f"unexpected response dump status: {response_dump!r}")
+                if response_dump.get("body") != {"ok": True}:
+                    raise AssertionError(f"unexpected response dump body: {response_dump!r}")
 
                 forbidden = urllib.request.Request(
                     f"http://127.0.0.1:{port}/not-responses",
