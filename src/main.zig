@@ -18,6 +18,7 @@ const login = @import("login.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const mcp_server_cmd = @import("mcp_server_cmd.zig");
 const plugin_cmd = @import("plugin_cmd.zig");
+const remote_fork = @import("remote_fork.zig");
 const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
 const sandbox_cmd = @import("sandbox_cmd.zig");
@@ -443,6 +444,26 @@ fn mainInner(init: std.process.Init) !void {
             });
             return;
         }
+        if (std.mem.eql(u8, cmd, "remote-fork")) {
+            var remaining = try collectRemainingArgs(allocator, &args);
+            defer remaining.deinit(allocator);
+            var parsed = try parseRemoteForkCommandArgs(allocator, remaining.items);
+            defer parsed.deinit(allocator);
+            if (parsed.help) {
+                printRemoteForkHelp();
+                return;
+            }
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            defer launch.deinit(allocator);
+            var imported = try remote_fork.importRemoteFork(allocator, parsed.target.?);
+            defer imported.deinit(allocator);
+
+            var options = launch.tui_options;
+            options.fork_target = imported.thread_id;
+            options.fork_show_all = true;
+            try runTuiWithImages(allocator, launch.image_files, options);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "resume")) {
             var remaining = try collectRemainingArgs(allocator, &args);
             defer remaining.deinit(allocator);
@@ -731,6 +752,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         printResumeHelp();
     } else if (std.mem.eql(u8, target, "fork")) {
         printForkHelp();
+    } else if (std.mem.eql(u8, target, "remote-fork")) {
+        printRemoteForkHelp();
     } else if (std.mem.eql(u8, target, "sessions")) {
         printSessionsHelp();
     } else {
@@ -1054,6 +1077,20 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
     return parsed;
 }
 
+fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []const u8) !SessionCommandArgs {
+    var parsed = try parseSessionCommandArgs(allocator, args, false);
+    errdefer parsed.deinit(allocator);
+
+    if (parsed.help) return parsed;
+    if (parsed.last or parsed.show_all or parsed.include_non_interactive) {
+        return error.UnknownRemoteForkOption;
+    }
+    if (parsed.target == null) {
+        return error.MissingRemoteForkCode;
+    }
+    return parsed;
+}
+
 fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: config.RuntimeOverrides) config.RuntimeOverrides {
     var merged = base;
     if (session_overrides.model) |value| merged.model = value;
@@ -1086,6 +1123,8 @@ fn printHelp() !void {
         \\                          Fork the latest saved Zig session
         \\  codex-zig fork ID|PATH|last
         \\                          Start interactive TUI from a forked session
+        \\  codex-zig remote-fork CODE
+        \\                          Import a remote fork claim and start a fork
         \\  codex-zig sessions [N] List saved Zig sessions
         \\  codex-zig exec PROMPT  Run one non-interactive turn
         \\  codex-zig e PROMPT     Alias for exec
@@ -1231,6 +1270,18 @@ fn printForkHelp() void {
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
         \\--all and remote flags are accepted for Rust CLI compatibility.
+        \\
+    , .{});
+}
+
+fn printRemoteForkHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig remote-fork CODE
+        \\  codex-zig remote-fork CODE [--remote ADDR]
+        \\
+        \\Imports a Rust-compatible remote fork claim bundle and starts a local forked session.
+        \\For the current local demo, CODE must be an http:// claim URL.
         \\
     , .{});
 }
@@ -1456,6 +1507,7 @@ test {
     _ = exec;
     _ = git_diff;
     _ = login;
+    _ = remote_fork;
     _ = review;
     _ = sandbox;
     _ = session;
@@ -1567,6 +1619,32 @@ test "fork session command rejects include non interactive" {
     try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionCommandArgs(allocator, argv[0..], false));
 }
 
+test "remote fork command parses code and interactive overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{
+        "--oss",
+        "--no-alt-screen",
+        "--remote=ws://127.0.0.1:4500",
+        "http://127.0.0.1:1234/claim",
+    };
+    var parsed = try parseRemoteForkCommandArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.oss);
+    try std.testing.expect(parsed.no_alt_screen);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:4500", parsed.remote.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/claim", parsed.target.?);
+}
+
+test "remote fork command requires a code and rejects session picker flags" {
+    const allocator = std.testing.allocator;
+    const no_code = [_][]const u8{"--oss"};
+    try std.testing.expectError(error.MissingRemoteForkCode, parseRemoteForkCommandArgs(allocator, no_code[0..]));
+
+    const all = [_][]const u8{ "--all", "http://127.0.0.1:1234/claim" };
+    try std.testing.expectError(error.UnknownRemoteForkOption, parseRemoteForkCommandArgs(allocator, all[0..]));
+}
+
 test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("exec"));
     try std.testing.expect(commandRejectsRootRemote("app-server"));
@@ -1574,6 +1652,7 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("remote-control"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
+    try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
     try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
 }
 

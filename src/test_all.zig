@@ -37,6 +37,7 @@ const modules = .{
     @import("plugin_config.zig"),
     @import("plugin_list.zig"),
     @import("remote_plugin.zig"),
+    @import("remote_fork.zig"),
     @import("proposed_plan.zig"),
     @import("review.zig"),
     @import("sandbox.zig"),

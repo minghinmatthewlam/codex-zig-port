@@ -1164,7 +1164,7 @@ fn fileExists(path: []const u8) bool {
     return stat.kind == .file;
 }
 
-fn isUuidLike(value: []const u8) bool {
+pub fn isUuidLike(value: []const u8) bool {
     if (value.len != 36) return false;
     for (value, 0..) |char, index| {
         if (index == 8 or index == 13 or index == 18 or index == 23) {
