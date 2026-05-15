@@ -25,6 +25,7 @@ const modules = .{
     @import("hooks_list.zig"),
     @import("input_images.zig"),
     @import("login.zig"),
+    @import("local_remote_control.zig"),
     @import("memory_reset.zig"),
     @import("marketplace_config.zig"),
     @import("model_catalog.zig"),
