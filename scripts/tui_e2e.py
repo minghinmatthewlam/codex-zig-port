@@ -1674,6 +1674,72 @@ def run_remote_unix_tui_smoke(
         if exit_code != 0:
             rendered = fork_output.decode(errors="replace")
             raise AssertionError(f"remote TUI fork smoke exited with {exit_code}\n\n{rendered}")
+
+        resume_picker_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "resume",
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, resume_picker_output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, resume_picker_output, b"resume sessions:", 5)
+        send_line(master_fd, "1")
+        wait_for(master_fd, resume_picker_output, b"\xe2\x80\xba", 5)
+        send_line(master_fd, "side question from remote resume picker")
+        wait_for(master_fd, resume_picker_output, b"side answer", 8)
+        mark = len(resume_picker_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, resume_picker_output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = resume_picker_output.decode(errors="replace")
+            raise AssertionError(f"remote TUI resume picker smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        fork_picker_output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "fork",
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, fork_picker_output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, fork_picker_output, b"fork sessions:", 5)
+        send_line(master_fd, "1")
+        wait_for(master_fd, fork_picker_output, b"\xe2\x80\xba", 5)
+        send_line(master_fd, "side question from remote fork picker")
+        wait_for(master_fd, fork_picker_output, b"side answer", 8)
+        mark = len(fork_picker_output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, fork_picker_output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = fork_picker_output.decode(errors="replace")
+            raise AssertionError(f"remote TUI fork picker smoke exited with {exit_code}\n\n{rendered}")
     finally:
         if client is not None and client.poll() is None:
             client.terminate()
@@ -1730,6 +1796,24 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI fork did not send prompt through app-server")
     if "describe attached image from remote tui" not in json.dumps(fork_matching[-1]):
         raise AssertionError("remote TUI fork did not include forked transcript history")
+    resume_picker_matching = [
+        body
+        for body in bodies
+        if "side question from remote resume picker" in latest_user_text(body.get("input", []))
+    ]
+    if not resume_picker_matching:
+        raise AssertionError("remote TUI resume picker did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(resume_picker_matching[-1]):
+        raise AssertionError("remote TUI resume picker did not include resumed transcript history")
+    fork_picker_matching = [
+        body
+        for body in bodies
+        if "side question from remote fork picker" in latest_user_text(body.get("input", []))
+    ]
+    if not fork_picker_matching:
+        raise AssertionError("remote TUI fork picker did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(fork_picker_matching[-1]):
+        raise AssertionError("remote TUI fork picker did not include forked transcript history")
     image_matching = [
         body
         for body in bodies
