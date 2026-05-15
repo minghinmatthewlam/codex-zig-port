@@ -1863,11 +1863,31 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, output, b"side answer", 8)
         send_line(master_fd, "long remote answer")
         wait_for(master_fd, output, b"long remote answer tail", 8)
+        send_line(master_fd, "/status")
+        wait_for(master_fd, output, b"thread:", 5)
+        send_line(master_fd, "/sessions 3")
+        wait_for(master_fd, output, b"remote sessions:", 5)
+        os.write(master_fd, b"/fork\n1\n")
+        wait_for(master_fd, output, b"forked remote thread:", 5)
+        send_line(master_fd, "side question from remote slash picker fork")
+        wait_for(master_fd, output, b"side answer", 8)
+        os.write(master_fd, b"/resume\n1\n")
+        wait_for(master_fd, output, b"resumed remote thread:", 5)
+        send_line(master_fd, "side question from remote slash picker resume")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/fork last")
+        wait_for(master_fd, output, b"forked remote thread:", 5)
+        send_line(master_fd, "side question from remote slash fork")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/resume last")
+        wait_for(master_fd, output, b"resumed remote thread:", 5)
+        send_line(master_fd, "side question from remote slash resume")
+        wait_for(master_fd, output, b"side answer", 8)
         if b"parsed but not implemented yet" in output:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"remote TUI still hit placeholder:\n\n{rendered}")
         mark = len(output)
-        send_line(master_fd, "/quit")
+        send_line(master_fd, "q")
         wait_for(master_fd, output, b"bye", 5, mark)
         exit_code = client.wait(timeout=5)
         if exit_code != 0:
@@ -2115,6 +2135,38 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI fork picker did not send prompt through app-server")
     if "describe attached image from remote tui" not in json.dumps(fork_picker_matching[-1]):
         raise AssertionError("remote TUI fork picker did not include forked transcript history")
+    slash_fork_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash fork" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_fork_matching:
+        raise AssertionError("remote TUI slash fork did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(slash_fork_matching[-1]):
+        raise AssertionError("remote TUI slash fork did not include forked transcript history")
+    slash_picker_fork_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash picker fork" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_picker_fork_matching:
+        raise AssertionError("remote TUI slash picker fork did not send prompt through app-server")
+    if "describe attached image from remote tui" not in json.dumps(slash_picker_fork_matching[-1]):
+        raise AssertionError("remote TUI slash picker fork did not include forked transcript history")
+    slash_resume_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash resume" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_resume_matching:
+        raise AssertionError("remote TUI slash resume did not send prompt through app-server")
+    slash_picker_resume_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash picker resume" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_picker_resume_matching:
+        raise AssertionError("remote TUI slash picker resume did not send prompt through app-server")
     image_matching = [
         body
         for body in bodies
