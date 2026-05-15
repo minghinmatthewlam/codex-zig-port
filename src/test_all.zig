@@ -52,6 +52,7 @@ const modules = .{
     @import("tools.zig"),
     @import("trace_reduce.zig"),
     @import("tui.zig"),
+    @import("update_cmd.zig"),
     @import("workdir.zig"),
 };
 

@@ -28,6 +28,7 @@ const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const tools = @import("tools.zig");
 const tui = @import("tui.zig");
+const update_cmd = @import("update_cmd.zig");
 const workdir = @import("workdir.zig");
 
 const version = "0.0.1";
@@ -67,6 +68,10 @@ pub fn main(init: std.process.Init) !void {
             ),
             error.UpdateInstallMethodUnknown => std.debug.print(
                 "error: Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/\n",
+                .{},
+            ),
+            error.UpdateCommandFailed => std.debug.print(
+                "error: update command failed\n",
                 .{},
             ),
             error.ResponsesApiProxyHelpRequested => std.process.exit(0),
@@ -432,7 +437,7 @@ fn mainInner(init: std.process.Init) !void {
             return error.RemovedTopLevelCommand;
         }
         if (std.mem.eql(u8, cmd, "update")) {
-            try runUpdateCommand(&args);
+            try runUpdateCommand(allocator, &args);
             return;
         }
         if (std.mem.eql(u8, cmd, "responses-api-proxy")) {
@@ -827,7 +832,7 @@ fn runStdioToUdsCommand(allocator: std.mem.Allocator, args: *std.process.Args.It
     try app_server_cmd.runStdioToUnixSocket(allocator, socket_path);
 }
 
-fn runUpdateCommand(args: *std.process.Args.Iterator) !void {
+fn runUpdateCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
     if (args.next()) |value| {
         if (isHelpFlag(value)) {
             printUpdateHelp();
@@ -839,7 +844,8 @@ fn runUpdateCommand(args: *std.process.Args.Iterator) !void {
     if (builtin.mode == .Debug) {
         return error.UpdateUnavailableDebugBuild;
     }
-    return error.UpdateInstallMethodUnknown;
+    const action = (try update_cmd.detectCurrentUpdateAction(allocator)) orelse return error.UpdateInstallMethodUnknown;
+    try update_cmd.runAction(allocator, action);
 }
 
 fn printStdioToUdsHelp() void {
