@@ -867,7 +867,6 @@ def run_unimplemented_command_smoke(
         "remote-control",
         "cloud",
         "cloud-tasks",
-        "exec-server",
     ]:
         result = subprocess.run(
             [str(binary), command],

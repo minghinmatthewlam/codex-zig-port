@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -695,6 +696,122 @@ def run_update_command_smoke(binary: Path) -> None:
         raise AssertionError(f"expected debug-build update message:\n{result.stderr}")
     if "parsed but not implemented yet" in result.stderr:
         raise AssertionError(f"update still used generic placeholder:\n{result.stderr}")
+
+
+def run_exec_server_stdio_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-server-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        help_result = subprocess.run(
+            [str(binary.resolve()), "help", "exec-server"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert help_result.stdout == ""
+        assert "codex-zig exec-server [--listen URL]" in help_result.stderr
+
+        default_result = subprocess.run(
+            [str(binary.resolve()), "exec-server"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert default_result.returncode != 0
+        assert "websocket listen transport is parsed but not implemented yet" in default_result.stderr
+        assert "codex-zig exec-server is parsed but not implemented yet" not in default_result.stderr
+
+        invalid_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "http://127.0.0.1:0"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert invalid_result.returncode != 0
+        assert "unsupported --listen URL" in invalid_result.stderr
+
+        requests = [
+            {"jsonrpc": "2.0", "id": "invalid-init", "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": "resume-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke", "resumeSessionId": "missing-session"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke", "resumeSessionId": None},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {"jsonrpc": "2.0", "id": "unknown", "method": "process/start", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": "again",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke"},
+            },
+        ]
+        payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in requests)
+        stdio_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stdio_result.stderr == ""
+        responses = [json.loads(line) for line in stdio_result.stdout.splitlines()]
+        assert len(responses) == 5
+
+        invalid_initialize = responses[0]
+        assert invalid_initialize["id"] == "invalid-init"
+        assert invalid_initialize["error"]["code"] == -32602
+        assert "initialize params must include clientName" in invalid_initialize["error"]["message"]
+
+        resume_initialize = responses[1]
+        assert resume_initialize["id"] == "resume-init"
+        assert resume_initialize["error"]["code"] == -32600
+        assert "unknown session id missing-session" in resume_initialize["error"]["message"]
+
+        initialize = responses[2]
+        assert initialize["jsonrpc"] == "2.0"
+        assert initialize["id"] == 1
+        session_id = initialize["result"]["sessionId"]
+        uuid.UUID(session_id)
+
+        unknown = responses[3]
+        assert unknown["id"] == "unknown"
+        assert unknown["error"]["code"] == -32601
+        assert "exec-server stub does not implement `process/start` yet" in unknown["error"]["message"]
+
+        duplicate = responses[4]
+        assert duplicate["id"] == "again"
+        assert duplicate["error"]["code"] == -32600
+        assert "initialize may only be sent once" in duplicate["error"]["message"]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def run_app_command_smoke(binary: Path) -> None:
@@ -3466,6 +3583,7 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
     run_update_command_smoke(binary)
+    run_exec_server_stdio_smoke(binary)
     run_app_command_smoke(binary)
     run_responses_api_proxy_smoke(binary)
     run_features_profile_smoke(binary)
@@ -3495,6 +3613,7 @@ def main() -> None:
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
     print("cli-update-e2e: ok")
+    print("cli-exec-server-stdio-e2e: ok")
     print("cli-app-command-e2e: ok")
     print("cli-responses-api-proxy-e2e: ok")
     print("cli-features-profile-e2e: ok")
