@@ -23589,6 +23589,78 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_app_server_root_feature_override_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-root-features-", dir="/tmp"))
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[features]",
+                "apps = false",
+                "memories = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "--enable",
+            "apps",
+            "--disable",
+            "memories",
+            "app-server",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: dict) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        feature_list = rpc("root-feature-list", "experimentalFeature/list", {})
+        by_name = {item["name"]: item for item in feature_list["result"]["data"]}
+        assert by_name["apps"]["enabled"] is True
+        assert by_name["memories"]["enabled"] is False
+
+        config_read = rpc("root-feature-config-read", "config/read", {})
+        assert config_read["result"]["config"]["features"]["apps"] is True
+        assert config_read["result"]["config"]["features"]["memories"] is False
+
+        set_enablement = rpc(
+            "root-feature-runtime-set",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"apps": False, "memories": True}},
+        )
+        assert set_enablement["id"] == "root-feature-runtime-set"
+
+        after_runtime_set = rpc("root-feature-after-runtime-set", "experimentalFeature/list", {})
+        after_by_name = {item["name"]: item for item in after_runtime_set["result"]["data"]}
+        assert after_by_name["apps"]["enabled"] is True
+        assert after_by_name["memories"]["enabled"] is False
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_initialize_config_warning_smoke(binary: Path) -> None:
     binary = binary.resolve()
 
@@ -34265,6 +34337,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_app_server_root_feature_override_smoke(binary)
+    print("app-server-root-feature-override-e2e: ok")
     run_initialize_config_warning_smoke(binary)
     print("app-server-initialize-config-warning-e2e: ok")
     run_legacy_feature_deprecation_notice_smoke(binary)
