@@ -20,6 +20,7 @@ const mcp_cmd = @import("mcp_cmd.zig");
 const mcp_server_cmd = @import("mcp_server_cmd.zig");
 const plugin_cmd = @import("plugin_cmd.zig");
 const remote_fork = @import("remote_fork.zig");
+const responses_api_proxy = @import("responses_api_proxy.zig");
 const review = @import("review.zig");
 const sandbox = @import("sandbox.zig");
 const sandbox_cmd = @import("sandbox_cmd.zig");
@@ -66,6 +67,27 @@ pub fn main(init: std.process.Init) !void {
             ),
             error.UpdateInstallMethodUnknown => std.debug.print(
                 "error: Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/\n",
+                .{},
+            ),
+            error.ResponsesApiProxyHelpRequested => std.process.exit(0),
+            error.ResponsesApiProxyMissingApiKey => std.debug.print(
+                "error: API key must be provided via stdin (e.g. printenv OPENAI_API_KEY | codex responses-api-proxy)\n",
+                .{},
+            ),
+            error.ResponsesApiProxyInvalidApiKey => std.debug.print(
+                "error: API key may only contain ASCII letters, numbers, '-' or '_'\n",
+                .{},
+            ),
+            error.ResponsesApiProxyApiKeyTooLarge => std.debug.print(
+                "error: API key is too large to fit in the 1024-byte buffer\n",
+                .{},
+            ),
+            error.InvalidResponsesApiProxyUpstreamUrl => std.debug.print(
+                "error: upstream URL must include a host\n",
+                .{},
+            ),
+            error.ResponsesApiProxyDumpDirUnsupported => std.debug.print(
+                "error: responses-api-proxy --dump-dir is parsed but not implemented yet\n",
                 .{},
             ),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
@@ -417,6 +439,10 @@ fn mainInner(init: std.process.Init) !void {
             try runUpdateCommand(&args);
             return;
         }
+        if (std.mem.eql(u8, cmd, "responses-api-proxy")) {
+            try responses_api_proxy.run(allocator, &args);
+            return;
+        }
         if (isKnownUnimplementedCommand(cmd)) {
             try runKnownUnimplementedCommand(cmd, &args);
             return;
@@ -644,6 +670,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "app-server") or
         std.mem.eql(u8, cmd, "plugin") or
         std.mem.eql(u8, cmd, "update") or
+        std.mem.eql(u8, cmd, "responses-api-proxy") or
         isKnownUnimplementedCommand(cmd) or
         std.mem.eql(u8, cmd, "stdio-to-uds") or
         std.mem.eql(u8, cmd, "help") or
@@ -662,7 +689,6 @@ fn isKnownUnimplementedCommand(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "app") or
         std.mem.eql(u8, cmd, "cloud") or
         std.mem.eql(u8, cmd, "cloud-tasks") or
-        std.mem.eql(u8, cmd, "responses-api-proxy") or
         std.mem.eql(u8, cmd, "exec-server");
 }
 
@@ -749,6 +775,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         plugin_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "update")) {
         printUpdateHelp();
+    } else if (std.mem.eql(u8, target, "responses-api-proxy")) {
+        responses_api_proxy.printHelp();
     } else if (isKnownUnimplementedCommand(target)) {
         printKnownUnimplementedHelp(target);
     } else if (std.mem.eql(u8, target, "completion")) {
@@ -1692,6 +1720,7 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("plugin"));
     try std.testing.expect(commandRejectsRootRemote("remote-control"));
     try std.testing.expect(commandRejectsRootRemote("update"));
+    try std.testing.expect(commandRejectsRootRemote("responses-api-proxy"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
@@ -1703,10 +1732,10 @@ test "known unimplemented Rust commands are recognized" {
     try std.testing.expect(isKnownUnimplementedCommand("app"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud"));
     try std.testing.expect(isKnownUnimplementedCommand("cloud-tasks"));
-    try std.testing.expect(isKnownUnimplementedCommand("responses-api-proxy"));
     try std.testing.expect(isKnownUnimplementedCommand("exec-server"));
     try std.testing.expect(!isKnownUnimplementedCommand("plugin"));
     try std.testing.expect(!isKnownUnimplementedCommand("update"));
+    try std.testing.expect(!isKnownUnimplementedCommand("responses-api-proxy"));
     try std.testing.expect(!isKnownUnimplementedCommand("write this prompt"));
 }
 
