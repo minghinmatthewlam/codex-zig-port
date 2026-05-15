@@ -69,7 +69,34 @@ const RemoteScheme = enum {
 const RemoteUrlParts = struct {
     scheme: RemoteScheme,
     host: []const u8,
+    port: u16 = 0,
     path: []const u8 = "",
+};
+
+const RemoteTransportKind = enum {
+    jsonl,
+    websocket,
+};
+
+const RemoteTransport = struct {
+    allocator: std.mem.Allocator,
+    kind: RemoteTransportKind,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+
+    fn writeJson(self: *RemoteTransport, payload: []const u8) !void {
+        switch (self.kind) {
+            .jsonl => try writeRemoteLine(self.writer, payload),
+            .websocket => try writeClientWebSocketTextFrame(self.allocator, self.writer, payload),
+        }
+    }
+
+    fn readMessage(self: *RemoteTransport) !?[]u8 {
+        return switch (self.kind) {
+            .jsonl => try readRemoteLine(self.allocator, self.reader),
+            .websocket => try readServerWebSocketTextFrame(self.allocator, self.reader, self.writer),
+        };
+    }
 };
 
 fn validateRemoteOptions(allocator: std.mem.Allocator, remote: ?[]const u8, remote_auth_token_env: ?[]const u8) !void {
@@ -146,8 +173,8 @@ fn validateRemoteUrl(value: []const u8) !RemoteUrlParts {
         break :blk host_port[colon_index + 1 ..];
     };
     if (host.len == 0 or port_text.len == 0) return error.InvalidRemoteAddress;
-    _ = std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteAddress;
-    return .{ .scheme = scheme, .host = host };
+    const port = std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteAddress;
+    return .{ .scheme = scheme, .host = host, .port = port };
 }
 
 fn remoteUrlSupportsAuthToken(parts: RemoteUrlParts) bool {
@@ -352,21 +379,41 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     }
 
     const parts = try validateRemoteUrl(remote);
-    if (parts.scheme != .unix) {
-        std.debug.print("remote app-server TUI is parsed but not implemented yet for websocket transport: {s}\n", .{remote});
+    if (parts.scheme == .wss) {
+        std.debug.print("remote app-server TUI does not support `wss://` transport yet: {s}\n", .{remote});
         return error.RemoteAppServerTuiNotImplemented;
     }
     try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    var address = try net.UnixAddress.init(parts.path);
-    var stream = try address.connect(io);
+    var stream = switch (parts.scheme) {
+        .unix => blk: {
+            var address = try net.UnixAddress.init(parts.path);
+            break :blk try address.connect(io);
+        },
+        .ws => try connectRemoteWebSocket(io, parts),
+        .wss => unreachable,
+    };
     defer stream.close(io);
 
     var input_buffer: [64 * 1024]u8 = undefined;
     var output_buffer: [64 * 1024]u8 = undefined;
     var reader = stream.reader(io, &input_buffer);
     var writer = stream.writer(io, &output_buffer);
+    const transport_kind: RemoteTransportKind = switch (parts.scheme) {
+        .unix => .jsonl,
+        .ws => blk: {
+            try performRemoteWebSocketHandshake(allocator, &reader.interface, &writer.interface, parts, options.remote_auth_token_env);
+            break :blk .websocket;
+        },
+        .wss => unreachable,
+    };
+    var transport = RemoteTransport{
+        .allocator = allocator,
+        .kind = transport_kind,
+        .reader = &reader.interface,
+        .writer = &writer.interface,
+    };
 
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
     defer allocator.free(cwd);
@@ -378,20 +425,20 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
 
     printRemoteHeader(remote, cwd);
 
-    try writeRemoteLine(&writer.interface,
+    try transport.writeJson(
         \\{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"clientInfo":{"name":"codex-zig-tui","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}
     );
-    var initialize_response = try readRemoteResponse(allocator, &reader.interface, "initialize");
+    var initialize_response = try readRemoteResponse(&transport, "initialize");
     initialize_response.deinit();
 
-    const thread_id = (try openRemoteThread(allocator, &writer.interface, &reader.interface, cwd, options)) orelse return;
+    const thread_id = (try openRemoteThread(allocator, &transport, cwd, options)) orelse return;
     defer allocator.free(thread_id);
 
     var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths, options.runtime_overrides) catch |err| {
+            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, options.runtime_overrides) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             pending_input_image_paths = &.{};
@@ -417,7 +464,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         }
         const input_image_paths = pending_input_image_paths;
         pending_input_image_paths = &.{};
-        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_image_paths, options.runtime_overrides) catch |err| {
+        runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, options.runtime_overrides) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -428,42 +475,41 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
 
 fn openRemoteThread(
     allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    reader: *std.Io.Reader,
+    transport: *RemoteTransport,
     cwd: []const u8,
     options: Options,
 ) !?[]const u8 {
     if (options.resume_picker) {
-        const target = (try promptRemoteSessionPicker(allocator, writer, reader, "resume", options.resume_show_all)) orelse {
+        const target = (try promptRemoteSessionPicker(allocator, transport, "resume", options.resume_show_all)) orelse {
             std.debug.print("resume canceled\n", .{});
             return null;
         };
         defer allocator.free(target);
-        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
         return thread_id;
     }
     if (options.fork_picker) {
-        const target = (try promptRemoteSessionPicker(allocator, writer, reader, "fork", options.fork_show_all)) orelse {
+        const target = (try promptRemoteSessionPicker(allocator, transport, "fork", options.fork_show_all)) orelse {
             std.debug.print("fork canceled\n", .{});
             return null;
         };
         defer allocator.free(target);
-        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
         return thread_id;
     }
     if (options.resume_target) |target| {
-        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
         return thread_id;
     }
     if (options.fork_target) |target| {
-        const thread_id = try openRemoteLifecycleThread(allocator, writer, reader, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
         return thread_id;
     }
 
     const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
     defer allocator.free(thread_start);
-    try writeRemoteLine(writer, thread_start);
-    var thread_response = try readRemoteResponse(allocator, reader, "thread-start");
+    try transport.writeJson(thread_start);
+    var thread_response = try readRemoteResponse(transport, "thread-start");
     defer thread_response.deinit();
     const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
     const thread_id = try allocator.dupe(u8, thread_id_raw);
@@ -472,17 +518,16 @@ fn openRemoteThread(
 
 fn promptRemoteSessionPicker(
     allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    reader: *std.Io.Reader,
+    transport: *RemoteTransport,
     action: []const u8,
     show_all: bool,
 ) !?[]const u8 {
     const limit: usize = if (show_all) 100 else 10;
     const request = try renderRemoteThreadListRequest(allocator, limit);
     defer allocator.free(request);
-    try writeRemoteLine(writer, request);
+    try transport.writeJson(request);
 
-    var response = try readRemoteResponse(allocator, reader, "thread-list-picker");
+    var response = try readRemoteResponse(transport, "thread-list-picker");
     defer response.deinit();
     const sessions = try remoteThreadListItems(response.value);
     if (sessions.len == 0) {
@@ -540,8 +585,7 @@ fn printRemoteSessionSummary(index: usize, entry: std.json.Value) !void {
 
 fn openRemoteLifecycleThread(
     allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    reader: *std.Io.Reader,
+    transport: *RemoteTransport,
     request_id: []const u8,
     method: []const u8,
     target: []const u8,
@@ -550,8 +594,8 @@ fn openRemoteLifecycleThread(
 ) ![]const u8 {
     const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, overrides);
     defer allocator.free(request);
-    try writeRemoteLine(writer, request);
-    var response = try readRemoteResponse(allocator, reader, request_id);
+    try transport.writeJson(request);
+    var response = try readRemoteResponse(transport, request_id);
     defer response.deinit();
     const thread_id_raw = try remoteNestedString(response.value, &.{ "result", "thread", "id" });
     return allocator.dupe(u8, thread_id_raw);
@@ -660,8 +704,7 @@ fn remoteThreadTargetPath(allocator: std.mem.Allocator, cwd: []const u8, target:
 
 fn runRemotePrompt(
     allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    reader: *std.Io.Reader,
+    transport: *RemoteTransport,
     thread_id: []const u8,
     prompt: []const u8,
     input_image_paths: []const []const u8,
@@ -671,15 +714,15 @@ fn runRemotePrompt(
     defer allocator.free(request);
 
     std.debug.print("\nassistant:\n", .{});
-    try writeRemoteLine(writer, request);
+    try transport.writeJson(request);
 
-    var response = try readRemoteResponse(allocator, reader, "turn-start");
+    var response = try readRemoteResponse(transport, "turn-start");
     defer response.deinit();
     const turn_id_raw = try remoteNestedString(response.value, &.{ "result", "turn", "id" });
     const turn_id = try allocator.dupe(u8, turn_id_raw);
     defer allocator.free(turn_id);
 
-    try streamRemoteTurnUntilCompleted(allocator, reader, thread_id, turn_id);
+    try streamRemoteTurnUntilCompleted(transport, thread_id, turn_id);
 }
 
 fn renderRemoteTurnStartRequest(
@@ -717,17 +760,232 @@ fn writeRemoteLine(writer: *std.Io.Writer, payload: []const u8) !void {
     try writer.flush();
 }
 
-fn readRemoteResponse(
+fn connectRemoteWebSocket(io: std.Io, parts: RemoteUrlParts) !net.Stream {
+    const host = remoteWebSocketConnectHost(parts.host);
+    var address = remoteWebSocketAddress(host, parts.port) catch |err| {
+        std.debug.print("remote websocket TUI supports literal IP hosts or localhost only: {s}\n", .{parts.host});
+        return err;
+    };
+    return address.connect(io, .{ .mode = .stream });
+}
+
+fn remoteWebSocketConnectHost(host: []const u8) []const u8 {
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        return host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+fn remoteWebSocketAddress(host: []const u8, port: u16) !net.IpAddress {
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) {
+        return .{ .ip4 = net.Ip4Address.loopback(port) };
+    }
+    return net.IpAddress.parse(host, port) catch return error.InvalidRemoteAddress;
+}
+
+fn performRemoteWebSocketHandshake(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    parts: RemoteUrlParts,
+    remote_auth_token_env: ?[]const u8,
+) !void {
+    var nonce: [16]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&nonce);
+    var key_buffer: [24]u8 = undefined;
+    const key = std.base64.standard.Encoder.encode(&key_buffer, &nonce);
+    const auth_token = if (remote_auth_token_env) |env_name|
+        try remoteAuthTokenFromEnv(allocator, env_name)
+    else
+        null;
+    defer if (auth_token) |token| allocator.free(token);
+
+    try writer.print(
+        "GET / HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n",
+        .{ parts.host, parts.port, key },
+    );
+    if (auth_token) |token| {
+        try writer.print("Authorization: Bearer {s}\r\n", .{token});
+    }
+    try writer.writeAll("\r\n");
+    try writer.flush();
+
+    const response = try readRemoteHttpHeaderBlock(allocator, reader);
+    defer allocator.free(response);
+    if (!remoteWebSocketStatusIsSwitchingProtocols(response)) {
+        std.debug.print("remote websocket handshake failed\n", .{});
+        return error.RemoteWebSocketHandshakeFailed;
+    }
+    const expected_accept = try remoteWebSocketAcceptValue(allocator, key);
+    defer allocator.free(expected_accept);
+    const actual_accept = remoteHttpHeaderValue(response, "sec-websocket-accept") orelse {
+        std.debug.print("remote websocket handshake missing Sec-WebSocket-Accept\n", .{});
+        return error.RemoteWebSocketHandshakeFailed;
+    };
+    if (!std.mem.eql(u8, actual_accept, expected_accept)) {
+        std.debug.print("remote websocket handshake returned invalid Sec-WebSocket-Accept\n", .{});
+        return error.RemoteWebSocketHandshakeFailed;
+    }
+}
+
+fn remoteAuthTokenFromEnv(allocator: std.mem.Allocator, env_name: []const u8) ![]const u8 {
+    const raw = try getEnvVarOwned(allocator, env_name);
+    defer if (raw) |value| allocator.free(value);
+    const value = raw orelse return error.RemoteAuthTokenEnvNotSet;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return error.RemoteAuthTokenEnvEmpty;
+    return allocator.dupe(u8, trimmed);
+}
+
+fn readRemoteHttpHeaderBlock(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    while (out.items.len < 64 * 1024) {
+        const byte = try reader.takeByte();
+        try out.append(allocator, byte);
+        if (out.items.len >= 4 and std.mem.eql(u8, out.items[out.items.len - 4 ..], "\r\n\r\n")) {
+            return out.toOwnedSlice(allocator);
+        }
+    }
+    return error.RemoteWebSocketHandshakeTooLarge;
+}
+
+fn remoteWebSocketStatusIsSwitchingProtocols(response: []const u8) bool {
+    const line_end = std.mem.indexOf(u8, response, "\r\n") orelse return false;
+    const status_line = response[0..line_end];
+    return std.mem.startsWith(u8, status_line, "HTTP/") and std.mem.indexOf(u8, status_line, " 101 ") != null;
+}
+
+fn remoteHttpHeaderValue(response: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, response, "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) return null;
+        const separator = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const header_name = std.mem.trim(u8, line[0..separator], " \t");
+        if (!std.ascii.eqlIgnoreCase(header_name, name)) continue;
+        return std.mem.trim(u8, line[separator + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn remoteWebSocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
+    const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ key, magic });
+    defer allocator.free(combined);
+    var digest: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+    std.crypto.hash.Sha1.hash(combined, &digest, .{});
+    const encoded_len = std.base64.standard.Encoder.calcSize(digest.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(encoded, &digest);
+    return encoded;
+}
+
+fn writeClientWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    payload: []const u8,
+) !void {
+    try writeClientWebSocketFrame(allocator, writer, 0x1, payload);
+}
+
+fn writeClientWebSocketFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    opcode: u8,
+    payload: []const u8,
+) !void {
+    var mask: [4]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&mask);
+    const masked = try allocator.alloc(u8, payload.len);
+    defer allocator.free(masked);
+    for (payload, 0..) |byte, index| {
+        masked[index] = byte ^ mask[index % mask.len];
+    }
+
+    try writer.writeByte(0x80 | (opcode & 0x0f));
+    if (payload.len <= 125) {
+        try writer.writeByte(0x80 | @as(u8, @intCast(payload.len)));
+    } else if (payload.len <= std.math.maxInt(u16)) {
+        try writer.writeByte(0x80 | 126);
+        try writer.writeInt(u16, @intCast(payload.len), .big);
+    } else {
+        try writer.writeByte(0x80 | 127);
+        try writer.writeInt(u64, @intCast(payload.len), .big);
+    }
+    try writer.writeAll(&mask);
+    try writer.writeAll(masked);
+    try writer.flush();
+}
+
+fn readServerWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !?[]u8 {
+    while (true) {
+        const first = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return null,
+            else => return err,
+        };
+        const second = try reader.takeByte();
+        const fin = (first & 0x80) != 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) != 0;
+        var payload_len: u64 = second & 0x7f;
+        if (payload_len == 126) {
+            payload_len = try reader.takeInt(u16, .big);
+        } else if (payload_len == 127) {
+            payload_len = try reader.takeInt(u64, .big);
+        }
+        if (!fin) return error.UnsupportedWebSocketFragment;
+        if (payload_len > remote_line_limit) return error.WebSocketFrameTooLarge;
+
+        var zero_mask = [4]u8{ 0, 0, 0, 0 };
+        const mask: *const [4]u8 = if (masked) try reader.takeArray(4) else &zero_mask;
+        const payload = try allocator.alloc(u8, @intCast(payload_len));
+        errdefer allocator.free(payload);
+        try reader.readSliceAll(payload);
+        if (masked) {
+            for (payload, 0..) |*byte, index| {
+                byte.* ^= mask[index % mask.len];
+            }
+        }
+
+        switch (opcode) {
+            0x1 => return payload,
+            0x8 => {
+                try writeClientWebSocketFrame(allocator, writer, 0x8, payload);
+                allocator.free(payload);
+                return null;
+            },
+            0x9 => {
+                try writeClientWebSocketFrame(allocator, writer, 0xA, payload);
+                allocator.free(payload);
+                continue;
+            },
+            0xA => {
+                allocator.free(payload);
+                continue;
+            },
+            else => {
+                allocator.free(payload);
+                return error.UnsupportedWebSocketOpcode;
+            },
+        }
+    }
+}
+
+fn readRemoteResponse(
+    transport: *RemoteTransport,
     request_id: []const u8,
 ) !std.json.Parsed(std.json.Value) {
     var lines_read: usize = 0;
     while (lines_read < 512) : (lines_read += 1) {
-        const line_raw = try readRemoteLine(allocator, reader) orelse return error.RemoteAppServerClosed;
-        defer allocator.free(line_raw);
+        const line_raw = try transport.readMessage() orelse return error.RemoteAppServerClosed;
+        defer transport.allocator.free(line_raw);
         const line = std.mem.trim(u8, line_raw, " \t\r\n");
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
+        var parsed = try std.json.parseFromSlice(std.json.Value, transport.allocator, line, .{ .allocate = .alloc_always });
         if (parsed.value != .object) {
             parsed.deinit();
             continue;
@@ -749,17 +1007,16 @@ fn readRemoteResponse(
 }
 
 fn streamRemoteTurnUntilCompleted(
-    allocator: std.mem.Allocator,
-    reader: *std.Io.Reader,
+    transport: *RemoteTransport,
     thread_id: []const u8,
     turn_id: []const u8,
 ) !void {
     var saw_delta = false;
     while (true) {
-        const line_raw = try readRemoteLine(allocator, reader) orelse return error.RemoteAppServerClosed;
-        defer allocator.free(line_raw);
+        const line_raw = try transport.readMessage() orelse return error.RemoteAppServerClosed;
+        defer transport.allocator.free(line_raw);
         const line = std.mem.trim(u8, line_raw, " \t\r\n");
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
+        var parsed = try std.json.parseFromSlice(std.json.Value, transport.allocator, line, .{ .allocate = .alloc_always });
         defer parsed.deinit();
         if (parsed.value != .object) continue;
         const object = parsed.value.object;
@@ -2770,10 +3027,12 @@ test "validates remote app-server URLs" {
     const ws = try validateRemoteUrl("ws://127.0.0.1:4500");
     try std.testing.expectEqual(.ws, ws.scheme);
     try std.testing.expectEqualStrings("127.0.0.1", ws.host);
+    try std.testing.expectEqual(@as(u16, 4500), ws.port);
 
     const wss = try validateRemoteUrl("wss://example.com:443/");
     try std.testing.expectEqual(.wss, wss.scheme);
     try std.testing.expectEqualStrings("example.com", wss.host);
+    try std.testing.expectEqual(@as(u16, 443), wss.port);
 
     const ipv6 = try validateRemoteUrl("ws://[::1]:4500");
     try std.testing.expectEqualStrings("[::1]", ipv6.host);
@@ -2886,7 +3145,15 @@ test "remote TUI waits past many ignored notifications" {
     try input.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\"}}\n");
 
     var reader: std.Io.Reader = .fixed(input.items);
-    try streamRemoteTurnUntilCompleted(allocator, &reader, "thread-1", "turn-1");
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    var transport = RemoteTransport{
+        .allocator = allocator,
+        .kind = .jsonl,
+        .reader = &reader,
+        .writer = &output.writer,
+    };
+    try streamRemoteTurnUntilCompleted(&transport, "thread-1", "turn-1");
 }
 
 test "parse resume picker selection" {
