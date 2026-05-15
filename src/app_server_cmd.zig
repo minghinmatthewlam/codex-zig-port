@@ -29383,6 +29383,15 @@ fn handleThreadFork(
     const source_thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
         error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
     };
+    if (threadTargetIsLast(source_thread_id)) {
+        var stored_source = createStoredThreadFromParams(allocator, cfg, object) catch |err| switch (err) {
+            error.FileNotFound, error.NoSavedSessions => return renderNoRolloutFoundForThreadResume(allocator, id_value, object),
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/fork"),
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
+        };
+        defer stored_source.deinit(allocator);
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source);
+    }
     if (!isUuidString(source_thread_id)) {
         return renderInvalidThreadId(allocator, id_value, source_thread_id);
     }
@@ -29648,6 +29657,11 @@ fn threadResumePath(allocator: std.mem.Allocator, codex_home: []const u8, params
     }
     const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
     return session_store.resolveResumePath(allocator, codex_home, thread_id);
+}
+
+fn threadTargetIsLast(target: []const u8) bool {
+    const trimmed = std.mem.trim(u8, target, " \t\r\n");
+    return std.ascii.eqlIgnoreCase(trimmed, "last");
 }
 
 fn threadResumePathIncludingStateDb(allocator: std.mem.Allocator, codex_home: []const u8, params: std.json.ObjectMap) ![]const u8 {

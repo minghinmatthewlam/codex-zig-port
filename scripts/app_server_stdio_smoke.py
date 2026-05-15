@@ -10404,6 +10404,45 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "includeAnchor": True,
             }
 
+            last_fork_thread_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+            last_fork_rollout_path = sessions_dir / f"rollout-{last_fork_thread_id}.jsonl"
+            last_fork_rollout_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content_type": "input_text",
+                                "text": "latest fork source",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-fork-last",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": "last",
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            fork_last = read_json_line(proc, 5)
+            assert fork_last["id"] == "thread-fork-last"
+            fork_last_thread = fork_last["result"]["thread"]
+            assert fork_last_thread["forkedFromId"] == last_fork_thread_id
+            assert fork_last_thread["preview"] == "latest fork source"
+            assert fork_last_thread["turns"] == []
+            assert_thread_started_notification(read_json_line(proc, 5), fork_last_thread)
+
             write_json_line(
                 proc,
                 {
