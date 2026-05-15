@@ -598,14 +598,17 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var initialize_response = try readRemoteResponse(&transport, "initialize");
     initialize_response.deinit();
 
-    var thread_id = (try openRemoteThread(allocator, &transport, cwd, options)) orelse return;
+    var remote_state = RemoteTuiState.init(options.runtime_overrides);
+    defer remote_state.deinit(allocator);
+
+    var thread_id = (try openRemoteThread(allocator, &transport, cwd, options, &remote_state)) orelse return;
     defer allocator.free(thread_id);
 
     var pending_input_image_paths: []const []const u8 = options.initial_input_image_paths;
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, options.runtime_overrides) catch |err| {
+            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, remote_state.overrides, remote_state.service_tier_cleared) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             pending_input_image_paths = &.{};
@@ -622,7 +625,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         if (prompt.len == 0) continue;
         if (std.mem.eql(u8, prompt, "q")) break;
         if (std.mem.startsWith(u8, prompt, "/")) {
-            const action = handleRemoteSlashCommand(allocator, &transport, &thread_id, remote, cwd, options.runtime_overrides, &stdin_reader.interface, prompt) catch |err| {
+            const action = handleRemoteSlashCommand(allocator, &transport, &thread_id, remote, cwd, &remote_state, &stdin_reader.interface, prompt) catch |err| {
                 std.debug.print("remote command error: {s}\n", .{@errorName(err)});
                 continue;
             };
@@ -631,7 +634,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         }
         const input_image_paths = pending_input_image_paths;
         pending_input_image_paths = &.{};
-        runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, options.runtime_overrides) catch |err| {
+        runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, remote_state.overrides, remote_state.service_tier_cleared) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -645,13 +648,71 @@ const RemoteSlashAction = enum {
     quit,
 };
 
+const RemoteTuiState = struct {
+    overrides: config.RuntimeOverrides,
+    owned_model: ?[]const u8 = null,
+    effective_service_tier: ?[]const u8 = null,
+    owned_effective_service_tier: ?[]const u8 = null,
+    service_tier_cleared: bool = false,
+
+    fn init(overrides: config.RuntimeOverrides) RemoteTuiState {
+        return .{
+            .overrides = overrides,
+            .effective_service_tier = overrides.service_tier,
+        };
+    }
+
+    fn deinit(self: *RemoteTuiState, allocator: std.mem.Allocator) void {
+        if (self.owned_model) |model| allocator.free(model);
+        if (self.owned_effective_service_tier) |service_tier| allocator.free(service_tier);
+    }
+
+    fn setModel(self: *RemoteTuiState, allocator: std.mem.Allocator, model: []const u8) !void {
+        const copy = try allocator.dupe(u8, model);
+        if (self.owned_model) |existing| allocator.free(existing);
+        self.owned_model = copy;
+        self.overrides.model = copy;
+    }
+
+    fn setEffectiveServiceTier(self: *RemoteTuiState, allocator: std.mem.Allocator, service_tier: ?[]const u8) !void {
+        if (self.owned_effective_service_tier) |existing| allocator.free(existing);
+        self.owned_effective_service_tier = null;
+        self.effective_service_tier = null;
+        if (service_tier) |value| {
+            const copy = try allocator.dupe(u8, value);
+            self.owned_effective_service_tier = copy;
+            self.effective_service_tier = copy;
+        }
+    }
+
+    fn updateFromLifecycleResponse(self: *RemoteTuiState, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        if (value != .object) return error.InvalidRemoteAppServerResponse;
+        const result = value.object.get("result") orelse return error.InvalidRemoteAppServerResponse;
+        if (result != .object) return error.InvalidRemoteAppServerResponse;
+        const service_tier = result.object.get("serviceTier") orelse return;
+        switch (service_tier) {
+            .null => try self.setEffectiveServiceTier(allocator, null),
+            .string => |label| try self.setEffectiveServiceTier(allocator, label),
+            else => return error.InvalidRemoteAppServerResponse,
+        }
+    }
+
+    fn setFastMode(self: *RemoteTuiState, allocator: std.mem.Allocator, enabled: bool) void {
+        if (self.owned_effective_service_tier) |existing| allocator.free(existing);
+        self.owned_effective_service_tier = null;
+        self.overrides.service_tier = if (enabled) "priority" else null;
+        self.effective_service_tier = self.overrides.service_tier;
+        self.service_tier_cleared = !enabled;
+    }
+};
+
 fn handleRemoteSlashCommand(
     allocator: std.mem.Allocator,
     transport: *RemoteTransport,
     thread_id: *[]const u8,
     remote: []const u8,
     cwd: []const u8,
-    overrides: config.RuntimeOverrides,
+    state: *RemoteTuiState,
     stdin_reader: *std.Io.Reader,
     prompt: []const u8,
 ) !RemoteSlashAction {
@@ -674,6 +735,21 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
+        try handleRemoteModel(allocator, state, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "fast")) {
+        handleRemoteFastMode(allocator, state, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "personality")) {
+        handleRemotePersonality(&state.overrides, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
         const limit = try parseSessionListLimit(parts.args);
         try printRemoteSessions(allocator, transport, limit);
@@ -681,7 +757,7 @@ fn handleRemoteSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "resume")) {
-        if (try switchRemoteThread(allocator, transport, thread_id, "resume", "thread/resume", cwd, overrides, stdin_reader, parts.args)) {
+        if (try switchRemoteThread(allocator, transport, thread_id, "resume", "thread/resume", cwd, state, stdin_reader, parts.args)) {
             std.debug.print("resumed remote thread: {s}\n", .{thread_id.*});
         } else {
             std.debug.print("resume canceled\n", .{});
@@ -690,7 +766,7 @@ fn handleRemoteSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "fork")) {
-        if (try switchRemoteThread(allocator, transport, thread_id, "fork", "thread/fork", cwd, overrides, stdin_reader, parts.args)) {
+        if (try switchRemoteThread(allocator, transport, thread_id, "fork", "thread/fork", cwd, state, stdin_reader, parts.args)) {
             std.debug.print("forked remote thread: {s}\n", .{thread_id.*});
         } else {
             std.debug.print("fork canceled\n", .{});
@@ -707,12 +783,79 @@ fn printRemoteSlashHelp() void {
         \\commands:
         \\  /help
         \\  /status
+        \\  /model [MODEL]
+        \\  /fast [on|off|status]
+        \\  /personality [status|list|none|friendly|pragmatic]
         \\  /sessions [N]
         \\  /resume [TARGET|last]
         \\  /fork [TARGET|last]
         \\  /quit
         \\
     , .{});
+}
+
+fn handleRemoteModel(allocator: std.mem.Allocator, state: *RemoteTuiState, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        std.debug.print("model: {s}\n", .{state.overrides.model orelse "remote default"});
+        return;
+    }
+    try state.setModel(allocator, trimmed);
+    std.debug.print("model: {s}\n", .{state.overrides.model.?});
+}
+
+fn handleRemoteFastMode(allocator: std.mem.Allocator, state: *RemoteTuiState, args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        state.setFastMode(allocator, !remoteFastMode(state.effective_service_tier));
+        printRemoteFastMode(state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        state.setFastMode(allocator, true);
+        printRemoteFastMode(state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        state.setFastMode(allocator, false);
+        printRemoteFastMode(state);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printRemoteFastMode(state);
+        return;
+    }
+    std.debug.print("usage: /fast [on|off|status]\n", .{});
+}
+
+fn remoteFastMode(service_tier: ?[]const u8) bool {
+    return if (service_tier) |value|
+        std.ascii.eqlIgnoreCase(value, "priority") or std.ascii.eqlIgnoreCase(value, "fast")
+    else
+        false;
+}
+
+fn printRemoteFastMode(state: *const RemoteTuiState) void {
+    std.debug.print("Fast mode is {s}.\n", .{if (remoteFastMode(state.effective_service_tier)) "on" else "off"});
+}
+
+fn handleRemotePersonality(overrides: *config.RuntimeOverrides, args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        printPersonalityStatus(overrides.personality);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "list")) {
+        printPersonalityList(overrides.personality);
+        return;
+    }
+    const personality = config.Personality.parse(trimmed) catch {
+        std.debug.print("unknown personality: {s}\n", .{trimmed});
+        printPersonalityUsage();
+        return;
+    };
+    overrides.personality = personality;
+    printPersonalityStatus(overrides.personality);
 }
 
 fn printRemoteSessions(
@@ -745,7 +888,7 @@ fn switchRemoteThread(
     action: []const u8,
     method: []const u8,
     cwd: []const u8,
-    overrides: config.RuntimeOverrides,
+    state: *RemoteTuiState,
     stdin_reader: *std.Io.Reader,
     args: []const u8,
 ) !bool {
@@ -759,7 +902,7 @@ fn switchRemoteThread(
     const target = target_owned orelse return false;
     defer allocator.free(target);
 
-    const next_thread_id = try openRemoteLifecycleThread(allocator, transport, action, method, target, cwd, overrides);
+    const next_thread_id = try openRemoteLifecycleThread(allocator, transport, action, method, target, cwd, state);
     allocator.free(current_thread_id.*);
     current_thread_id.* = next_thread_id;
     return true;
@@ -770,6 +913,7 @@ fn openRemoteThread(
     transport: *RemoteTransport,
     cwd: []const u8,
     options: Options,
+    state: *RemoteTuiState,
 ) !?[]const u8 {
     if (options.resume_picker) {
         const target = (try promptRemoteSessionPicker(allocator, transport, "resume", options.resume_show_all)) orelse {
@@ -777,7 +921,7 @@ fn openRemoteThread(
             return null;
         };
         defer allocator.free(target);
-        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, state);
         return thread_id;
     }
     if (options.fork_picker) {
@@ -786,23 +930,24 @@ fn openRemoteThread(
             return null;
         };
         defer allocator.free(target);
-        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, state);
         return thread_id;
     }
     if (options.resume_target) |target| {
-        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-resume", "thread/resume", target, cwd, state);
         return thread_id;
     }
     if (options.fork_target) |target| {
-        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, options.runtime_overrides);
+        const thread_id = try openRemoteLifecycleThread(allocator, transport, "thread-fork", "thread/fork", target, cwd, state);
         return thread_id;
     }
 
-    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
+    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, state.overrides);
     defer allocator.free(thread_start);
     try transport.writeJson(thread_start);
     var thread_response = try readRemoteResponse(transport, "thread-start");
     defer thread_response.deinit();
+    try state.updateFromLifecycleResponse(allocator, thread_response.value);
     const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
     const thread_id = try allocator.dupe(u8, thread_id_raw);
     return thread_id;
@@ -892,13 +1037,14 @@ fn openRemoteLifecycleThread(
     method: []const u8,
     target: []const u8,
     cwd: []const u8,
-    overrides: config.RuntimeOverrides,
+    state: *RemoteTuiState,
 ) ![]const u8 {
-    const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, overrides);
+    const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, state.overrides, state.service_tier_cleared);
     defer allocator.free(request);
     try transport.writeJson(request);
     var response = try readRemoteResponse(transport, request_id);
     defer response.deinit();
+    try state.updateFromLifecycleResponse(allocator, response.value);
     const thread_id_raw = try remoteNestedString(response.value, &.{ "result", "thread", "id" });
     return allocator.dupe(u8, thread_id_raw);
 }
@@ -945,7 +1091,7 @@ fn renderRemoteThreadStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, false);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -957,6 +1103,7 @@ fn renderRemoteThreadLifecycleRequest(
     target: []const u8,
     cwd: []const u8,
     overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -973,7 +1120,7 @@ fn renderRemoteThreadLifecycleRequest(
     if (target_path) |path| try appendJsonStringField(allocator, &out, &first, "path", path);
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
     try appendJsonBoolField(allocator, &out, &first, "excludeTurns", true);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -983,11 +1130,16 @@ fn appendRemoteThreadRuntimeOverrides(
     out: *std.ArrayList(u8),
     first: *bool,
     overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
 ) !void {
     if (overrides.model) |model| try appendJsonStringField(allocator, out, first, "model", model);
     if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, out, first, "approvalPolicy", policy.label());
     if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, out, first, "sandbox", sandbox.label());
-    if (overrides.service_tier) |service_tier| try appendJsonStringField(allocator, out, first, "serviceTier", service_tier);
+    if (overrides.service_tier) |service_tier| {
+        try appendJsonStringField(allocator, out, first, "serviceTier", service_tier);
+    } else if (service_tier_cleared) {
+        try appendJsonNullField(allocator, out, first, "serviceTier");
+    }
     if (overrides.personality) |personality| try appendJsonStringField(allocator, out, first, "personality", personality.label());
 }
 
@@ -1011,8 +1163,9 @@ fn runRemotePrompt(
     prompt: []const u8,
     input_image_paths: []const []const u8,
     overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
 ) !void {
-    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths, overrides);
+    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths, overrides, service_tier_cleared);
     defer allocator.free(request);
 
     std.debug.print("\nassistant:\n", .{});
@@ -1033,6 +1186,7 @@ fn renderRemoteTurnStartRequest(
     prompt: []const u8,
     input_image_paths: []const []const u8,
     overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1048,12 +1202,30 @@ fn renderRemoteTurnStartRequest(
         try out.appendSlice(allocator, "}");
     }
     try out.append(allocator, ']');
-    if (overrides.model_reasoning_summary) |summary| {
-        try appendJsonStringFieldAfterExisting(allocator, &out, "summary", summary.label());
-    }
+    try appendRemoteTurnRuntimeOverrides(allocator, &out, overrides, service_tier_cleared);
     try out.append(allocator, '}');
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
+}
+
+fn appendRemoteTurnRuntimeOverrides(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
+) !void {
+    if (overrides.model) |model| try appendJsonStringFieldAfterExisting(allocator, out, "model", model);
+    if (overrides.approval_policy) |policy| try appendJsonStringFieldAfterExisting(allocator, out, "approvalPolicy", policy.label());
+    if (overrides.sandbox_mode) |sandbox| try appendJsonStringFieldAfterExisting(allocator, out, "sandbox", sandbox.label());
+    if (overrides.service_tier) |service_tier| {
+        try appendJsonStringFieldAfterExisting(allocator, out, "serviceTier", service_tier);
+    } else if (service_tier_cleared) {
+        try appendJsonNullFieldAfterExisting(allocator, out, "serviceTier");
+    }
+    if (overrides.model_reasoning_summary) |summary| {
+        try appendJsonStringFieldAfterExisting(allocator, out, "summary", summary.label());
+    }
+    if (overrides.personality) |personality| try appendJsonStringFieldAfterExisting(allocator, out, "personality", personality.label());
 }
 
 fn writeRemoteLine(writer: *std.Io.Writer, payload: []const u8) !void {
@@ -1447,6 +1619,31 @@ fn appendJsonStringFieldAfterExisting(
 ) !void {
     var first = false;
     try appendJsonStringField(allocator, out, &first, name, value);
+}
+
+fn appendJsonNullField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.append(allocator, '"');
+    try out.appendSlice(allocator, name);
+    try out.appendSlice(allocator, "\":null");
+}
+
+fn appendJsonNullFieldAfterExisting(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    name: []const u8,
+) !void {
+    var first = false;
+    try appendJsonNullField(allocator, out, &first, name);
 }
 
 fn appendJsonBoolField(
@@ -3387,7 +3584,7 @@ test "remote TUI serializes supported runtime overrides" {
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
         .sandbox_mode = .workspace_write,
-    });
+    }, false);
     defer allocator.free(thread_resume);
 
     var parsed_resume = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume, .{});
@@ -3401,7 +3598,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("gpt-resume", resume_params.get("model").?.string);
     try std.testing.expectEqualStrings("workspace-write", resume_params.get("sandbox").?.string);
 
-    const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{});
+    const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{}, false);
     defer allocator.free(thread_resume_relative);
 
     var parsed_resume_relative = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume_relative, .{});
@@ -3410,7 +3607,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("./rollout.jsonl", resume_relative_params.get("threadId").?.string);
     try std.testing.expectEqualStrings("/tmp/work/./rollout.jsonl", resume_relative_params.get("path").?.string);
 
-    const thread_fork = try renderRemoteThreadLifecycleRequest(allocator, "thread-fork", "thread/fork", "11111111-1111-4111-8111-111111111111", "/tmp/work", .{});
+    const thread_fork = try renderRemoteThreadLifecycleRequest(allocator, "thread-fork", "thread/fork", "11111111-1111-4111-8111-111111111111", "/tmp/work", .{}, false);
     defer allocator.free(thread_fork);
 
     var parsed_fork = try std.json.parseFromSlice(std.json.Value, allocator, thread_fork, .{});
@@ -3422,17 +3619,43 @@ test "remote TUI serializes supported runtime overrides" {
 
     const images = [_][]const u8{"/tmp/image.png"};
     const turn_start = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &images, .{
+        .model = "gpt-turn",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .service_tier = "priority",
         .model_reasoning_summary = .concise,
-    });
+        .personality = .pragmatic,
+    }, false);
     defer allocator.free(turn_start);
 
     var parsed_turn = try std.json.parseFromSlice(std.json.Value, allocator, turn_start, .{});
     defer parsed_turn.deinit();
     const turn_params = parsed_turn.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("gpt-turn", turn_params.get("model").?.string);
+    try std.testing.expectEqualStrings("on-request", turn_params.get("approvalPolicy").?.string);
+    try std.testing.expectEqualStrings("workspace-write", turn_params.get("sandbox").?.string);
+    try std.testing.expectEqualStrings("priority", turn_params.get("serviceTier").?.string);
     try std.testing.expectEqualStrings("concise", turn_params.get("summary").?.string);
+    try std.testing.expectEqualStrings("pragmatic", turn_params.get("personality").?.string);
     const input_items = turn_params.get("input").?.array.items;
     try std.testing.expectEqual(@as(usize, 2), input_items.len);
     try std.testing.expectEqualStrings("/tmp/image.png", input_items[1].object.get("path").?.string);
+
+    const turn_clear_service_tier = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, true);
+    defer allocator.free(turn_clear_service_tier);
+
+    var parsed_turn_clear = try std.json.parseFromSlice(std.json.Value, allocator, turn_clear_service_tier, .{});
+    defer parsed_turn_clear.deinit();
+    const turn_clear_params = parsed_turn_clear.value.object.get("params").?.object;
+    try std.testing.expect(turn_clear_params.get("serviceTier").? == .null);
+
+    const resume_clear_service_tier = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{}, true);
+    defer allocator.free(resume_clear_service_tier);
+
+    var parsed_resume_clear = try std.json.parseFromSlice(std.json.Value, allocator, resume_clear_service_tier, .{});
+    defer parsed_resume_clear.deinit();
+    const resume_clear_params = parsed_resume_clear.value.object.get("params").?.object;
+    try std.testing.expect(resume_clear_params.get("serviceTier").? == .null);
 }
 
 test "remote TUI waits past many ignored notifications" {
