@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const net = std.Io.net;
 
 const api = @import("api.zig");
 const auth = @import("auth.zig");
@@ -57,9 +58,16 @@ pub fn run(allocator: std.mem.Allocator) !void {
     try runWithOptions(allocator, .{});
 }
 
+const RemoteScheme = enum {
+    unix,
+    ws,
+    wss,
+};
+
 const RemoteUrlParts = struct {
-    scheme: []const u8,
+    scheme: RemoteScheme,
     host: []const u8,
+    path: []const u8 = "",
 };
 
 fn validateRemoteOptions(allocator: std.mem.Allocator, remote: ?[]const u8, remote_auth_token_env: ?[]const u8) !void {
@@ -71,7 +79,7 @@ fn validateRemoteOptions(allocator: std.mem.Allocator, remote: ?[]const u8, remo
         return;
     };
     const parts = validateRemoteUrl(remote_url) catch |err| {
-        std.debug.print("invalid remote address `{s}`; expected `ws://host:port` or `wss://host:port`\n", .{remote_url});
+        std.debug.print("invalid remote address `{s}`; expected `unix://PATH`, `ws://host:port`, or `wss://host:port`\n", .{remote_url});
         return err;
     };
     if (remote_auth_token_env) |env_name| {
@@ -93,16 +101,23 @@ fn validateRemoteOptions(allocator: std.mem.Allocator, remote: ?[]const u8, remo
 }
 
 fn validateRemoteUrl(value: []const u8) !RemoteUrlParts {
-    const scheme: []const u8 = if (std.mem.startsWith(u8, value, "ws://"))
-        "ws"
+    if (std.mem.startsWith(u8, value, "unix://")) {
+        const path = value["unix://".len..];
+        if (path.len == 0) return error.InvalidRemoteAddress;
+        return .{ .scheme = .unix, .host = "", .path = path };
+    }
+
+    const scheme: RemoteScheme = if (std.mem.startsWith(u8, value, "ws://"))
+        .ws
     else if (std.mem.startsWith(u8, value, "wss://"))
-        "wss"
+        .wss
     else
         return error.InvalidRemoteAddress;
-    const rest = if (std.mem.eql(u8, scheme, "ws"))
-        value["ws://".len..]
-    else
-        value["wss://".len..];
+    const rest = switch (scheme) {
+        .ws => value["ws://".len..],
+        .wss => value["wss://".len..],
+        .unix => unreachable,
+    };
 
     if (rest.len == 0) return error.InvalidRemoteAddress;
     if (std.mem.indexOfAny(u8, rest, "?#") != null) return error.InvalidRemoteAddress;
@@ -134,8 +149,8 @@ fn validateRemoteUrl(value: []const u8) !RemoteUrlParts {
 }
 
 fn remoteUrlSupportsAuthToken(parts: RemoteUrlParts) bool {
-    if (std.mem.eql(u8, parts.scheme, "wss")) return true;
-    if (!std.mem.eql(u8, parts.scheme, "ws")) return false;
+    if (parts.scheme == .wss) return true;
+    if (parts.scheme != .ws) return false;
     return std.ascii.eqlIgnoreCase(parts.host, "localhost") or
         std.mem.startsWith(u8, parts.host, "127.") or
         std.mem.eql(u8, parts.host, "[::1]");
@@ -176,8 +191,7 @@ fn validateLocalRemoteControlOptions(enabled: bool, bind: ?[]const u8) !void {
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     try validateRemoteOptions(allocator, options.remote, options.remote_auth_token_env);
     if (options.remote) |remote| {
-        std.debug.print("remote app-server TUI is parsed but not implemented yet: {s}\n", .{remote});
-        return error.RemoteAppServerTuiNotImplemented;
+        return runRemoteTui(allocator, options, remote);
     }
     try validateLocalRemoteControlOptions(options.local_remote_control, options.remote_control_bind);
     if (options.local_remote_control) {
@@ -327,6 +341,317 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
 
     if (state.terminal_title_items.items.len > 0) clearTerminalTitle();
     std.debug.print("\nbye\n", .{});
+}
+
+fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const u8) !void {
+    if (options.local_remote_control or options.remote_control_bind != null) {
+        std.debug.print("`--remote-control` cannot be combined with `--remote`.\n", .{});
+        return error.RemoteControlCannotCombineWithRemote;
+    }
+    if (options.resume_target != null or options.resume_picker or options.fork_target != null or options.fork_picker) {
+        std.debug.print("remote app-server TUI is parsed but not implemented yet for resume/fork\n", .{});
+        return error.RemoteAppServerSessionTuiNotImplemented;
+    }
+
+    const parts = try validateRemoteUrl(remote);
+    if (parts.scheme != .unix) {
+        std.debug.print("remote app-server TUI is parsed but not implemented yet for websocket transport: {s}\n", .{remote});
+        return error.RemoteAppServerTuiNotImplemented;
+    }
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var address = try net.UnixAddress.init(parts.path);
+    var stream = try address.connect(io);
+    defer stream.close(io);
+
+    var input_buffer: [64 * 1024]u8 = undefined;
+    var output_buffer: [64 * 1024]u8 = undefined;
+    var reader = stream.reader(io, &input_buffer);
+    var writer = stream.writer(io, &output_buffer);
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+
+    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen, .auto);
+    if (use_alt_screen) enterAlternateScreen();
+    defer if (use_alt_screen) leaveAlternateScreen();
+
+    printRemoteHeader(remote, cwd);
+
+    try writeRemoteLine(&writer.interface,
+        \\{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"clientInfo":{"name":"codex-zig-tui","version":"0.0.1"},"capabilities":{}}}
+    );
+    var initialize_response = try readRemoteResponse(allocator, &reader.interface, "initialize");
+    initialize_response.deinit();
+
+    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, options.runtime_overrides);
+    defer allocator.free(thread_start);
+    try writeRemoteLine(&writer.interface, thread_start);
+    var thread_response = try readRemoteResponse(allocator, &reader.interface, "thread-start");
+    const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
+    const thread_id = try allocator.dupe(u8, thread_id_raw);
+    thread_response.deinit();
+    defer allocator.free(thread_id);
+
+    var pending_input_images: []const []const u8 = options.initial_input_images;
+    if (options.initial_prompt) |initial_prompt| {
+        const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
+        if (prompt.len > 0) {
+            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_images);
+            pending_input_images = &.{};
+        }
+    }
+
+    var stdin_buffer: [16 * 1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
+    while (true) {
+        std.debug.print("\n› ", .{});
+        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+        const line = line_opt orelse break;
+        const prompt = std.mem.trim(u8, line, " \t\r\n");
+        if (prompt.len == 0) continue;
+        if (std.mem.eql(u8, prompt, "q") or std.mem.eql(u8, prompt, "/quit")) break;
+        if (std.mem.eql(u8, prompt, "/help")) {
+            std.debug.print("commands:\n  /help\n  /quit\n", .{});
+            continue;
+        }
+        if (std.mem.startsWith(u8, prompt, "/")) {
+            std.debug.print("remote TUI slash command is parsed but not implemented yet: {s}\n", .{prompt});
+            continue;
+        }
+        const input_images = pending_input_images;
+        pending_input_images = &.{};
+        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_images) catch |err| {
+            std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+            continue;
+        };
+    }
+
+    std.debug.print("\nbye\n", .{});
+}
+
+fn printRemoteHeader(remote: []const u8, cwd: []const u8) void {
+    std.debug.print(
+        \\╭────────────────────────────────────────────╮
+        \\│ Codex Zig Remote                           │
+        \\╰────────────────────────────────────────────╯
+        \\remote: {s}
+        \\cwd:    {s}
+        \\Type /help for commands or /quit to exit.
+        \\
+    , .{ remote, cwd });
+}
+
+fn renderRemoteThreadStartRequest(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    overrides: config.RuntimeOverrides,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
+    if (overrides.model) |model| try appendJsonStringField(allocator, &out, &first, "model", model);
+    if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, &out, &first, "approvalPolicy", policy.label());
+    if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, &out, &first, "sandbox", sandbox.label());
+    if (overrides.service_tier) |service_tier| try appendJsonStringField(allocator, &out, &first, "serviceTier", service_tier);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn runRemotePrompt(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    thread_id: []const u8,
+    prompt: []const u8,
+    input_images: []const []const u8,
+) !void {
+    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_images);
+    defer allocator.free(request);
+
+    std.debug.print("\nassistant:\n", .{});
+    try writeRemoteLine(writer, request);
+
+    var response = try readRemoteResponse(allocator, reader, "turn-start");
+    const turn_id_raw = try remoteNestedString(response.value, &.{ "result", "turn", "id" });
+    const turn_id = try allocator.dupe(u8, turn_id_raw);
+    response.deinit();
+    defer allocator.free(turn_id);
+
+    try streamRemoteTurnUntilCompleted(allocator, reader, thread_id, turn_id);
+}
+
+fn renderRemoteTurnStartRequest(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    prompt: []const u8,
+    input_images: []const []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"turn-start\",\"method\":\"turn/start\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"input\":[{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, &out, prompt);
+    try out.appendSlice(allocator, "}");
+    for (input_images) |image| {
+        try out.appendSlice(allocator, ",{\"type\":\"image\",\"url\":");
+        try appendJsonString(allocator, &out, image);
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn writeRemoteLine(writer: *std.Io.Writer, payload: []const u8) !void {
+    try writer.writeAll(payload);
+    try writer.writeByte('\n');
+    try writer.flush();
+}
+
+fn readRemoteResponse(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    request_id: []const u8,
+) !std.json.Parsed(std.json.Value) {
+    var lines_read: usize = 0;
+    while (lines_read < 512) : (lines_read += 1) {
+        const line = try readRemoteLine(reader) orelse return error.RemoteAppServerClosed;
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
+        if (parsed.value != .object) {
+            parsed.deinit();
+            continue;
+        }
+        const object = parsed.value.object;
+        if (object.get("id")) |id_value| {
+            if (jsonValueStringEquals(id_value, request_id)) {
+                if (remoteErrorMessage(object)) |message| {
+                    std.debug.print("remote app-server error: {s}\n", .{message});
+                    parsed.deinit();
+                    return error.RemoteAppServerRequestFailed;
+                }
+                return parsed;
+            }
+        }
+        parsed.deinit();
+    }
+    return error.RemoteAppServerResponseNotFound;
+}
+
+fn streamRemoteTurnUntilCompleted(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    thread_id: []const u8,
+    turn_id: []const u8,
+) !void {
+    var saw_delta = false;
+    var lines_read: usize = 0;
+    while (lines_read < 1024) : (lines_read += 1) {
+        const line = try readRemoteLine(reader) orelse return error.RemoteAppServerClosed;
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{ .allocate = .alloc_always });
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const object = parsed.value.object;
+        if (remoteErrorMessage(object)) |message| {
+            std.debug.print("remote app-server error: {s}\n", .{message});
+            return error.RemoteAppServerRequestFailed;
+        }
+        const method = object.get("method") orelse continue;
+        if (method != .string) continue;
+        if (!remoteTurnNotificationMatches(object, thread_id, turn_id)) continue;
+
+        if (std.mem.eql(u8, method.string, "item/agentMessage/delta")) {
+            if (remoteNotificationDelta(object)) |delta| {
+                saw_delta = true;
+                std.debug.print("{s}", .{delta});
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, method.string, "turn/completed")) {
+            if (!saw_delta) std.debug.print("(no assistant output)", .{});
+            std.debug.print("\n", .{});
+            return;
+        }
+    }
+    return error.RemoteAppServerTurnIncomplete;
+}
+
+fn readRemoteLine(reader: *std.Io.Reader) !?[]const u8 {
+    const line_opt = try reader.takeDelimiter('\n');
+    const line = line_opt orelse return null;
+    return std.mem.trim(u8, line, " \t\r\n");
+}
+
+fn remoteNestedString(value: std.json.Value, path: []const []const u8) ![]const u8 {
+    var current = value;
+    for (path) |part| {
+        if (current != .object) return error.InvalidRemoteAppServerResponse;
+        current = current.object.get(part) orelse return error.InvalidRemoteAppServerResponse;
+    }
+    if (current != .string) return error.InvalidRemoteAppServerResponse;
+    return current.string;
+}
+
+fn remoteErrorMessage(object: std.json.ObjectMap) ?[]const u8 {
+    const error_value = object.get("error") orelse return null;
+    if (error_value != .object) return "unknown error";
+    const message = error_value.object.get("message") orelse return "unknown error";
+    if (message != .string) return "unknown error";
+    return message.string;
+}
+
+fn remoteTurnNotificationMatches(object: std.json.ObjectMap, thread_id: []const u8, turn_id: []const u8) bool {
+    const params = object.get("params") orelse return false;
+    if (params != .object) return false;
+    const notification_thread_id = params.object.get("threadId") orelse return false;
+    if (!jsonValueStringEquals(notification_thread_id, thread_id)) return false;
+    if (params.object.get("turnId")) |notification_turn_id| {
+        if (jsonValueStringEquals(notification_turn_id, turn_id)) return true;
+    }
+    const turn = params.object.get("turn") orelse return false;
+    if (turn != .object) return false;
+    const nested_turn_id = turn.object.get("id") orelse return false;
+    return jsonValueStringEquals(nested_turn_id, turn_id);
+}
+
+fn remoteNotificationDelta(object: std.json.ObjectMap) ?[]const u8 {
+    const params = object.get("params") orelse return null;
+    if (params != .object) return null;
+    const delta = params.object.get("delta") orelse return null;
+    if (delta != .string) return null;
+    return delta.string;
+}
+
+fn jsonValueStringEquals(value: std.json.Value, expected: []const u8) bool {
+    return value == .string and std.mem.eql(u8, value.string, expected);
+}
+
+fn appendJsonStringField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.append(allocator, '"');
+    try out.appendSlice(allocator, name);
+    try out.appendSlice(allocator, "\":");
+    try appendJsonString(allocator, out, value);
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(value_json);
+    try out.appendSlice(allocator, value_json);
 }
 
 fn enterAlternateScreen() void {
@@ -2178,18 +2503,23 @@ test "parse history limit" {
 }
 
 test "validates remote app-server URLs" {
+    const unix = try validateRemoteUrl("unix:///tmp/codex.sock");
+    try std.testing.expectEqual(.unix, unix.scheme);
+    try std.testing.expectEqualStrings("/tmp/codex.sock", unix.path);
+
     const ws = try validateRemoteUrl("ws://127.0.0.1:4500");
-    try std.testing.expectEqualStrings("ws", ws.scheme);
+    try std.testing.expectEqual(.ws, ws.scheme);
     try std.testing.expectEqualStrings("127.0.0.1", ws.host);
 
     const wss = try validateRemoteUrl("wss://example.com:443/");
-    try std.testing.expectEqualStrings("wss", wss.scheme);
+    try std.testing.expectEqual(.wss, wss.scheme);
     try std.testing.expectEqualStrings("example.com", wss.host);
 
     const ipv6 = try validateRemoteUrl("ws://[::1]:4500");
     try std.testing.expectEqualStrings("[::1]", ipv6.host);
 
     try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("https://127.0.0.1:4500"));
+    try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("unix://"));
     try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("ws://127.0.0.1"));
     try std.testing.expectError(error.InvalidRemoteAddress, validateRemoteUrl("ws://127.0.0.1:4500/path"));
 }
@@ -2200,6 +2530,7 @@ test "remote auth token transport is limited to secure or loopback URLs" {
     try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://localhost:4500")));
     try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://[::1]:4500")));
     try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("wss://example.com:443")));
+    try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("unix:///tmp/codex.sock")));
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://example.com:4500")));
 }
 
