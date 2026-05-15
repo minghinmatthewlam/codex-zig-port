@@ -3,6 +3,7 @@ import difflib
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -694,6 +695,66 @@ def run_update_command_smoke(binary: Path) -> None:
         raise AssertionError(f"expected debug-build update message:\n{result.stderr}")
     if "parsed but not implemented yet" in result.stderr:
         raise AssertionError(f"update still used generic placeholder:\n{result.stderr}")
+
+
+def run_app_command_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-command-", dir="/tmp"))
+    try:
+        home = temp_root / "home"
+        fake_bin = temp_root / "bin"
+        workspace = temp_root / "workspace"
+        fake_app = home / "Applications" / "Codex.app"
+        open_log = temp_root / "open-args.txt"
+        home.mkdir()
+        fake_bin.mkdir()
+        workspace.mkdir()
+        fake_app.mkdir(parents=True)
+        fake_open = fake_bin / "open"
+        fake_open.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" > {shlex.quote(str(open_log))}\n",
+            encoding="utf-8",
+        )
+        fake_open.chmod(0o755)
+
+        help_result = subprocess.run(
+            [str(binary.resolve()), "help", "app"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert help_result.stdout == ""
+        assert "codex-zig app [PATH]" in help_result.stderr
+
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+        env["CODEX_TEST_APP_OPEN_BIN"] = str(fake_open)
+        result = subprocess.run(
+            [str(binary.resolve()), "app", str(workspace)],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError(f"app command failed:\nstdout={result.stdout}\nstderr={result.stderr}")
+        assert result.stdout == ""
+        if "Opening Codex Desktop at " not in result.stderr:
+            raise AssertionError(f"app command did not report opening desktop app:\n{result.stderr}")
+        if "parsed but not implemented yet" in result.stderr:
+            raise AssertionError(f"app command still used generic placeholder:\n{result.stderr}")
+
+        open_args = open_log.read_text(encoding="utf-8").splitlines()
+        assert open_args[0] == "-a", open_args
+        assert open_args[1].endswith("/Codex.app"), open_args
+        assert open_args[2] == str(workspace.resolve()), open_args
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def wait_for_json_file(path: Path, process: subprocess.Popen, timeout: float = 5.0) -> dict:
@@ -3405,6 +3466,7 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
     run_update_command_smoke(binary)
+    run_app_command_smoke(binary)
     run_responses_api_proxy_smoke(binary)
     run_features_profile_smoke(binary)
     run_execpolicy_smoke(binary)
@@ -3433,6 +3495,7 @@ def main() -> None:
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
     print("cli-update-e2e: ok")
+    print("cli-app-command-e2e: ok")
     print("cli-responses-api-proxy-e2e: ok")
     print("cli-features-profile-e2e: ok")
     print("cli-execpolicy-e2e: ok")
