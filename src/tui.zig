@@ -401,7 +401,9 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths, options.runtime_overrides);
+            runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths, options.runtime_overrides) catch |err| {
+                std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+            };
             pending_input_image_paths = &.{};
         }
     }

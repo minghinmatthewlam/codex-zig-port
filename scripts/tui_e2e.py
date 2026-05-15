@@ -1625,6 +1625,171 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("expected remote personality override in instructions")
 
 
+class InitialPromptErrorRemoteServer:
+    def __init__(self, socket_path: Path) -> None:
+        self.socket_path = socket_path
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.ready = threading.Event()
+        self.error: BaseException | None = None
+        self.requests: list[dict] = []
+
+    def start(self) -> None:
+        self.thread.start()
+        if not self.ready.wait(timeout=5):
+            raise AssertionError("timed out waiting for fake remote app-server")
+
+    def join(self) -> None:
+        self.thread.join(timeout=5)
+        if self.thread.is_alive():
+            raise AssertionError("fake remote app-server did not exit")
+        if self.error is not None:
+            raise AssertionError("fake remote app-server failed") from self.error
+
+    def _serve(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(self.socket_path))
+            sock.listen(1)
+            self.ready.set()
+            conn, _ = sock.accept()
+            with conn:
+                reader = conn.makefile("r", encoding="utf-8")
+                writer = conn.makefile("w", encoding="utf-8")
+                turn_starts = 0
+                for line in reader:
+                    request = json.loads(line)
+                    self.requests.append(request)
+                    method = request.get("method")
+                    if method == "initialize":
+                        self._write(writer, {"jsonrpc": "2.0", "id": request["id"], "result": {}})
+                    elif method == "thread/start":
+                        self._write(
+                            writer,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request["id"],
+                                "result": {"thread": {"id": "thread-1"}},
+                            },
+                        )
+                    elif method == "turn/start":
+                        turn_starts += 1
+                        if turn_starts == 1:
+                            self._write(
+                                writer,
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"],
+                                    "error": {
+                                        "code": -32000,
+                                        "message": "forced initial failure",
+                                    },
+                                },
+                            )
+                            continue
+                        turn_id = f"turn-{turn_starts}"
+                        self._write(
+                            writer,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request["id"],
+                                "result": {"turn": {"id": turn_id}},
+                            },
+                        )
+                        self._write(
+                            writer,
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "item/agentMessage/delta",
+                                "params": {
+                                    "threadId": "thread-1",
+                                    "turnId": turn_id,
+                                    "delta": "retry answer\n",
+                                },
+                            },
+                        )
+                        self._write(
+                            writer,
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "turn/completed",
+                                "params": {"threadId": "thread-1", "turnId": turn_id},
+                            },
+                        )
+        except BaseException as exc:
+            self.error = exc
+        finally:
+            sock.close()
+
+    @staticmethod
+    def _write(writer, payload: dict) -> None:
+        writer.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        writer.flush()
+
+
+def run_remote_initial_prompt_error_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    socket_dir = Path(
+        tempfile.mkdtemp(prefix="codex-zig-remote-error-sock-", dir="/tmp")
+    )
+    socket_path = socket_dir / "app-server.sock"
+    server = InitialPromptErrorRemoteServer(socket_path)
+    output = bytearray()
+    client = None
+    master_fd = -1
+    try:
+        server.start()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+                "first prompt fails",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"remote app-server error: forced initial failure", 5)
+        wait_for(master_fd, output, b"error: RemoteAppServerRequestFailed", 5)
+        send_line(master_fd, "retry after initial failure")
+        wait_for(master_fd, output, b"retry answer", 5)
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote TUI error smoke exited with {exit_code}\n\n{rendered}")
+        turn_prompts = [
+            request["params"]["input"][0]["text"]
+            for request in server.requests
+            if request.get("method") == "turn/start"
+        ]
+        if turn_prompts != ["first prompt fails", "retry after initial failure"]:
+            raise AssertionError(f"unexpected remote retry prompts: {turn_prompts!r}")
+    finally:
+        if client is not None and client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+                client.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
+        server.join()
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
 def run_session_command_option_smoke(
     binary: Path,
     env: dict[str, str],
@@ -1849,6 +2014,7 @@ def run_e2e(binary: Path) -> str:
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
+            run_remote_initial_prompt_error_smoke(binary, env, workspace)
             run_session_command_option_smoke(binary, env, workspace)
             run_unimplemented_command_smoke(binary, env, workspace)
             run_plugin_marketplace_smoke(binary, env, workspace)
