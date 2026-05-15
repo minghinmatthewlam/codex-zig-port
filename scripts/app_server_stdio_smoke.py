@@ -6276,7 +6276,12 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "thread-fork-after-external-sandbox"
                 )
                 assert fork_after_external_sandbox["result"]["sandbox"] == {
-                    "type": "dangerFullAccess"
+                    "type": "externalSandbox",
+                    "networkAccess": "enabled",
+                }
+                assert fork_after_external_sandbox["result"]["permissionProfile"] == {
+                    "type": "external",
+                    "network": {"enabled": True},
                 }
                 assert_thread_started_notification(
                     read_json_line(proc, 5),
@@ -7560,6 +7565,8 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
             stable_start = read_json_line(proc, 5)
             assert stable_start["id"] == "stable-thread-start-control"
             stable_thread_id = stable_start["result"]["thread"]["id"]
+            assert "permissionProfile" not in stable_start["result"]
+            assert "activePermissionProfile" not in stable_start["result"]
 
             for method, params, reason in experimental_api_field_cases(stable_thread_id):
                 reason_slug = reason.replace("/", "-").replace(".", "-")
@@ -7610,8 +7617,109 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
             field_ungated = read_json_line(proc, 5)
             assert field_ungated["id"] == "thread-start-dynamic-tools-with-experimental-api"
             assert field_ungated["result"]["model"] == "gpt-field-gate-experimental"
+            assert field_ungated["result"]["permissionProfile"] == {
+                "type": "managed",
+                "fileSystem": {
+                    "type": "restricted",
+                    "entries": [
+                        {
+                            "path": {"type": "special", "value": {"kind": "root"}},
+                            "access": "read",
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {"kind": "project_roots"},
+                            },
+                            "access": "write",
+                        },
+                    ],
+                },
+                "network": {"enabled": False},
+            }
+            assert field_ungated["result"]["activePermissionProfile"] is None
             started = read_json_line(proc, 5)
             assert started["method"] == "thread/started"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-history-with-experimental-api",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": "ignored-history-thread-id",
+                        "history": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "experimental lifecycle response",
+                                    }
+                                ],
+                            }
+                        ],
+                        "sandbox": "read-only",
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            resume_ungated = read_json_line(proc, 5)
+            assert resume_ungated["id"] == "thread-resume-history-with-experimental-api"
+            assert resume_ungated["result"]["permissionProfile"] == {
+                "type": "managed",
+                "fileSystem": {
+                    "type": "restricted",
+                    "entries": [
+                        {
+                            "path": {"type": "special", "value": {"kind": "root"}},
+                            "access": "read",
+                        }
+                    ],
+                },
+                "network": {"enabled": False},
+            }
+            assert resume_ungated["result"]["activePermissionProfile"] is None
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-fork-with-experimental-api",
+                    "method": "thread/fork",
+                    "params": {
+                        "threadId": stable_thread_id,
+                        "excludeTurns": True,
+                    },
+                },
+            )
+            fork_ungated = read_json_line(proc, 5)
+            assert fork_ungated["id"] == "thread-fork-with-experimental-api"
+            assert fork_ungated["result"]["permissionProfile"] == {
+                "type": "managed",
+                "fileSystem": {
+                    "type": "restricted",
+                    "entries": [
+                        {
+                            "path": {"type": "special", "value": {"kind": "root"}},
+                            "access": "read",
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {"kind": "project_roots"},
+                            },
+                            "access": "write",
+                        },
+                    ],
+                },
+                "network": {"enabled": False},
+            }
+            assert fork_ungated["result"]["activePermissionProfile"] is None
+            fork_started = read_json_line(proc, 5)
+            assert fork_started["method"] == "thread/started"
 
             write_json_line(
                 proc,

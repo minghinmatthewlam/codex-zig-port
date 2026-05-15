@@ -154,6 +154,7 @@ const LoadedThread = struct {
     sandbox_writable_roots: config.StringList,
     sandbox_include_cwd_write_root: bool,
     sandbox_network_enabled: bool,
+    sandbox_external: bool,
     reasoning_effort: ?[]const u8,
     reasoning_summary: ?[]const u8,
     personality: ?[]const u8,
@@ -26543,22 +26544,31 @@ fn applyTurnStartRuntimeOverrides(
             roots,
             profile.include_cwd_write_root,
             profile.network_enabled,
+            false,
         );
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
             const sandbox_selection = parseTurnStartSandboxPolicy(sandbox_policy) catch return error.InvalidTurnContextOverride;
             cfg.sandbox_mode = sandbox_selection.mode;
-            try resetLoadedThreadSandboxProfile(allocator, thread, sandbox_selection.mode, sandbox_selection.network_enabled);
+            try resetLoadedThreadSandboxProfile(
+                allocator,
+                thread,
+                sandbox_selection.mode,
+                sandbox_selection.network_enabled,
+                sandbox_selection.external,
+            );
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
             if (optionalStringParam(params, "sandbox")) |sandbox| {
+                const requested_sandbox_mode = config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride;
                 try resetLoadedThreadSandboxProfile(
                     allocator,
                     thread,
-                    config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
-                    true,
+                    requested_sandbox_mode,
+                    defaultNetworkEnabledForSandboxMode(requested_sandbox_mode),
+                    false,
                 );
             }
         }
@@ -26566,11 +26576,13 @@ fn applyTurnStartRuntimeOverrides(
         const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
         cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
         if (optionalStringParam(params, "sandbox")) |sandbox| {
+            const requested_sandbox_mode = config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride;
             try resetLoadedThreadSandboxProfile(
                 allocator,
                 thread,
-                config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
-                true,
+                requested_sandbox_mode,
+                defaultNetworkEnabledForSandboxMode(requested_sandbox_mode),
+                false,
             );
         }
     }
@@ -26651,6 +26663,7 @@ fn applyTurnStartRuntimeOverrides(
 const TurnStartSandboxPolicy = struct {
     mode: config.SandboxMode,
     network_enabled: bool,
+    external: bool = false,
 };
 
 fn parseTurnStartSandboxPolicy(value: std.json.Value) !TurnStartSandboxPolicy {
@@ -26666,6 +26679,7 @@ fn parseTurnStartSandboxPolicy(value: std.json.Value) !TurnStartSandboxPolicy {
         return .{
             .mode = .danger_full_access,
             .network_enabled = parseCommandExecExternalSandboxPolicyNetworkAccess(value.object) catch return error.InvalidTurnContextOverride,
+            .external = true,
         };
     }
     if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
@@ -26775,11 +26789,20 @@ fn emptyStringList(allocator: std.mem.Allocator) !config.StringList {
     return .{ .items = try allocator.alloc([]const u8, 0) };
 }
 
+fn defaultNetworkEnabledForSandboxMode(mode: config.SandboxMode) bool {
+    return mode == .danger_full_access;
+}
+
+fn defaultNetworkEnabledForSandboxModeLabel(mode: []const u8) bool {
+    return std.mem.eql(u8, mode, "danger-full-access");
+}
+
 fn resetLoadedThreadSandboxProfile(
     allocator: std.mem.Allocator,
     thread: *LoadedThread,
     mode: config.SandboxMode,
     network_enabled: bool,
+    external: bool,
 ) !void {
     var roots = try emptyStringList(allocator);
     errdefer roots.deinit(allocator);
@@ -26790,6 +26813,7 @@ fn resetLoadedThreadSandboxProfile(
         roots,
         true,
         network_enabled,
+        external,
     );
 }
 
@@ -26800,12 +26824,14 @@ fn replaceLoadedThreadSandboxProfile(
     roots: config.StringList,
     include_cwd_write_root: bool,
     network_enabled: bool,
+    external: bool,
 ) !void {
     try replaceOwnedString(allocator, &thread.sandbox_mode, mode.label());
     thread.sandbox_writable_roots.deinit(allocator);
     thread.sandbox_writable_roots = roots;
     thread.sandbox_include_cwd_write_root = include_cwd_write_root;
     thread.sandbox_network_enabled = network_enabled;
+    thread.sandbox_external = external;
     thread.runtime_overrides.sandbox_mode = true;
 }
 
@@ -29141,7 +29167,7 @@ fn handleThreadStart(
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
 
-    const result = try renderThreadLifecycleResponse(allocator, &thread, true);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, true, state.experimental_api_enabled);
     defer allocator.free(result);
     const started_notification = try renderThreadStartedNotification(allocator, &thread);
     var notification_moved = false;
@@ -29192,7 +29218,7 @@ fn handleThreadResume(
             errdefer if (!thread_moved) thread.deinit(allocator);
 
             const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
-            const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
+            const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
             defer allocator.free(result);
 
             const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
@@ -29237,7 +29263,7 @@ fn handleThreadResume(
     };
 
     const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
-    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
     defer allocator.free(result);
 
     const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
@@ -29317,7 +29343,7 @@ fn handleThreadForkWithSource(
     errdefer if (!thread_moved) thread.deinit(allocator);
 
     const include_turns = !(optionalBoolParam(params, "excludeTurns") orelse false);
-    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns);
+    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
     defer allocator.free(result);
     const started_notification = try renderThreadStartedNotification(allocator, &thread);
     var notification_moved = false;
@@ -29878,7 +29904,8 @@ fn createLoadedThreadFromStartParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
-        .sandbox_network_enabled = true,
+        .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_external = false,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -30003,7 +30030,8 @@ fn createLoadedThreadFromHistoryParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
-        .sandbox_network_enabled = true,
+        .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_external = false,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -30141,7 +30169,8 @@ fn createLoadedThreadFromResumeParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
-        .sandbox_network_enabled = true,
+        .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_external = false,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -30255,7 +30284,8 @@ fn createLoadedThreadFromForkParams(
         try source.sandbox_writable_roots.clone(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
     const sandbox_include_cwd_write_root = if (sandbox_override) true else source.sandbox_include_cwd_write_root;
-    const sandbox_network_enabled = if (sandbox_override) true else source.sandbox_network_enabled;
+    const sandbox_network_enabled = if (sandbox_override) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
+    const sandbox_external = if (sandbox_override) false else source.sandbox_external;
 
     const reasoning_effort = if (source.reasoning_effort) |value|
         try allocator.dupe(u8, value)
@@ -30320,6 +30350,7 @@ fn createLoadedThreadFromForkParams(
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
         .sandbox_network_enabled = sandbox_network_enabled,
+        .sandbox_external = sandbox_external,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -31416,7 +31447,12 @@ const ThreadRuntimeStatus = enum {
     system_error,
 };
 
-fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, include_turns: bool) ![]const u8 {
+fn renderThreadLifecycleResponse(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    include_turns: bool,
+    experimental_api_enabled: bool,
+) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
@@ -31435,7 +31471,12 @@ fn renderThreadLifecycleResponse(allocator: std.mem.Allocator, thread: *const Lo
     try result.appendSlice(allocator, ",\"approvalsReviewer\":");
     try appendJsonString(allocator, &result, thread.approvals_reviewer);
     try result.appendSlice(allocator, ",\"sandbox\":");
-    try appendSandboxPolicyJson(allocator, &result, thread.sandbox_mode);
+    try appendThreadSandboxPolicyJson(allocator, &result, thread);
+    if (experimental_api_enabled) {
+        try result.appendSlice(allocator, ",\"permissionProfile\":");
+        try appendThreadPermissionProfileJson(allocator, &result, thread);
+        try result.appendSlice(allocator, ",\"activePermissionProfile\":null");
+    }
     try result.appendSlice(allocator, ",\"reasoningEffort\":");
     try appendOptionalJsonString(allocator, &result, thread.reasoning_effort);
     try result.appendSlice(allocator, "}");
@@ -32604,14 +32645,59 @@ fn appendSavedThreadListGitInfoJson(allocator: std.mem.Allocator, result: *std.A
     try result.append(allocator, '}');
 }
 
-fn appendSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), sandbox_mode: []const u8) !void {
-    if (std.mem.eql(u8, sandbox_mode, "danger-full-access")) {
+fn appendThreadSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    if (thread.sandbox_external) {
+        try result.appendSlice(allocator, "{\"type\":\"externalSandbox\",\"networkAccess\":");
+        try appendJsonString(allocator, result, if (thread.sandbox_network_enabled) "enabled" else "restricted");
+        try result.append(allocator, '}');
+    } else if (std.mem.eql(u8, thread.sandbox_mode, "danger-full-access")) {
         try result.appendSlice(allocator, "{\"type\":\"dangerFullAccess\"}");
-    } else if (std.mem.eql(u8, sandbox_mode, "read-only")) {
-        try result.appendSlice(allocator, "{\"type\":\"readOnly\",\"networkAccess\":false}");
+    } else if (std.mem.eql(u8, thread.sandbox_mode, "read-only")) {
+        try result.appendSlice(allocator, "{\"type\":\"readOnly\",\"networkAccess\":");
+        try appendJsonBool(allocator, result, thread.sandbox_network_enabled);
+        try result.append(allocator, '}');
     } else {
-        try result.appendSlice(allocator, "{\"type\":\"workspaceWrite\",\"writableRoots\":[],\"networkAccess\":false,\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
+        try result.appendSlice(allocator, "{\"type\":\"workspaceWrite\",\"writableRoots\":[");
+        for (thread.sandbox_writable_roots.items, 0..) |root, index| {
+            if (index > 0) try result.append(allocator, ',');
+            try appendJsonString(allocator, result, root);
+        }
+        try result.appendSlice(allocator, "],\"networkAccess\":");
+        try appendJsonBool(allocator, result, thread.sandbox_network_enabled);
+        try result.appendSlice(allocator, ",\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
     }
+}
+
+fn appendThreadPermissionProfileJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    if (thread.sandbox_external) {
+        try result.appendSlice(allocator, "{\"type\":\"external\",\"network\":{\"enabled\":");
+        try appendJsonBool(allocator, result, thread.sandbox_network_enabled);
+        try result.appendSlice(allocator, "}}");
+    } else if (std.mem.eql(u8, thread.sandbox_mode, "danger-full-access")) {
+        try result.appendSlice(allocator, "{\"type\":\"disabled\"}");
+    } else {
+        try result.appendSlice(allocator, "{\"type\":\"managed\",\"fileSystem\":");
+        try appendThreadPermissionProfileFileSystemJson(allocator, result, thread);
+        try result.appendSlice(allocator, ",\"network\":{\"enabled\":");
+        try appendJsonBool(allocator, result, thread.sandbox_network_enabled);
+        try result.appendSlice(allocator, "}}");
+    }
+}
+
+fn appendThreadPermissionProfileFileSystemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    try result.appendSlice(allocator, "{\"type\":\"restricted\",\"entries\":[");
+    try result.appendSlice(allocator, "{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"root\"}},\"access\":\"read\"}");
+    if (std.mem.eql(u8, thread.sandbox_mode, "workspace-write")) {
+        if (thread.sandbox_include_cwd_write_root) {
+            try result.appendSlice(allocator, ",{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"project_roots\"}},\"access\":\"write\"}");
+        }
+        for (thread.sandbox_writable_roots.items) |root| {
+            try result.appendSlice(allocator, ",{\"path\":{\"type\":\"path\",\"path\":");
+            try appendJsonString(allocator, result, root);
+            try result.appendSlice(allocator, "},\"access\":\"write\"}");
+        }
+    }
+    try result.appendSlice(allocator, "]}");
 }
 
 fn updateInitializeCapabilities(allocator: std.mem.Allocator, state: *AppServerState, params_value: ?std.json.Value) !void {
@@ -43827,7 +43913,8 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             thread.sandbox_writable_roots = roots;
             roots_moved = true;
             thread.sandbox_include_cwd_write_root = true;
-            thread.sandbox_network_enabled = true;
+            thread.sandbox_network_enabled = defaultNetworkEnabledForSandboxMode(cfg.sandbox_mode);
+            thread.sandbox_external = false;
         }
         if (!thread.runtime_overrides.reasoning_effort) {
             if (cfg.model_reasoning_effort) |effort| {
@@ -48056,6 +48143,10 @@ fn appendJsonString(allocator: std.mem.Allocator, result: *std.ArrayList(u8), va
     const value_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
     defer allocator.free(value_json);
     try result.appendSlice(allocator, value_json);
+}
+
+fn appendJsonBool(allocator: std.mem.Allocator, result: *std.ArrayList(u8), value: bool) !void {
+    try result.appendSlice(allocator, if (value) "true" else "false");
 }
 
 fn appendOptionalJsonString(allocator: std.mem.Allocator, result: *std.ArrayList(u8), value: ?[]const u8) !void {
