@@ -13,48 +13,38 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - License: MIT
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
-- GitHub community profile: 100%
-- Security settings: GitHub API checks through 2026-05-15 showed secret scanning,
+- GitHub community profile: 100% by the repository community-profile API.
+- Security settings: GitHub API checks through 2026-05-15 show secret scanning,
   push protection, Dependabot security updates, and private vulnerability
   reporting enabled. GitHub reports non-provider pattern scanning and secret
-  validity checks as disabled. Dependabot and secret-scanning alert APIs
-  returned no open alerts. CodeQL Python code scanning is configured; push run
-  `25895326233` passed for `27b2f7e Tune CodeQL smoke fixture filters`, and the
-  code-scanning API returned no open alerts after fixing the initial
-  smoke-fixture findings. The current remote-control push also passed CodeQL
-  run `25907516640` for commit `3e52b91 Document local remote-control support`,
-  and fresh `state=open` API checks for code-scanning, secret-scanning, and
-  Dependabot alerts returned no open alerts.
+  validity checks as disabled. The current token received 404s from the
+  code-scanning, secret-scanning alert, and Dependabot alert list endpoints, so
+  this pass did not record a fresh alert count. CodeQL Python code scanning is
+  configured; the latest completed pre-current-slice CodeQL run `25911164524`
+  passed for `bee6089 Document app-server root feature overrides`.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `25907516624` passed for
-  `3e52b91 Document local remote-control support`; prior push run
-  `25895326235` passed for
-  `27b2f7e Tune CodeQL smoke fixture filters`; prior push runs `25894492493`,
-  `25878096276`, and `25877638204` also passed for the lifecycle response,
-  remaining request-field, and server-notification gating slices. Local
-  pre-push verification for the current remote-control slice included Python
-  compilation, whitespace checks, `zig build`, `zig build test --summary all`,
-  a direct `scripts/tui_e2e.py` run against the rebuilt binary, `zig build e2e`,
-  and `codex-review`.
-- Source hygiene: current tracked-file scans after the local remote-control
-  slice found no provider-shaped tokens, GitHub tokens, Slack tokens, AWS access
-  keys, private-key blocks, or JWT-shaped blobs.
-  Keyword/path scans found public docs, test fixtures, mocked auth/token flows
-  such as `test-api-key`, and temporary-path examples rather than checked-in
-  local credentials. Current ignored-file scans only found local build output,
+  Checked pre-current-slice push run `25911164502` passed for
+  `bee6089 Document app-server root feature overrides`; prior push runs
+  `25910352507` and `25908888054` also passed for runtime and session slash
+  command slices. Local pre-push verification for the current config write
+  override metadata slice included Python compilation, whitespace checks,
+  `zig build`, focused config write override metadata smoke,
+  `zig build test --summary all`, full app-server stdio smoke,
+  `zig build e2e --summary all`, and `codex review --uncommitted`.
+- Source hygiene: current tracked-file scans after the local config write
+  override metadata slice found no provider-shaped tokens, GitHub tokens, Slack
+  tokens, AWS access keys, or private-key blocks in tracked files;
+  the only current match is this document's historical dummy
+  `sk-proj-1234567890ABCDE` note. `git ls-files -o --exclude-standard` returned
+  no untracked public files. Ignored-file scans only found local build output,
   Python bytecode, ignored demo scratch files, and ignored local `plans/`
-  content; provider-shaped secret scans over ignored non-build files also found
-  no matches. Git-history regex scans found no GitHub tokens, AWS access keys,
-  private-key blocks, or JWT-shaped blobs; the only provider-shaped history
-  match is the old dummy `sk-proj-1234567890ABCDE` test fixture added by commit
-  `820d156` and removed by commit `0383594`, and it is not present in current
-  source. `gitleaks` was not installed on the local machine during the latest
-  check, so the local scan used repository `rg` and `git grep` patterns plus
-  GitHub's enabled secret-scanning state.
+  content. `gitleaks` was not installed on the local machine during the latest
+  check, so the local scan used repository `git grep` patterns plus GitHub's
+  enabled secret-scanning state.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package
 
