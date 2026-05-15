@@ -426,7 +426,9 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "app-server")) {
-            try app_server_cmd.run(allocator, &args);
+            try app_server_cmd.runWithOptions(allocator, &args, .{
+                .feature_overrides = runtime_feature_overrides,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "plugin")) {

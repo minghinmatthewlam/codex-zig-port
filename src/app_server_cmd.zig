@@ -87,9 +87,14 @@ const AppServerOptions = struct {
     websocket_auth: WebsocketAuthArgs = .{},
 };
 
+pub const InvocationOptions = struct {
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+};
+
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
     experimental_api_enabled: bool = false,
+    cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
@@ -104,6 +109,7 @@ const AppServerState = struct {
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         clearAppServerConnectionState(allocator, self);
+        self.cli_feature_overrides.deinit(allocator);
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
         self.loaded_threads.deinit(allocator);
@@ -118,6 +124,19 @@ const AppServerState = struct {
         self.active_command_execs.deinit(allocator);
     }
 };
+
+fn initAppServerState(
+    allocator: std.mem.Allocator,
+    invocation_options: InvocationOptions,
+    deferred_command_exec_stdio: bool,
+) !AppServerState {
+    var state = AppServerState{
+        .deferred_command_exec_stdio = deferred_command_exec_stdio,
+        .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
+    };
+    errdefer state.deinit(allocator);
+    return state;
+}
 
 fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServerState) void {
     terminateActiveCommandExecSessions(state);
@@ -314,6 +333,14 @@ const Transport = union(enum) {
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    try runWithOptions(allocator, args, .{});
+}
+
+pub fn runWithOptions(
+    allocator: std.mem.Allocator,
+    args: *std.process.Args.Iterator,
+    invocation_options: InvocationOptions,
+) !void {
     var options = AppServerOptions{};
     var subcommand: ?[]const u8 = null;
     var subcommand_args = std.ArrayList([]const u8).empty;
@@ -437,24 +464,24 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
 
     switch (transport) {
         .stdio => {
-            var server = StdioServer{ .allocator = allocator };
+            var server = StdioServer{ .allocator = allocator, .invocation_options = invocation_options };
             try server.run();
         },
         .off => try cli_utils.writeStdout("app-server transport: off\n"),
         .unix_default => {
             const socket_path = try defaultUnixSocketPath(allocator);
             defer allocator.free(socket_path);
-            var server = UnixServer{ .allocator = allocator, .socket_path = socket_path };
+            var server = UnixServer{ .allocator = allocator, .socket_path = socket_path, .invocation_options = invocation_options };
             try server.run();
         },
         .unix_path => |path| {
-            var server = UnixServer{ .allocator = allocator, .socket_path = path };
+            var server = UnixServer{ .allocator = allocator, .socket_path = path, .invocation_options = invocation_options };
             try server.run();
         },
         .websocket => |address| {
             var auth_policy = try websocketAuthPolicyFromArgs(allocator, options.websocket_auth);
             defer auth_policy.deinit(allocator);
-            var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy };
+            var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy, .invocation_options = invocation_options };
             try server.run();
         },
     }
@@ -24764,9 +24791,10 @@ fn formatTransportLabel(allocator: std.mem.Allocator, transport: Transport) ![]c
 
 const StdioServer = struct {
     allocator: std.mem.Allocator,
+    invocation_options: InvocationOptions = .{},
 
     fn run(self: *StdioServer) !void {
-        var state = AppServerState{ .deferred_command_exec_stdio = true };
+        var state = try initAppServerState(self.allocator, self.invocation_options, true);
         defer state.deinit(self.allocator);
 
         var input_buffer: [64 * 1024]u8 = undefined;
@@ -24798,6 +24826,7 @@ const StdioServer = struct {
 const UnixServer = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
+    invocation_options: InvocationOptions = .{},
 
     fn run(self: *UnixServer) !void {
         const io = std.Io.Threaded.global_single_threaded.io();
@@ -24812,7 +24841,7 @@ const UnixServer = struct {
         defer server.deinit(io);
         defer deleteSocketFileIfSocket(self.allocator, io, self.socket_path) catch {};
 
-        var state = AppServerState{};
+        var state = try initAppServerState(self.allocator, self.invocation_options, false);
         defer state.deinit(self.allocator);
 
         while (true) {
@@ -24873,6 +24902,7 @@ const WebSocketServer = struct {
     allocator: std.mem.Allocator,
     address: WebSocketListen,
     auth_policy: WebsocketAuthPolicy = .none,
+    invocation_options: InvocationOptions = .{},
 
     fn run(self: *WebSocketServer) !void {
         const io = std.Io.Threaded.global_single_threaded.io();
@@ -24885,7 +24915,7 @@ const WebSocketServer = struct {
         defer self.allocator.free(bind_message);
         try cli_utils.writeStderr(bind_message);
 
-        var state = AppServerState{};
+        var state = try initAppServerState(self.allocator, self.invocation_options, false);
         defer state.deinit(self.allocator);
 
         while (true) {
@@ -33038,6 +33068,7 @@ fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServer
     var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
     defer config_overrides.deinit(allocator);
 
+    if (state.cli_feature_overrides.get(key)) |enabled| return enabled;
     if (config_overrides.get(key)) |enabled| return enabled;
     if (state.runtime_feature_enablement.get(key)) |enabled| return enabled;
     for (features_cmd.FeatureSpec.all) |feature| {
@@ -44292,7 +44323,7 @@ fn handleConfigRead(
     };
     defer project_layers.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, feature_overrides, state.runtime_feature_enablement, include_layers, managed_layer, project_layers, user_layer, system_layer);
+    const result = try renderConfigReadResponse(allocator, cfg, state.cli_feature_overrides, feature_overrides, state.runtime_feature_enablement, include_layers, managed_layer, project_layers, user_layer, system_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -44430,6 +44461,7 @@ fn renderConfigWriteResponse(allocator: std.mem.Allocator, file_path: []const u8
 fn renderConfigReadResponse(
     allocator: std.mem.Allocator,
     cfg: config.Config,
+    cli_feature_overrides: features_cmd.FeatureOverrides,
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
     include_layers: bool,
@@ -44481,7 +44513,7 @@ fn renderConfigReadResponse(
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
-    try appendConfigReadFeaturesField(allocator, &result, &first, config_feature_overrides, runtime_feature_enablement);
+    try appendConfigReadFeaturesField(allocator, &result, &first, cli_feature_overrides, config_feature_overrides, runtime_feature_enablement);
     try result.appendSlice(allocator, "},\"origins\":");
     try appendConfigReadOrigins(allocator, &result, managed_layer, project_layers, user_layer, system_layer);
     try result.appendSlice(allocator, ",\"layers\":");
@@ -47421,6 +47453,7 @@ fn appendConfigReadFeaturesField(
     allocator: std.mem.Allocator,
     result: *std.ArrayList(u8),
     first: *bool,
+    cli_feature_overrides: features_cmd.FeatureOverrides,
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
 ) !void {
@@ -47430,7 +47463,8 @@ fn appendConfigReadFeaturesField(
         if (index > 0) try result.appendSlice(allocator, ",");
         const key_json = try std.json.Stringify.valueAlloc(allocator, feature.key, .{});
         defer allocator.free(key_json);
-        const enabled = config_feature_overrides.get(feature.key) orelse
+        const enabled = cli_feature_overrides.get(feature.key) orelse
+            config_feature_overrides.get(feature.key) orelse
             runtime_feature_enablement.get(feature.key) orelse
             feature.default_enabled;
         try result.appendSlice(allocator, key_json);
@@ -48404,7 +48438,8 @@ fn handleExperimentalFeatureList(
     try result.appendSlice(allocator, "{\"data\":[");
     for (all_features[start..end], 0..) |feature, index| {
         if (index > 0) try result.appendSlice(allocator, ",");
-        const enabled = feature_overrides.get(feature.key) orelse
+        const enabled = state.cli_feature_overrides.get(feature.key) orelse
+            feature_overrides.get(feature.key) orelse
             state.runtime_feature_enablement.get(feature.key) orelse
             feature.default_enabled;
         try appendExperimentalFeatureJson(allocator, &result, feature, enabled);
