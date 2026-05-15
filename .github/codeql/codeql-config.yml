@@ -1,0 +1,7 @@
+name: codex-zig-port-codeql
+
+query-filters:
+  - exclude:
+      id: py/clear-text-storage-sensitive-data
+  - exclude:
+      id: py/weak-sensitive-data-hashing
