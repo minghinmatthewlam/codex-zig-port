@@ -122,6 +122,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   including local cache/config cleanup and remote cloud mutation
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
+- run a minimal exec-server stdio JSON-RPC transport with a Rust-shaped
+  `initialize` handshake plus explicit partial-parity errors for resume
+  handshakes and other methods
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
   clients
@@ -277,7 +280,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `forceReload` cache refreshes, and `agents/openai.yaml` interface/dependency metadata plus
   `skills/config/write` enablement toggles
 - recognize planned Rust top-level commands like `remote-control`, `cloud`,
-  `exec-server`, and `update` without treating them as prompt text
+  and `cloud-tasks` without treating them as prompt text
 - print general or command-specific help with `help [COMMAND]`
 - generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
