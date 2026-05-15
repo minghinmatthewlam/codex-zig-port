@@ -283,7 +283,9 @@ and option params, network approval/policy helpers, and the MCP elicitation
 request envelope. JSON Schema generation now includes the legacy
 `ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files plus
 the v2 command/file/permission approval, dynamic tool-call, request-user-input,
-and MCP elicitation request param helper files. Runtime handling for these
+and MCP elicitation request param helper files. Stable-client filtering is
+covered for `item/commandExecution/requestApproval.additionalPermissions` when
+a command-approval server request is rendered. Runtime handling for these
 request surfaces remains planned.
 
 Additional app-server dynamic/MCP helper generation coverage: generated
@@ -728,7 +730,9 @@ such as `thread/goal/*` and `process/*` until the client opts in. Experimental
 `thread/start`, `thread/resume`, and `thread/fork` response
 `permissionProfile` / `activePermissionProfile` fields are likewise hidden from
 stable clients and included for experimental clients. Experimental
-server-request field filtering remains planned.
+server-request field filtering is covered for the command-execution approval
+`additionalPermissions` field; full server-request runtime dispatch remains
+planned.
 
 Additional app-server turn-start coverage: `turn/start` now accepts text, URL-backed image, localImage, skill, and mention input for a loaded thread, including turns made only of structured skill/mention items. It preserves text input item arrays, `text_elements`, image URLs, local image paths, and skill/mention name/path pairs in user-message lifecycle notifications, runs the existing Responses turn loop with the thread transcript, roots model-requested shell tools and `apply_patch` edits in the loaded thread cwd when the tool call does not provide an explicit workdir, forwards URL-backed and readable local images as `input_image` request content, converts missing local images into model-visible error placeholders, injects readable local skill files as Rust-shaped `<skill>` user fragments, updates loaded-thread preview/turns, persists persistent Zig transcripts, returns a Rust-shaped `TurnStartResponse`, emits `turn/started`, text user-message `item/started` / `item/completed`, raw Responses output items as `rawResponseItem/completed`, final assistant-message `item/started`, `item/agentMessage/delta`, `item/completed`, and `turn/completed` notifications, and includes `turn/start`, `turn/started`, `turn/completed`, `item/started`, `item/completed`, `item/agentMessage/delta`, and the current `UserInput` union in generated TypeScript and JSON schemas. `turn/steer` and `turn/interrupt` are also parsed and generated: the current no-active-turn runtime validates loaded-thread ids, steer input, `expectedTurnId`, and `turnId`, returns Rust-shaped no-active-turn errors for loaded synchronous threads, and accepts the Rust startup-interrupt empty `turnId` response. The current Zig implementation is synchronous and flattens model-visible turn input into the stored transcript; full Rust async streaming, plugin/app mention capability injection, chunked deltas and tool/reasoning item lifecycles, real same-turn steering, async interruption, active-turn tracking, and full turn schema parity remain planned.
 
