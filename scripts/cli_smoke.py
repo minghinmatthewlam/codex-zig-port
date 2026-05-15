@@ -734,6 +734,8 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
     try:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env["EXEC_SERVER_POLICY_PARENT"] = "parent"
+        env["EXEC_SERVER_POLICY_SECRET_TOKEN"] = "secret"
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_ACCESS_TOKEN", None)
 
@@ -1504,6 +1506,88 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             )
             assert default_path_read["result"]["exited"] is True
             assert default_path_read["result"]["closed"] is True
+
+            invalid_env_policy_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "invalid-env-policy-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "invalid-env-policy-proc",
+                        "argv": ["/bin/sh", "-c", "printf bad"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "envPolicy": {"inherit": "all"},
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert invalid_env_policy_start["error"]["code"] == -32602
+            assert "envPolicy must include inherit" in invalid_env_policy_start["error"]["message"]
+
+            env_policy_script = (
+                "import json, os; "
+                "keys = ["
+                "'EXEC_SERVER_POLICY_PARENT', "
+                "'EXEC_SERVER_POLICY_SECRET_TOKEN', "
+                "'POLICY_SET', "
+                "'OVERLAY_ME', "
+                "'REQUEST_ONLY', "
+                "'PATH'"
+                "]; "
+                "print(json.dumps({key: os.environ.get(key) for key in keys}, sort_keys=True), flush=True)"
+            )
+            env_policy_start = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "env-policy-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "env-policy-proc",
+                        "argv": [sys.executable, "-c", env_policy_script],
+                        "cwd": str(temp_root),
+                        "env": {"OVERLAY_ME": "request", "REQUEST_ONLY": "request"},
+                        "envPolicy": {
+                            "inherit": "all",
+                            "ignoreDefaultExcludes": False,
+                            "exclude": ["EXEC_SERVER_POLICY_PARENT"],
+                            "set": {"POLICY_SET": "policy", "OVERLAY_ME": "policy"},
+                            "includeOnly": ["PATH", "POLICY_*", "OVERLAY_*", "EXEC_SERVER_POLICY_*"],
+                        },
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            assert env_policy_start["result"]["processId"] == "env-policy-proc"
+            env_policy_read = rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "env-policy-read",
+                    "method": "process/read",
+                    "params": {
+                        "processId": "env-policy-proc",
+                        "afterSeq": 0,
+                        "maxBytes": 4096,
+                        "waitMs": 1000,
+                    },
+                }
+            )
+            env_policy_output = b"".join(
+                base64.b64decode(chunk["chunk"])
+                for chunk in env_policy_read["result"]["chunks"]
+                if chunk["stream"] == "stdout"
+            )
+            env_policy_values = json.loads(env_policy_output.decode("utf-8"))
+            assert env_policy_values["EXEC_SERVER_POLICY_PARENT"] is None
+            assert env_policy_values["EXEC_SERVER_POLICY_SECRET_TOKEN"] is None
+            assert env_policy_values["POLICY_SET"] == "policy"
+            assert env_policy_values["OVERLAY_ME"] == "request"
+            assert env_policy_values["REQUEST_ONLY"] == "request"
+            assert env_policy_values["PATH"]
 
             large_stdin_started = rpc(
                 {
