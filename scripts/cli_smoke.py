@@ -73,6 +73,22 @@ class ExecResponsesHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
+        chunks = self.server.response_chunks.pop(0) if self.server.response_chunks else None
+        if chunks is not None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for payload, chunk_delay in chunks:
+                self.wfile.write(f"{len(payload):x}\r\n".encode())
+                self.wfile.write(payload)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+                if chunk_delay:
+                    time.sleep(chunk_delay)
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+            return
         payload = self.server.response_payloads.pop(0) if self.server.response_payloads else default_exec_response_payload()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -90,6 +106,7 @@ class ExecResponsesServer(ThreadingHTTPServer):
     request_headers: list[dict[str, str]]
     response_statuses: list[int]
     response_payloads: list[bytes]
+    response_chunks: list[list[tuple[bytes, float]]]
     response_delays: list[float]
 
 
@@ -345,6 +362,7 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.request_headers = []
     server.response_statuses = []
     server.response_payloads = []
+    server.response_chunks = []
     server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
@@ -690,6 +708,21 @@ def wait_for_json_file(path: Path, process: subprocess.Popen, timeout: float = 5
     raise AssertionError(f"timed out waiting for {path}; process still running")
 
 
+def wait_for_dump_files(dump_dir: Path, process: subprocess.Popen, expected_count: int, timeout: float = 5.0) -> tuple[list[Path], list[Path]]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        request_dumps = sorted(dump_dir.glob("*-request.json")) if dump_dir.exists() else []
+        response_dumps = sorted(dump_dir.glob("*-response.json")) if dump_dir.exists() else []
+        if len(request_dumps) == expected_count and len(response_dumps) == expected_count:
+            return request_dumps, response_dumps
+        if process.poll() is not None:
+            stderr = process.stderr.read() if process.stderr else ""
+            raise AssertionError(f"process exited before dump files appeared:\n{stderr}")
+        time.sleep(0.05)
+    existing = sorted(path.name for path in dump_dir.iterdir()) if dump_dir.exists() else []
+    raise AssertionError(f"timed out waiting for dump files: {existing!r}")
+
+
 def run_responses_api_proxy_smoke(binary: Path) -> None:
     help_result = subprocess.run(
         [str(binary), "help", "responses-api-proxy"],
@@ -710,6 +743,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
         upstream.request_headers = []
         upstream.response_statuses = []
         upstream.response_payloads = [b'{"ok":true}']
+        upstream.response_chunks = []
         upstream.response_delays = []
         upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         upstream_thread.start()
@@ -772,10 +806,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                 if header_value(upstream.request_headers[0], "X-Codex-Test") != "proxy-smoke":
                     raise AssertionError(f"proxy did not forward custom headers: {upstream.request_headers[0]!r}")
 
-                request_dumps = sorted(dump_dir.glob("*-request.json"))
-                response_dumps = sorted(dump_dir.glob("*-response.json"))
-                if len(request_dumps) != 1 or len(response_dumps) != 1:
-                    raise AssertionError(f"unexpected dump files: {sorted(path.name for path in dump_dir.iterdir())!r}")
+                request_dumps, response_dumps = wait_for_dump_files(dump_dir, proxy, 1)
                 request_dump = json.loads(request_dumps[0].read_text())
                 response_dump = json.loads(response_dumps[0].read_text())
                 if request_dump.get("method") != "POST" or request_dump.get("url") != "/v1/responses":
@@ -790,6 +821,26 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     raise AssertionError(f"unexpected response dump status: {response_dump!r}")
                 if response_dump.get("body") != {"ok": True}:
                     raise AssertionError(f"unexpected response dump body: {response_dump!r}")
+
+                first_chunk = b"data: first\n\n"
+                second_chunk = b"data: second\n\n"
+                upstream.response_chunks.append([(first_chunk, 1.5), (second_chunk, 0)])
+                stream_request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/responses",
+                    data=b'{"model":"gpt-test","input":"stream"}',
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                stream_start = time.monotonic()
+                with urllib.request.urlopen(stream_request, timeout=5) as response:
+                    first = response.read(len(first_chunk))
+                    first_elapsed = time.monotonic() - stream_start
+                    if first != first_chunk:
+                        raise AssertionError(f"unexpected first streamed chunk: {first!r}")
+                    if first_elapsed > 1.0:
+                        raise AssertionError(f"proxy buffered streamed response for {first_elapsed:.2f}s")
+                    if response.read() != second_chunk:
+                        raise AssertionError("unexpected remaining streamed response body")
 
                 forbidden = urllib.request.Request(
                     f"http://127.0.0.1:{port}/not-responses",
