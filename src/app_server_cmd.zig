@@ -44131,6 +44131,32 @@ fn handleConfigWriteEdits(
         updated = next;
     }
 
+    var managed_layer = loadConfigReadManagedLayer(allocator) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "{s} failed to read managed config", .{method_name});
+        defer allocator.free(message);
+        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
+    };
+    defer if (managed_layer) |*layer| layer.deinit(allocator);
+
+    const overridden_metadata = if (managed_layer) |layer|
+        renderFirstManagedConfigWriteOverrideMetadata(allocator, layer, edits, updated) catch |err| switch (err) {
+            error.InvalidApprovalPolicy,
+            error.InvalidSandboxMode,
+            error.InvalidWebSearchMode,
+            error.InvalidReasoningEffort,
+            error.InvalidForcedLoginMethod,
+            error.InvalidConfigWriteScalarType,
+            => {
+                const message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{@errorName(err)});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32602, message);
+            },
+            else => return err,
+        }
+    else
+        null;
+    defer if (overridden_metadata) |metadata| allocator.free(metadata);
+
     config.writeConfigTomlFile(config_path, updated) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to write config", .{method_name});
         defer allocator.free(message);
@@ -44139,7 +44165,7 @@ fn handleConfigWriteEdits(
 
     const version = try configVersionAlloc(allocator, updated);
     defer allocator.free(version);
-    const result = try renderConfigWriteResponse(allocator, config_path, version);
+    const result = try renderConfigWriteResponse(allocator, config_path, version, overridden_metadata);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -44446,15 +44472,195 @@ fn configVersionAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const 
     return out;
 }
 
-fn renderConfigWriteResponse(allocator: std.mem.Allocator, file_path: []const u8, version: []const u8) ![]const u8 {
+fn renderFirstManagedConfigWriteOverrideMetadata(
+    allocator: std.mem.Allocator,
+    layer: ConfigReadManagedLayer,
+    edits: []const ConfigRawEdit,
+    user_config_bytes: []const u8,
+) !?[]const u8 {
+    for (edits) |edit| {
+        const effective_value_json = try renderManagedConfigWriteOverrideValueJson(allocator, layer, edit.key_path, user_config_bytes);
+        if (effective_value_json) |value_json| {
+            defer allocator.free(value_json);
+            const metadata = try renderManagedConfigWriteOverrideMetadata(allocator, layer, value_json);
+            return metadata;
+        }
+    }
+    return null;
+}
+
+fn renderManagedConfigWriteOverrideValueJson(
+    allocator: std.mem.Allocator,
+    layer: ConfigReadManagedLayer,
+    key_path: []const u8,
+    user_config_bytes: []const u8,
+) !?[]const u8 {
+    if (std.mem.eql(u8, key_path, "model")) {
+        if (layer.model) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "approval_policy")) {
+        if (layer.approval_policy) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "sandbox_mode")) {
+        if (layer.sandbox_mode) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "web_search")) {
+        if (layer.web_search_mode) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "model_reasoning_effort")) {
+        if (layer.model_reasoning_effort) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "service_tier")) {
+        if (layer.service_tier) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "forced_chatgpt_workspace_id")) {
+        if (layer.forced_chatgpt_workspace_id) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "forced_login_method")) {
+        if (layer.forced_login_method) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    }
+    return null;
+}
+
+fn renderStringOverrideValue(
+    allocator: std.mem.Allocator,
+    effective_value: []const u8,
+    key_path: []const u8,
+    user_config_bytes: []const u8,
+) !?[]const u8 {
+    if (try configWriteUserScalarEquals(allocator, user_config_bytes, key_path, effective_value)) return null;
+    const value_json = try std.json.Stringify.valueAlloc(allocator, effective_value, .{});
+    return value_json;
+}
+
+fn configWriteUserScalarEquals(
+    allocator: std.mem.Allocator,
+    user_config_bytes: []const u8,
+    key_path: []const u8,
+    expected: []const u8,
+) !bool {
+    const user_value = try configWriteUserScalarValue(allocator, user_config_bytes, key_path) orelse return false;
+    defer allocator.free(user_value);
+    return std.mem.eql(u8, user_value, expected);
+}
+
+fn configWriteUserScalarValue(
+    allocator: std.mem.Allocator,
+    user_config_bytes: []const u8,
+    key_path: []const u8,
+) !?[]const u8 {
+    if (std.mem.eql(u8, key_path, "model")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model");
+    }
+    if (std.mem.eql(u8, key_path, "approval_policy")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "approval_policy")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.ApprovalPolicy.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "sandbox_mode")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "sandbox_mode")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.SandboxMode.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "web_search")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "web_search")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.WebSearchMode.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "model_reasoning_effort")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model_reasoning_effort")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.ReasoningEffort.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "service_tier")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "service_tier")) |value| {
+            defer allocator.free(value);
+            const normalized = try config.normalizeServiceTier(allocator, value);
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "forced_chatgpt_workspace_id")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "forced_chatgpt_workspace_id")) |value| {
+            defer allocator.free(value);
+            const trimmed = std.mem.trim(u8, value, " \t\r\n");
+            if (trimmed.len == 0) return null;
+            return @as(?[]const u8, try allocator.dupe(u8, trimmed));
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "forced_login_method")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "forced_login_method")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.ForcedLoginMethod.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    return null;
+}
+
+fn configWriteRequiredTopLevelStringValue(
+    allocator: std.mem.Allocator,
+    user_config_bytes: []const u8,
+    key: []const u8,
+) !?[]const u8 {
+    _ = configReadTopLevelRawValue(user_config_bytes, key) orelse return null;
+    return (try config.topLevelStringValue(allocator, user_config_bytes, key)) orelse error.InvalidConfigWriteScalarType;
+}
+
+fn renderManagedConfigWriteOverrideMetadata(
+    allocator: std.mem.Allocator,
+    layer: ConfigReadManagedLayer,
+    effective_value_json: []const u8,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    const message = try std.fmt.allocPrint(allocator, "Overridden by legacy managed_config.toml: {s}", .{layer.file_path});
+    defer allocator.free(message);
+    const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
+    defer allocator.free(message_json);
+    const version_json = try std.json.Stringify.valueAlloc(allocator, layer.version, .{});
+    defer allocator.free(version_json);
+
+    try result.appendSlice(allocator, "{\"message\":");
+    try result.appendSlice(allocator, message_json);
+    try result.appendSlice(allocator, ",\"overridingLayer\":{\"name\":");
+    try appendConfigReadManagedSource(allocator, &result, layer.file_path);
+    try result.appendSlice(allocator, ",\"version\":");
+    try result.appendSlice(allocator, version_json);
+    try result.appendSlice(allocator, "},\"effectiveValue\":");
+    try result.appendSlice(allocator, effective_value_json);
+    try result.append(allocator, '}');
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderConfigWriteResponse(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    version: []const u8,
+    overridden_metadata: ?[]const u8,
+) ![]const u8 {
     const path_json = try std.json.Stringify.valueAlloc(allocator, file_path, .{});
     defer allocator.free(path_json);
     const version_json = try std.json.Stringify.valueAlloc(allocator, version, .{});
     defer allocator.free(version_json);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"status\":\"ok\",\"version\":{s},\"filePath\":{s},\"overriddenMetadata\":null}}",
-        .{ version_json, path_json },
+        "{{\"status\":\"{s}\",\"version\":{s},\"filePath\":{s},\"overriddenMetadata\":{s}}}",
+        .{
+            if (overridden_metadata != null) "okOverridden" else "ok",
+            version_json,
+            path_json,
+            overridden_metadata orelse "null",
+        },
     );
 }
 
