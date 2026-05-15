@@ -360,6 +360,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         std.debug.print("remote app-server TUI is parsed but not implemented yet for websocket transport: {s}\n", .{remote});
         return error.RemoteAppServerTuiNotImplemented;
     }
+    try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();
     var address = try net.UnixAddress.init(parts.path);
@@ -374,7 +375,8 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
     defer allocator.free(cwd);
 
-    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen, .auto);
+    const alt_screen_mode = options.runtime_overrides.tui_alternate_screen orelse .auto;
+    const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen, alt_screen_mode);
     if (use_alt_screen) enterAlternateScreen();
     defer if (use_alt_screen) leaveAlternateScreen();
 
@@ -399,7 +401,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths);
+            try runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, pending_input_image_paths, options.runtime_overrides);
             pending_input_image_paths = &.{};
         }
     }
@@ -423,13 +425,32 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         }
         const input_image_paths = pending_input_image_paths;
         pending_input_image_paths = &.{};
-        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_image_paths) catch |err| {
+        runRemotePrompt(allocator, &writer.interface, &reader.interface, thread_id, prompt, input_image_paths, options.runtime_overrides) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
     }
 
     std.debug.print("\nbye\n", .{});
+}
+
+fn validateRemoteTuiSupportedOptions(options: Options) !void {
+    if (options.profile != null) return rejectUnsupportedRemoteTuiOption("--profile");
+    if (options.oss) return rejectUnsupportedRemoteTuiOption("--oss");
+    if (options.oss_provider != null) return rejectUnsupportedRemoteTuiOption("--local-provider");
+    if (options.additional_writable_roots.len > 0) return rejectUnsupportedRemoteTuiOption("--add-dir");
+
+    const overrides = options.runtime_overrides;
+    if (overrides.openai_base_url != null) return rejectUnsupportedRemoteTuiOption("-c openai_base_url");
+    if (overrides.chatgpt_base_url != null) return rejectUnsupportedRemoteTuiOption("-c chatgpt_base_url");
+    if (overrides.oss_provider != null) return rejectUnsupportedRemoteTuiOption("-c oss_provider");
+    if (overrides.web_search_mode != null) return rejectUnsupportedRemoteTuiOption("--search");
+    if (overrides.syntax_theme != null) return rejectUnsupportedRemoteTuiOption("-c syntax_theme");
+}
+
+fn rejectUnsupportedRemoteTuiOption(option: []const u8) error{RemoteTuiUnsupportedOption} {
+    std.debug.print("remote app-server TUI does not support `{s}` yet\n", .{option});
+    return error.RemoteTuiUnsupportedOption;
 }
 
 fn printRemoteHeader(remote: []const u8, cwd: []const u8) void {
@@ -459,6 +480,7 @@ fn renderRemoteThreadStartRequest(
     if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, &out, &first, "approvalPolicy", policy.label());
     if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, &out, &first, "sandbox", sandbox.label());
     if (overrides.service_tier) |service_tier| try appendJsonStringField(allocator, &out, &first, "serviceTier", service_tier);
+    if (overrides.personality) |personality| try appendJsonStringField(allocator, &out, &first, "personality", personality.label());
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -470,8 +492,9 @@ fn runRemotePrompt(
     thread_id: []const u8,
     prompt: []const u8,
     input_image_paths: []const []const u8,
+    overrides: config.RuntimeOverrides,
 ) !void {
-    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths);
+    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths, overrides);
     defer allocator.free(request);
 
     std.debug.print("\nassistant:\n", .{});
@@ -491,6 +514,7 @@ fn renderRemoteTurnStartRequest(
     thread_id: []const u8,
     prompt: []const u8,
     input_image_paths: []const []const u8,
+    overrides: config.RuntimeOverrides,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -505,7 +529,12 @@ fn renderRemoteTurnStartRequest(
         try appendJsonString(allocator, &out, path);
         try out.appendSlice(allocator, "}");
     }
-    try out.appendSlice(allocator, "]}}");
+    try out.append(allocator, ']');
+    if (overrides.model_reasoning_summary) |summary| {
+        try appendJsonStringFieldAfterExisting(allocator, &out, "summary", summary.label());
+    }
+    try out.append(allocator, '}');
+    try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
 
@@ -553,8 +582,7 @@ fn streamRemoteTurnUntilCompleted(
     turn_id: []const u8,
 ) !void {
     var saw_delta = false;
-    var lines_read: usize = 0;
-    while (lines_read < 1024) : (lines_read += 1) {
+    while (true) {
         const line_raw = try readRemoteLine(allocator, reader) orelse return error.RemoteAppServerClosed;
         defer allocator.free(line_raw);
         const line = std.mem.trim(u8, line_raw, " \t\r\n");
@@ -583,7 +611,6 @@ fn streamRemoteTurnUntilCompleted(
             return;
         }
     }
-    return error.RemoteAppServerTurnIncomplete;
 }
 
 fn readRemoteLine(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
@@ -664,6 +691,16 @@ fn appendJsonStringField(
     try out.appendSlice(allocator, name);
     try out.appendSlice(allocator, "\":");
     try appendJsonString(allocator, out, value);
+}
+
+fn appendJsonStringFieldAfterExisting(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    var first = false;
+    try appendJsonStringField(allocator, out, &first, name, value);
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
@@ -2550,6 +2587,65 @@ test "remote auth token transport is limited to secure or loopback URLs" {
     try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("wss://example.com:443")));
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("unix:///tmp/codex.sock")));
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://example.com:4500")));
+}
+
+test "remote TUI rejects unsupported local-only options" {
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .profile = "work",
+    }));
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{ .web_search_mode = .live },
+    }));
+}
+
+test "remote TUI serializes supported runtime overrides" {
+    const allocator = std.testing.allocator;
+    const thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{
+        .model = "gpt-remote",
+        .approval_policy = .never,
+        .sandbox_mode = .read_only,
+        .service_tier = "flex",
+        .personality = .friendly,
+    });
+    defer allocator.free(thread_start);
+
+    var parsed_thread = try std.json.parseFromSlice(std.json.Value, allocator, thread_start, .{});
+    defer parsed_thread.deinit();
+    const thread_params = parsed_thread.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("gpt-remote", thread_params.get("model").?.string);
+    try std.testing.expectEqualStrings("never", thread_params.get("approvalPolicy").?.string);
+    try std.testing.expectEqualStrings("read-only", thread_params.get("sandbox").?.string);
+    try std.testing.expectEqualStrings("flex", thread_params.get("serviceTier").?.string);
+    try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
+
+    const images = [_][]const u8{"/tmp/image.png"};
+    const turn_start = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &images, .{
+        .model_reasoning_summary = .concise,
+    });
+    defer allocator.free(turn_start);
+
+    var parsed_turn = try std.json.parseFromSlice(std.json.Value, allocator, turn_start, .{});
+    defer parsed_turn.deinit();
+    const turn_params = parsed_turn.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("concise", turn_params.get("summary").?.string);
+    const input_items = turn_params.get("input").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), input_items.len);
+    try std.testing.expectEqualStrings("/tmp/image.png", input_items[1].object.get("path").?.string);
+}
+
+test "remote TUI waits past many ignored notifications" {
+    const allocator = std.testing.allocator;
+    var input = std.ArrayList(u8).empty;
+    defer input.deinit(allocator);
+
+    for (0..1030) |_| {
+        try input.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\"}}\n");
+    }
+    try input.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"delta\":\"done\"}}\n");
+    try input.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\"}}\n");
+
+    var reader: std.Io.Reader = .fixed(input.items);
+    try streamRemoteTurnUntilCompleted(allocator, &reader, "thread-1", "turn-1");
 }
 
 test "parse resume picker selection" {

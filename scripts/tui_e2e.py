@@ -1471,6 +1471,28 @@ def run_remote_flag_smoke(
             f"expected non-interactive remote rejection:\n{rejected_result.stderr}"
         )
 
+    unsupported_remote_override = subprocess.run(
+        [
+            str(binary),
+            "--remote",
+            "unix:///tmp/codex-zig-missing.sock",
+            "--search",
+            "--no-alt-screen",
+        ],
+        cwd=workspace,
+        env=remote_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if unsupported_remote_override.returncode == 0:
+        raise AssertionError("unsupported remote override unexpectedly succeeded")
+    if "remote app-server TUI does not support `--search` yet" not in unsupported_remote_override.stderr:
+        raise AssertionError(
+            "expected unsupported remote override rejection before connecting:\n"
+            f"{unsupported_remote_override.stderr}"
+        )
+
 
 def run_remote_unix_tui_smoke(
     binary: Path,
@@ -1516,6 +1538,12 @@ def run_remote_unix_tui_smoke(
                 "--remote",
                 f"unix://{socket_path}",
                 "--no-alt-screen",
+                "--model",
+                "gpt-remote-cli",
+                "-c",
+                "personality=friendly",
+                "-c",
+                "model_reasoning_summary=concise",
                 "--image",
                 image_path.name,
                 "describe attached image from remote tui",
@@ -1585,6 +1613,16 @@ def run_remote_unix_tui_smoke(
     images = latest_user_images(image_matching[-1].get("input", []))
     if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
         raise AssertionError(f"expected one remote PNG input_image, saw {images!r}")
+    if image_matching[-1].get("model") != "gpt-remote-cli":
+        raise AssertionError(
+            f"expected remote model override, saw {image_matching[-1].get('model')!r}"
+        )
+    reasoning = image_matching[-1].get("reasoning", {})
+    if reasoning.get("summary") != "concise":
+        raise AssertionError(f"expected remote summary override, saw {reasoning!r}")
+    instructions = image_matching[-1].get("instructions", "")
+    if "<personality_spec>" not in instructions:
+        raise AssertionError("expected remote personality override in instructions")
 
 
 def run_session_command_option_smoke(
