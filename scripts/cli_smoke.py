@@ -1459,6 +1459,125 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert arg0_stdin_output == b"chr\n"
 
+        if sys.platform == "darwin":
+            tty_proc = subprocess.Popen(
+                [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+                cwd=temp_root,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert tty_proc.stdin is not None
+            assert tty_proc.stdout is not None
+            assert tty_proc.stderr is not None
+
+            def write_tty(message: dict[str, object]) -> None:
+                assert tty_proc.stdin is not None
+                tty_proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+                tty_proc.stdin.flush()
+
+            def read_tty_response() -> dict[str, object]:
+                assert tty_proc.stdout is not None
+                line = tty_proc.stdout.readline()
+                if line == "":
+                    raise AssertionError(f"exec-server tty smoke exited early: {tty_proc.stderr.read()}")
+                return json.loads(line)
+
+            try:
+                write_tty(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "tty-init",
+                        "method": "initialize",
+                        "params": {"clientName": "cli-smoke-tty"},
+                    }
+                )
+                tty_init = read_tty_response()
+                assert tty_init["id"] == "tty-init"
+                assert "sessionId" in tty_init["result"]
+                write_tty({"jsonrpc": "2.0", "method": "initialized"})
+                write_tty(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "start-tty",
+                        "method": "process/start",
+                        "params": {
+                            "processId": "tty-proc",
+                            "argv": [
+                                bash,
+                                "-c",
+                                "printf 'TTY:%s:%s\\n' \"$0\" \"$(test -t 0 && echo yes || echo no)\"; IFS= read -r line; printf 'LINE:%s\\n' \"$line\"",
+                            ],
+                            "cwd": str(temp_root),
+                            "env": shell_env,
+                            "tty": True,
+                            "pipeStdin": False,
+                            "arg0": "tty-zero",
+                        },
+                    }
+                )
+                tty_start = read_tty_response()
+                assert tty_start["id"] == "start-tty"
+                assert tty_start["result"]["processId"] == "tty-proc"
+
+                tty_after_seq = 0
+                tty_output = b""
+                tty_read_index = 0
+
+                def read_tty_output() -> None:
+                    nonlocal tty_after_seq, tty_output, tty_read_index
+                    tty_read_index += 1
+                    write_tty(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": f"read-tty-{tty_read_index}",
+                            "method": "process/read",
+                            "params": {"processId": "tty-proc", "afterSeq": tty_after_seq, "maxBytes": 4096, "waitMs": 2000},
+                        }
+                    )
+                    tty_read = read_tty_response()
+                    assert tty_read["id"] == f"read-tty-{tty_read_index}"
+                    tty_chunks = tty_read["result"]["chunks"]
+                    if tty_chunks:
+                        assert {chunk["stream"] for chunk in tty_chunks} == {"pty"}
+                        tty_output += b"".join(base64.b64decode(chunk["chunk"]) for chunk in tty_chunks)
+                    tty_after_seq = max(tty_after_seq, tty_read["result"]["nextSeq"] - 1)
+
+                for _ in range(5):
+                    read_tty_output()
+                    if b"TTY:tty-zero:yes" in tty_output:
+                        break
+                assert b"TTY:tty-zero:yes" in tty_output, tty_output
+
+                write_tty(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "write-tty",
+                        "method": "process/write",
+                        "params": {"processId": "tty-proc", "chunk": base64.b64encode(b"hello\r").decode("ascii")},
+                    }
+                )
+                tty_write = read_tty_response()
+                assert tty_write["id"] == "write-tty"
+                assert tty_write["result"]["status"] == "accepted"
+
+                for _ in range(5):
+                    read_tty_output()
+                    if b"LINE:hello" in tty_output:
+                        break
+                assert b"LINE:hello" in tty_output, tty_output
+            finally:
+                if tty_proc.stdin is not None:
+                    tty_proc.stdin.close()
+                try:
+                    tty_proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    tty_proc.terminate()
+                    tty_proc.wait(timeout=2)
+            assert tty_proc.stderr.read() == ""
+
         missing_cwd_requests = [
             {
                 "jsonrpc": "2.0",
