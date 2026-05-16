@@ -882,6 +882,68 @@ def run_exec_server_stream_response_smoke(
             proc.wait(timeout=5)
 
 
+def run_exec_server_websocket_stream_response_smoke(
+    binary: Path, temp_root: Path, env: dict[str, str], http_url: str
+) -> None:
+    proc = subprocess.Popen(
+        [str(binary.resolve()), "exec-server"],
+        cwd=temp_root,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    websocket: ExecServerSmokeWebSocket | None = None
+    try:
+        host, port = wait_for_exec_server_websocket_bind(proc, 5)
+        websocket = ExecServerSmokeWebSocket(host, port)
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-stream-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-websocket-stream"},
+            }
+        )
+        initialize = websocket.read_json()
+        assert initialize["id"] == "websocket-stream-init"
+        websocket.write_json({"jsonrpc": "2.0", "method": "initialized"})
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-stream-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream",
+                    "requestId": "http-smoke-websocket-stream",
+                    "streamResponse": True,
+                },
+            }
+        )
+
+        stream_response = websocket.read_json()
+        assert stream_response["id"] == "websocket-stream-request"
+        assert stream_response["result"]["status"] == 200
+        assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "yes"
+        assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
+        stream_deltas = [websocket.read_json()["params"] for _ in range(3)]
+        assert [delta["requestId"] for delta in stream_deltas] == ["http-smoke-websocket-stream"] * 3
+        assert [delta["seq"] for delta in stream_deltas] == [1, 2, 3]
+        assert b"".join(base64.b64decode(delta["deltaBase64"]) for delta in stream_deltas) == b"hello stream"
+        assert [delta["done"] for delta in stream_deltas] == [False, False, True]
+        assert [delta["error"] for delta in stream_deltas] == [None, None, None]
+    finally:
+        if websocket is not None:
+            websocket.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 def run_exec_server_stream_content_length_close_smoke(
     binary: Path, temp_root: Path, env: dict[str, str], http_url: str
 ) -> None:
@@ -1944,23 +2006,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             default_websocket.write_json(
                 {
                     "jsonrpc": "2.0",
-                    "id": "websocket-http-stream",
-                    "method": "http/request",
-                    "params": {
-                        "method": "GET",
-                        "url": "http://127.0.0.1:9/stream",
-                        "requestId": "websocket-http-stream",
-                        "streamResponse": True,
-                    },
-                }
-            )
-            websocket_http_stream = default_websocket.read_json()
-            assert websocket_http_stream["id"] == "websocket-http-stream"
-            assert websocket_http_stream["error"]["code"] == -32601
-            assert "streamResponse over websocket is not implemented yet" in websocket_http_stream["error"]["message"]
-            default_websocket.write_json(
-                {
-                    "jsonrpc": "2.0",
                     "id": "websocket-start",
                     "method": "process/start",
                     "params": {
@@ -2846,6 +2891,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert "only supports http and https URLs" in http_scheme["error"]["message"]
 
         run_exec_server_stream_response_smoke(binary, temp_root, env, http_url)
+        run_exec_server_websocket_stream_response_smoke(binary, temp_root, env, http_url)
         run_exec_server_stream_shutdown_cancellation_smoke(binary, temp_root, env, http_url)
         run_exec_server_stream_preheader_shutdown_cancellation_smoke(binary, temp_root, env, http_url, http_server)
         run_exec_server_stream_content_length_close_smoke(binary, temp_root, env, http_url)
