@@ -1262,6 +1262,71 @@ const FsBoolField = union(enum) {
     message: []const u8,
 };
 
+const FsSandboxAccess = enum {
+    read,
+    write,
+    none,
+
+    fn allowsRead(self: FsSandboxAccess) bool {
+        return self != .none;
+    }
+
+    fn allowsWrite(self: FsSandboxAccess) bool {
+        return self == .write;
+    }
+
+    fn precedence(self: FsSandboxAccess) u8 {
+        return switch (self) {
+            .read => 0,
+            .write => 1,
+            .none => 2,
+        };
+    }
+};
+
+const FsSandboxEntry = struct {
+    path: []const u8,
+    access: FsSandboxAccess,
+};
+
+const FsSandboxPolicy = struct {
+    entries: std.ArrayList(FsSandboxEntry) = .empty,
+
+    fn deinit(self: *FsSandboxPolicy, allocator: std.mem.Allocator) void {
+        for (self.entries.items) |entry| allocator.free(entry.path);
+        self.entries.deinit(allocator);
+    }
+
+    fn allowsRead(self: *const FsSandboxPolicy, path: []const u8) bool {
+        return if (self.matchAccess(path)) |access| access.allowsRead() else false;
+    }
+
+    fn allowsWrite(self: *const FsSandboxPolicy, path: []const u8) bool {
+        return if (self.matchAccess(path)) |access| access.allowsWrite() else false;
+    }
+
+    fn matchAccess(self: *const FsSandboxPolicy, path: []const u8) ?FsSandboxAccess {
+        var best_access: ?FsSandboxAccess = null;
+        var best_len: usize = 0;
+        for (self.entries.items) |entry| {
+            if (!pathIsSameOrDescendant(entry.path, path)) continue;
+            const len = normalizedRootAwarePathLen(entry.path);
+            if (best_access == null or len > best_len or
+                (len == best_len and entry.access.precedence() > best_access.?.precedence()))
+            {
+                best_access = entry.access;
+                best_len = len;
+            }
+        }
+        return best_access;
+    }
+};
+
+const FsSandboxPolicyResult = union(enum) {
+    policy: ?FsSandboxPolicy,
+    response: []const u8,
+};
+
 const ResolvedExecArgv = struct {
     argv: []const []const u8,
     path_lookup_env_block: ?std.process.Environ.Block = null,
@@ -2434,12 +2499,19 @@ fn handleFsReadFile(allocator: std.mem.Allocator, id_value: std.json.Value, para
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    if (!fsSandboxAllowsRead(fsSandboxPolicyPtr(&sandbox), path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
 
     const metadata = statPath(path, true) catch |err| {
         return renderFsFailure(allocator, id_value, err);
@@ -2473,12 +2545,19 @@ fn handleFsWriteFile(allocator: std.mem.Allocator, id_value: std.json.Value, par
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    if (!fsSandboxAllowsWrite(fsSandboxPolicyPtr(&sandbox), path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
     const data_base64 = switch (requiredStringFieldValue(object, "dataBase64", "fs/writeFile requires string dataBase64")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -2505,12 +2584,19 @@ fn handleFsCreateDirectory(allocator: std.mem.Allocator, id_value: std.json.Valu
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    if (!fsSandboxAllowsWrite(fsSandboxPolicyPtr(&sandbox), path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
     const recursive = switch (optionalBoolFieldValue(object, "recursive", true, true)) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -2534,12 +2620,19 @@ fn handleFsGetMetadata(allocator: std.mem.Allocator, id_value: std.json.Value, p
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    if (!fsSandboxAllowsRead(fsSandboxPolicyPtr(&sandbox), path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
 
     const metadata = statPath(path, true) catch |err| {
         return renderFsFailure(allocator, id_value, err);
@@ -2569,12 +2662,20 @@ fn handleFsReadDirectory(allocator: std.mem.Allocator, id_value: std.json.Value,
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    const sandbox_ptr = fsSandboxPolicyPtr(&sandbox);
+    if (!fsSandboxAllowsRead(sandbox_ptr, path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
 
     const io = std.Io.Threaded.global_single_threaded.io();
     var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch |err| {
@@ -2594,6 +2695,7 @@ fn handleFsReadDirectory(allocator: std.mem.Allocator, id_value: std.json.Value,
         }) orelse break;
         const child_path = try std.fs.path.join(allocator, &.{ path, entry.name });
         defer allocator.free(child_path);
+        if (!fsSandboxAllowsRead(sandbox_ptr, child_path)) continue;
         const metadata = (statPath(child_path, true) catch continue) orelse continue;
         const name_json = try std.json.Stringify.valueAlloc(allocator, entry.name, .{});
         defer allocator.free(name_json);
@@ -2617,12 +2719,20 @@ fn handleFsRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "path")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
     defer allocator.free(path);
+    const sandbox_ptr = fsSandboxPolicyPtr(&sandbox);
+    if (!fsSandboxAllowsWrite(sandbox_ptr, path)) {
+        return renderFsFailure(allocator, id_value, error.PermissionDenied);
+    }
     const recursive = switch (optionalBoolFieldValue(object, "recursive", true, true)) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -2642,6 +2752,9 @@ fn handleFsRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params
     const io = std.Io.Threaded.global_single_threaded.io();
     if (metadata.kind == .directory) {
         if (recursive) {
+            if (!try fsSandboxAllowsWriteTree(allocator, io, sandbox_ptr, path)) {
+                return renderFsFailure(allocator, id_value, error.PermissionDenied);
+            }
             std.Io.Dir.cwd().deleteTree(io, path) catch |err| {
                 return renderFsFailure(allocator, id_value, err);
             };
@@ -2663,7 +2776,11 @@ fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_v
         .object => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    var sandbox = switch (try fsSandboxPolicyOrError(allocator, id_value, object)) {
+        .policy => |value| value,
+        .response => |response| return response,
+    };
+    defer if (sandbox) |*policy| policy.deinit(allocator);
     const source_path = switch (try requiredAbsolutePathFieldAlloc(allocator, object, "sourcePath")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
@@ -2680,7 +2797,7 @@ fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_v
     };
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    copyPath(allocator, io, source_path, destination_path, recursive) catch |err| {
+    copyPath(allocator, io, source_path, destination_path, recursive, fsSandboxPolicyPtr(&sandbox)) catch |err| {
         return renderFsFailure(allocator, id_value, err);
     };
     return renderJsonRpcResult(allocator, id_value, "{}");
@@ -2698,10 +2815,158 @@ fn fsObjectParamsMessage(method: []const u8) []const u8 {
     return "filesystem params must be an object";
 }
 
-fn fsSandboxContextError(object: std.json.ObjectMap) ?[]const u8 {
-    const value = object.get("sandbox") orelse return null;
-    if (value == .null) return null;
-    return "direct filesystem operations do not accept sandbox context";
+fn fsSandboxPolicyOrError(allocator: std.mem.Allocator, id_value: std.json.Value, object: std.json.ObjectMap) !FsSandboxPolicyResult {
+    const policy = parseFsSandboxPolicy(allocator, object) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        error.InvalidFsSandboxContext => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "filesystem sandbox context must be a supported FileSystemSandboxContext") },
+        error.UnsupportedFsSandboxContext => return .{ .response = try renderJsonRpcError(allocator, id_value, -32600, "filesystem sandbox context includes unsupported filesystem policy entries") },
+        else => return err,
+    };
+    return .{ .policy = policy };
+}
+
+fn parseFsSandboxPolicy(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?FsSandboxPolicy {
+    const sandbox_value = object.get("sandbox") orelse return null;
+    if (sandbox_value == .null) return null;
+    if (sandbox_value != .object) return error.InvalidFsSandboxContext;
+
+    const permissions_value = sandbox_value.object.get("permissions") orelse return error.InvalidFsSandboxContext;
+    if (permissions_value != .object) return error.InvalidFsSandboxContext;
+    const type_value = permissions_value.object.get("type") orelse return error.InvalidFsSandboxContext;
+    if (type_value != .string) return error.InvalidFsSandboxContext;
+    if (std.mem.eql(u8, type_value.string, "disabled") or std.mem.eql(u8, type_value.string, "external")) return null;
+    if (!std.mem.eql(u8, type_value.string, "managed")) return error.InvalidFsSandboxContext;
+
+    const file_system_value = permissions_value.object.get("file_system") orelse
+        permissions_value.object.get("fileSystem") orelse
+        return error.InvalidFsSandboxContext;
+    if (file_system_value != .object) return error.InvalidFsSandboxContext;
+    const file_system_type = file_system_value.object.get("type") orelse return error.InvalidFsSandboxContext;
+    if (file_system_type != .string) return error.InvalidFsSandboxContext;
+    if (std.mem.eql(u8, file_system_type.string, "unrestricted")) return null;
+    if (!std.mem.eql(u8, file_system_type.string, "restricted")) return error.InvalidFsSandboxContext;
+
+    const entries_value = file_system_value.object.get("entries") orelse return error.InvalidFsSandboxContext;
+    if (entries_value != .array) return error.InvalidFsSandboxContext;
+
+    var policy = FsSandboxPolicy{};
+    errdefer policy.deinit(allocator);
+
+    const cwd = try fsSandboxCwd(allocator, sandbox_value.object);
+    defer if (cwd) |path| allocator.free(path);
+
+    for (entries_value.array.items) |entry_value| {
+        try parseFsSandboxEntry(allocator, &policy, entry_value, cwd);
+    }
+    return policy;
+}
+
+fn fsSandboxCwd(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    const cwd_value = object.get("cwd") orelse return null;
+    if (cwd_value == .null) return null;
+    if (cwd_value != .string) return error.InvalidFsSandboxContext;
+    if (!std.fs.path.isAbsolute(cwd_value.string)) return error.InvalidFsSandboxContext;
+    return try normalizeAbsolutePath(allocator, cwd_value.string);
+}
+
+fn parseFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, value: std.json.Value, cwd: ?[]const u8) !void {
+    if (value != .object) return error.InvalidFsSandboxContext;
+    const access_value = value.object.get("access") orelse return error.InvalidFsSandboxContext;
+    if (access_value != .string) return error.InvalidFsSandboxContext;
+    const access = parseFsSandboxAccess(access_value.string) orelse return error.InvalidFsSandboxContext;
+
+    const path_value = value.object.get("path") orelse return error.InvalidFsSandboxContext;
+    const path = try parseFsSandboxPath(allocator, path_value, cwd);
+    errdefer allocator.free(path);
+    try policy.entries.append(allocator, .{ .path = path, .access = access });
+}
+
+fn parseFsSandboxAccess(raw: []const u8) ?FsSandboxAccess {
+    if (std.mem.eql(u8, raw, "read")) return .read;
+    if (std.mem.eql(u8, raw, "write")) return .write;
+    if (std.mem.eql(u8, raw, "none")) return .none;
+    return null;
+}
+
+fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: ?[]const u8) ![]const u8 {
+    if (value != .object) return error.InvalidFsSandboxContext;
+    const type_value = value.object.get("type") orelse return error.InvalidFsSandboxContext;
+    if (type_value != .string) return error.InvalidFsSandboxContext;
+    if (std.mem.eql(u8, type_value.string, "path")) {
+        const path_value = value.object.get("path") orelse return error.InvalidFsSandboxContext;
+        if (path_value != .string) return error.InvalidFsSandboxContext;
+        if (!std.fs.path.isAbsolute(path_value.string)) return error.InvalidFsSandboxContext;
+        return normalizeAbsolutePath(allocator, path_value.string);
+    }
+    if (std.mem.eql(u8, type_value.string, "special")) {
+        return parseFsSandboxSpecialPath(allocator, value.object, cwd);
+    }
+    if (std.mem.eql(u8, type_value.string, "glob_pattern")) return error.UnsupportedFsSandboxContext;
+    return error.InvalidFsSandboxContext;
+}
+
+fn parseFsSandboxSpecialPath(allocator: std.mem.Allocator, object: std.json.ObjectMap, cwd: ?[]const u8) ![]const u8 {
+    const special_value = object.get("value") orelse return error.InvalidFsSandboxContext;
+    if (special_value != .object) return error.InvalidFsSandboxContext;
+    const kind_value = special_value.object.get("kind") orelse return error.InvalidFsSandboxContext;
+    if (kind_value != .string) return error.InvalidFsSandboxContext;
+    if (std.mem.eql(u8, kind_value.string, "root")) return normalizeAbsolutePath(allocator, std.fs.path.sep_str);
+    if (std.mem.eql(u8, kind_value.string, "slash_tmp")) return normalizeAbsolutePath(allocator, "/tmp");
+    if (std.mem.eql(u8, kind_value.string, "tmpdir")) return fsSandboxTmpdirPath(allocator);
+    if (std.mem.eql(u8, kind_value.string, "project_roots") or std.mem.eql(u8, kind_value.string, "current_working_directory")) {
+        return fsSandboxProjectRootPath(allocator, special_value.object, cwd);
+    }
+    return error.UnsupportedFsSandboxContext;
+}
+
+fn fsSandboxTmpdirPath(allocator: std.mem.Allocator) ![]const u8 {
+    const raw = std.c.getenv("TMPDIR") orelse std.c.getenv("TEMP") orelse std.c.getenv("TMP") orelse "/tmp";
+    const path = std.mem.span(raw);
+    if (!std.fs.path.isAbsolute(path)) return normalizeAbsolutePath(allocator, "/tmp");
+    return normalizeAbsolutePath(allocator, path);
+}
+
+fn fsSandboxProjectRootPath(allocator: std.mem.Allocator, object: std.json.ObjectMap, cwd: ?[]const u8) ![]const u8 {
+    const root = if (cwd) |path|
+        path
+    else
+        try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer if (cwd == null) allocator.free(root);
+
+    const subpath_value = object.get("subpath") orelse return allocator.dupe(u8, root);
+    if (subpath_value == .null) return allocator.dupe(u8, root);
+    if (subpath_value != .string) return error.InvalidFsSandboxContext;
+    const joined = try std.fs.path.join(allocator, &.{ root, subpath_value.string });
+    defer allocator.free(joined);
+    return normalizeAbsolutePath(allocator, joined);
+}
+
+fn fsSandboxPolicyPtr(sandbox: *?FsSandboxPolicy) ?*const FsSandboxPolicy {
+    return if (sandbox.*) |*policy| policy else null;
+}
+
+fn fsSandboxAllowsRead(sandbox: ?*const FsSandboxPolicy, path: []const u8) bool {
+    return if (sandbox) |policy| policy.allowsRead(path) else true;
+}
+
+fn fsSandboxAllowsWrite(sandbox: ?*const FsSandboxPolicy, path: []const u8) bool {
+    return if (sandbox) |policy| policy.allowsWrite(path) else true;
+}
+
+fn fsSandboxAllowsWriteTree(allocator: std.mem.Allocator, io: std.Io, sandbox: ?*const FsSandboxPolicy, path: []const u8) !bool {
+    if (!fsSandboxAllowsWrite(sandbox, path)) return false;
+    const metadata = (try statPath(path, false)) orelse return true;
+    if (metadata.kind != .directory) return true;
+
+    var dir = try std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        const child = try std.fs.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(child);
+        if (!try fsSandboxAllowsWriteTree(allocator, io, sandbox, child)) return false;
+    }
+    return true;
 }
 
 fn requiredAbsolutePathFieldAlloc(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8) !FsStringField {
@@ -2803,7 +3068,16 @@ fn timespecToUnixMs(value: std.c.timespec) i64 {
     return @as(i64, @intCast(value.sec)) * 1000 + @divTrunc(@as(i64, @intCast(value.nsec)), 1_000_000);
 }
 
-fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, destination_path: []const u8, recursive: bool) anyerror!void {
+fn copyPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+    destination_path: []const u8,
+    recursive: bool,
+    sandbox: ?*const FsSandboxPolicy,
+) anyerror!void {
+    if (!fsSandboxAllowsRead(sandbox, source_path)) return error.PermissionDenied;
+    if (!fsSandboxAllowsWrite(sandbox, destination_path)) return error.PermissionDenied;
     const metadata = (try statPath(source_path, false)) orelse return error.FileNotFound;
     if (metadata.kind == .directory) {
         if (!recursive) return error.FsCopyDirectoryRequiresRecursive;
@@ -2821,7 +3095,7 @@ fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, d
             defer allocator.free(child_source);
             const child_destination = try std.fs.path.join(allocator, &.{ destination_path, entry.name });
             defer allocator.free(child_destination);
-            copyPath(allocator, io, child_source, child_destination, recursive) catch |err| switch (err) {
+            copyPath(allocator, io, child_source, child_destination, recursive, sandbox) catch |err| switch (err) {
                 error.FsCopyUnsupportedFileType => continue,
                 else => return err,
             };
@@ -2885,6 +3159,11 @@ fn pathIsSameOrDescendant(source_path: []const u8, destination_path: []const u8)
     if (!std.mem.startsWith(u8, destination, source)) return false;
     if (destination.len <= source.len) return false;
     return destination[source.len] == std.fs.path.sep;
+}
+
+fn normalizedRootAwarePathLen(path: []const u8) usize {
+    const trimmed = std.mem.trimEnd(u8, path, std.fs.path.sep_str);
+    return if (trimmed.len == 0 and path.len > 0) path.len else trimmed.len;
 }
 
 fn renderJsonRpcResult(allocator: std.mem.Allocator, id_value: std.json.Value, result_json: []const u8) ![]const u8 {

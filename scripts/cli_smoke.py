@@ -1420,7 +1420,52 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         fs_missing_recursive_copy = fs_nested / "note-missing-recursive-copy.txt"
         fs_copy_file = fs_nested / "note-copy.txt"
         fs_copy_dir = fs_root / "nested-copy"
+        fs_sandbox_allowed = fs_nested / "sandbox-allowed.txt"
+        fs_sandbox_blocked = temp_root / "sandbox-blocked.txt"
         fs_payload_bytes = b"hello from filesystem rpc\n"
+
+        def fs_read_only_sandbox() -> dict:
+            return {
+                "permissions": {
+                    "type": "managed",
+                    "file_system": {
+                        "type": "restricted",
+                        "entries": [
+                            {"path": {"type": "special", "value": {"kind": "root"}}, "access": "read"}
+                        ],
+                    },
+                    "network": "restricted",
+                },
+                "windowsSandboxLevel": "disabled",
+                "windowsSandboxPrivateDesktop": False,
+                "useLegacyLandlock": False,
+            }
+
+        def fs_workspace_write_sandbox(cwd: Path) -> dict:
+            return {
+                "permissions": {
+                    "type": "managed",
+                    "file_system": {
+                        "type": "restricted",
+                        "entries": [
+                            {"path": {"type": "special", "value": {"kind": "root"}}, "access": "read"},
+                            {
+                                "path": {
+                                    "type": "special",
+                                    "value": {"kind": "project_roots", "subpath": None},
+                                },
+                                "access": "write",
+                            },
+                        ],
+                    },
+                    "network": "restricted",
+                },
+                "cwd": str(cwd),
+                "windowsSandboxLevel": "disabled",
+                "windowsSandboxPrivateDesktop": False,
+                "useLegacyLandlock": False,
+            }
+
         fs_requests = [
             {
                 "jsonrpc": "2.0",
@@ -1543,9 +1588,39 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
-                "id": "fs-sandbox",
+                "id": "fs-sandbox-read",
                 "method": "fs/readFile",
-                "params": {"path": str(fs_file), "sandbox": {}},
+                "params": {"path": str(fs_file), "sandbox": fs_read_only_sandbox()},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-sandbox-write-denied",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(fs_sandbox_allowed),
+                    "dataBase64": base64.b64encode(b"denied").decode("ascii"),
+                    "sandbox": fs_read_only_sandbox(),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-sandbox-workspace-write",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(fs_sandbox_allowed),
+                    "dataBase64": base64.b64encode(b"allowed").decode("ascii"),
+                    "sandbox": fs_workspace_write_sandbox(fs_root),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-sandbox-workspace-blocked",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(fs_sandbox_blocked),
+                    "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                    "sandbox": fs_workspace_write_sandbox(fs_root),
+                },
             },
             {
                 "jsonrpc": "2.0",
@@ -1580,7 +1655,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert fs_result.stderr == ""
         fs_responses = [json.loads(line) for line in fs_result.stdout.splitlines()]
-        assert len(fs_responses) == 20
+        assert len(fs_responses) == 23
         fs_by_id = {response["id"]: response for response in fs_responses}
         assert fs_by_id["fs-before-init"]["error"]["code"] == -32600
         assert "client must call initialize before using filesystem methods" in fs_by_id["fs-before-init"]["error"]["message"]
@@ -1610,8 +1685,12 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert fs_copy_entries["note.txt"]["isFile"] is True
         assert fs_by_id["fs-invalid-base64"]["error"]["code"] == -32600
         assert "fs/writeFile requires valid base64 dataBase64" in fs_by_id["fs-invalid-base64"]["error"]["message"]
-        assert fs_by_id["fs-sandbox"]["error"]["code"] == -32600
-        assert "direct filesystem operations do not accept sandbox context" in fs_by_id["fs-sandbox"]["error"]["message"]
+        assert base64.b64decode(fs_by_id["fs-sandbox-read"]["result"]["dataBase64"]) == fs_payload_bytes
+        assert fs_by_id["fs-sandbox-write-denied"]["error"]["code"] == -32600
+        assert fs_by_id["fs-sandbox-workspace-write"]["result"] == {}
+        assert fs_sandbox_allowed.read_bytes() == b"allowed"
+        assert fs_by_id["fs-sandbox-workspace-blocked"]["error"]["code"] == -32600
+        assert not fs_sandbox_blocked.exists()
         assert fs_by_id["fs-remove-file"]["result"] == {}
         assert not fs_copy_file.exists()
         assert fs_by_id["fs-remove-dir"]["result"] == {}
