@@ -1500,6 +1500,24 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "useLegacyLandlock": False,
             }
 
+        def fs_denied_path_with_readable_target_sandbox(denied: Path, readable: Path) -> dict:
+            return {
+                "permissions": {
+                    "type": "managed",
+                    "file_system": {
+                        "type": "restricted",
+                        "entries": [
+                            {"path": {"type": "path", "path": str(denied)}, "access": "none"},
+                            {"path": {"type": "path", "path": str(readable)}, "access": "read"},
+                        ],
+                    },
+                    "network": "restricted",
+                },
+                "windowsSandboxLevel": "disabled",
+                "windowsSandboxPrivateDesktop": False,
+                "useLegacyLandlock": False,
+            }
+
         def fs_tmpdir_write_sandbox() -> dict:
             return {
                 "permissions": {
@@ -1764,6 +1782,9 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             fs_protected_workspace = fs_edge_root / "protected-workspace"
             fs_protected_git = fs_protected_workspace / ".git"
             fs_loop_root = fs_edge_root / "loop-root"
+            fs_denied_root = fs_edge_root / "denied-root"
+            fs_denied_target = fs_edge_root / "denied-target"
+            fs_denied_target_nested = fs_denied_target / "nested"
             try:
                 fs_allowed.mkdir(parents=True)
                 fs_outside.mkdir()
@@ -1771,14 +1792,18 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 fs_real_workspace.mkdir()
                 fs_protected_git.mkdir(parents=True)
                 fs_loop_root.mkdir()
+                fs_denied_root.mkdir()
+                fs_denied_target_nested.mkdir(parents=True)
                 (fs_allowed / "secret.txt").write_text("allowed", encoding="utf-8")
                 (fs_edge_root / "secret.txt").write_text("root", encoding="utf-8")
                 (fs_fifo_source / "note.txt").write_text("copy me", encoding="utf-8")
                 (fs_protected_git / "config").write_text("old", encoding="utf-8")
+                (fs_denied_target_nested / "secret.txt").write_text("denied", encoding="utf-8")
                 os.symlink(fs_outside, fs_allowed / "link")
                 os.symlink(fs_real_workspace, fs_link_workspace)
                 os.symlink(".git", fs_protected_workspace / "gitlink")
                 os.symlink("loop", fs_loop_root / "loop")
+                os.symlink(fs_denied_target_nested, fs_denied_root / "alias")
                 os.mkfifo(fs_fifo_source / "named-pipe")
             except (NotImplementedError, OSError):
                 shutil.rmtree(fs_edge_root, ignore_errors=True)
@@ -1883,6 +1908,17 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                             "sandbox": fs_path_read_sandbox(fs_loop_root),
                         },
                     },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-denied-logical-symlink-read",
+                        "method": "fs/readFile",
+                        "params": {
+                            "path": str(fs_denied_root / "alias" / "secret.txt"),
+                            "sandbox": fs_denied_path_with_readable_target_sandbox(
+                                fs_denied_root, fs_denied_target_nested
+                            ),
+                        },
+                    },
                 ]
                 fs_edge_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in fs_edge_requests)
                 fs_edge_result = subprocess.run(
@@ -1898,7 +1934,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 )
                 assert fs_edge_result.stderr == ""
                 fs_edge_responses = [json.loads(line) for line in fs_edge_result.stdout.splitlines()]
-                assert len(fs_edge_responses) == 11
+                assert len(fs_edge_responses) == 12
                 fs_edge_by_id = {response["id"]: response for response in fs_edge_responses}
                 uuid.UUID(fs_edge_by_id["fs-edge-init"]["result"]["sessionId"])
                 assert base64.b64decode(fs_edge_by_id["fs-normalized-read"]["result"]["dataBase64"]) == b"allowed"
@@ -1918,6 +1954,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 assert fs_edge_by_id["fs-sandbox-loop-read"]["error"]["code"] == -32600
                 assert "TooManySymbolicLinks" in fs_edge_by_id["fs-sandbox-loop-read"]["error"]["message"]
                 assert fs_edge_by_id["fs-sandbox-loop-list"]["result"] == {"entries": []}
+                assert fs_edge_by_id["fs-sandbox-denied-logical-symlink-read"]["error"]["code"] == -32600
 
             canonical_temp_parent = Path(tempfile.gettempdir()).resolve()
             fs_canonical_edge_root = Path(
