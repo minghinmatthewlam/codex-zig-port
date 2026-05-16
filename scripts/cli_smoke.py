@@ -1825,6 +1825,75 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 assert fs_edge_by_id["fs-sandbox-symlink-root-write"]["result"] == {}
                 assert (fs_real_workspace / "created.txt").read_bytes() == b"created"
 
+            canonical_temp_parent = Path(tempfile.gettempdir()).resolve()
+            fs_canonical_edge_root = Path(
+                tempfile.mkdtemp(
+                    prefix="codex-zig-cli-exec-server-canonical-fs-edges-",
+                    dir=str(canonical_temp_parent),
+                )
+            )
+            try:
+                fs_canonical_allowed = fs_canonical_edge_root / "allowed"
+                fs_canonical_outside = fs_canonical_edge_root / "outside"
+                fs_canonical_allowed.mkdir()
+                fs_canonical_outside.mkdir()
+                os.symlink(fs_canonical_outside, fs_canonical_allowed / "link")
+                os.symlink(fs_canonical_outside / "dangling-target.txt", fs_canonical_allowed / "dangling-link")
+                fs_canonical_requests = [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-canonical-edge-init",
+                        "method": "initialize",
+                        "params": {"clientName": "cli-smoke-fs-canonical-edges"},
+                    },
+                    {"jsonrpc": "2.0", "method": "initialized"},
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-canonical-child-symlink-write",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_canonical_allowed / "link" / "blocked.txt"),
+                            "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                            "sandbox": fs_workspace_write_sandbox(fs_canonical_allowed),
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-canonical-dangling-symlink-write",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_canonical_allowed / "dangling-link"),
+                            "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                            "sandbox": fs_workspace_write_sandbox(fs_canonical_allowed),
+                        },
+                    },
+                ]
+                fs_canonical_payload = "".join(
+                    json.dumps(item, separators=(",", ":")) + "\n" for item in fs_canonical_requests
+                )
+                fs_canonical_result = subprocess.run(
+                    [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+                    cwd=temp_root,
+                    env=env,
+                    input=fs_canonical_payload,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                assert fs_canonical_result.stderr == ""
+                fs_canonical_responses = [json.loads(line) for line in fs_canonical_result.stdout.splitlines()]
+                assert len(fs_canonical_responses) == 3
+                fs_canonical_by_id = {response["id"]: response for response in fs_canonical_responses}
+                uuid.UUID(fs_canonical_by_id["fs-canonical-edge-init"]["result"]["sessionId"])
+                assert fs_canonical_by_id["fs-sandbox-canonical-child-symlink-write"]["error"]["code"] == -32600
+                assert fs_canonical_by_id["fs-sandbox-canonical-dangling-symlink-write"]["error"]["code"] == -32600
+                assert not (fs_canonical_outside / "blocked.txt").exists()
+                assert not (fs_canonical_outside / "dangling-target.txt").exists()
+            finally:
+                shutil.rmtree(fs_canonical_edge_root, ignore_errors=True)
+
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [
             {
