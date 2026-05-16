@@ -5,6 +5,14 @@ const net = std.Io.net;
 
 const cli_utils = @import("cli_utils.zig");
 
+extern "c" fn openpty(
+    amaster: *c_int,
+    aslave: *c_int,
+    name: ?[*:0]u8,
+    termp: ?*anyopaque,
+    winp: ?*std.posix.winsize,
+) c_int;
+
 const default_listen_url = "ws://127.0.0.1:0";
 const max_stdio_json_rpc_line_bytes = 16 * 1024 * 1024;
 const retained_output_bytes_per_process = 1024 * 1024;
@@ -12,6 +20,8 @@ const retained_closed_processes = 64;
 const max_stdin_write_queue_bytes = 2 * 1024 * 1024;
 const max_stdin_write_queue_chunks = 32;
 const max_buffered_input_read_wait_ms = 200;
+const default_exec_tty_rows = 24;
+const default_exec_tty_cols = 80;
 const default_env_exclude_patterns = [_][]const u8{ "*KEY*", "*SECRET*", "*TOKEN*" };
 const unix_core_env_vars = [_][]const u8{ "PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "USER" };
 const windows_core_env_vars = [_][]const u8{
@@ -63,6 +73,7 @@ const ExecStartParams = struct {
     cwd: []const u8,
     env: std.json.Value,
     env_policy: ?ExecEnvPolicy,
+    tty: bool,
     pipe_stdin: bool,
     arg0: ?[]const u8,
 
@@ -185,6 +196,7 @@ const ProcessSession = struct {
     stdin_file: ?std.Io.File,
     stdout_file: ?std.Io.File,
     stderr_file: ?std.Io.File,
+    tty: bool = false,
     stdin_write_task: ?*StdinWriteTask = null,
     output: std.ArrayList(ProcessOutputChunk) = .empty,
     retained_bytes: usize = 0,
@@ -427,7 +439,6 @@ const StdioServer = struct {
         if (!self.initialized) return try renderJsonRpcError(self.allocator, id_value, -32600, "initialized notification must be sent before process requests");
 
         const params = parseExecStartParams(self.allocator, params_value) catch |err| switch (err) {
-            error.ExecServerTtyUnsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start tty is not implemented yet"),
             error.InvalidExecServerEnvPolicy => return renderJsonRpcError(self.allocator, id_value, -32602, "envPolicy must include inherit, ignoreDefaultExcludes, exclude, set, and includeOnly"),
             else => return renderJsonRpcError(self.allocator, id_value, -32602, "process/start params must include processId, argv, cwd, env, and tty"),
         };
@@ -450,7 +461,7 @@ const StdioServer = struct {
         };
         defer child_env.deinit();
 
-        var spawned = spawnExecServerProcess(self.allocator, params.argv, params.arg0, params.cwd, &child_env, params.pipe_stdin) catch |err| {
+        var spawned = spawnExecServerProcess(self.allocator, params.argv, params.arg0, params.cwd, &child_env, params.pipe_stdin, params.tty) catch |err| {
             const message = try std.fmt.allocPrint(self.allocator, "failed to start process {s}: {s}", .{
                 params.process_id,
                 switch (err) {
@@ -489,6 +500,7 @@ const StdioServer = struct {
             .stdin_file = stdin_file,
             .stdout_file = stdout_file,
             .stderr_file = stderr_file,
+            .tty = spawned.tty,
         });
         child_owned = false;
         spawned.path_lookup_env_block = null;
@@ -1009,7 +1021,6 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
     if (std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidExecServerStartParams;
     const env = object.get("env") orelse return error.InvalidExecServerStartParams;
     const tty = try requiredBoolField(object, "tty");
-    if (tty) return error.ExecServerTtyUnsupported;
     const env_policy = try parseExecEnvPolicy(allocator, object.get("envPolicy"));
     errdefer if (env_policy) |policy| policy.deinit(allocator);
 
@@ -1024,6 +1035,7 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
         .cwd = cwd,
         .env = env,
         .env_policy = env_policy,
+        .tty = tty,
         .pipe_stdin = try optionalBoolField(object, "pipeStdin", false),
         .arg0 = if (object.get("arg0")) |arg0| switch (arg0) {
             .string => |string| string,
@@ -1136,6 +1148,7 @@ const SpawnedExecProcess = struct {
     io_instance: std.Io.Threaded,
     child: std.process.Child,
     path_lookup_env_block: ?std.process.Environ.Block = null,
+    tty: bool = false,
 
     fn deinit(self: *SpawnedExecProcess, allocator: std.mem.Allocator) void {
         self.child.kill(self.io_instance.io());
@@ -1151,7 +1164,10 @@ fn spawnExecServerProcess(
     cwd: []const u8,
     child_env: *const std.process.Environ.Map,
     pipe_stdin: bool,
+    tty: bool,
 ) !SpawnedExecProcess {
+    if (tty) return try spawnExecServerTtyProcess(allocator, argv, arg0, cwd, child_env);
+
     if (arg0) |custom_arg0| {
         if (builtin.os.tag == .windows) return try spawnExecServerProcessDefault(allocator, argv, cwd, child_env, pipe_stdin);
         const executable_path = try resolveExecProgramPath(allocator, argv[0], cwd, child_env);
@@ -1203,6 +1219,31 @@ fn spawnExecServerProcessDefault(
     };
 }
 
+fn spawnExecServerTtyProcess(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    arg0: ?[]const u8,
+    cwd: []const u8,
+    child_env: *const std.process.Environ.Map,
+) !SpawnedExecProcess {
+    if (builtin.os.tag != .macos) return error.ExecServerTtyUnsupported;
+
+    const executable_path = try resolveExecProgramPath(allocator, argv[0], cwd, child_env);
+    defer allocator.free(executable_path);
+
+    var owned_child_argv: ?[]const []const u8 = null;
+    defer if (owned_child_argv) |value| allocator.free(value);
+    const child_argv = if (arg0) |custom_arg0| blk: {
+        owned_child_argv = try execArgvWithArg0(allocator, argv, custom_arg0);
+        break :blk owned_child_argv.?;
+    } else argv;
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    errdefer io_instance.deinit();
+    const child = try spawnUnixPtyProcess(allocator, executable_path, child_argv, cwd, child_env);
+    return .{ .io_instance = io_instance, .child = child, .tty = true };
+}
+
 fn execArgvWithArg0(allocator: std.mem.Allocator, argv: []const []const u8, arg0: []const u8) ![]const []const u8 {
     const child_argv = try allocator.alloc([]const u8, argv.len);
     errdefer allocator.free(child_argv);
@@ -1220,6 +1261,136 @@ fn resolveExecProgramPath(
     if (std.mem.indexOfScalar(u8, argv0, '/') != null) return try allocator.dupe(u8, argv0);
     const path = env.get("PATH") orelse defaultExecPath();
     return (try resolveExecutableOnPath(allocator, argv0, cwd, path)) orelse error.ExecServerExecutableNotFound;
+}
+
+fn spawnUnixPtyProcess(
+    allocator: std.mem.Allocator,
+    executable_path: []const u8,
+    argv: []const []const u8,
+    cwd: []const u8,
+    child_env: *const std.process.Environ.Map,
+) !std.process.Child {
+    if (builtin.os.tag != .macos) return error.ExecServerTtyUnsupported;
+
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const executable_z = try arena.dupeZ(u8, executable_path);
+    const cwd_z = try arena.dupeZ(u8, cwd);
+    const argv_buf = try arena.allocSentinel(?[*:0]const u8, argv.len, null);
+    for (argv, 0..) |arg, index| {
+        argv_buf[index] = (try arena.dupeZ(u8, arg)).ptr;
+    }
+    const env_block = try child_env.createPosixBlock(arena, .{ .zig_progress_fd = null });
+
+    const pty_pair = try openExecServerPtyPair();
+    var master_open = true;
+    var slave_open = true;
+    errdefer {
+        if (master_open) closeFd(pty_pair.master);
+        if (slave_open) closeFd(pty_pair.slave);
+    }
+
+    const master_write_fd = try duplicateFd(pty_pair.master);
+    var master_write_open = true;
+    errdefer if (master_write_open) closeFd(master_write_fd);
+
+    const err_pipe = try makeUnixPipe();
+    var err_read_open = true;
+    var err_write_open = true;
+    errdefer {
+        if (err_read_open) closeFd(err_pipe[0]);
+        if (err_write_open) closeFd(err_pipe[1]);
+    }
+    try setFdCloseOnExec(err_pipe[1]);
+
+    const pid_result = std.posix.system.fork();
+    switch (std.c.errno(pid_result)) {
+        .SUCCESS => {},
+        .AGAIN, .NOMEM => return error.SystemResources,
+        .NOSYS => return error.OperationUnsupported,
+        else => return error.Unexpected,
+    }
+
+    if (pid_result == 0) {
+        closeFd(err_pipe[0]);
+        closeFd(pty_pair.master);
+        closeFd(master_write_fd);
+
+        switch (std.c.errno(std.c.setsid())) {
+            .SUCCESS => {},
+            else => |err| childExitWithErrno(err_pipe[1], err),
+        }
+        childDup2OrExit(pty_pair.slave, std.posix.STDIN_FILENO, err_pipe[1]);
+        childDup2OrExit(pty_pair.slave, std.posix.STDOUT_FILENO, err_pipe[1]);
+        childDup2OrExit(pty_pair.slave, std.posix.STDERR_FILENO, err_pipe[1]);
+        closeFd(pty_pair.slave);
+
+        switch (std.c.errno(std.c.chdir(cwd_z.ptr))) {
+            .SUCCESS => {},
+            else => |err| childExitWithErrno(err_pipe[1], err),
+        }
+        _ = std.c.execve(executable_z.ptr, argv_buf.ptr, env_block.slice.ptr);
+        childExitWithErrno(err_pipe[1], std.c.errno(-1));
+    }
+
+    const pid: std.posix.pid_t = @intCast(pid_result);
+    closeFd(pty_pair.slave);
+    slave_open = false;
+    closeFd(err_pipe[1]);
+    err_write_open = false;
+
+    if (readSpawnErrno(err_pipe[0])) |err| {
+        closeFd(err_pipe[0]);
+        err_read_open = false;
+        closeFd(pty_pair.master);
+        master_open = false;
+        closeFd(master_write_fd);
+        master_write_open = false;
+        var status: c_int = 0;
+        _ = std.c.waitpid(pid, &status, 0);
+        return spawnErrorFromErrno(err);
+    }
+    closeFd(err_pipe[0]);
+    err_read_open = false;
+
+    const stdin_file: std.Io.File = .{ .handle = master_write_fd, .flags = .{ .nonblocking = false } };
+    master_write_open = false;
+    const stdout_file: std.Io.File = .{ .handle = pty_pair.master, .flags = .{ .nonblocking = false } };
+    master_open = false;
+
+    return .{
+        .id = pid,
+        .thread_handle = {},
+        .stdin = stdin_file,
+        .stdout = stdout_file,
+        .stderr = null,
+        .request_resource_usage_statistics = false,
+    };
+}
+
+const ExecServerPtyPair = struct {
+    master: std.c.fd_t,
+    slave: std.c.fd_t,
+};
+
+fn openExecServerPtyPair() !ExecServerPtyPair {
+    if (builtin.os.tag != .macos) return error.ExecServerTtyUnsupported;
+
+    var window_size: std.posix.winsize = .{
+        .row = default_exec_tty_rows,
+        .col = default_exec_tty_cols,
+        .xpixel = 0,
+        .ypixel = 0,
+    };
+    var master_fd: c_int = undefined;
+    var slave_fd: c_int = undefined;
+    if (openpty(&master_fd, &slave_fd, null, null, &window_size) != 0) return error.ExecServerOpenPtyFailed;
+    return .{
+        .master = @intCast(master_fd),
+        .slave = @intCast(slave_fd),
+    };
 }
 
 fn spawnUnixArg0Process(
@@ -1333,7 +1504,7 @@ fn spawnUnixArg0Process(
     closeFd(err_pipe[1]);
     err_write_open = false;
 
-    if (readArg0SpawnErrno(err_pipe[0])) |err| {
+    if (readSpawnErrno(err_pipe[0])) |err| {
         closeFd(err_pipe[0]);
         err_read_open = false;
         if (pipe_stdin) {
@@ -1388,6 +1559,19 @@ fn setFdCloseOnExec(fd: std.c.fd_t) !void {
     }
 }
 
+fn duplicateFd(fd: std.c.fd_t) !std.c.fd_t {
+    while (true) {
+        const duplicated = std.c.dup(fd);
+        switch (std.c.errno(duplicated)) {
+            .SUCCESS => return @intCast(duplicated),
+            .INTR => continue,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            else => return error.Unexpected,
+        }
+    }
+}
+
 fn closeFd(fd: std.c.fd_t) void {
     _ = std.c.close(fd);
 }
@@ -1406,7 +1590,7 @@ fn childExitWithErrno(err_fd: std.c.fd_t, err: std.c.E) noreturn {
     std.c._exit(127);
 }
 
-fn readArg0SpawnErrno(err_fd: std.c.fd_t) ?std.c.E {
+fn readSpawnErrno(err_fd: std.c.fd_t) ?std.c.E {
     var errno_value: c_int = 0;
     const bytes = std.mem.asBytes(&errno_value);
     var filled: usize = 0;
@@ -1809,8 +1993,9 @@ fn stdoutDisconnected() bool {
 fn pollProcess(allocator: std.mem.Allocator, process: *ProcessSession, timeout_ms: u64) !void {
     if (process.closed) return;
     process.reapStdinWriteTask(allocator);
-    _ = try readProcessPipeChunk(allocator, process, &process.stdout_file, "stdout", timeout_ms);
-    _ = try readProcessPipeChunk(allocator, process, &process.stderr_file, "stderr", timeout_ms);
+    const stdout_stream = if (process.tty) "pty" else "stdout";
+    _ = try readProcessPipeChunk(allocator, process, &process.stdout_file, stdout_stream, timeout_ms);
+    if (!process.tty) _ = try readProcessPipeChunk(allocator, process, &process.stderr_file, "stderr", timeout_ms);
 
     if (pollProcessChild(process)) |term| {
         const exit_code = processExitCode(term);
@@ -1911,8 +2096,11 @@ fn drainProcessOutput(allocator: std.mem.Allocator, process: *ProcessSession) !v
     var empty_rounds: usize = 0;
     while (empty_rounds < 2) {
         var made_progress = false;
-        made_progress = (try readProcessPipeChunk(allocator, process, &process.stdout_file, "stdout", 1)) == .data or made_progress;
-        made_progress = (try readProcessPipeChunk(allocator, process, &process.stderr_file, "stderr", 1)) == .data or made_progress;
+        const stdout_stream = if (process.tty) "pty" else "stdout";
+        made_progress = (try readProcessPipeChunk(allocator, process, &process.stdout_file, stdout_stream, 1)) == .data or made_progress;
+        if (!process.tty) {
+            made_progress = (try readProcessPipeChunk(allocator, process, &process.stderr_file, "stderr", 1)) == .data or made_progress;
+        }
         if (made_progress) {
             empty_rounds = 0;
         } else {
