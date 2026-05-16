@@ -23,6 +23,7 @@ const max_buffered_input_read_wait_ms = 200;
 const max_detached_exec_sessions = 64;
 const detached_exec_session_poll_interval_ms = 50;
 const max_exec_server_read_file_bytes = 512 * 1024 * 1024;
+const max_fs_symlink_resolution_depth = 40;
 const default_exec_tty_rows = 24;
 const default_exec_tty_cols = 80;
 const default_env_exclude_patterns = [_][]const u8{ "*KEY*", "*SECRET*", "*TOKEN*" };
@@ -2928,11 +2929,6 @@ fn appendFsSandboxEntryPath(allocator: std.mem.Allocator, policy: *FsSandboxPoli
 fn fsSandboxCanonicalEntryPath(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const resolved_path = resolveExistingPath(allocator, io, path) catch return null;
-    errdefer allocator.free(resolved_path);
-    if (std.mem.eql(u8, resolved_path, path)) {
-        allocator.free(resolved_path);
-        return null;
-    }
     return resolved_path;
 }
 
@@ -3152,6 +3148,7 @@ fn fsFailureCode(err: anyerror) i64 {
         error.FsCopyDirectoryRequiresRecursive,
         error.FsCopyDestinationInsideSource,
         error.FsCopyUnsupportedFileType,
+        error.TooManySymbolicLinks,
         => -32600,
         else => -32603,
     };
@@ -3241,12 +3238,24 @@ fn normalizeAbsolutePath(allocator: std.mem.Allocator, path: []const u8) ![]cons
 }
 
 fn resolveExistingPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
-    const trimmed_path = std.mem.trimEnd(u8, path, std.fs.path.sep_str);
-    var existing_path = if (trimmed_path.len == 0) path else trimmed_path;
+    return resolveExistingPathDepth(allocator, io, path, 0);
+}
+
+fn resolveExistingPathDepth(allocator: std.mem.Allocator, io: std.Io, path: []const u8, symlink_depth: usize) ![]const u8 {
+    if (symlink_depth >= max_fs_symlink_resolution_depth) return error.TooManySymbolicLinks;
+    const normalized = try normalizeAbsolutePath(allocator, path);
+    defer allocator.free(normalized);
+    const trimmed_path = std.mem.trimEnd(u8, normalized, std.fs.path.sep_str);
+    var existing_path = if (trimmed_path.len == 0) normalized else trimmed_path;
     var unresolved_suffix = std.ArrayList([]const u8).empty;
     defer unresolved_suffix.deinit(allocator);
 
     while (!pathExists(io, existing_path)) {
+        if (try pathIsSymlink(io, existing_path)) {
+            const redirected_path = try resolveSymlinkTargetPath(allocator, io, existing_path, unresolved_suffix.items);
+            defer allocator.free(redirected_path);
+            return resolveExistingPathDepth(allocator, io, redirected_path, symlink_depth + 1);
+        }
         const file_name = std.fs.path.basename(existing_path);
         if (file_name.len == 0) break;
         try unresolved_suffix.append(allocator, file_name);
@@ -3264,6 +3273,45 @@ fn resolveExistingPath(allocator: std.mem.Allocator, io: std.Io, path: []const u
     while (index > 0) {
         index -= 1;
         try parts.append(allocator, unresolved_suffix.items[index]);
+    }
+    return std.fs.path.join(allocator, parts.items);
+}
+
+fn pathIsSymlink(io: std.Io, path: []const u8) !bool {
+    const metadata = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        error.NotDir => return false,
+        else => return err,
+    };
+    return metadata.kind == .sym_link;
+}
+
+fn resolveSymlinkTargetPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    symlink_path: []const u8,
+    unresolved_suffix: []const []const u8,
+) ![]const u8 {
+    var target_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = try std.Io.Dir.readLinkAbsolute(io, symlink_path, &target_buffer);
+    const target = target_buffer[0..target_len];
+    const resolved_target = if (std.fs.path.isAbsolute(target))
+        try normalizeAbsolutePath(allocator, target)
+    else blk: {
+        const parent_path = std.fs.path.dirname(symlink_path) orelse std.fs.path.sep_str;
+        break :blk try std.fs.path.resolve(allocator, &.{ parent_path, target });
+    };
+    defer allocator.free(resolved_target);
+
+    if (unresolved_suffix.len == 0) return allocator.dupe(u8, resolved_target);
+
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    try parts.append(allocator, resolved_target);
+    var index = unresolved_suffix.len;
+    while (index > 0) {
+        index -= 1;
+        try parts.append(allocator, unresolved_suffix[index]);
     }
     return std.fs.path.join(allocator, parts.items);
 }
