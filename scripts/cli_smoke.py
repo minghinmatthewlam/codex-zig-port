@@ -561,6 +561,36 @@ class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
                 b"\r\n" + payload
             )
             return
+        if self.path == "/timeout":
+            payload = b"too late"
+            self.close_connection = True
+            time.sleep(0.5)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/timeout-body":
+            payload = b"too late body"
+            self.close_connection = True
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload[:1])
+                self.wfile.flush()
+                time.sleep(0.5)
+                self.wfile.write(payload[1:])
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         self.send_response(404)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -1702,6 +1732,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                     ],
                     "bodyBase64": base64.b64encode(http_request_body).decode("ascii"),
                     "requestId": "http-smoke-1",
+                    "timeoutMs": 5000,
                 },
             },
             {
@@ -1864,7 +1895,18 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                     "method": "GET",
                     "url": f"{http_url}/timeout",
                     "requestId": "http-smoke-timeout",
-                    "timeoutMs": 1,
+                    "timeoutMs": 100,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-timeout-body",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/timeout-body",
+                    "requestId": "http-smoke-timeout-body",
+                    "timeoutMs": 100,
                 },
             },
             {
@@ -1888,7 +1930,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert stdio_result.stderr == ""
         responses = [json.loads(line) for line in stdio_result.stdout.splitlines()]
-        assert len(responses) == 44
+        assert len(responses) == 45
 
         invalid_initialize = responses[0]
         assert invalid_initialize["id"] == "invalid-init"
@@ -2045,6 +2087,8 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             "/transfer-encoding",
             "/early-hints",
             "/binary-header",
+            "/timeout",
+            "/timeout-body",
         ]
         assert header_value(http_server.request_headers[0], "x-smoke") == "yes"
         assert header_value(http_server.request_headers[0], "user-agent") == "exec-smoke-agent"
@@ -2084,6 +2128,8 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             b"not-supported",
             b"",
             http_transfer_encoding_body,
+            b"",
+            b"",
             b"",
             b"",
         ]
@@ -2202,10 +2248,15 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
 
         http_timeout = responses[42]
         assert http_timeout["id"] == "http-request-timeout"
-        assert http_timeout["error"]["code"] == -32601
-        assert "timeoutMs is not implemented yet" in http_timeout["error"]["message"]
+        assert http_timeout["error"]["code"] == -32603
+        assert "http/request failed: Timeout" in http_timeout["error"]["message"]
 
-        http_scheme = responses[43]
+        http_timeout_body = responses[43]
+        assert http_timeout_body["id"] == "http-request-timeout-body"
+        assert http_timeout_body["error"]["code"] == -32603
+        assert "http/request failed: Timeout" in http_timeout_body["error"]["message"]
+
+        http_scheme = responses[44]
         assert http_scheme["id"] == "http-request-scheme"
         assert http_scheme["error"]["code"] == -32602
         assert "only supports http and https URLs" in http_scheme["error"]["message"]
