@@ -561,6 +561,93 @@ class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
                 b"\r\n" + payload
             )
             return
+        if self.path == "/stream":
+            chunks = [b"hello ", b"stream"]
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "yes")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for chunk in chunks:
+                    self.wfile.write(f"{len(chunk):x}\r\n".encode("ascii"))
+                    self.wfile.write(chunk)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                    time.sleep(0.1)
+                self.wfile.write(b"0\r\n\r\n")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/stream-fixed-close":
+            payload = b"hello"
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "fixed-close")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/stream-truncated":
+            payload = b"hello"
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "truncated")
+            self.send_header("Content-Length", str(len(payload) + 5))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/stream-fixed-hang":
+            payload = b"hello"
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "fixed-hang")
+            self.send_header("Content-Length", str(len(payload) + 5))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(payload)
+                self.wfile.flush()
+                time.sleep(10)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/stream-hang":
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "hang")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(b"5\r\nhello\r\n")
+                self.wfile.flush()
+                time.sleep(10)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/stream-slow-head":
+            self.close_connection = True
+            time.sleep(10)
+            try:
+                payload = b"late"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if self.path == "/timeout":
             payload = b"too late"
             self.close_connection = True
@@ -637,6 +724,7 @@ class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
 
 
 class ExecServerHttpRequestServer(ThreadingHTTPServer):
+    daemon_threads = True
     request_paths: list[str]
     request_headers: list[dict[str, str]]
     request_header_values: list[dict[str, list[str]]]
@@ -649,6 +737,353 @@ def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]
         if header.get("name", "").lower() == name.lower():
             return header.get("value")
     return None
+
+
+def run_exec_server_stream_content_length_close_smoke(
+    binary: Path, temp_root: Path, env: dict[str, str], http_url: str
+) -> None:
+    def run_case(path: str, request_id: str, header_value: str, expected_error: Optional[str]) -> None:
+        proc = subprocess.Popen(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        def write_json(payload: dict) -> None:
+            proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            proc.stdin.flush()
+
+        def read_event(timeout: float) -> dict:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 0.05))
+                if ready:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    return json.loads(line)
+                if proc.poll() is not None:
+                    break
+            raise AssertionError(f"timed out waiting for stream content-length event for {path}")
+
+        try:
+            write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"{request_id}-init",
+                    "method": "initialize",
+                    "params": {"clientName": "cli-smoke-stream-content-length"},
+                }
+            )
+            initialize = read_event(5)
+            assert initialize["id"] == f"{request_id}-init"
+            write_json({"jsonrpc": "2.0", "method": "initialized"})
+            write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"{request_id}-request",
+                    "method": "http/request",
+                    "params": {
+                        "method": "GET",
+                        "url": f"{http_url}{path}",
+                        "requestId": request_id,
+                        "streamResponse": True,
+                    },
+                }
+            )
+
+            stream_response = read_event(5)
+            assert stream_response["id"] == f"{request_id}-request"
+            assert stream_response["result"]["status"] == 200
+            assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == header_value
+            assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
+            first_delta = read_event(5)
+            assert first_delta["method"] == "http/request/bodyDelta"
+            assert first_delta["params"]["requestId"] == request_id
+            assert first_delta["params"]["seq"] == 1
+            assert base64.b64decode(first_delta["params"]["deltaBase64"]) == b"hello"
+            assert first_delta["params"]["done"] is False
+            assert first_delta["params"]["error"] is None
+            terminal_delta = read_event(5)
+            assert terminal_delta["method"] == "http/request/bodyDelta"
+            assert terminal_delta["params"]["requestId"] == request_id
+            assert terminal_delta["params"]["seq"] == 2
+            assert base64.b64decode(terminal_delta["params"]["deltaBase64"]) == b""
+            assert terminal_delta["params"]["done"] is True
+            assert terminal_delta["params"]["error"] == expected_error
+
+            proc.stdin.close()
+            proc.wait(timeout=3)
+            assert proc.returncode == 0
+            assert proc.stderr.read() == ""
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    run_case("/stream-fixed-close", "http-smoke-stream-fixed-close", "fixed-close", None)
+    run_case("/stream-truncated", "http-smoke-stream-truncated", "truncated", "EndOfStream")
+
+
+def run_exec_server_stream_content_length_shutdown_cancellation_smoke(
+    binary: Path, temp_root: Path, env: dict[str, str], http_url: str
+) -> None:
+    proc = subprocess.Popen(
+        [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+        cwd=temp_root,
+        env=env,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    def write_json(payload: dict) -> None:
+        proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+
+    def read_event(timeout: float) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 0.05))
+            if ready:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                return json.loads(line)
+            if proc.poll() is not None:
+                break
+        raise AssertionError("timed out waiting for stream fixed-length shutdown event")
+
+    try:
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-fixed-hang-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-stream-fixed-hang"},
+            }
+        )
+        initialize = read_event(5)
+        assert initialize["id"] == "stream-fixed-hang-init"
+        write_json({"jsonrpc": "2.0", "method": "initialized"})
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-fixed-hang-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-fixed-hang",
+                    "requestId": "http-smoke-stream-fixed-hang",
+                    "streamResponse": True,
+                },
+            }
+        )
+
+        stream_response = read_event(5)
+        assert stream_response["id"] == "stream-fixed-hang-request"
+        assert stream_response["result"]["status"] == 200
+        assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "fixed-hang"
+        assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
+        first_delta = read_event(5)
+        assert first_delta["method"] == "http/request/bodyDelta"
+        assert first_delta["params"]["requestId"] == "http-smoke-stream-fixed-hang"
+        assert first_delta["params"]["seq"] == 1
+        assert base64.b64decode(first_delta["params"]["deltaBase64"]) == b"hello"
+        assert first_delta["params"]["done"] is False
+
+        proc.stdin.close()
+        proc.wait(timeout=3)
+        assert proc.returncode == 0
+        assert proc.stdout.read() == ""
+        assert proc.stderr.read() == ""
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def run_exec_server_stream_shutdown_cancellation_smoke(
+    binary: Path, temp_root: Path, env: dict[str, str], http_url: str
+) -> None:
+    proc = subprocess.Popen(
+        [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+        cwd=temp_root,
+        env=env,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    def write_json(payload: dict) -> None:
+        proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+
+    def read_event(timeout: float) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 0.05))
+            if ready:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                return json.loads(line)
+            if proc.poll() is not None:
+                break
+        raise AssertionError("timed out waiting for stream shutdown event")
+
+    try:
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-shutdown-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-stream-shutdown"},
+            }
+        )
+        initialize = read_event(5)
+        assert initialize["id"] == "stream-shutdown-init"
+        write_json({"jsonrpc": "2.0", "method": "initialized"})
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-shutdown-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-hang",
+                    "requestId": "http-smoke-stream-shutdown",
+                    "streamResponse": True,
+                },
+            }
+        )
+
+        stream_response = read_event(5)
+        assert stream_response["id"] == "stream-shutdown-request"
+        assert stream_response["result"]["status"] == 200
+        assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "hang"
+        assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
+        first_delta = read_event(5)
+        assert first_delta["method"] == "http/request/bodyDelta"
+        assert first_delta["params"]["requestId"] == "http-smoke-stream-shutdown"
+        assert first_delta["params"]["seq"] == 1
+        assert base64.b64decode(first_delta["params"]["deltaBase64"]) == b"hello"
+        assert first_delta["params"]["done"] is False
+
+        proc.stdin.close()
+        proc.wait(timeout=3)
+        assert proc.returncode == 0
+        assert proc.stderr.read() == ""
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def wait_for_http_request_path(server: ExecServerHttpRequestServer, path: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path in server.request_paths:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for HTTP request path {path}")
+
+
+def run_exec_server_stream_preheader_shutdown_cancellation_smoke(
+    binary: Path,
+    temp_root: Path,
+    env: dict[str, str],
+    http_url: str,
+    http_server: ExecServerHttpRequestServer,
+) -> None:
+    proc = subprocess.Popen(
+        [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+        cwd=temp_root,
+        env=env,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    def write_json(payload: dict) -> None:
+        proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+
+    try:
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-preheader-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-stream-preheader"},
+            }
+        )
+        initialize = json.loads(proc.stdout.readline())
+        assert initialize["id"] == "stream-preheader-init"
+        write_json({"jsonrpc": "2.0", "method": "initialized"})
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-preheader-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-slow-head",
+                    "requestId": "http-smoke-stream-preheader",
+                    "streamResponse": True,
+                },
+            }
+        )
+        wait_for_http_request_path(http_server, "/stream-slow-head", 5)
+        proc.stdin.close()
+        proc.wait(timeout=3)
+        remaining_stdout = proc.stdout.read()
+        assert proc.returncode == 0
+        assert proc.stderr.read() == ""
+        assert "stream-preheader-request" not in remaining_stdout
+        assert "http/request failed" not in remaining_stdout
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 class ExecResponsesHandler(BaseHTTPRequestHandler):
@@ -1366,6 +1801,23 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             default_websocket.write_json(
                 {
                     "jsonrpc": "2.0",
+                    "id": "websocket-http-stream",
+                    "method": "http/request",
+                    "params": {
+                        "method": "GET",
+                        "url": "http://127.0.0.1:9/stream",
+                        "requestId": "websocket-http-stream",
+                        "streamResponse": True,
+                    },
+                }
+            )
+            websocket_http_stream = default_websocket.read_json()
+            assert websocket_http_stream["id"] == "websocket-http-stream"
+            assert websocket_http_stream["error"]["code"] == -32601
+            assert "streamResponse over websocket is not implemented yet" in websocket_http_stream["error"]["message"]
+            default_websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
                     "id": "websocket-start",
                     "method": "process/start",
                     "params": {
@@ -1889,6 +2341,29 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
+                "id": "http-request-stream-duplicate",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-duplicate",
+                    "requestId": "http-smoke-stream",
+                    "streamResponse": True,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-stream-timeout",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-timeout",
+                    "requestId": "http-smoke-stream-timeout",
+                    "timeoutMs": 100,
+                    "streamResponse": True,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
                 "id": "http-request-timeout",
                 "method": "http/request",
                 "params": {
@@ -1928,9 +2403,14 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert stdio_result.stderr == ""
-        responses = [json.loads(line) for line in stdio_result.stdout.splitlines()]
-        assert len(responses) == 45
+        assert stdio_result.stderr == "", stdio_result.stderr
+        events = [json.loads(line) for line in stdio_result.stdout.splitlines()]
+        responses = [event for event in events if "id" in event]
+        notifications = [event for event in events if event.get("method") == "http/request/bodyDelta"]
+        response_by_id = {event["id"]: event for event in responses}
+        assert len(events) == 50
+        assert len(responses) == 47
+        assert len(notifications) == 3
 
         invalid_initialize = responses[0]
         assert invalid_initialize["id"] == "invalid-init"
@@ -2087,6 +2567,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             "/transfer-encoding",
             "/early-hints",
             "/binary-header",
+            "/stream",
             "/timeout",
             "/timeout-body",
         ]
@@ -2128,6 +2609,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             b"not-supported",
             b"",
             http_transfer_encoding_body,
+            b"",
             b"",
             b"",
             b"",
@@ -2241,25 +2723,50 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert dump_header_value(http_binary_header["result"]["headers"], "x-text") == "kept"
         assert base64.b64decode(http_binary_header["result"]["bodyBase64"]) == b"binary header"
 
-        http_stream = responses[41]
+        http_stream = response_by_id["http-request-stream"]
         assert http_stream["id"] == "http-request-stream"
-        assert http_stream["error"]["code"] == -32601
-        assert "streamResponse is not implemented yet" in http_stream["error"]["message"]
+        assert http_stream["result"]["status"] == 200
+        assert dump_header_value(http_stream["result"]["headers"], "x-exec-stream") == "yes"
+        assert base64.b64decode(http_stream["result"]["bodyBase64"]) == b""
+        stream_deltas = [
+            notification["params"]
+            for notification in notifications
+            if notification["params"]["requestId"] == "http-smoke-stream"
+        ]
+        assert [delta["seq"] for delta in stream_deltas] == [1, 2, 3]
+        assert b"".join(base64.b64decode(delta["deltaBase64"]) for delta in stream_deltas) == b"hello stream"
+        assert [delta["done"] for delta in stream_deltas] == [False, False, True]
+        assert [delta["error"] for delta in stream_deltas] == [None, None, None]
 
-        http_timeout = responses[42]
+        http_stream_duplicate = response_by_id["http-request-stream-duplicate"]
+        assert http_stream_duplicate["id"] == "http-request-stream-duplicate"
+        assert http_stream_duplicate["error"]["code"] == -32602
+        assert "requestId `http-smoke-stream` is already active" in http_stream_duplicate["error"]["message"]
+
+        http_stream_timeout = response_by_id["http-request-stream-timeout"]
+        assert http_stream_timeout["id"] == "http-request-stream-timeout"
+        assert http_stream_timeout["error"]["code"] == -32601
+        assert "streamResponse timeoutMs is not implemented yet" in http_stream_timeout["error"]["message"]
+
+        http_timeout = response_by_id["http-request-timeout"]
         assert http_timeout["id"] == "http-request-timeout"
         assert http_timeout["error"]["code"] == -32603
         assert "http/request failed: Timeout" in http_timeout["error"]["message"]
 
-        http_timeout_body = responses[43]
+        http_timeout_body = response_by_id["http-request-timeout-body"]
         assert http_timeout_body["id"] == "http-request-timeout-body"
         assert http_timeout_body["error"]["code"] == -32603
         assert "http/request failed: Timeout" in http_timeout_body["error"]["message"]
 
-        http_scheme = responses[44]
+        http_scheme = response_by_id["http-request-scheme"]
         assert http_scheme["id"] == "http-request-scheme"
         assert http_scheme["error"]["code"] == -32602
         assert "only supports http and https URLs" in http_scheme["error"]["message"]
+
+        run_exec_server_stream_shutdown_cancellation_smoke(binary, temp_root, env, http_url)
+        run_exec_server_stream_preheader_shutdown_cancellation_smoke(binary, temp_root, env, http_url, http_server)
+        run_exec_server_stream_content_length_close_smoke(binary, temp_root, env, http_url)
+        run_exec_server_stream_content_length_shutdown_cancellation_smoke(binary, temp_root, env, http_url)
 
         http_server.shutdown()
         http_server.server_close()
