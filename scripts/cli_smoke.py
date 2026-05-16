@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import difflib
+import gzip
 import hashlib
 import json
 import os
@@ -43,6 +44,17 @@ def header_value(headers: dict[str, str], name: str) -> Optional[str]:
         if key.lower() == name.lower():
             return value
     return None
+
+
+def captured_header_values(headers: dict[str, list[str]], name: str) -> list[str]:
+    return headers.get(name.lower(), [])
+
+
+def capture_header_values(headers) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for key, value in headers.items():
+        values.setdefault(key.lower(), []).append(value)
+    return values
 
 
 def process_exists(pid: int) -> bool:
@@ -407,6 +419,201 @@ class ExecServerRemoteRegistryServer(ThreadingHTTPServer):
     response_payloads: list[bytes]
 
 
+class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_header_values.append(capture_header_values(self.headers))
+        self.server.request_bodies.append(body)
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/absolute-redirect":
+            self.send_response(302)
+            self.send_header("Location", f"http://{self.headers['Host']}/relative-hop-one")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/relative-hop-one":
+            self.send_response(302)
+            self.send_header("Location", "/relative-hop-two")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/relative-hop-two":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/cross-origin-redirect":
+            self.send_response(302)
+            self.send_header("Location", f"{self.server.cross_origin_url}/cross-origin-final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/cross-origin-final":
+            payload = b"cross-origin"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Cross-Origin", "followed")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/redirect-final":
+            payload = b"redirected"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Redirect", "followed")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/multiple-choice":
+            payload = b"choose"
+            self.send_response(300)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Location", "/should-not-follow")
+            self.send_header("X-Exec-Unfollowed", "yes")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/head-final":
+            payload = b"wrong-method"
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/gzip":
+            payload = gzip.compress(b"gzip body")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/not-modified":
+            self.send_response(304)
+            self.send_header("Content-Length", "123")
+            self.end_headers()
+            return
+        if self.path == "/too-large":
+            self.send_response(200)
+            self.send_header("Content-Length", str(16 * 1024 * 1024 + 1))
+            self.end_headers()
+            return
+        if self.path == "/encoded-too-large":
+            self.send_response(200)
+            self.send_header("Content-Length", str(13 * 1024 * 1024))
+            self.end_headers()
+            return
+        if self.path == "/get-body":
+            payload = b"get:" + body
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("X-Exec-Get-Body", "yes")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/uppercase-scheme":
+            payload = b"uppercase"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Uppercase-Scheme", "yes")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/early-hints":
+            payload = b"early hints final"
+            self.send_response_only(103, "Early Hints")
+            self.send_header("Link", "</style.css>; rel=preload")
+            self.end_headers()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Early-Hints", "final")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/binary-header":
+            payload = b"binary header"
+            self.close_connection = True
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"X-Bin: \xff\r\n"
+                b"X-Text: kept\r\n"
+                b"Content-Length: " + str(len(payload)).encode("ascii") + b"\r\n"
+                b"Connection: close\r\n"
+                b"\r\n" + payload
+            )
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_HEAD(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_header_values.append(capture_header_values(self.headers))
+        self.server.request_bodies.append(b"")
+        if self.path == "/head-see-other":
+            self.send_response(303)
+            self.send_header("Location", "/head-final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", "123")
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_header_values.append(capture_header_values(self.headers))
+        self.server.request_bodies.append(body)
+        if self.path == "/post-redirect":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = b"echo:" + body
+        self.send_response(201)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("X-Exec-Reply", "yes")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class ExecServerHttpRequestServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_header_values: list[dict[str, list[str]]]
+    request_bodies: list[bytes]
+    cross_origin_url: str
+
+
 def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]:
     for header in headers:
         if header.get("name", "").lower() == name.lower():
@@ -734,6 +941,17 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_exec_server_http_request_server(public_host: str = "127.0.0.1") -> tuple[ExecServerHttpRequestServer, str]:
+    server = ExecServerHttpRequestServer(("127.0.0.1", 0), ExecServerHttpRequestHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_header_values = []
+    server.request_bodies = []
+    server.cross_origin_url = ""
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://{public_host}:{server.server_port}"
 
 
 def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
@@ -1268,6 +1486,13 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         path_shadow_probe.chmod(0o644)
         path_probe = path_bin / "path-probe"
         path_probe.symlink_to("/bin/pwd")
+        http_request_body = b"exec http payload"
+        http_redirect_body = b"redirect body"
+        http_transfer_encoding_body = b"transfer encoding body"
+        cross_origin_http_server, cross_origin_http_url = start_exec_server_http_request_server("localhost")
+        http_server, http_url = start_exec_server_http_request_server()
+        http_server.cross_origin_url = cross_origin_http_url
+        uppercase_scheme_url = "HTTP://" + http_url.removeprefix("http://") + "/uppercase-scheme"
         requests = [
             {"jsonrpc": "2.0", "id": "invalid-init", "method": "initialize", "params": {}},
             {
@@ -1462,6 +1687,192 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "method": "initialize",
                 "params": {"clientName": "cli-smoke"},
             },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request",
+                "method": "http/request",
+                "params": {
+                    "method": "POST",
+                    "url": f"{http_url}/echo?source=stdio",
+                    "headers": [
+                        {"name": "X-Smoke", "value": "yes"},
+                        {"name": "Accept-Encoding", "value": "identity"},
+                        {"name": "User-Agent", "value": "exec-smoke-agent"},
+                        {"name": "Content-Length", "value": str(len(http_request_body))},
+                    ],
+                    "bodyBase64": base64.b64encode(http_request_body).decode("ascii"),
+                    "requestId": "http-smoke-1",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-post-empty",
+                "method": "http/request",
+                "params": {"method": "POST", "url": f"{http_url}/post-empty", "requestId": "http-smoke-post-empty"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-post-redirect",
+                "method": "http/request",
+                "params": {
+                    "method": "POST",
+                    "url": f"{http_url}/post-redirect",
+                    "headers": [{"name": "Content-Length", "value": str(len(http_redirect_body))}],
+                    "bodyBase64": base64.b64encode(http_redirect_body).decode("ascii"),
+                    "requestId": "http-smoke-post-redirect",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-redirect",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/redirect", "requestId": "http-smoke-redirect"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-absolute-relative-redirect",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/absolute-redirect",
+                    "requestId": "http-smoke-absolute-relative-redirect",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-cross-origin-redirect",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/cross-origin-redirect",
+                    "headers": [
+                        {"name": "Authorization", "value": "Bearer should-not-forward"},
+                        {"name": "Cookie", "value": "session=should-not-forward"},
+                        {"name": "Proxy-Authorization", "value": "Basic should-not-forward"},
+                        {"name": "X-Smoke", "value": "cross-origin"},
+                    ],
+                    "requestId": "http-smoke-cross-origin",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-unfollowed-redirect",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/multiple-choice", "requestId": "http-smoke-300"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-gzip",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/gzip", "requestId": "http-smoke-gzip"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-not-modified",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/not-modified", "requestId": "http-smoke-304"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-too-large",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/too-large", "requestId": "http-smoke-too-large"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-encoded-too-large",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/encoded-too-large",
+                    "requestId": "http-smoke-encoded-too-large",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-head",
+                "method": "http/request",
+                "params": {"method": "HEAD", "url": f"{http_url}/head", "requestId": "http-smoke-head"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-head-see-other",
+                "method": "http/request",
+                "params": {"method": "HEAD", "url": f"{http_url}/head-see-other", "requestId": "http-smoke-head-303"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-get-body",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/get-body",
+                    "bodyBase64": base64.b64encode(b"not-supported").decode("ascii"),
+                    "requestId": "http-smoke-get-body",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-uppercase-scheme",
+                "method": "http/request",
+                "params": {"method": "GET", "url": uppercase_scheme_url, "requestId": "http-smoke-uppercase-scheme"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-transfer-encoding",
+                "method": "http/request",
+                "params": {
+                    "method": "POST",
+                    "url": f"{http_url}/transfer-encoding",
+                    "headers": [{"name": "Transfer-Encoding", "value": "chunked"}],
+                    "bodyBase64": base64.b64encode(http_transfer_encoding_body).decode("ascii"),
+                    "requestId": "http-smoke-transfer-encoding",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-early-hints",
+                "method": "http/request",
+                "params": {"method": "GET", "url": f"{http_url}/early-hints", "requestId": "http-smoke-early-hints"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-binary-header",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/binary-header",
+                    "requestId": "http-smoke-binary-header",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-stream",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream",
+                    "requestId": "http-smoke-stream",
+                    "streamResponse": True,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-timeout",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/timeout",
+                    "requestId": "http-smoke-timeout",
+                    "timeoutMs": 1,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "http-request-scheme",
+                "method": "http/request",
+                "params": {"method": "GET", "url": "file:///tmp/not-http", "requestId": "http-smoke-scheme"},
+            },
         ]
         payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in requests)
         stdio_result = subprocess.run(
@@ -1477,7 +1888,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert stdio_result.stderr == ""
         responses = [json.loads(line) for line in stdio_result.stdout.splitlines()]
-        assert len(responses) == 23
+        assert len(responses) == 44
 
         invalid_initialize = responses[0]
         assert invalid_initialize["id"] == "invalid-init"
@@ -1603,6 +2014,206 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert duplicate["id"] == "again"
         assert duplicate["error"]["code"] == -32600
         assert "initialize may only be sent once" in duplicate["error"]["message"]
+
+        http_request = responses[23]
+        assert http_request["id"] == "http-request"
+        assert http_request["result"]["status"] == 201
+        assert dump_header_value(http_request["result"]["headers"], "x-exec-reply") == "yes"
+        assert base64.b64decode(http_request["result"]["bodyBase64"]) == b"echo:" + http_request_body
+        assert http_server.request_paths == [
+            "/echo?source=stdio",
+            "/post-empty",
+            "/post-redirect",
+            "/redirect-final",
+            "/redirect",
+            "/redirect-final",
+            "/absolute-redirect",
+            "/relative-hop-one",
+            "/relative-hop-two",
+            "/redirect-final",
+            "/cross-origin-redirect",
+            "/multiple-choice",
+            "/gzip",
+            "/not-modified",
+            "/too-large",
+            "/encoded-too-large",
+            "/head",
+            "/head-see-other",
+            "/head-final",
+            "/get-body",
+            "/uppercase-scheme",
+            "/transfer-encoding",
+            "/early-hints",
+            "/binary-header",
+        ]
+        assert header_value(http_server.request_headers[0], "x-smoke") == "yes"
+        assert header_value(http_server.request_headers[0], "user-agent") == "exec-smoke-agent"
+        assert captured_header_values(http_server.request_header_values[0], "accept-encoding") == ["identity"]
+        assert captured_header_values(http_server.request_header_values[0], "content-length") == [
+            str(len(http_request_body))
+        ]
+        assert captured_header_values(http_server.request_header_values[3], "content-length") == []
+        assert captured_header_values(http_server.request_header_values[21], "transfer-encoding") == []
+        assert captured_header_values(http_server.request_header_values[21], "content-length") == [
+            str(len(http_transfer_encoding_body))
+        ]
+        assert header_value(http_server.request_headers[10], "authorization") == "Bearer should-not-forward"
+        assert header_value(http_server.request_headers[10], "cookie") == "session=should-not-forward"
+        assert header_value(http_server.request_headers[10], "proxy-authorization") == "Basic should-not-forward"
+        assert header_value(http_server.request_headers[10], "x-smoke") == "cross-origin"
+        assert http_server.request_bodies == [
+            http_request_body,
+            b"",
+            http_redirect_body,
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"",
+            b"not-supported",
+            b"",
+            http_transfer_encoding_body,
+            b"",
+            b"",
+        ]
+        assert cross_origin_http_server.request_paths == ["/cross-origin-final"]
+        assert header_value(cross_origin_http_server.request_headers[0], "authorization") is None
+        assert header_value(cross_origin_http_server.request_headers[0], "cookie") is None
+        assert header_value(cross_origin_http_server.request_headers[0], "proxy-authorization") is None
+        assert header_value(cross_origin_http_server.request_headers[0], "x-smoke") == "cross-origin"
+
+        http_post_empty = responses[24]
+        assert http_post_empty["id"] == "http-request-post-empty"
+        assert http_post_empty["result"]["status"] == 201
+        assert base64.b64decode(http_post_empty["result"]["bodyBase64"]) == b"echo:"
+
+        http_post_redirect = responses[25]
+        assert http_post_redirect["id"] == "http-request-post-redirect"
+        assert http_post_redirect["result"]["status"] == 200
+        assert dump_header_value(http_post_redirect["result"]["headers"], "x-exec-redirect") == "followed"
+        assert base64.b64decode(http_post_redirect["result"]["bodyBase64"]) == b"redirected"
+
+        http_redirect = responses[26]
+        assert http_redirect["id"] == "http-request-redirect"
+        assert http_redirect["result"]["status"] == 200
+        assert dump_header_value(http_redirect["result"]["headers"], "x-exec-redirect") == "followed"
+        assert base64.b64decode(http_redirect["result"]["bodyBase64"]) == b"redirected"
+
+        http_absolute_relative_redirect = responses[27]
+        assert http_absolute_relative_redirect["id"] == "http-request-absolute-relative-redirect"
+        assert http_absolute_relative_redirect["result"]["status"] == 200
+        assert dump_header_value(http_absolute_relative_redirect["result"]["headers"], "x-exec-redirect") == "followed"
+        assert base64.b64decode(http_absolute_relative_redirect["result"]["bodyBase64"]) == b"redirected"
+
+        http_cross_origin = responses[28]
+        assert http_cross_origin["id"] == "http-request-cross-origin-redirect"
+        assert http_cross_origin["result"]["status"] == 200
+        assert dump_header_value(http_cross_origin["result"]["headers"], "x-exec-cross-origin") == "followed"
+        assert base64.b64decode(http_cross_origin["result"]["bodyBase64"]) == b"cross-origin"
+
+        http_unfollowed = responses[29]
+        assert http_unfollowed["id"] == "http-request-unfollowed-redirect"
+        assert http_unfollowed["result"]["status"] == 300
+        assert dump_header_value(http_unfollowed["result"]["headers"], "x-exec-unfollowed") == "yes"
+        assert base64.b64decode(http_unfollowed["result"]["bodyBase64"]) == b"choose"
+
+        http_gzip = responses[30]
+        assert http_gzip["id"] == "http-request-gzip"
+        assert http_gzip["result"]["status"] == 200
+        assert dump_header_value(http_gzip["result"]["headers"], "content-encoding") is None
+        assert dump_header_value(http_gzip["result"]["headers"], "content-length") is None
+        assert base64.b64decode(http_gzip["result"]["bodyBase64"]) == b"gzip body"
+
+        http_not_modified = responses[31]
+        assert http_not_modified["id"] == "http-request-not-modified"
+        assert http_not_modified["result"]["status"] == 304
+        assert dump_header_value(http_not_modified["result"]["headers"], "content-length") == "123"
+        assert base64.b64decode(http_not_modified["result"]["bodyBase64"]) == b""
+
+        http_too_large = responses[32]
+        assert http_too_large["id"] == "http-request-too-large"
+        assert http_too_large["error"]["code"] == -32603
+        assert "response body is too large" in http_too_large["error"]["message"]
+
+        http_encoded_too_large = responses[33]
+        assert http_encoded_too_large["id"] == "http-request-encoded-too-large"
+        assert http_encoded_too_large["error"]["code"] == -32603
+        assert "response body is too large" in http_encoded_too_large["error"]["message"]
+
+        http_head = responses[34]
+        assert http_head["id"] == "http-request-head"
+        assert http_head["result"]["status"] == 200
+        assert dump_header_value(http_head["result"]["headers"], "content-length") == "123"
+        assert base64.b64decode(http_head["result"]["bodyBase64"]) == b""
+
+        http_head_303 = responses[35]
+        assert http_head_303["id"] == "http-request-head-see-other"
+        assert http_head_303["result"]["status"] == 200
+        assert dump_header_value(http_head_303["result"]["headers"], "content-length") == "123"
+        assert base64.b64decode(http_head_303["result"]["bodyBase64"]) == b""
+
+        http_get_body = responses[36]
+        assert http_get_body["id"] == "http-request-get-body"
+        assert http_get_body["result"]["status"] == 200
+        assert dump_header_value(http_get_body["result"]["headers"], "x-exec-get-body") == "yes"
+        assert base64.b64decode(http_get_body["result"]["bodyBase64"]) == b"get:not-supported"
+
+        http_uppercase_scheme = responses[37]
+        assert http_uppercase_scheme["id"] == "http-request-uppercase-scheme"
+        assert http_uppercase_scheme["result"]["status"] == 200
+        assert dump_header_value(http_uppercase_scheme["result"]["headers"], "x-exec-uppercase-scheme") == "yes"
+        assert base64.b64decode(http_uppercase_scheme["result"]["bodyBase64"]) == b"uppercase"
+
+        http_transfer_encoding = responses[38]
+        assert http_transfer_encoding["id"] == "http-request-transfer-encoding"
+        assert http_transfer_encoding["result"]["status"] == 201
+        assert base64.b64decode(http_transfer_encoding["result"]["bodyBase64"]) == (
+            b"echo:" + http_transfer_encoding_body
+        )
+
+        http_early_hints = responses[39]
+        assert http_early_hints["id"] == "http-request-early-hints"
+        assert http_early_hints["result"]["status"] == 200
+        assert dump_header_value(http_early_hints["result"]["headers"], "x-exec-early-hints") == "final"
+        assert base64.b64decode(http_early_hints["result"]["bodyBase64"]) == b"early hints final"
+
+        http_binary_header = responses[40]
+        assert http_binary_header["id"] == "http-request-binary-header"
+        assert http_binary_header["result"]["status"] == 200
+        assert dump_header_value(http_binary_header["result"]["headers"], "x-bin") is None
+        assert dump_header_value(http_binary_header["result"]["headers"], "x-text") == "kept"
+        assert base64.b64decode(http_binary_header["result"]["bodyBase64"]) == b"binary header"
+
+        http_stream = responses[41]
+        assert http_stream["id"] == "http-request-stream"
+        assert http_stream["error"]["code"] == -32601
+        assert "streamResponse is not implemented yet" in http_stream["error"]["message"]
+
+        http_timeout = responses[42]
+        assert http_timeout["id"] == "http-request-timeout"
+        assert http_timeout["error"]["code"] == -32601
+        assert "timeoutMs is not implemented yet" in http_timeout["error"]["message"]
+
+        http_scheme = responses[43]
+        assert http_scheme["id"] == "http-request-scheme"
+        assert http_scheme["error"]["code"] == -32602
+        assert "only supports http and https URLs" in http_scheme["error"]["message"]
+
+        http_server.shutdown()
+        http_server.server_close()
+        cross_origin_http_server.shutdown()
+        cross_origin_http_server.server_close()
 
         fs_root = temp_root / "exec-server-fs"
         fs_nested = fs_root / "nested"
