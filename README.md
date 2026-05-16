@@ -130,7 +130,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `arg0` process titles, filesystem read/write/mkdir/metadata/list/copy/remove
   RPCs with supported filesystem sandbox contexts, buffered executor-side
   `http/request` RPCs for built-in HTTP methods with buffered timeout handling
-  plus stdio streamed response body-delta notifications,
+  plus streamed response body-delta notifications over stdio and websockets,
   registry-backed remote executor registration through `--remote` /
   `--executor-id` with bearer-token auth, local `ws://` rendezvous serving, and
   explicit partial-parity errors for unsupported transports
