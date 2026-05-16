@@ -129,8 +129,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   lifecycle, `envPolicy`-based child environment filtering and overlays, Unix
   `arg0` process titles, filesystem read/write/mkdir/metadata/list/copy/remove
   RPCs with supported filesystem sandbox contexts, buffered executor-side
-  `http/request` RPCs for built-in HTTP methods without streaming or timeout
-  handling yet,
+  `http/request` RPCs for built-in HTTP methods with buffered timeout handling
+  and without streaming yet,
   registry-backed remote executor registration through `--remote` /
   `--executor-id` with bearer-token auth, local `ws://` rendezvous serving, and
   explicit partial-parity errors for unsupported transports
