@@ -1618,6 +1618,89 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert not fs_copy_dir.exists()
         assert fs_by_id["fs-remove-missing"]["error"]["code"] == -32004
 
+        if hasattr(os, "mkfifo") and hasattr(os, "symlink"):
+            fs_edge_root = temp_root / "exec-server-fs-edges"
+            fs_allowed = fs_edge_root / "allowed"
+            fs_outside = fs_edge_root / "outside"
+            fs_fifo_source = fs_edge_root / "fifo-source"
+            fs_fifo_dest = fs_edge_root / "fifo-dest"
+            try:
+                fs_allowed.mkdir(parents=True)
+                fs_outside.mkdir()
+                fs_fifo_source.mkdir()
+                (fs_allowed / "secret.txt").write_text("allowed", encoding="utf-8")
+                (fs_edge_root / "secret.txt").write_text("root", encoding="utf-8")
+                (fs_fifo_source / "note.txt").write_text("copy me", encoding="utf-8")
+                os.symlink(fs_outside, fs_allowed / "link")
+                os.mkfifo(fs_fifo_source / "named-pipe")
+            except (NotImplementedError, OSError):
+                shutil.rmtree(fs_edge_root, ignore_errors=True)
+            else:
+                fs_edge_requests = [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-edge-init",
+                        "method": "initialize",
+                        "params": {"clientName": "cli-smoke-fs-edges"},
+                    },
+                    {"jsonrpc": "2.0", "method": "initialized"},
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-normalized-read",
+                        "method": "fs/readFile",
+                        "params": {"path": str(fs_allowed / "link" / ".." / "secret.txt")},
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-copy-dir-with-fifo",
+                        "method": "fs/copy",
+                        "params": {
+                            "sourcePath": str(fs_fifo_source),
+                            "destinationPath": str(fs_fifo_dest),
+                            "recursive": True,
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-read-fifo-copy-note",
+                        "method": "fs/readFile",
+                        "params": {"path": str(fs_fifo_dest / "note.txt")},
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-copy-standalone-fifo",
+                        "method": "fs/copy",
+                        "params": {
+                            "sourcePath": str(fs_fifo_source / "named-pipe"),
+                            "destinationPath": str(fs_edge_root / "fifo-copy"),
+                            "recursive": False,
+                        },
+                    },
+                ]
+                fs_edge_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in fs_edge_requests)
+                fs_edge_result = subprocess.run(
+                    [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+                    cwd=temp_root,
+                    env=env,
+                    input=fs_edge_payload,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                assert fs_edge_result.stderr == ""
+                fs_edge_responses = [json.loads(line) for line in fs_edge_result.stdout.splitlines()]
+                assert len(fs_edge_responses) == 5
+                fs_edge_by_id = {response["id"]: response for response in fs_edge_responses}
+                uuid.UUID(fs_edge_by_id["fs-edge-init"]["result"]["sessionId"])
+                assert base64.b64decode(fs_edge_by_id["fs-normalized-read"]["result"]["dataBase64"]) == b"allowed"
+                assert fs_edge_by_id["fs-copy-dir-with-fifo"]["result"] == {}
+                assert base64.b64decode(fs_edge_by_id["fs-read-fifo-copy-note"]["result"]["dataBase64"]) == b"copy me"
+                assert not (fs_fifo_dest / "named-pipe").exists()
+                assert fs_edge_by_id["fs-copy-standalone-fifo"]["error"]["code"] == -32600
+                assert "fs/copy only supports regular files" in fs_edge_by_id["fs-copy-standalone-fifo"]["error"]["message"]
+
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [
             {
