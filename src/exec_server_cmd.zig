@@ -110,6 +110,17 @@ const StdioServerTransport = enum {
     websocket,
 };
 
+const WebSocketJsonRpcOutput = struct {
+    mutex: std.Io.Mutex = .init,
+    writer: *std.Io.Writer,
+};
+
+const JsonRpcOutput = union(enum) {
+    stdio,
+    websocket_server: *WebSocketJsonRpcOutput,
+    websocket_client: *WebSocketJsonRpcOutput,
+};
+
 const ParsedOptions = struct {
     help: bool = false,
     listen: ?[]const u8 = null,
@@ -397,6 +408,7 @@ const HttpBodyStreamTask = struct {
     allocator: std.mem.Allocator,
     id_json: []const u8,
     params: OwnedHttpRequestParams,
+    output: JsonRpcOutput,
 
     fn deinit(self: *HttpBodyStreamTask, allocator: std.mem.Allocator) void {
         allocator.free(self.id_json);
@@ -412,7 +424,7 @@ fn runHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
         defer task.allocator.free(message);
         const response = renderJsonRpcErrorFromIdJson(task.allocator, task.id_json, -32603, message) catch return;
         defer task.allocator.free(response);
-        writeStdoutLine(response) catch {};
+        writeJsonRpcOutputLine(task.output, task.allocator, response) catch {};
     };
 }
 
@@ -469,6 +481,7 @@ const StdioServer = struct {
     session_id: ?[]const u8 = null,
     processes: std.ArrayList(ProcessSession) = .empty,
     http_body_streams: std.ArrayList(*HttpBodyStreamTask) = .empty,
+    output: JsonRpcOutput = .stdio,
 
     fn deinit(self: *StdioServer) void {
         self.finishHttpBodyStreamTasks();
@@ -543,7 +556,7 @@ const StdioServer = struct {
                 .too_long => {
                     const response = try renderJsonRpcError(self.allocator, null, -32600, "Request too large");
                     defer self.allocator.free(response);
-                    try writeStdoutLine(response);
+                    try writeJsonRpcOutputLine(self.output, self.allocator, response);
                     continue;
                 },
                 .line => {},
@@ -563,7 +576,7 @@ const StdioServer = struct {
             };
             if (response) |payload| {
                 defer self.allocator.free(payload);
-                try writeStdoutLine(payload);
+                try writeJsonRpcOutputLine(self.output, self.allocator, payload);
             }
         }
     }
@@ -841,9 +854,6 @@ const StdioServer = struct {
             defer self.allocator.free(message);
             return try renderJsonRpcError(self.allocator, id_value, -32602, message);
         }
-        if (self.transport != .stdio) {
-            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse over websocket is not implemented yet");
-        }
         if (params.timeout_ms != null) {
             return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse timeoutMs is not implemented yet");
         }
@@ -862,6 +872,7 @@ const StdioServer = struct {
         task.allocator = self.allocator;
         task.id_json = id_json;
         task.params = owned_params;
+        task.output = self.output;
         task.thread = try std.Thread.spawn(.{}, runHttpBodyStreamTask, .{task});
         errdefer task.thread.join();
         errdefer cancelHttpBodyStreamTask(task);
@@ -1034,11 +1045,13 @@ const WebSocketServer = struct {
         );
         try writer.interface.flush();
 
+        var websocket_output = WebSocketJsonRpcOutput{ .writer = &writer.interface };
         var connection = StdioServer{
             .allocator = self.allocator,
             .check_stdin_readiness = false,
             .transport = .websocket,
             .detached_sessions = &self.detached_sessions,
+            .output = .{ .websocket_server = &websocket_output },
         };
         // Defers run in reverse: detach before deinit so live processes can resume.
         defer connection.deinit();
@@ -1055,7 +1068,7 @@ const WebSocketServer = struct {
         };
 
         while (true) {
-            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface) orelse return;
+            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &websocket_output) orelse return;
             defer self.allocator.free(payload);
             const trimmed = std.mem.trim(u8, payload, " \t\r\n");
             if (trimmed.len == 0) continue;
@@ -1069,7 +1082,7 @@ const WebSocketServer = struct {
             };
             if (response) |payload_response| {
                 defer self.allocator.free(payload_response);
-                try writeWebSocketTextFrame(&writer.interface, payload_response);
+                try writeJsonRpcOutputLine(connection.output, self.allocator, payload_response);
             }
         }
     }
@@ -1433,11 +1446,13 @@ fn runRemoteExecutorWebSocket(
     var writer = stream.writer(io, &output_buffer);
     try performRemoteExecutorWebSocketHandshake(allocator, &reader.interface, &writer.interface, parts);
 
+    var websocket_output = WebSocketJsonRpcOutput{ .writer = &writer.interface };
     var connection = StdioServer{
         .allocator = allocator,
         .check_stdin_readiness = false,
         .transport = .websocket,
         .detached_sessions = detached_sessions,
+        .output = .{ .websocket_client = &websocket_output },
     };
     // Defers run in reverse: detach before deinit so live processes can resume.
     defer connection.deinit();
@@ -1454,7 +1469,7 @@ fn runRemoteExecutorWebSocket(
     };
 
     while (true) {
-        const payload = try readRemoteWebSocketTextFrame(allocator, &reader.interface, &writer.interface) orelse return;
+        const payload = try readRemoteWebSocketTextFrame(allocator, &reader.interface, &websocket_output) orelse return;
         defer allocator.free(payload);
         const trimmed = std.mem.trim(u8, payload, " \t\r\n");
         if (trimmed.len == 0) continue;
@@ -1467,7 +1482,7 @@ fn runRemoteExecutorWebSocket(
         };
         if (response) |payload_response| {
             defer allocator.free(payload_response);
-            try writeRemoteWebSocketTextFrame(allocator, &writer.interface, payload_response);
+            try writeJsonRpcOutputLine(connection.output, allocator, payload_response);
         }
     }
 }
@@ -1634,7 +1649,7 @@ fn writeRemoteWebSocketFrame(
 fn readRemoteWebSocketTextFrame(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
-    writer: *std.Io.Writer,
+    output: *WebSocketJsonRpcOutput,
 ) !?[]u8 {
     while (true) {
         const first = reader.takeByte() catch |err| switch (err) {
@@ -1668,12 +1683,12 @@ fn readRemoteWebSocketTextFrame(
         switch (opcode) {
             0x1 => return payload,
             0x8 => {
-                try writeRemoteWebSocketFrame(allocator, writer, 0x8, payload);
+                try writeWebSocketClientOutputFrame(allocator, output, 0x8, payload);
                 allocator.free(payload);
                 return null;
             },
             0x9 => {
-                try writeRemoteWebSocketFrame(allocator, writer, 0xA, payload);
+                try writeWebSocketClientOutputFrame(allocator, output, 0xA, payload);
                 allocator.free(payload);
                 continue;
             },
@@ -1737,7 +1752,7 @@ fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const 
 fn readWebSocketTextFrame(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
-    writer: *std.Io.Writer,
+    output: *WebSocketJsonRpcOutput,
 ) !?[]const u8 {
     while (true) {
         const first = reader.takeByte() catch |err| switch (err) {
@@ -1769,12 +1784,12 @@ fn readWebSocketTextFrame(
         switch (opcode) {
             0x1 => return payload,
             0x8 => {
-                try writeWebSocketFrame(writer, 0x8, payload);
+                try writeWebSocketServerOutputFrame(output, 0x8, payload);
                 allocator.free(payload);
                 return null;
             },
             0x9 => {
-                try writeWebSocketFrame(writer, 0xA, payload);
+                try writeWebSocketServerOutputFrame(output, 0xA, payload);
                 allocator.free(payload);
                 continue;
             },
@@ -2615,13 +2630,13 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
         defer allocator.free(response_json);
         const response_line = try renderJsonRpcResultFromIdJson(allocator, id_json, response_json);
         defer allocator.free(response_line);
-        try writeStdoutLine(response_line);
+        try writeJsonRpcOutputLine(task.output, allocator, response_line);
 
         if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
         if (!response_has_body) {
             request.response_content_length = 0;
             request.response_transfer_encoding = .none;
-            try writeExecServerHttpBodyDelta(allocator, params.request_id, 1, &.{}, true, null);
+            try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, 1, &.{}, true, null);
             return;
         }
 
@@ -2644,22 +2659,22 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
                 error.EndOfStream => {
                     if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
                     if (execServerHttpBodyStreamEndedCleanly(&response)) break;
-                    try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, "EndOfStream");
+                    try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, "EndOfStream");
                     return;
                 },
                 error.ReadFailed => {
                     if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
                     const message = if (response.bodyErr()) |body_err| @errorName(body_err) else @errorName(err);
-                    try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, message);
+                    try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, message);
                     return;
                 },
             };
             if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
             if (read_len == 0) continue;
-            try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, read_buffer[0..read_len], false, null);
+            try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, read_buffer[0..read_len], false, null);
             seq += 1;
         }
-        try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, null);
+        try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, null);
         return;
     }
 }
@@ -2823,6 +2838,7 @@ fn renderExecServerHttpResponse(allocator: std.mem.Allocator, prefix: []const u8
 
 fn writeExecServerHttpBodyDelta(
     allocator: std.mem.Allocator,
+    output: JsonRpcOutput,
     request_id: []const u8,
     seq: u64,
     delta: []const u8,
@@ -2831,7 +2847,7 @@ fn writeExecServerHttpBodyDelta(
 ) !void {
     const notification = try renderExecServerHttpBodyDeltaNotification(allocator, request_id, seq, delta, done, err);
     defer allocator.free(notification);
-    try writeStdoutLine(notification);
+    try writeJsonRpcOutputLine(output, allocator, notification);
 }
 
 fn renderExecServerHttpBodyDeltaNotification(
@@ -5103,6 +5119,45 @@ fn writeStdoutLine(payload: []const u8) !void {
     defer exec_server_stdout_mutex.unlock(io);
     try writeStdoutBytes(payload);
     try writeStdoutBytes("\n");
+}
+
+fn writeJsonRpcOutputLine(output: JsonRpcOutput, allocator: std.mem.Allocator, payload: []const u8) !void {
+    switch (output) {
+        .stdio => try writeStdoutLine(payload),
+        .websocket_server => |websocket| try writeWebSocketServerOutputTextFrame(websocket, payload),
+        .websocket_client => |websocket| try writeWebSocketClientOutputTextFrame(allocator, websocket, payload),
+    }
+}
+
+fn writeWebSocketServerOutputTextFrame(output: *WebSocketJsonRpcOutput, payload: []const u8) !void {
+    try writeWebSocketServerOutputFrame(output, 0x1, payload);
+}
+
+fn writeWebSocketServerOutputFrame(output: *WebSocketJsonRpcOutput, opcode: u8, payload: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    output.mutex.lockUncancelable(io);
+    defer output.mutex.unlock(io);
+    try writeWebSocketFrame(output.writer, opcode, payload);
+}
+
+fn writeWebSocketClientOutputTextFrame(
+    allocator: std.mem.Allocator,
+    output: *WebSocketJsonRpcOutput,
+    payload: []const u8,
+) !void {
+    try writeWebSocketClientOutputFrame(allocator, output, 0x1, payload);
+}
+
+fn writeWebSocketClientOutputFrame(
+    allocator: std.mem.Allocator,
+    output: *WebSocketJsonRpcOutput,
+    opcode: u8,
+    payload: []const u8,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    output.mutex.lockUncancelable(io);
+    defer output.mutex.unlock(io);
+    try writeRemoteWebSocketFrame(allocator, output.writer, opcode, payload);
 }
 
 fn writeStdoutBytes(bytes: []const u8) !void {
