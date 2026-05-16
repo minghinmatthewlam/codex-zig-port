@@ -61,6 +61,8 @@ const windows_core_env_vars = [_][]const u8{
     "PWSH",
 };
 
+var exec_server_stdout_mutex: std.Io.Mutex = .init;
+
 const WebSocketListen = struct {
     host: []const u8,
     port: u16,
@@ -101,6 +103,11 @@ const RemoteWebSocketUrl = struct {
 const Transport = union(enum) {
     stdio,
     websocket: WebSocketListen,
+};
+
+const StdioServerTransport = enum {
+    stdio,
+    websocket,
 };
 
 const ParsedOptions = struct {
@@ -348,6 +355,99 @@ const ProcessSession = struct {
     }
 };
 
+const OwnedHttpRequestParams = struct {
+    method: std.http.Method,
+    url: []const u8,
+    headers: []const HttpHeaderParam,
+    body: ?[]u8,
+    timeout_ms: ?u64,
+    request_id: []const u8,
+    stream_response: bool,
+
+    fn deinit(self: OwnedHttpRequestParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.url);
+        for (self.headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(self.headers);
+        if (self.body) |body| allocator.free(body);
+        allocator.free(self.request_id);
+    }
+
+    fn borrowed(self: OwnedHttpRequestParams) HttpRequestParams {
+        return .{
+            .method = self.method,
+            .url = self.url,
+            .headers = self.headers,
+            .body = self.body,
+            .timeout_ms = self.timeout_ms,
+            .request_id = self.request_id,
+            .stream_response = self.stream_response,
+        };
+    }
+};
+
+const HttpBodyStreamTask = struct {
+    thread: std.Thread,
+    done: std.atomic.Value(bool) = .init(false),
+    cancel_requested: std.atomic.Value(bool) = .init(false),
+    connection_mutex: std.Io.Mutex = .init,
+    active_stream: ?std.Io.net.Stream = null,
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    params: OwnedHttpRequestParams,
+
+    fn deinit(self: *HttpBodyStreamTask, allocator: std.mem.Allocator) void {
+        allocator.free(self.id_json);
+        self.params.deinit(allocator);
+    }
+};
+
+fn runHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
+    defer task.done.store(true, .release);
+    performExecServerHttpRequestStream(task) catch |err| {
+        if (err == error.ExecServerHttpBodyStreamCanceled or httpBodyStreamTaskCanceled(task)) return;
+        const message = std.fmt.allocPrint(task.allocator, "http/request failed: {s}", .{@errorName(err)}) catch return;
+        defer task.allocator.free(message);
+        const response = renderJsonRpcErrorFromIdJson(task.allocator, task.id_json, -32603, message) catch return;
+        defer task.allocator.free(response);
+        writeStdoutLine(response) catch {};
+    };
+}
+
+fn cancelHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
+    task.cancel_requested.store(true, .release);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    task.connection_mutex.lockUncancelable(io);
+    if (task.active_stream) |stream| stream.shutdown(io, .both) catch {};
+    task.connection_mutex.unlock(io);
+}
+
+fn httpBodyStreamTaskCanceled(task: *HttpBodyStreamTask) bool {
+    return task.cancel_requested.load(.acquire);
+}
+
+fn trackHttpBodyStreamConnection(task: *HttpBodyStreamTask, request: *std.http.Client.Request) !void {
+    const active_stream = if (request.connection) |connection| connection.stream_reader.stream else null;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    task.connection_mutex.lockUncancelable(io);
+    task.active_stream = active_stream;
+    const canceled = task.cancel_requested.load(.acquire);
+    if (canceled) {
+        if (active_stream) |stream| stream.shutdown(io, .both) catch {};
+    }
+    task.connection_mutex.unlock(io);
+    if (canceled) return error.ExecServerHttpBodyStreamCanceled;
+}
+
+fn clearHttpBodyStreamConnection(task: *HttpBodyStreamTask) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    task.connection_mutex.lockUncancelable(io);
+    task.active_stream = null;
+    task.connection_mutex.unlock(io);
+}
+
 const DetachedExecSession = struct {
     session_id: []const u8,
     processes: std.ArrayList(ProcessSession) = .empty,
@@ -364,14 +464,43 @@ const StdioServer = struct {
     initialize_complete: bool = false,
     initialized: bool = false,
     check_stdin_readiness: bool = true,
+    transport: StdioServerTransport = .stdio,
     detached_sessions: ?*std.ArrayList(DetachedExecSession) = null,
     session_id: ?[]const u8 = null,
     processes: std.ArrayList(ProcessSession) = .empty,
+    http_body_streams: std.ArrayList(*HttpBodyStreamTask) = .empty,
 
     fn deinit(self: *StdioServer) void {
+        self.finishHttpBodyStreamTasks();
         for (self.processes.items) |*process| process.deinit(self.allocator);
         self.processes.deinit(self.allocator);
+        self.http_body_streams.deinit(self.allocator);
         if (self.session_id) |value| self.allocator.free(value);
+    }
+
+    fn finishHttpBodyStreamTasks(self: *StdioServer) void {
+        for (self.http_body_streams.items) |task| cancelHttpBodyStreamTask(task);
+        for (self.http_body_streams.items) |task| {
+            task.thread.join();
+            task.deinit(self.allocator);
+            self.allocator.destroy(task);
+        }
+        self.http_body_streams.clearRetainingCapacity();
+    }
+
+    fn reapHttpBodyStreamTasks(self: *StdioServer) void {
+        var index: usize = 0;
+        while (index < self.http_body_streams.items.len) {
+            const task = self.http_body_streams.items[index];
+            if (!task.done.load(.acquire)) {
+                index += 1;
+                continue;
+            }
+            task.thread.join();
+            task.deinit(self.allocator);
+            self.allocator.destroy(task);
+            _ = self.http_body_streams.orderedRemove(index);
+        }
     }
 
     fn detachSession(self: *StdioServer) !void {
@@ -401,6 +530,7 @@ const StdioServer = struct {
             if (stdin_reader.interface.seek == stdin_reader.interface.end) {
                 switch (stdinReadinessWithTimeout(50)) {
                     .none => {
+                        self.reapHttpBodyStreamTasks();
                         self.pollAllProcesses(0);
                         continue;
                     },
@@ -421,6 +551,7 @@ const StdioServer = struct {
             const line = line_data.written();
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0) continue;
+            self.reapHttpBodyStreamTasks();
             const buffered_input = stdin_reader.interface.buffer[stdin_reader.interface.seek..stdin_reader.interface.end];
 
             const response = self.handleLine(trimmed, buffered_input) catch |err| {
@@ -675,32 +806,75 @@ const StdioServer = struct {
         return try renderJsonRpcResult(self.allocator, id_value, "{\"running\":true}");
     }
 
-    fn handleHttpRequest(self: *StdioServer, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    fn handleHttpRequest(self: *StdioServer, id_value: std.json.Value, params_value: ?std.json.Value) !?[]const u8 {
         if (!self.initialized) return try renderJsonRpcError(self.allocator, id_value, -32600, "initialized notification must be sent before http requests");
         const params = parseHttpRequestParams(self.allocator, params_value) catch |err| switch (err) {
-            error.InvalidExecServerHttpRequestMethod => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request method is invalid"),
-            error.InvalidExecServerHttpRequestUrl => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request url is invalid"),
-            error.UnsupportedExecServerHttpRequestUrlScheme => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request only supports http and https URLs"),
-            error.InvalidExecServerHttpRequestHeaders => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request headers must be an array of objects"),
-            error.InvalidExecServerHttpRequestHeaderName => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request header name is invalid"),
-            error.InvalidExecServerHttpRequestHeaderValue => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request header value is invalid"),
-            error.InvalidExecServerHttpRequestBody => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request bodyBase64 must be valid base64"),
-            else => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request params must include method, url, and requestId"),
+            error.InvalidExecServerHttpRequestMethod => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request method is invalid"),
+            error.InvalidExecServerHttpRequestUrl => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request url is invalid"),
+            error.UnsupportedExecServerHttpRequestUrlScheme => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request only supports http and https URLs"),
+            error.InvalidExecServerHttpRequestHeaders => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request headers must be an array of objects"),
+            error.InvalidExecServerHttpRequestHeaderName => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request header name is invalid"),
+            error.InvalidExecServerHttpRequestHeaderValue => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request header value is invalid"),
+            error.InvalidExecServerHttpRequestBody => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request bodyBase64 must be valid base64"),
+            else => return try renderJsonRpcError(self.allocator, id_value, -32602, "http/request params must include method, url, and requestId"),
         };
         defer params.deinit(self.allocator);
         if (params.stream_response) {
-            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse is not implemented yet");
+            return try self.handleStreamingHttpRequest(id_value, params);
         }
         const result = performExecServerHttpRequestWithOptionalTimeout(self.allocator, params) catch |err| switch (err) {
-            error.ExecServerHttpResponseTooLarge => return renderJsonRpcError(self.allocator, id_value, -32603, "http/request response body is too large"),
+            error.ExecServerHttpResponseTooLarge => return try renderJsonRpcError(self.allocator, id_value, -32603, "http/request response body is too large"),
             else => {
                 const message = try std.fmt.allocPrint(self.allocator, "http/request failed: {s}", .{@errorName(err)});
                 defer self.allocator.free(message);
-                return renderJsonRpcError(self.allocator, id_value, -32603, message);
+                return try renderJsonRpcError(self.allocator, id_value, -32603, message);
             },
         };
         defer self.allocator.free(result);
         return try renderJsonRpcResult(self.allocator, id_value, result);
+    }
+
+    fn handleStreamingHttpRequest(self: *StdioServer, id_value: std.json.Value, params: HttpRequestParams) !?[]const u8 {
+        self.reapHttpBodyStreamTasks();
+        if (self.findActiveHttpBodyStream(params.request_id) != null) {
+            const message = try std.fmt.allocPrint(self.allocator, "http/request streamResponse requestId `{s}` is already active", .{params.request_id});
+            defer self.allocator.free(message);
+            return try renderJsonRpcError(self.allocator, id_value, -32602, message);
+        }
+        if (self.transport != .stdio) {
+            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse over websocket is not implemented yet");
+        }
+        if (params.timeout_ms != null) {
+            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse timeoutMs is not implemented yet");
+        }
+
+        const owned_params = try cloneHttpRequestParams(self.allocator, params);
+        errdefer owned_params.deinit(self.allocator);
+        const id_json = try std.json.Stringify.valueAlloc(self.allocator, id_value, .{});
+        errdefer self.allocator.free(id_json);
+        const task = try self.allocator.create(HttpBodyStreamTask);
+        errdefer self.allocator.destroy(task);
+        task.* = undefined;
+        task.done = .init(false);
+        task.cancel_requested = .init(false);
+        task.connection_mutex = .init;
+        task.active_stream = null;
+        task.allocator = self.allocator;
+        task.id_json = id_json;
+        task.params = owned_params;
+        task.thread = try std.Thread.spawn(.{}, runHttpBodyStreamTask, .{task});
+        errdefer task.thread.join();
+        errdefer cancelHttpBodyStreamTask(task);
+        try self.http_body_streams.append(self.allocator, task);
+        return null;
+    }
+
+    fn findActiveHttpBodyStream(self: *StdioServer, request_id: []const u8) ?*HttpBodyStreamTask {
+        for (self.http_body_streams.items) |task| {
+            if (task.done.load(.acquire)) continue;
+            if (std.mem.eql(u8, task.params.request_id, request_id)) return task;
+        }
+        return null;
     }
 
     fn handleFsMethod(self: *StdioServer, id_value: std.json.Value, method: []const u8, params_value: ?std.json.Value) ![]const u8 {
@@ -863,6 +1037,7 @@ const WebSocketServer = struct {
         var connection = StdioServer{
             .allocator = self.allocator,
             .check_stdin_readiness = false,
+            .transport = .websocket,
             .detached_sessions = &self.detached_sessions,
         };
         // Defers run in reverse: detach before deinit so live processes can resume.
@@ -1261,6 +1436,7 @@ fn runRemoteExecutorWebSocket(
     var connection = StdioServer{
         .allocator = allocator,
         .check_stdin_readiness = false,
+        .transport = .websocket,
         .detached_sessions = detached_sessions,
     };
     // Defers run in reverse: detach before deinit so live processes can resume.
@@ -1925,6 +2101,7 @@ const HttpRequestParams = struct {
     headers: []const HttpHeaderParam,
     body: ?[]u8,
     timeout_ms: ?u64,
+    request_id: []const u8,
     stream_response: bool,
 
     fn deinit(self: HttpRequestParams, allocator: std.mem.Allocator) void {
@@ -1995,7 +2172,45 @@ fn parseHttpRequestParams(allocator: std.mem.Allocator, params_value: ?std.json.
         .headers = headers,
         .body = body,
         .timeout_ms = try optionalNullableU64Field(object, "timeoutMs"),
+        .request_id = request_id,
         .stream_response = try optionalBoolField(object, "streamResponse", false),
+    };
+}
+
+fn cloneHttpRequestParams(allocator: std.mem.Allocator, params: HttpRequestParams) !OwnedHttpRequestParams {
+    const url = try allocator.dupe(u8, params.url);
+    errdefer allocator.free(url);
+    const request_id = try allocator.dupe(u8, params.request_id);
+    errdefer allocator.free(request_id);
+
+    const headers = try allocator.alloc(HttpHeaderParam, params.headers.len);
+    errdefer allocator.free(headers);
+    var initialized_headers: usize = 0;
+    errdefer {
+        for (headers[0..initialized_headers]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+    }
+    for (params.headers, 0..) |header, index| {
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        const value = try allocator.dupe(u8, header.value);
+        headers[index] = .{ .name = name, .value = value };
+        initialized_headers += 1;
+    }
+
+    const body = if (params.body) |body_bytes| try allocator.dupe(u8, body_bytes) else null;
+    errdefer if (body) |value| allocator.free(value);
+
+    return .{
+        .method = params.method,
+        .url = url,
+        .headers = headers,
+        .body = body,
+        .timeout_ms = params.timeout_ms,
+        .request_id = request_id,
+        .stream_response = params.stream_response,
     };
 }
 
@@ -2271,6 +2486,191 @@ fn performExecServerHttpRequest(allocator: std.mem.Allocator, io: std.Io, params
     }
 }
 
+fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
+    const allocator = task.allocator;
+    const id_json = task.id_json;
+    const params = task.params.borrowed();
+    const header_capacity = params.headers.len + 1;
+    var all_headers = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(all_headers);
+    var redirect_safe_headers = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(redirect_safe_headers);
+    const extra_header_buffer = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(extra_header_buffer);
+    const all_header_count = params.headers.len;
+    var redirect_safe_header_count: usize = 0;
+    for (params.headers, 0..) |header, index| {
+        const client_header: std.http.Header = .{ .name = header.name, .value = header.value };
+        all_headers[index] = client_header;
+        if (!httpHeaderIsSensitive(header.name)) {
+            redirect_safe_headers[redirect_safe_header_count] = client_header;
+            redirect_safe_header_count += 1;
+        }
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    var current_uri = try std.Uri.parse(params.url);
+    try normalizeHttpUriScheme(&current_uri);
+    var current_method = params.method;
+    var current_body = params.body;
+    var body_headers_allowed = true;
+    var sensitive_headers_allowed = true;
+    var redirect_count: u16 = 0;
+    var current_uri_storage: ?[]u8 = null;
+    defer if (current_uri_storage) |storage| allocator.free(storage);
+    var redirect_buffer: [8192]u8 = undefined;
+
+    while (true) {
+        if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+        const request_headers = if (sensitive_headers_allowed)
+            all_headers[0..all_header_count]
+        else
+            redirect_safe_headers[0..redirect_safe_header_count];
+        var content_length_buffer: [32]u8 = undefined;
+        const manual_content_length = if (current_body) |body| blk: {
+            if (current_method.requestHasBody()) break :blk null;
+            break :blk try std.fmt.bufPrint(&content_length_buffer, "{d}", .{body.len});
+        } else null;
+        const prepared_headers = prepareExecServerHttpRequestHeaders(
+            request_headers,
+            extra_header_buffer,
+            body_headers_allowed,
+            current_body != null or current_method.requestHasBody(),
+            manual_content_length,
+        );
+        var request = try client.request(current_method, current_uri, .{
+            .redirect_behavior = .unhandled,
+            .headers = prepared_headers.standard,
+            .extra_headers = prepared_headers.extra,
+        });
+        defer request.deinit();
+        defer clearHttpBodyStreamConnection(task);
+        try trackHttpBodyStreamConnection(task, &request);
+
+        if (current_body) |body| {
+            if (current_method.requestHasBody()) {
+                try request.sendBodyComplete(body);
+            } else {
+                try sendExecServerHttpRequestBodyForAnyMethod(&request, body);
+            }
+        } else if (current_method.requestHasBody()) {
+            var empty_body: [0]u8 = .{};
+            try request.sendBodyComplete(&empty_body);
+        } else {
+            try request.sendBodiless();
+        }
+
+        var response_head_buffer: [8192]u8 = undefined;
+        var response = try request.receiveHead(&response_head_buffer);
+        while (response.head.status.class() == .informational) {
+            request.response_content_length = 0;
+            request.response_transfer_encoding = .none;
+            response = try request.receiveHead(&response_head_buffer);
+        }
+        if (httpStatusIsFollowedRedirect(response.head.status)) {
+            if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+            if (response.head.location) |location| {
+                closeHttpRequestConnection(&request);
+                if (redirect_count >= 10) return error.TooManyHttpRedirects;
+                var redirect_buffer_slice: []u8 = redirect_buffer[0..];
+                if (location.len > redirect_buffer_slice.len) return error.HttpRedirectLocationOversize;
+                @memcpy(redirect_buffer_slice[0..location.len], location);
+                var next_uri = try current_uri.resolveInPlace(location.len, &redirect_buffer_slice);
+                try normalizeHttpUriScheme(&next_uri);
+                const next_uri_text = try std.fmt.allocPrint(allocator, "{f}", .{std.Uri.fmt(&next_uri, .all)});
+                errdefer allocator.free(next_uri_text);
+                const owned_next_uri = try std.Uri.parse(next_uri_text);
+                if (!httpRedirectKeepsSensitiveHeaders(current_uri, next_uri)) sensitive_headers_allowed = false;
+                const redirect_drops_body = httpRedirectDropsRequestBody(current_method, response.head.status);
+                if (httpRedirectChangesMethodToGet(current_method, response.head.status)) {
+                    current_method = .GET;
+                }
+                if (redirect_drops_body) {
+                    current_body = null;
+                    body_headers_allowed = false;
+                }
+                if (current_uri_storage) |storage| allocator.free(storage);
+                current_uri_storage = next_uri_text;
+                current_uri = owned_next_uri;
+                redirect_count += 1;
+                continue;
+            }
+        }
+
+        if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+        const response_has_body = httpResponseMayHaveBody(current_method, response.head.status);
+        const content_encoding = response.head.content_encoding;
+        if (response_has_body and content_encoding == .compress) {
+            closeHttpRequestConnection(&request);
+            return error.UnsupportedCompressionMethod;
+        }
+        const response_prefix = try renderExecServerHttpResponsePrefix(allocator, response.head, response_has_body and content_encoding != .identity);
+        defer allocator.free(response_prefix);
+        const response_json = try renderExecServerHttpResponse(allocator, response_prefix, &.{});
+        defer allocator.free(response_json);
+        const response_line = try renderJsonRpcResultFromIdJson(allocator, id_json, response_json);
+        defer allocator.free(response_line);
+        try writeStdoutLine(response_line);
+
+        if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+        if (!response_has_body) {
+            request.response_content_length = 0;
+            request.response_transfer_encoding = .none;
+            try writeExecServerHttpBodyDelta(allocator, params.request_id, 1, &.{}, true, null);
+            return;
+        }
+
+        const decompress_buffer: []u8 = switch (content_encoding) {
+            .identity => &.{},
+            .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => unreachable,
+        };
+        defer if (content_encoding != .identity) allocator.free(decompress_buffer);
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+        var read_buffer: [8192]u8 = undefined;
+        var seq: u64 = 1;
+        while (true) {
+            var read_slices = [_][]u8{&read_buffer};
+            const read_len = reader.readVec(&read_slices) catch |err| switch (err) {
+                error.EndOfStream => {
+                    if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+                    if (execServerHttpBodyStreamEndedCleanly(&response)) break;
+                    try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, "EndOfStream");
+                    return;
+                },
+                error.ReadFailed => {
+                    if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+                    const message = if (response.bodyErr()) |body_err| @errorName(body_err) else @errorName(err);
+                    try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, message);
+                    return;
+                },
+            };
+            if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
+            if (read_len == 0) continue;
+            try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, read_buffer[0..read_len], false, null);
+            seq += 1;
+        }
+        try writeExecServerHttpBodyDelta(allocator, params.request_id, seq, &.{}, true, null);
+        return;
+    }
+}
+
+fn execServerHttpBodyStreamEndedCleanly(response: *const std.http.Client.Response) bool {
+    return switch (response.request.reader.state) {
+        .ready, .body_none => true,
+        else => false,
+    };
+}
+
 fn prepareExecServerHttpRequestHeaders(
     headers: []const std.http.Header,
     extra_header_buffer: []std.http.Header,
@@ -2418,6 +2818,51 @@ fn renderExecServerHttpResponse(allocator: std.mem.Allocator, prefix: []const u8
     _ = std.base64.standard.Encoder.encode(encoded, body);
     try appendJsonString(allocator, &out, encoded);
     try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn writeExecServerHttpBodyDelta(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    seq: u64,
+    delta: []const u8,
+    done: bool,
+    err: ?[]const u8,
+) !void {
+    const notification = try renderExecServerHttpBodyDeltaNotification(allocator, request_id, seq, delta, done, err);
+    defer allocator.free(notification);
+    try writeStdoutLine(notification);
+}
+
+fn renderExecServerHttpBodyDeltaNotification(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    seq: u64,
+    delta: []const u8,
+    done: bool,
+    err: ?[]const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"http/request/bodyDelta\",\"params\":{\"requestId\":");
+    try appendJsonString(allocator, &out, request_id);
+    const seq_prefix = try std.fmt.allocPrint(allocator, ",\"seq\":{d},\"deltaBase64\":", .{seq});
+    defer allocator.free(seq_prefix);
+    try out.appendSlice(allocator, seq_prefix);
+    const encoded_len = std.base64.standard.Encoder.calcSize(delta.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, delta);
+    try appendJsonString(allocator, &out, encoded);
+    try out.appendSlice(allocator, ",\"done\":");
+    try out.appendSlice(allocator, if (done) "true" else "false");
+    try out.appendSlice(allocator, ",\"error\":");
+    if (err) |message| {
+        try appendJsonString(allocator, &out, message);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
 
@@ -4580,6 +5025,10 @@ fn normalizedRootAwarePathLen(path: []const u8) usize {
 fn renderJsonRpcResult(allocator: std.mem.Allocator, id_value: std.json.Value, result_json: []const u8) ![]const u8 {
     const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
     defer allocator.free(id_json);
+    return renderJsonRpcResultFromIdJson(allocator, id_json, result_json);
+}
+
+fn renderJsonRpcResultFromIdJson(allocator: std.mem.Allocator, id_json: []const u8, result_json: []const u8) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
         "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}",
@@ -4593,6 +5042,10 @@ fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, c
     else
         try allocator.dupe(u8, "null");
     defer allocator.free(id_json);
+    return renderJsonRpcErrorFromIdJson(allocator, id_json, code, message);
+}
+
+fn renderJsonRpcErrorFromIdJson(allocator: std.mem.Allocator, id_json: []const u8, code: i64, message: []const u8) ![]const u8 {
     const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
     defer allocator.free(message_json);
     return std.fmt.allocPrint(
@@ -4645,8 +5098,26 @@ fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn writeStdoutLine(payload: []const u8) !void {
-    try cli_utils.writeStdout(payload);
-    try cli_utils.writeStdout("\n");
+    const io = std.Io.Threaded.global_single_threaded.io();
+    exec_server_stdout_mutex.lockUncancelable(io);
+    defer exec_server_stdout_mutex.unlock(io);
+    try writeStdoutBytes(payload);
+    try writeStdoutBytes("\n");
+}
+
+fn writeStdoutBytes(bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = std.c.write(std.posix.STDOUT_FILENO, bytes[offset..].ptr, bytes.len - offset);
+        switch (std.c.errno(rc)) {
+            .SUCCESS => {
+                if (rc <= 0) return error.StdoutWriteFailed;
+                offset += @intCast(rc);
+            },
+            .INTR => continue,
+            else => return error.StdoutWriteFailed,
+        }
+    }
 }
 
 fn fail(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
