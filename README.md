@@ -122,7 +122,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   including local cache/config cleanup and remote cloud mutation
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
   `model`, `cwd`, `approval-policy`, and `sandbox` overrides
-- run a minimal exec-server stdio JSON-RPC transport with a Rust-shaped
+- run a minimal exec-server stdio/websocket JSON-RPC transport with a Rust-shaped
   `initialize` handshake, non-tty `process/start` / `process/read` /
   `process/write` / `process/terminate` lifecycle, `envPolicy`-based child
   environment filtering and overlays, Unix `arg0` process titles, and explicit
