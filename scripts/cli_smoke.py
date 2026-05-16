@@ -8,6 +8,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,139 @@ def child_process_statuses(parent_pid: int) -> list[str]:
 def assert_no_zombie_children(parent_pid: int) -> None:
     zombies = [line for line in child_process_statuses(parent_pid) if line.split(None, 3)[2].startswith("Z")]
     assert zombies == []
+
+
+def wait_for_exec_server_websocket_bind(proc: subprocess.Popen[str], timeout: float) -> tuple[str, int]:
+    assert proc.stderr is not None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(f"exec-server exited before websocket bind: {proc.stderr.read()}")
+        remaining = max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([proc.stderr], [], [], min(remaining, 0.05))
+        if not ready:
+            continue
+        line = proc.stderr.readline()
+        if line:
+            for token in line.split():
+                if not token.startswith("ws://"):
+                    continue
+                host, port_text = token.removeprefix("ws://").rsplit(":", 1)
+                return host, int(port_text)
+    raise AssertionError("timed out waiting for exec-server websocket bind address")
+
+
+def websocket_http_status(host: str, port: int, path: str) -> int:
+    with socket.create_connection((host, port), timeout=5) as client:
+        client.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode(
+                "ascii"
+            )
+        )
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        status_line = data.split(b"\r\n", 1)[0].decode("ascii")
+        return int(status_line.split()[1])
+
+
+class ExecServerSmokeWebSocket:
+    def __init__(self, host: str, port: int) -> None:
+        self.sock = socket.create_connection((host, port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        self.sock.sendall(
+            (
+                f"GET / HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        response = self._recv_until(b"\r\n\r\n")
+        status_line = response.split(b"\r\n", 1)[0]
+        if b" 101 " not in status_line:
+            raise AssertionError(f"websocket handshake failed: {response!r}")
+        response_lower = response.lower()
+        if b"connection: upgrade" not in response_lower:
+            raise AssertionError(f"websocket handshake missing upgrade connection: {response!r}")
+        expected_accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        expected_header = f"sec-websocket-accept: {expected_accept}".lower().encode("ascii")
+        if expected_header not in response_lower:
+            raise AssertionError(f"websocket accept mismatch: {response!r}")
+
+    def close(self) -> None:
+        try:
+            self._send_frame(0x8, b"")
+        finally:
+            self.sock.close()
+
+    def write_json(self, payload: dict) -> None:
+        self._send_frame(0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+    def read_json(self) -> dict:
+        payload = self._read_frame()
+        if payload is None:
+            raise AssertionError("websocket closed before response")
+        return json.loads(payload.decode("utf-8"))
+
+    def _recv_until(self, delimiter: bytes) -> bytes:
+        data = b""
+        while delimiter not in data:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def _recv_exact(self, size: int) -> bytes:
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise AssertionError("websocket closed unexpectedly")
+            data += chunk
+        return data
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        header = bytearray([0x80 | opcode])
+        if len(payload) <= 125:
+            header.append(0x80 | len(payload))
+        elif len(payload) <= 0xFFFF:
+            header.append(0x80 | 126)
+            header.extend(len(payload).to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(len(payload).to_bytes(8, "big"))
+        mask = os.urandom(4)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        self.sock.sendall(bytes(header) + mask + masked)
+
+    def _read_frame(self) -> bytes | None:
+        first, second = self._recv_exact(2)
+        opcode = first & 0x0F
+        length = second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._recv_exact(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._recv_exact(8), "big")
+        masked = (second & 0x80) != 0
+        mask = self._recv_exact(4) if masked else b""
+        payload = self._recv_exact(length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        if opcode == 0x8:
+            return None
+        if opcode != 0x1:
+            raise AssertionError(f"unexpected websocket opcode {opcode}")
+        return payload
 
 
 def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]:
@@ -752,19 +886,78 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert help_result.stdout == ""
         assert "codex-zig exec-server [--listen URL]" in help_result.stderr
 
-        default_result = subprocess.run(
+        shell_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+        default_proc = subprocess.Popen(
             [str(binary.resolve()), "exec-server"],
             cwd=temp_root,
             env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=5,
-            check=False,
         )
-        assert default_result.returncode != 0
-        assert "websocket listen transport is parsed but not implemented yet" in default_result.stderr
-        assert "codex-zig exec-server is parsed but not implemented yet" not in default_result.stderr
+        default_websocket = None
+        try:
+            host, port = wait_for_exec_server_websocket_bind(default_proc, 5)
+            assert websocket_http_status(host, port, "/readyz") == 200
+            assert websocket_http_status(host, port, "/healthz") == 200
+            default_websocket = ExecServerSmokeWebSocket(host, port)
+            default_websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "websocket-init",
+                    "method": "initialize",
+                    "params": {"clientName": "cli-smoke-websocket"},
+                }
+            )
+            websocket_init = default_websocket.read_json()
+            assert websocket_init["id"] == "websocket-init"
+            assert "sessionId" in websocket_init["result"]
+            default_websocket.write_json({"jsonrpc": "2.0", "method": "initialized"})
+            default_websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "websocket-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "websocket-proc",
+                        "argv": ["/bin/sh", "-c", "printf websocket-ok"],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            websocket_start = default_websocket.read_json()
+            assert websocket_start["id"] == "websocket-start"
+            assert websocket_start["result"]["processId"] == "websocket-proc"
+            default_websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "websocket-read",
+                    "method": "process/read",
+                    "params": {"processId": "websocket-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+                }
+            )
+            websocket_read = default_websocket.read_json()
+            assert websocket_read["id"] == "websocket-read"
+            websocket_output = b"".join(
+                base64.b64decode(chunk["chunk"])
+                for chunk in websocket_read["result"]["chunks"]
+                if chunk["stream"] == "stdout"
+            )
+            assert websocket_output == b"websocket-ok"
+        finally:
+            if default_websocket is not None:
+                default_websocket.close()
+            default_proc.terminate()
+            try:
+                default_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                default_proc.kill()
+                default_proc.wait(timeout=5)
 
         invalid_result = subprocess.run(
             [str(binary.resolve()), "exec-server", "--listen", "http://127.0.0.1:0"],
@@ -779,7 +972,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert invalid_result.returncode != 0
         assert "unsupported --listen URL" in invalid_result.stderr
 
-        shell_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
         path_workspace = temp_root / "path-workspace"
         path_dir_bin = path_workspace / "path-dir-bin"
         path_shadow_bin = path_workspace / "path-shadow-bin"
