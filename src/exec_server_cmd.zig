@@ -2902,7 +2902,7 @@ fn parseFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, v
     const access = parseFsSandboxAccess(access_value.string) orelse return error.InvalidFsSandboxContext;
 
     const path_value = value.object.get("path") orelse return error.InvalidFsSandboxContext;
-    const path = try parseFsSandboxPath(allocator, path_value, cwd);
+    const path = try parseFsSandboxPath(allocator, path_value, cwd) orelse return;
     try appendFsSandboxEntry(allocator, policy, path, access);
 }
 
@@ -2956,7 +2956,7 @@ fn parseFsSandboxAccess(raw: []const u8) ?FsSandboxAccess {
     return null;
 }
 
-fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: ?[]const u8) ![]const u8 {
+fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: ?[]const u8) !?[]const u8 {
     if (value != .object) return error.InvalidFsSandboxContext;
     const type_value = value.object.get("type") orelse return error.InvalidFsSandboxContext;
     if (type_value != .string) return error.InvalidFsSandboxContext;
@@ -2964,7 +2964,7 @@ fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: 
         const path_value = value.object.get("path") orelse return error.InvalidFsSandboxContext;
         if (path_value != .string) return error.InvalidFsSandboxContext;
         if (!std.fs.path.isAbsolute(path_value.string)) return error.InvalidFsSandboxContext;
-        return normalizeAbsolutePath(allocator, path_value.string);
+        return try normalizeAbsolutePath(allocator, path_value.string);
     }
     if (std.mem.eql(u8, type_value.string, "special")) {
         return parseFsSandboxSpecialPath(allocator, value.object, cwd);
@@ -2973,25 +2973,31 @@ fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: 
     return error.InvalidFsSandboxContext;
 }
 
-fn parseFsSandboxSpecialPath(allocator: std.mem.Allocator, object: std.json.ObjectMap, cwd: ?[]const u8) ![]const u8 {
+fn parseFsSandboxSpecialPath(allocator: std.mem.Allocator, object: std.json.ObjectMap, cwd: ?[]const u8) !?[]const u8 {
     const special_value = object.get("value") orelse return error.InvalidFsSandboxContext;
     if (special_value != .object) return error.InvalidFsSandboxContext;
     const kind_value = special_value.object.get("kind") orelse return error.InvalidFsSandboxContext;
     if (kind_value != .string) return error.InvalidFsSandboxContext;
-    if (std.mem.eql(u8, kind_value.string, "root")) return normalizeAbsolutePath(allocator, std.fs.path.sep_str);
-    if (std.mem.eql(u8, kind_value.string, "slash_tmp")) return normalizeAbsolutePath(allocator, "/tmp");
+    if (std.mem.eql(u8, kind_value.string, "root")) return try normalizeAbsolutePath(allocator, std.fs.path.sep_str);
+    if (std.mem.eql(u8, kind_value.string, "slash_tmp")) return fsSandboxSlashTmpPath(allocator);
     if (std.mem.eql(u8, kind_value.string, "tmpdir")) return fsSandboxTmpdirPath(allocator);
     if (std.mem.eql(u8, kind_value.string, "project_roots") or std.mem.eql(u8, kind_value.string, "current_working_directory")) {
-        return fsSandboxProjectRootPath(allocator, special_value.object, cwd);
+        return try fsSandboxProjectRootPath(allocator, special_value.object, cwd);
     }
     return error.UnsupportedFsSandboxContext;
 }
 
-fn fsSandboxTmpdirPath(allocator: std.mem.Allocator) ![]const u8 {
-    const raw = std.c.getenv("TMPDIR") orelse std.c.getenv("TEMP") orelse std.c.getenv("TMP") orelse "/tmp";
+fn fsSandboxTmpdirPath(allocator: std.mem.Allocator) !?[]const u8 {
+    const raw = std.c.getenv("TMPDIR") orelse return null;
     const path = std.mem.span(raw);
-    if (!std.fs.path.isAbsolute(path)) return normalizeAbsolutePath(allocator, "/tmp");
-    return normalizeAbsolutePath(allocator, path);
+    if (path.len == 0) return null;
+    return try normalizeAbsolutePath(allocator, path);
+}
+
+fn fsSandboxSlashTmpPath(allocator: std.mem.Allocator) !?[]const u8 {
+    const metadata = (statPath("/tmp", true) catch return null) orelse return null;
+    if (metadata.kind != .directory) return null;
+    return try normalizeAbsolutePath(allocator, "/tmp");
 }
 
 fn fsSandboxProjectRootPath(allocator: std.mem.Allocator, object: std.json.ObjectMap, cwd: ?[]const u8) ![]const u8 {
