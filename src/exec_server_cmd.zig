@@ -20,6 +20,8 @@ const retained_closed_processes = 64;
 const max_stdin_write_queue_bytes = 2 * 1024 * 1024;
 const max_stdin_write_queue_chunks = 32;
 const max_buffered_input_read_wait_ms = 200;
+const max_detached_exec_sessions = 64;
+const detached_exec_session_poll_interval_ms = 50;
 const default_exec_tty_rows = 24;
 const default_exec_tty_cols = 80;
 const default_env_exclude_patterns = [_][]const u8{ "*KEY*", "*SECRET*", "*TOKEN*" };
@@ -304,11 +306,23 @@ const ProcessSession = struct {
     }
 };
 
+const DetachedExecSession = struct {
+    session_id: []const u8,
+    processes: std.ArrayList(ProcessSession) = .empty,
+
+    fn deinit(self: *DetachedExecSession, allocator: std.mem.Allocator) void {
+        for (self.processes.items) |*process| process.deinit(allocator);
+        self.processes.deinit(allocator);
+        allocator.free(self.session_id);
+    }
+};
+
 const StdioServer = struct {
     allocator: std.mem.Allocator,
     initialize_complete: bool = false,
     initialized: bool = false,
     check_stdin_readiness: bool = true,
+    detached_sessions: ?*std.ArrayList(DetachedExecSession) = null,
     session_id: ?[]const u8 = null,
     processes: std.ArrayList(ProcessSession) = .empty,
 
@@ -316,6 +330,23 @@ const StdioServer = struct {
         for (self.processes.items) |*process| process.deinit(self.allocator);
         self.processes.deinit(self.allocator);
         if (self.session_id) |value| self.allocator.free(value);
+    }
+
+    fn detachSession(self: *StdioServer) !void {
+        const detached_sessions = self.detached_sessions orelse return;
+        const session_id = self.session_id orelse return;
+        if (!self.initialize_complete) return;
+
+        try detached_sessions.append(self.allocator, .{
+            .session_id = session_id,
+            .processes = self.processes,
+        });
+        self.session_id = null;
+        self.processes = .empty;
+        while (detached_sessions.items.len > max_detached_exec_sessions) {
+            var removed = detached_sessions.orderedRemove(0);
+            removed.deinit(self.allocator);
+        }
     }
 
     fn run(self: *StdioServer) !void {
@@ -422,9 +453,16 @@ const StdioServer = struct {
             return try renderJsonRpcError(self.allocator, id_value, -32602, "initialize params must include clientName");
         };
         if (resume_session_id) |session_id| {
-            const message = try std.fmt.allocPrint(self.allocator, "unknown session id {s}", .{session_id});
-            defer self.allocator.free(message);
-            return try renderJsonRpcError(self.allocator, id_value, -32600, message);
+            if (self.attachDetachedSession(session_id)) {
+                self.initialize_complete = true;
+                const result = try renderInitializeResult(self.allocator, self.session_id.?);
+                defer self.allocator.free(result);
+                return try renderJsonRpcResult(self.allocator, id_value, result);
+            } else {
+                const message = try std.fmt.allocPrint(self.allocator, "unknown session id {s}", .{session_id});
+                defer self.allocator.free(message);
+                return try renderJsonRpcError(self.allocator, id_value, -32600, message);
+            }
         }
 
         self.session_id = try generateUuidString(self.allocator);
@@ -433,6 +471,18 @@ const StdioServer = struct {
         const result = try renderInitializeResult(self.allocator, self.session_id.?);
         defer self.allocator.free(result);
         return try renderJsonRpcResult(self.allocator, id_value, result);
+    }
+
+    fn attachDetachedSession(self: *StdioServer, session_id: []const u8) bool {
+        const detached_sessions = self.detached_sessions orelse return false;
+        for (detached_sessions.items, 0..) |detached, index| {
+            if (!std.mem.eql(u8, detached.session_id, session_id)) continue;
+            const resumed = detached_sessions.orderedRemove(index);
+            self.session_id = resumed.session_id;
+            self.processes = resumed.processes;
+            return true;
+        }
+        return false;
     }
 
     fn handleProcessStart(self: *StdioServer, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -620,6 +670,12 @@ const StdioServer = struct {
 const WebSocketServer = struct {
     allocator: std.mem.Allocator,
     address: WebSocketListen,
+    detached_sessions: std.ArrayList(DetachedExecSession) = .empty,
+
+    fn deinit(self: *WebSocketServer) void {
+        for (self.detached_sessions.items) |*session| session.deinit(self.allocator);
+        self.detached_sessions.deinit(self.allocator);
+    }
 
     fn run(self: *WebSocketServer) !void {
         const io = std.Io.Threaded.global_single_threaded.io();
@@ -633,6 +689,10 @@ const WebSocketServer = struct {
         try cli_utils.writeStderr(bind_message);
 
         while (true) {
+            self.pollDetachedSessions();
+            if (!try listenerReadyForAccept(server.socket.handle, detached_exec_session_poll_interval_ms)) {
+                continue;
+            }
             var stream = try server.accept(io);
             self.handleConnection(io, &stream) catch |err| {
                 const message = std.fmt.allocPrint(
@@ -648,6 +708,15 @@ const WebSocketServer = struct {
                 continue;
             };
             stream.close(io);
+        }
+    }
+
+    fn pollDetachedSessions(self: *WebSocketServer) void {
+        for (self.detached_sessions.items) |*session| {
+            for (session.processes.items) |*process| {
+                pollProcess(self.allocator, process, 0) catch {};
+                drainAvailableProcessOutputForRead(self.allocator, process, 0, null) catch {};
+            }
         }
     }
 
@@ -707,8 +776,24 @@ const WebSocketServer = struct {
         );
         try writer.interface.flush();
 
-        var connection = StdioServer{ .allocator = self.allocator, .check_stdin_readiness = false };
+        var connection = StdioServer{
+            .allocator = self.allocator,
+            .check_stdin_readiness = false,
+            .detached_sessions = &self.detached_sessions,
+        };
+        // Defers run in reverse: detach before deinit so live processes can resume.
         defer connection.deinit();
+        defer connection.detachSession() catch |err| {
+            const message = std.fmt.allocPrint(
+                self.allocator,
+                "[exec-server] failed to detach websocket session: {s}\n",
+                .{@errorName(err)},
+            ) catch null;
+            if (message) |stderr_message| {
+                defer self.allocator.free(stderr_message);
+                cli_utils.writeStderr(stderr_message) catch {};
+            }
+        };
 
         while (true) {
             const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface) orelse return;
@@ -730,6 +815,16 @@ const WebSocketServer = struct {
         }
     }
 };
+
+fn listenerReadyForAccept(fd: std.posix.fd_t, timeout_ms: u64) !bool {
+    var fds = [_]std.posix.pollfd{.{
+        .fd = fd,
+        .events = @intCast(std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL),
+        .revents = 0,
+    }};
+    const ready = try std.posix.poll(&fds, @intCast(timeout_ms));
+    return ready != 0;
+}
 
 fn websocketHeaderValue(request: *const std.http.Server.Request, name: []const u8) ?[]const u8 {
     var iter = request.iterateHeaders();
@@ -884,6 +979,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         },
         .websocket => |address| {
             var server = WebSocketServer{ .allocator = allocator, .address = address };
+            defer server.deinit();
             try server.run();
         },
     }
