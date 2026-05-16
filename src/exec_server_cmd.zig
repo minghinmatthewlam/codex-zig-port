@@ -2666,7 +2666,7 @@ fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_v
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    const recursive = switch (requiredBoolFieldValue(object, "recursive", "fs/copy requires boolean recursive")) {
+    const recursive = switch (optionalBoolFieldValue(object, "recursive", false, false)) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
@@ -2709,12 +2709,6 @@ fn requiredStringFieldValue(object: std.json.ObjectMap, field: []const u8, messa
     const value = object.get(field) orelse return .{ .message = message };
     if (value != .string) return .{ .message = message };
     return .{ .value = value.string };
-}
-
-fn requiredBoolFieldValue(object: std.json.ObjectMap, field: []const u8, message: []const u8) FsBoolField {
-    const value = object.get(field) orelse return .{ .message = message };
-    if (value != .bool) return .{ .message = message };
-    return .{ .value = value.bool };
 }
 
 fn optionalBoolFieldValue(object: std.json.ObjectMap, field: []const u8, default: bool, null_is_default: bool) FsBoolField {

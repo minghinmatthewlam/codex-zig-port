@@ -1480,7 +1480,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "params": {
                     "sourcePath": str(fs_file),
                     "destinationPath": str(fs_copy_file),
-                    "recursive": False,
                 },
             },
             {
