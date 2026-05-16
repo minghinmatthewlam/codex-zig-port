@@ -93,6 +93,17 @@ def wait_for_exec_server_websocket_bind(proc: subprocess.Popen[str], timeout: fl
     raise AssertionError("timed out waiting for exec-server websocket bind address")
 
 
+def wait_for_exec_server_file(path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        if proc.poll() is not None:
+            raise AssertionError(f"exec-server exited while waiting for {path}")
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
 def websocket_http_status(host: str, port: int, path: str) -> int:
     with socket.create_connection((host, port), timeout=5) as client:
         client.sendall(
@@ -949,6 +960,86 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 if chunk["stream"] == "stdout"
             )
             assert websocket_output == b"websocket-ok"
+            websocket_session_id = websocket_init["result"]["sessionId"]
+            websocket_resume_marker = temp_root / "websocket-resume-drained"
+            websocket_resume_script = (
+                "import pathlib, sys, time; "
+                "sys.stdout.write('R' * 2000000); "
+                "sys.stdout.flush(); "
+                f"pathlib.Path({str(websocket_resume_marker)!r}).write_text('drained', encoding='utf-8'); "
+                "time.sleep(30)"
+            )
+            default_websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "websocket-resume-start",
+                    "method": "process/start",
+                    "params": {
+                        "processId": "websocket-resume-proc",
+                        "argv": [sys.executable, "-c", websocket_resume_script],
+                        "cwd": str(temp_root),
+                        "env": shell_env,
+                        "tty": False,
+                        "pipeStdin": False,
+                        "arg0": None,
+                    },
+                }
+            )
+            websocket_resume_start = default_websocket.read_json()
+            assert websocket_resume_start["id"] == "websocket-resume-start"
+            assert websocket_resume_start["result"]["processId"] == "websocket-resume-proc"
+            default_websocket.close()
+            default_websocket = None
+            wait_for_exec_server_file(websocket_resume_marker, default_proc, 5)
+
+            resumed_websocket = ExecServerSmokeWebSocket(host, port)
+            try:
+                resumed_websocket.write_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "websocket-resume-init",
+                        "method": "initialize",
+                        "params": {
+                            "clientName": "cli-smoke-websocket-resume",
+                            "resumeSessionId": websocket_session_id,
+                        },
+                    }
+                )
+                websocket_resume_init = resumed_websocket.read_json()
+                assert websocket_resume_init["id"] == "websocket-resume-init"
+                assert websocket_resume_init["result"]["sessionId"] == websocket_session_id
+                resumed_websocket.write_json({"jsonrpc": "2.0", "method": "initialized"})
+                resumed_websocket.write_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "websocket-resume-read",
+                        "method": "process/read",
+                        "params": {
+                            "processId": "websocket-resume-proc",
+                            "afterSeq": 0,
+                            "maxBytes": 4096,
+                            "waitMs": 0,
+                        },
+                    }
+                )
+                websocket_resume_read = resumed_websocket.read_json()
+                assert websocket_resume_read["id"] == "websocket-resume-read"
+                assert websocket_resume_read["result"]["failure"] is None
+                assert websocket_resume_read["result"]["exited"] is False
+                assert websocket_resume_read["result"]["closed"] is False
+                resumed_websocket.write_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "websocket-resume-terminate",
+                        "method": "process/terminate",
+                        "params": {"processId": "websocket-resume-proc"},
+                    }
+                )
+                websocket_resume_terminate = resumed_websocket.read_json()
+                assert websocket_resume_terminate["id"] == "websocket-resume-terminate"
+                assert websocket_resume_terminate["result"]["running"] is True
+            finally:
+                resumed_websocket.close()
         finally:
             if default_websocket is not None:
                 default_websocket.close()
