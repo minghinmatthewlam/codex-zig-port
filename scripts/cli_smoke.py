@@ -813,7 +813,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             {"jsonrpc": "2.0", "id": "unknown", "method": "fs/readFile", "params": {}},
             {
                 "jsonrpc": "2.0",
-                "id": "arg0-unsupported",
+                "id": "arg0-invalid",
                 "method": "process/start",
                 "params": {
                     "processId": "arg0-proc",
@@ -822,7 +822,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                     "env": shell_env,
                     "tty": False,
                     "pipeStdin": False,
-                    "arg0": "custom-zero",
+                    "arg0": {"bad": True},
                 },
             },
             {
@@ -1027,10 +1027,10 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert unknown["error"]["code"] == -32601
         assert "exec-server stub does not implement `fs/readFile` yet" in unknown["error"]["message"]
 
-        arg0_unsupported = responses[4]
-        assert arg0_unsupported["id"] == "arg0-unsupported"
-        assert arg0_unsupported["error"]["code"] == -32600
-        assert "arg0 is not implemented yet" in arg0_unsupported["error"]["message"]
+        arg0_invalid = responses[4]
+        assert arg0_invalid["id"] == "arg0-invalid"
+        assert arg0_invalid["error"]["code"] == -32602
+        assert "process/start params must include processId" in arg0_invalid["error"]["message"]
 
         write_missing = responses[5]
         assert write_missing["id"] == "write-missing"
@@ -1130,6 +1130,203 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert duplicate["id"] == "again"
         assert duplicate["error"]["code"] == -32600
         assert "initialize may only be sent once" in duplicate["error"]["message"]
+
+        bash = shutil.which("bash") or "/bin/bash"
+        arg0_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "arg0-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-arg0"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "start-arg0",
+                "method": "process/start",
+                "params": {
+                    "processId": "arg0-proc",
+                    "argv": [bash, "-c", "printf '%s\\n' \"$0\""],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": "custom-zero",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-arg0",
+                "method": "process/read",
+                "params": {"processId": "arg0-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-arg0-piped",
+                "method": "process/start",
+                "params": {
+                    "processId": "arg0-piped-proc",
+                    "argv": [bash, "-c", "printf '%s:' \"$0\"; IFS= read -r line; printf '%s\\n' \"$line\""],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": True,
+                    "arg0": "pipe-zero",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "write-arg0-piped",
+                "method": "process/write",
+                "params": {"processId": "arg0-piped-proc", "chunk": base64.b64encode(b"hello\n").decode("ascii")},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-arg0-piped",
+                "method": "process/read",
+                "params": {"processId": "arg0-piped-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-arg0-stdin",
+                "method": "process/start",
+                "params": {
+                    "processId": "arg0-stdin-proc",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import os,stat; "
+                            "mode=os.fstat(0).st_mode; "
+                            "print('chr' if stat.S_ISCHR(mode) else 'fifo' if stat.S_ISFIFO(mode) else 'other')"
+                        ),
+                    ],
+                    "cwd": str(temp_root),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": "custom-python-zero",
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "read-arg0-stdin",
+                "method": "process/read",
+                "params": {"processId": "arg0-stdin-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
+            },
+        ]
+        arg0_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in arg0_requests)
+        arg0_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=arg0_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert arg0_result.stderr == ""
+        arg0_responses = [json.loads(line) for line in arg0_result.stdout.splitlines()]
+        assert len(arg0_responses) == 8
+        arg0_start = arg0_responses[1]
+        assert arg0_start["id"] == "start-arg0"
+        assert arg0_start["result"]["processId"] == "arg0-proc"
+        arg0_read = arg0_responses[2]
+        assert arg0_read["id"] == "read-arg0"
+        arg0_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in arg0_read["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert arg0_output == b"custom-zero\n"
+        arg0_piped_start = arg0_responses[3]
+        assert arg0_piped_start["id"] == "start-arg0-piped"
+        assert arg0_piped_start["result"]["processId"] == "arg0-piped-proc"
+        arg0_piped_write = arg0_responses[4]
+        assert arg0_piped_write["id"] == "write-arg0-piped"
+        assert arg0_piped_write["result"]["status"] == "accepted"
+        arg0_piped_read = arg0_responses[5]
+        assert arg0_piped_read["id"] == "read-arg0-piped"
+        arg0_piped_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in arg0_piped_read["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert arg0_piped_output == b"pipe-zero:hello\n"
+        arg0_stdin_start = arg0_responses[6]
+        assert arg0_stdin_start["id"] == "start-arg0-stdin"
+        assert arg0_stdin_start["result"]["processId"] == "arg0-stdin-proc"
+        arg0_stdin_read = arg0_responses[7]
+        assert arg0_stdin_read["id"] == "read-arg0-stdin"
+        arg0_stdin_output = b"".join(
+            base64.b64decode(chunk["chunk"])
+            for chunk in arg0_stdin_read["result"]["chunks"]
+            if chunk["stream"] == "stdout"
+        )
+        assert arg0_stdin_output == b"chr\n"
+
+        missing_cwd_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "missing-cwd-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-missing-cwd"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "start-missing-cwd",
+                "method": "process/start",
+                "params": {
+                    "processId": "missing-cwd-proc",
+                    "argv": ["/bin/echo", "hi"],
+                    "cwd": str(temp_root / "missing-cwd"),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "start-missing-cwd-arg0",
+                "method": "process/start",
+                "params": {
+                    "processId": "missing-cwd-arg0-proc",
+                    "argv": ["/bin/echo", "hi"],
+                    "cwd": str(temp_root / "missing-cwd"),
+                    "env": shell_env,
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": "missing-cwd-zero",
+                },
+            },
+        ]
+        missing_cwd_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in missing_cwd_requests)
+        missing_cwd_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=missing_cwd_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert missing_cwd_result.stderr == ""
+        missing_cwd_responses = [json.loads(line) for line in missing_cwd_result.stdout.splitlines()]
+        assert len(missing_cwd_responses) == 3
+        missing_cwd = missing_cwd_responses[1]
+        assert missing_cwd["id"] == "start-missing-cwd"
+        assert missing_cwd["error"]["code"] == -32603
+        assert "failed to start process missing-cwd-proc: FileNotFound" in missing_cwd["error"]["message"]
+        missing_cwd_arg0 = missing_cwd_responses[2]
+        assert missing_cwd_arg0["id"] == "start-missing-cwd-arg0"
+        assert missing_cwd_arg0["error"]["code"] == -32603
+        assert "failed to start process missing-cwd-arg0-proc: FileNotFound" in missing_cwd_arg0["error"]["message"]
 
         final_read_requests = [
             {
