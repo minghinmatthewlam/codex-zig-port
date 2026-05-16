@@ -125,7 +125,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a minimal exec-server stdio JSON-RPC transport with a Rust-shaped
   `initialize` handshake, non-tty `process/start` / `process/read` /
   `process/write` / `process/terminate` lifecycle, `envPolicy`-based child
-  environment filtering and overlays, and explicit partial-parity errors for
+  environment filtering and overlays, Unix `arg0` process titles, and explicit
+  partial-parity errors for
   resume handshakes and unsupported transports
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
