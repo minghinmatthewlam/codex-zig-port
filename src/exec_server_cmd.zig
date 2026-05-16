@@ -688,13 +688,10 @@ const StdioServer = struct {
             else => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request params must include method, url, and requestId"),
         };
         defer params.deinit(self.allocator);
-        if (params.timeout_ms != null) {
-            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request timeoutMs is not implemented yet");
-        }
         if (params.stream_response) {
             return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse is not implemented yet");
         }
-        const result = performExecServerHttpRequest(self.allocator, params) catch |err| switch (err) {
+        const result = performExecServerHttpRequestWithOptionalTimeout(self.allocator, params) catch |err| switch (err) {
             error.ExecServerHttpResponseTooLarge => return renderJsonRpcError(self.allocator, id_value, -32603, "http/request response body is too large"),
             else => {
                 const message = try std.fmt.allocPrint(self.allocator, "http/request failed: {s}", .{@errorName(err)});
@@ -2042,7 +2039,79 @@ const PreparedExecServerHttpRequestHeaders = struct {
     extra: []const std.http.Header,
 };
 
-fn performExecServerHttpRequest(allocator: std.mem.Allocator, params: HttpRequestParams) ![]const u8 {
+const ExecServerHttpRequestTimeoutContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    params: HttpRequestParams,
+    done: std.Io.Event = .unset,
+    result: ?[]const u8 = null,
+    err: ?anyerror = null,
+};
+
+fn performExecServerHttpRequestWithOptionalTimeout(allocator: std.mem.Allocator, params: HttpRequestParams) ![]const u8 {
+    if (params.timeout_ms) |timeout_ms| {
+        var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = execServerHttpTimeoutAsyncLimit() });
+        defer io_instance.deinit();
+        const io = io_instance.io();
+        var context = ExecServerHttpRequestTimeoutContext{
+            .allocator = allocator,
+            .io = io,
+            .params = params,
+        };
+        var future = try io.concurrent(performExecServerHttpRequestTimeoutWorker, .{&context});
+        const deadline = httpRequestDeadline(io, timeout_ms);
+        while (true) {
+            context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+                error.Timeout => {
+                    if (context.done.isSet()) break;
+                    const now = std.Io.Clock.Timestamp.now(io, .awake);
+                    if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                    _ = future.cancel(io);
+                    if (context.result) |result| allocator.free(result);
+                    return error.Timeout;
+                },
+                else => |e| {
+                    _ = future.cancel(io);
+                    if (context.result) |result| allocator.free(result);
+                    return e;
+                },
+            };
+            break;
+        }
+        _ = future.await(io);
+        if (context.result) |result| return result;
+        return context.err orelse error.Canceled;
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    return performExecServerHttpRequest(allocator, io, params);
+}
+
+fn execServerHttpTimeoutAsyncLimit() std.Io.Limit {
+    const cpu_count = std.Thread.getCpuCount() catch return .limited(1);
+    if (cpu_count == 0) return .limited(1);
+    return .limited(cpu_count);
+}
+
+fn performExecServerHttpRequestTimeoutWorker(context: *ExecServerHttpRequestTimeoutContext) void {
+    defer context.done.set(context.io);
+    context.result = performExecServerHttpRequest(context.allocator, context.io, context.params) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn httpRequestDeadline(io: std.Io, timeout_ms: u64) std.Io.Clock.Timestamp {
+    const timeout_ms_i64 = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    return std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = std.Io.Duration.fromMilliseconds(timeout_ms_i64),
+        .clock = .awake,
+    });
+}
+
+fn performExecServerHttpRequest(allocator: std.mem.Allocator, io: std.Io, params: HttpRequestParams) ![]const u8 {
     const header_capacity = params.headers.len + 1;
     var all_headers = try allocator.alloc(std.http.Header, header_capacity);
     defer allocator.free(all_headers);
@@ -2061,10 +2130,7 @@ fn performExecServerHttpRequest(allocator: std.mem.Allocator, params: HttpReques
         }
     }
 
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     var current_uri = try std.Uri.parse(params.url);
@@ -2190,7 +2256,7 @@ fn performExecServerHttpRequest(allocator: std.mem.Allocator, params: HttpReques
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         _ = reader.streamRemaining(&response_body) catch |err| switch (err) {
-            error.ReadFailed => return response.bodyErr().?,
+            error.ReadFailed => return response.bodyErr() orelse error.ReadFailed,
             error.WriteFailed => {
                 if (response_body.end >= max_http_response_body_bytes) {
                     closeHttpRequestConnection(&request);
