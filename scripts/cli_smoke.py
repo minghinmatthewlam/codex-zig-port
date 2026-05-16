@@ -739,6 +739,149 @@ def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]
     return None
 
 
+def run_exec_server_stream_response_smoke(
+    binary: Path, temp_root: Path, env: dict[str, str], http_url: str
+) -> None:
+    proc = subprocess.Popen(
+        [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+        cwd=temp_root,
+        env=env,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    def write_json(payload: dict) -> None:
+        proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+
+    def read_event(timeout: float) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 0.05))
+            if ready:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                return json.loads(line)
+            if proc.poll() is not None:
+                break
+        raise AssertionError("timed out waiting for stream response event")
+
+    try:
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-response-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-stream-response"},
+            }
+        )
+        initialize = read_event(5)
+        assert initialize["id"] == "stream-response-init"
+        write_json({"jsonrpc": "2.0", "method": "initialized"})
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-response-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream",
+                    "requestId": "http-smoke-stream-response",
+                    "streamResponse": True,
+                },
+            }
+        )
+
+        stream_response = read_event(5)
+        assert stream_response["id"] == "stream-response-request"
+        assert stream_response["result"]["status"] == 200
+        assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "yes"
+        assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
+        stream_deltas = [read_event(5)["params"] for _ in range(3)]
+        assert [delta["requestId"] for delta in stream_deltas] == ["http-smoke-stream-response"] * 3
+        assert [delta["seq"] for delta in stream_deltas] == [1, 2, 3]
+        assert b"".join(base64.b64decode(delta["deltaBase64"]) for delta in stream_deltas) == b"hello stream"
+        assert [delta["done"] for delta in stream_deltas] == [False, False, True]
+        assert [delta["error"] for delta in stream_deltas] == [None, None, None]
+
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-timeout-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-timeout",
+                    "requestId": "http-smoke-stream-timeout",
+                    "timeoutMs": 100,
+                    "streamResponse": True,
+                },
+            }
+        )
+        stream_timeout = read_event(5)
+        assert stream_timeout["id"] == "stream-timeout-request"
+        assert stream_timeout["error"]["code"] == -32601
+        assert "streamResponse timeoutMs is not implemented yet" in stream_timeout["error"]["message"]
+
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-duplicate-source",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-hang",
+                    "requestId": "http-smoke-stream-duplicate",
+                    "streamResponse": True,
+                },
+            }
+        )
+        duplicate_source = read_event(5)
+        assert duplicate_source["id"] == "stream-duplicate-source"
+        assert duplicate_source["result"]["status"] == 200
+        first_delta = read_event(5)
+        assert first_delta["method"] == "http/request/bodyDelta"
+        assert first_delta["params"]["requestId"] == "http-smoke-stream-duplicate"
+        assert first_delta["params"]["done"] is False
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-duplicate-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-duplicate",
+                    "requestId": "http-smoke-stream-duplicate",
+                    "streamResponse": True,
+                },
+            }
+        )
+        duplicate = read_event(5)
+        assert duplicate["id"] == "stream-duplicate-request"
+        assert duplicate["error"]["code"] == -32602
+        assert "requestId `http-smoke-stream-duplicate` is already active" in duplicate["error"]["message"]
+
+        proc.stdin.close()
+        proc.wait(timeout=3)
+        assert proc.returncode == 0
+        assert proc.stderr.read() == ""
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 def run_exec_server_stream_content_length_close_smoke(
     binary: Path, temp_root: Path, env: dict[str, str], http_url: str
 ) -> None:
@@ -2330,40 +2473,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
-                "id": "http-request-stream",
-                "method": "http/request",
-                "params": {
-                    "method": "GET",
-                    "url": f"{http_url}/stream",
-                    "requestId": "http-smoke-stream",
-                    "streamResponse": True,
-                },
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": "http-request-stream-duplicate",
-                "method": "http/request",
-                "params": {
-                    "method": "GET",
-                    "url": f"{http_url}/stream-duplicate",
-                    "requestId": "http-smoke-stream",
-                    "streamResponse": True,
-                },
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": "http-request-stream-timeout",
-                "method": "http/request",
-                "params": {
-                    "method": "GET",
-                    "url": f"{http_url}/stream-timeout",
-                    "requestId": "http-smoke-stream-timeout",
-                    "timeoutMs": 100,
-                    "streamResponse": True,
-                },
-            },
-            {
-                "jsonrpc": "2.0",
                 "id": "http-request-timeout",
                 "method": "http/request",
                 "params": {
@@ -2408,9 +2517,9 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         responses = [event for event in events if "id" in event]
         notifications = [event for event in events if event.get("method") == "http/request/bodyDelta"]
         response_by_id = {event["id"]: event for event in responses}
-        assert len(events) == 50
-        assert len(responses) == 47
-        assert len(notifications) == 3
+        assert len(events) == 44
+        assert len(responses) == 44
+        assert len(notifications) == 0
 
         invalid_initialize = responses[0]
         assert invalid_initialize["id"] == "invalid-init"
@@ -2567,7 +2676,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             "/transfer-encoding",
             "/early-hints",
             "/binary-header",
-            "/stream",
             "/timeout",
             "/timeout-body",
         ]
@@ -2609,7 +2717,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             b"not-supported",
             b"",
             http_transfer_encoding_body,
-            b"",
             b"",
             b"",
             b"",
@@ -2723,31 +2830,6 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert dump_header_value(http_binary_header["result"]["headers"], "x-text") == "kept"
         assert base64.b64decode(http_binary_header["result"]["bodyBase64"]) == b"binary header"
 
-        http_stream = response_by_id["http-request-stream"]
-        assert http_stream["id"] == "http-request-stream"
-        assert http_stream["result"]["status"] == 200
-        assert dump_header_value(http_stream["result"]["headers"], "x-exec-stream") == "yes"
-        assert base64.b64decode(http_stream["result"]["bodyBase64"]) == b""
-        stream_deltas = [
-            notification["params"]
-            for notification in notifications
-            if notification["params"]["requestId"] == "http-smoke-stream"
-        ]
-        assert [delta["seq"] for delta in stream_deltas] == [1, 2, 3]
-        assert b"".join(base64.b64decode(delta["deltaBase64"]) for delta in stream_deltas) == b"hello stream"
-        assert [delta["done"] for delta in stream_deltas] == [False, False, True]
-        assert [delta["error"] for delta in stream_deltas] == [None, None, None]
-
-        http_stream_duplicate = response_by_id["http-request-stream-duplicate"]
-        assert http_stream_duplicate["id"] == "http-request-stream-duplicate"
-        assert http_stream_duplicate["error"]["code"] == -32602
-        assert "requestId `http-smoke-stream` is already active" in http_stream_duplicate["error"]["message"]
-
-        http_stream_timeout = response_by_id["http-request-stream-timeout"]
-        assert http_stream_timeout["id"] == "http-request-stream-timeout"
-        assert http_stream_timeout["error"]["code"] == -32601
-        assert "streamResponse timeoutMs is not implemented yet" in http_stream_timeout["error"]["message"]
-
         http_timeout = response_by_id["http-request-timeout"]
         assert http_timeout["id"] == "http-request-timeout"
         assert http_timeout["error"]["code"] == -32603
@@ -2763,6 +2845,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert http_scheme["error"]["code"] == -32602
         assert "only supports http and https URLs" in http_scheme["error"]["message"]
 
+        run_exec_server_stream_response_smoke(binary, temp_root, env, http_url)
         run_exec_server_stream_shutdown_cancellation_smoke(binary, temp_root, env, http_url)
         run_exec_server_stream_preheader_shutdown_cancellation_smoke(binary, temp_root, env, http_url, http_server)
         run_exec_server_stream_content_length_close_smoke(binary, temp_root, env, http_url)
