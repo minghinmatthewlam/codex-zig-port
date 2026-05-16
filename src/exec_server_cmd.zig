@@ -1328,7 +1328,7 @@ const FsSandboxPolicy = struct {
         var best_access: ?FsSandboxAccess = null;
         var best_len: usize = 0;
         for (self.entries.items) |entry| {
-            if (!fsSandboxEntryMatches(entry, logical_path, resolved_path)) continue;
+            if (!fsSandboxEntryMatchesLogical(entry, logical_path, resolved_path)) continue;
             const len = normalizedRootAwarePathLen(entry.path);
             if (best_access == null or len > best_len or
                 (len == best_len and entry.access.precedence() > best_access.?.precedence()))
@@ -1337,13 +1337,31 @@ const FsSandboxPolicy = struct {
                 best_len = len;
             }
         }
+        if (best_access != null) {
+            for (self.entries.items) |entry| {
+                if (entry.access == .write) continue;
+                if (!fsSandboxEntryMatchesCanonical(entry, resolved_path)) continue;
+                const len = normalizedRootAwarePathLen(entry.path);
+                if (len > best_len or
+                    (len == best_len and entry.access.precedence() > best_access.?.precedence()))
+                {
+                    best_access = entry.access;
+                    best_len = len;
+                }
+            }
+        }
         return best_access;
     }
 };
 
-fn fsSandboxEntryMatches(entry: FsSandboxEntry, logical_path: []const u8, resolved_path: []const u8) bool {
+fn fsSandboxEntryMatchesLogical(entry: FsSandboxEntry, logical_path: []const u8, resolved_path: []const u8) bool {
     if (!pathIsSameOrDescendant(entry.path, logical_path)) return false;
     const canonical_path = entry.canonical_path orelse return true;
+    return pathIsSameOrDescendant(canonical_path, resolved_path);
+}
+
+fn fsSandboxEntryMatchesCanonical(entry: FsSandboxEntry, resolved_path: []const u8) bool {
+    const canonical_path = entry.canonical_path orelse return false;
     return pathIsSameOrDescendant(canonical_path, resolved_path);
 }
 
