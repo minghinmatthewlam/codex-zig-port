@@ -1466,6 +1466,23 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "useLegacyLandlock": False,
             }
 
+        def fs_tmpdir_write_sandbox() -> dict:
+            return {
+                "permissions": {
+                    "type": "managed",
+                    "file_system": {
+                        "type": "restricted",
+                        "entries": [
+                            {"path": {"type": "special", "value": {"kind": "tmpdir"}}, "access": "write"}
+                        ],
+                    },
+                    "network": "restricted",
+                },
+                "windowsSandboxLevel": "disabled",
+                "windowsSandboxPrivateDesktop": False,
+                "useLegacyLandlock": False,
+            }
+
         def fs_workspace_write_sandbox_without_cwd(cwd: Path) -> dict:
             sandbox = fs_workspace_write_sandbox(cwd)
             del sandbox["cwd"]
@@ -1893,6 +1910,57 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 assert not (fs_canonical_outside / "dangling-target.txt").exists()
             finally:
                 shutil.rmtree(fs_canonical_edge_root, ignore_errors=True)
+
+            fs_tmpdir_env = env.copy()
+            for key in ("TMPDIR", "TEMP", "TMP"):
+                fs_tmpdir_env.pop(key, None)
+            fs_tmpdir_blocked = Path("/tmp") / f"codex-zig-cli-exec-server-tmpdir-{uuid.uuid4().hex}.txt"
+            try:
+                fs_tmpdir_requests = [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-tmpdir-init",
+                        "method": "initialize",
+                        "params": {"clientName": "cli-smoke-fs-tmpdir"},
+                    },
+                    {"jsonrpc": "2.0", "method": "initialized"},
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-tmpdir-unset-denied",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_tmpdir_blocked),
+                            "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                            "sandbox": fs_tmpdir_write_sandbox(),
+                        },
+                    },
+                ]
+                fs_tmpdir_payload = "".join(
+                    json.dumps(item, separators=(",", ":")) + "\n" for item in fs_tmpdir_requests
+                )
+                fs_tmpdir_result = subprocess.run(
+                    [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+                    cwd=temp_root,
+                    env=fs_tmpdir_env,
+                    input=fs_tmpdir_payload,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=True,
+                )
+                assert fs_tmpdir_result.stderr == ""
+                fs_tmpdir_responses = [json.loads(line) for line in fs_tmpdir_result.stdout.splitlines()]
+                assert len(fs_tmpdir_responses) == 2
+                fs_tmpdir_by_id = {response["id"]: response for response in fs_tmpdir_responses}
+                uuid.UUID(fs_tmpdir_by_id["fs-tmpdir-init"]["result"]["sessionId"])
+                assert fs_tmpdir_by_id["fs-tmpdir-unset-denied"]["error"]["code"] == -32600
+                assert not fs_tmpdir_blocked.exists()
+            finally:
+                try:
+                    fs_tmpdir_blocked.unlink()
+                except FileNotFoundError:
+                    pass
 
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [
