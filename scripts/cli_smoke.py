@@ -1093,7 +1093,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "params": {"clientName": "cli-smoke", "resumeSessionId": None},
             },
             {"jsonrpc": "2.0", "method": "initialized"},
-            {"jsonrpc": "2.0", "id": "unknown", "method": "fs/readFile", "params": {}},
+            {"jsonrpc": "2.0", "id": "unknown", "method": "missing/method", "params": {}},
             {
                 "jsonrpc": "2.0",
                 "id": "arg0-invalid",
@@ -1308,7 +1308,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         unknown = responses[3]
         assert unknown["id"] == "unknown"
         assert unknown["error"]["code"] == -32601
-        assert "exec-server stub does not implement `fs/readFile` yet" in unknown["error"]["message"]
+        assert "exec-server stub does not implement `missing/method` yet" in unknown["error"]["message"]
 
         arg0_invalid = responses[4]
         assert arg0_invalid["id"] == "arg0-invalid"
@@ -1413,6 +1413,186 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert duplicate["id"] == "again"
         assert duplicate["error"]["code"] == -32600
         assert "initialize may only be sent once" in duplicate["error"]["message"]
+
+        fs_root = temp_root / "exec-server-fs"
+        fs_nested = fs_root / "nested"
+        fs_file = fs_nested / "note.txt"
+        fs_copy_file = fs_nested / "note-copy.txt"
+        fs_copy_dir = fs_root / "nested-copy"
+        fs_payload_bytes = b"hello from filesystem rpc\n"
+        fs_requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-before-init",
+                "method": "fs/readFile",
+                "params": {"path": str(fs_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-init",
+                "method": "initialize",
+                "params": {"clientName": "cli-smoke-fs"},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-relative-path",
+                "method": "fs/readFile",
+                "params": {"path": "relative.txt"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-mkdir",
+                "method": "fs/createDirectory",
+                "params": {"path": str(fs_nested)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-write",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(fs_file),
+                    "dataBase64": base64.b64encode(fs_payload_bytes).decode("ascii"),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-read",
+                "method": "fs/readFile",
+                "params": {"path": str(fs_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-metadata",
+                "method": "fs/getMetadata",
+                "params": {"path": str(fs_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-list",
+                "method": "fs/readDirectory",
+                "params": {"path": str(fs_nested)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-copy-file",
+                "method": "fs/copy",
+                "params": {
+                    "sourcePath": str(fs_file),
+                    "destinationPath": str(fs_copy_file),
+                    "recursive": False,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-read-copy",
+                "method": "fs/readFile",
+                "params": {"path": str(fs_copy_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-copy-dir-nonrecursive",
+                "method": "fs/copy",
+                "params": {
+                    "sourcePath": str(fs_nested),
+                    "destinationPath": str(fs_copy_dir),
+                    "recursive": False,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-copy-dir",
+                "method": "fs/copy",
+                "params": {
+                    "sourcePath": str(fs_nested),
+                    "destinationPath": str(fs_copy_dir),
+                    "recursive": True,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-list-copy-dir",
+                "method": "fs/readDirectory",
+                "params": {"path": str(fs_copy_dir)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-invalid-base64",
+                "method": "fs/writeFile",
+                "params": {"path": str(fs_file), "dataBase64": "not base64"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-sandbox",
+                "method": "fs/readFile",
+                "params": {"path": str(fs_file), "sandbox": {}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-remove-file",
+                "method": "fs/remove",
+                "params": {"path": str(fs_copy_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-remove-dir",
+                "method": "fs/remove",
+                "params": {"path": str(fs_copy_dir)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-remove-missing",
+                "method": "fs/remove",
+                "params": {"path": str(fs_copy_dir), "force": False},
+            },
+        ]
+        fs_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in fs_requests)
+        fs_result = subprocess.run(
+            [str(binary.resolve()), "exec-server", "--listen", "stdio"],
+            cwd=temp_root,
+            env=env,
+            input=fs_payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert fs_result.stderr == ""
+        fs_responses = [json.loads(line) for line in fs_result.stdout.splitlines()]
+        assert len(fs_responses) == 18
+        fs_by_id = {response["id"]: response for response in fs_responses}
+        assert fs_by_id["fs-before-init"]["error"]["code"] == -32600
+        assert "client must call initialize before using filesystem methods" in fs_by_id["fs-before-init"]["error"]["message"]
+        uuid.UUID(fs_by_id["fs-init"]["result"]["sessionId"])
+        assert fs_by_id["fs-relative-path"]["error"]["code"] == -32602
+        assert "AbsolutePathBuf deserialized without a base path" in fs_by_id["fs-relative-path"]["error"]["message"]
+        assert fs_by_id["fs-mkdir"]["result"] == {}
+        assert fs_by_id["fs-write"]["result"] == {}
+        assert base64.b64decode(fs_by_id["fs-read"]["result"]["dataBase64"]) == fs_payload_bytes
+        fs_metadata = fs_by_id["fs-metadata"]["result"]
+        assert fs_metadata["isFile"] is True
+        assert fs_metadata["isDirectory"] is False
+        assert fs_metadata["isSymlink"] is False
+        assert isinstance(fs_metadata["modifiedAtMs"], int)
+        fs_entries = {entry["fileName"]: entry for entry in fs_by_id["fs-list"]["result"]["entries"]}
+        assert fs_entries["note.txt"]["isFile"] is True
+        assert fs_by_id["fs-copy-file"]["result"] == {}
+        assert base64.b64decode(fs_by_id["fs-read-copy"]["result"]["dataBase64"]) == fs_payload_bytes
+        assert fs_by_id["fs-copy-dir-nonrecursive"]["error"]["code"] == -32600
+        assert "fs/copy requires recursive: true" in fs_by_id["fs-copy-dir-nonrecursive"]["error"]["message"]
+        assert fs_by_id["fs-copy-dir"]["result"] == {}
+        fs_copy_entries = {entry["fileName"]: entry for entry in fs_by_id["fs-list-copy-dir"]["result"]["entries"]}
+        assert fs_copy_entries["note.txt"]["isFile"] is True
+        assert fs_by_id["fs-invalid-base64"]["error"]["code"] == -32600
+        assert "fs/writeFile requires valid base64 dataBase64" in fs_by_id["fs-invalid-base64"]["error"]["message"]
+        assert fs_by_id["fs-sandbox"]["error"]["code"] == -32600
+        assert "direct filesystem operations do not accept sandbox context" in fs_by_id["fs-sandbox"]["error"]["message"]
+        assert fs_by_id["fs-remove-file"]["result"] == {}
+        assert not fs_copy_file.exists()
+        assert fs_by_id["fs-remove-dir"]["result"] == {}
+        assert not fs_copy_dir.exists()
+        assert fs_by_id["fs-remove-missing"]["error"]["code"] == -32004
 
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [
