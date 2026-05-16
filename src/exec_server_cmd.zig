@@ -22,6 +22,7 @@ const max_stdin_write_queue_chunks = 32;
 const max_buffered_input_read_wait_ms = 200;
 const max_detached_exec_sessions = 64;
 const detached_exec_session_poll_interval_ms = 50;
+const max_exec_server_read_file_bytes = 512 * 1024 * 1024;
 const default_exec_tty_rows = 24;
 const default_exec_tty_cols = 80;
 const default_env_exclude_patterns = [_][]const u8{ "*KEY*", "*SECRET*", "*TOKEN*" };
@@ -439,6 +440,9 @@ const StdioServer = struct {
         if (std.mem.eql(u8, method, "process/terminate")) {
             return try self.handleProcessTerminate(id_value.?, object.get("params"));
         }
+        if (isFsMethod(method)) {
+            return try self.handleFsMethod(id_value.?, method, object.get("params"));
+        }
 
         const message = try std.fmt.allocPrint(self.allocator, "exec-server stub does not implement `{s}` yet", .{method});
         defer self.allocator.free(message);
@@ -625,6 +629,19 @@ const StdioServer = struct {
         try terminateProcess(self.allocator, process);
         self.evictExcessClosedProcesses();
         return try renderJsonRpcResult(self.allocator, id_value, "{\"running\":true}");
+    }
+
+    fn handleFsMethod(self: *StdioServer, id_value: std.json.Value, method: []const u8, params_value: ?std.json.Value) ![]const u8 {
+        if (!self.initialize_complete) return try renderJsonRpcError(self.allocator, id_value, -32600, "client must call initialize before using filesystem methods");
+        if (!self.initialized) return try renderJsonRpcError(self.allocator, id_value, -32600, "client must send initialized before using filesystem methods");
+        if (std.mem.eql(u8, method, "fs/readFile")) return handleFsReadFile(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/writeFile")) return handleFsWriteFile(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/createDirectory")) return handleFsCreateDirectory(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/getMetadata")) return handleFsGetMetadata(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/readDirectory")) return handleFsReadDirectory(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/remove")) return handleFsRemove(self.allocator, id_value, params_value);
+        if (std.mem.eql(u8, method, "fs/copy")) return handleFsCopy(self.allocator, id_value, params_value);
+        return try renderJsonRpcError(self.allocator, id_value, -32601, "unknown filesystem method");
     }
 
     fn findProcess(self: *StdioServer, process_id: []const u8) ?*ProcessSession {
@@ -1229,6 +1246,21 @@ fn parseProcessWriteParams(allocator: std.mem.Allocator, params_value: ?std.json
     std.base64.standard.Decoder.decode(decoded, chunk_base64) catch return error.InvalidExecServerBase64;
     return .{ .process_id = process_id, .chunk = decoded };
 }
+
+const FsObjectParams = union(enum) {
+    object: std.json.ObjectMap,
+    message: []const u8,
+};
+
+const FsStringField = union(enum) {
+    value: []const u8,
+    message: []const u8,
+};
+
+const FsBoolField = union(enum) {
+    value: bool,
+    message: []const u8,
+};
 
 const ResolvedExecArgv = struct {
     argv: []const []const u8,
@@ -2383,6 +2415,397 @@ fn renderProcessReadResult(allocator: std.mem.Allocator, process: *const Process
             if (process.closed) "true" else "false",
         },
     );
+}
+
+const FS_ABSOLUTE_PATH_MESSAGE = "Invalid request: AbsolutePathBuf deserialized without a base path";
+
+fn isFsMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "fs/readFile") or
+        std.mem.eql(u8, method, "fs/writeFile") or
+        std.mem.eql(u8, method, "fs/createDirectory") or
+        std.mem.eql(u8, method, "fs/getMetadata") or
+        std.mem.eql(u8, method, "fs/readDirectory") or
+        std.mem.eql(u8, method, "fs/remove") or
+        std.mem.eql(u8, method, "fs/copy");
+}
+
+fn handleFsReadFile(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/readFile")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_exec_server_read_file_bytes)) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    };
+    defer allocator.free(data);
+
+    const encoded_len = std.base64.standard.Encoder.calcSize(data.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, data);
+
+    const encoded_json = try std.json.Stringify.valueAlloc(allocator, encoded, .{});
+    defer allocator.free(encoded_json);
+    const result = try std.fmt.allocPrint(allocator, "{{\"dataBase64\":{s}}}", .{encoded_json});
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleFsWriteFile(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/writeFile")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const data_base64 = switch (requiredStringFieldValue(object, "dataBase64", "fs/writeFile requires string dataBase64")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(data_base64) catch |err| {
+        return renderFsInvalidBase64(allocator, id_value, err);
+    };
+    const decoded = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded);
+    std.base64.standard.Decoder.decode(decoded, data_base64) catch |err| {
+        return renderFsInvalidBase64(allocator, id_value, err);
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = decoded }) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    };
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleFsCreateDirectory(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/createDirectory")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const recursive = switch (optionalBoolFieldValue(object, "recursive", true, true)) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (recursive) {
+        std.Io.Dir.cwd().createDirPath(io, path) catch |err| {
+            return renderFsFailure(allocator, id_value, err);
+        };
+    } else {
+        std.Io.Dir.createDirAbsolute(io, path, .default_dir) catch |err| {
+            return renderFsFailure(allocator, id_value, err);
+        };
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleFsGetMetadata(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/getMetadata")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const metadata = statPath(path, true) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    } orelse {
+        return renderFsFailure(allocator, id_value, error.FileNotFound);
+    };
+    const symlink_metadata = statPath(path, false) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    } orelse metadata;
+    const result = try std.fmt.allocPrint(
+        allocator,
+        "{{\"isDirectory\":{},\"isFile\":{},\"isSymlink\":{},\"createdAtMs\":{},\"modifiedAtMs\":{}}}",
+        .{
+            metadata.kind == .directory,
+            metadata.kind == .file,
+            symlink_metadata.kind == .sym_link,
+            0,
+            timestampMs(metadata.mtime),
+        },
+    );
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleFsReadDirectory(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/readDirectory")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    };
+    defer dir.close(io);
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"entries\":[");
+
+    var first = true;
+    var iter = dir.iterate();
+    while (true) {
+        const entry = (iter.next(io) catch |err| {
+            return renderFsFailure(allocator, id_value, err);
+        }) orelse break;
+        const child_path = try std.fs.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(child_path);
+        const metadata = (statPath(child_path, true) catch continue) orelse continue;
+        const name_json = try std.json.Stringify.valueAlloc(allocator, entry.name, .{});
+        defer allocator.free(name_json);
+        const entry_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"fileName\":{s},\"isDirectory\":{},\"isFile\":{}}}",
+            .{ name_json, metadata.kind == .directory, metadata.kind == .file },
+        );
+        defer allocator.free(entry_json);
+        if (!first) try result.appendSlice(allocator, ",");
+        first = false;
+        try result.appendSlice(allocator, entry_json);
+    }
+
+    try result.appendSlice(allocator, "]}");
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn handleFsRemove(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/remove")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const path = switch (requiredAbsolutePathField(object, "path")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const recursive = switch (optionalBoolFieldValue(object, "recursive", true, true)) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const force = switch (optionalBoolFieldValue(object, "force", true, true)) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const metadata = statPath(path, false) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    } orelse {
+        if (force) return renderJsonRpcResult(allocator, id_value, "{}");
+        return renderFsFailure(allocator, id_value, error.FileNotFound);
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (metadata.kind == .directory) {
+        if (recursive) {
+            std.Io.Dir.cwd().deleteTree(io, path) catch |err| {
+                return renderFsFailure(allocator, id_value, err);
+            };
+        } else {
+            std.Io.Dir.deleteDirAbsolute(io, path) catch |err| {
+                return renderFsFailure(allocator, id_value, err);
+            };
+        }
+    } else {
+        std.Io.Dir.deleteFileAbsolute(io, path) catch |err| {
+            return renderFsFailure(allocator, id_value, err);
+        };
+    }
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const object = switch (fsObjectParams(params_value, "fs/copy")) {
+        .object => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    if (fsSandboxContextError(object)) |message| return renderJsonRpcError(allocator, id_value, -32600, message);
+    const source_path = switch (requiredAbsolutePathField(object, "sourcePath")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const destination_path = switch (requiredAbsolutePathField(object, "destinationPath")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+    const recursive = switch (requiredBoolFieldValue(object, "recursive", "fs/copy requires boolean recursive")) {
+        .value => |value| value,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    copyPath(allocator, io, source_path, destination_path, recursive) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    };
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn fsObjectParams(params_value: ?std.json.Value, method: []const u8) FsObjectParams {
+    const invalid_message = fsObjectParamsMessage(method);
+    const params = params_value orelse return .{ .message = invalid_message };
+    if (params != .object) return .{ .message = invalid_message };
+    return .{ .object = params.object };
+}
+
+fn fsObjectParamsMessage(method: []const u8) []const u8 {
+    if (std.mem.eql(u8, method, "fs/copy")) return "fs/copy params must be an object";
+    return "filesystem params must be an object";
+}
+
+fn fsSandboxContextError(object: std.json.ObjectMap) ?[]const u8 {
+    const value = object.get("sandbox") orelse return null;
+    if (value == .null) return null;
+    return "direct filesystem operations do not accept sandbox context";
+}
+
+fn requiredAbsolutePathField(object: std.json.ObjectMap, field: []const u8) FsStringField {
+    const path = switch (requiredStringFieldValue(object, field, "required path field must be an absolute string")) {
+        .value => |value| value,
+        .message => |message| return .{ .message = message },
+    };
+    if (!std.fs.path.isAbsolute(path)) return .{ .message = FS_ABSOLUTE_PATH_MESSAGE };
+    return .{ .value = path };
+}
+
+fn requiredStringFieldValue(object: std.json.ObjectMap, field: []const u8, message: []const u8) FsStringField {
+    const value = object.get(field) orelse return .{ .message = message };
+    if (value != .string) return .{ .message = message };
+    return .{ .value = value.string };
+}
+
+fn requiredBoolFieldValue(object: std.json.ObjectMap, field: []const u8, message: []const u8) FsBoolField {
+    const value = object.get(field) orelse return .{ .message = message };
+    if (value != .bool) return .{ .message = message };
+    return .{ .value = value.bool };
+}
+
+fn optionalBoolFieldValue(object: std.json.ObjectMap, field: []const u8, default: bool, null_is_default: bool) FsBoolField {
+    const value = object.get(field) orelse return .{ .value = default };
+    if (value == .null and null_is_default) return .{ .value = default };
+    if (value != .bool) return .{ .message = "optional field must be a boolean" };
+    return .{ .value = value.bool };
+}
+
+fn renderFsInvalidBase64(allocator: std.mem.Allocator, id_value: std.json.Value, err: anyerror) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "fs/writeFile requires valid base64 dataBase64: {s}", .{@errorName(err)});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderFsFailure(allocator: std.mem.Allocator, id_value: std.json.Value, err: anyerror) ![]const u8 {
+    const message = try fsFailureMessage(allocator, err);
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, fsFailureCode(err), message);
+}
+
+fn fsFailureMessage(allocator: std.mem.Allocator, err: anyerror) ![]const u8 {
+    return switch (err) {
+        error.FsSandboxUnsupported => allocator.dupe(u8, "direct filesystem operations do not accept sandbox context"),
+        error.FsCopyDirectoryRequiresRecursive => allocator.dupe(u8, "fs/copy requires recursive: true when sourcePath is a directory"),
+        error.FsCopyDestinationInsideSource => allocator.dupe(u8, "fs/copy cannot copy a directory to itself or one of its descendants"),
+        error.FsCopyUnsupportedFileType => allocator.dupe(u8, "fs/copy only supports regular files, directories, and symlinks"),
+        error.StreamTooLong => std.fmt.allocPrint(allocator, "file is too large to read: limit is {d} bytes", .{max_exec_server_read_file_bytes}),
+        else => std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}),
+    };
+}
+
+fn fsFailureCode(err: anyerror) i64 {
+    return switch (err) {
+        error.FileNotFound => -32004,
+        error.AccessDenied,
+        error.PermissionDenied,
+        error.InvalidArgument,
+        error.BadPathName,
+        error.NameTooLong,
+        error.StreamTooLong,
+        error.FsSandboxUnsupported,
+        error.FsCopyDirectoryRequiresRecursive,
+        error.FsCopyDestinationInsideSource,
+        error.FsCopyUnsupportedFileType,
+        => -32600,
+        else => -32603,
+    };
+}
+
+fn statPath(path: []const u8, follow_symlinks: bool) !?std.Io.File.Stat {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = follow_symlinks }) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
+    };
+}
+
+fn timestampMs(value: std.Io.Timestamp) i64 {
+    return @divTrunc(@as(i64, @intCast(value.nanoseconds)), 1_000_000);
+}
+
+fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, destination_path: []const u8, recursive: bool) !void {
+    const metadata = (try statPath(source_path, false)) orelse return error.FileNotFound;
+    if (metadata.kind == .directory) {
+        if (!recursive) return error.FsCopyDirectoryRequiresRecursive;
+        if (pathIsSameOrDescendant(source_path, destination_path)) return error.FsCopyDestinationInsideSource;
+        try std.Io.Dir.cwd().createDirPath(io, destination_path);
+        var source_dir = try std.Io.Dir.openDirAbsolute(io, source_path, .{ .iterate = true });
+        defer source_dir.close(io);
+        var iter = source_dir.iterate();
+        while (try iter.next(io)) |entry| {
+            const child_source = try std.fs.path.join(allocator, &.{ source_path, entry.name });
+            defer allocator.free(child_source);
+            const child_destination = try std.fs.path.join(allocator, &.{ destination_path, entry.name });
+            defer allocator.free(child_destination);
+            try copyPath(allocator, io, child_source, child_destination, recursive);
+        }
+        return;
+    }
+    if (metadata.kind == .sym_link) {
+        var target_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const target_len = try std.Io.Dir.readLinkAbsolute(io, source_path, &target_buffer);
+        try std.Io.Dir.cwd().symLink(io, target_buffer[0..target_len], destination_path, .{});
+        return;
+    }
+    if (metadata.kind == .file) {
+        try std.Io.Dir.copyFileAbsolute(source_path, destination_path, io, .{});
+        return;
+    }
+    return error.FsCopyUnsupportedFileType;
+}
+
+fn pathIsSameOrDescendant(source_path: []const u8, destination_path: []const u8) bool {
+    const source = std.mem.trimEnd(u8, source_path, std.fs.path.sep_str);
+    const destination = std.mem.trimEnd(u8, destination_path, std.fs.path.sep_str);
+    if (std.mem.eql(u8, source, destination)) return true;
+    if (!std.mem.startsWith(u8, destination, source)) return false;
+    if (destination.len <= source.len) return false;
+    return destination[source.len] == std.fs.path.sep;
 }
 
 fn renderJsonRpcResult(allocator: std.mem.Allocator, id_value: std.json.Value, result_json: []const u8) ![]const u8 {
