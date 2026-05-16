@@ -128,8 +128,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `process/start` / `process/read` / `process/write` / `process/terminate`
   lifecycle, `envPolicy`-based child environment filtering and overlays, Unix
   `arg0` process titles, filesystem read/write/mkdir/metadata/list/copy/remove
-  RPCs with supported filesystem sandbox contexts, and explicit partial-parity
-  errors for unsupported transports
+  RPCs with supported filesystem sandbox contexts, registry-backed remote
+  executor registration through `--remote` / `--executor-id` with bearer-token
+  auth, local `ws://` rendezvous serving, and explicit partial-parity errors for
+  unsupported transports
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
   clients
