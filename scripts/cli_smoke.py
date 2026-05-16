@@ -93,6 +93,28 @@ def wait_for_exec_server_websocket_bind(proc: subprocess.Popen[str], timeout: fl
     raise AssertionError("timed out waiting for exec-server websocket bind address")
 
 
+def wait_for_stderr_line(proc: subprocess.Popen[str], fragment: str, timeout: float) -> str:
+    assert proc.stderr is not None
+    deadline = time.monotonic() + timeout
+    captured: list[str] = []
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(
+                f"process exited while waiting for stderr line {fragment!r}: {''.join(captured)}{proc.stderr.read()}"
+            )
+        remaining = max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([proc.stderr], [], [], min(remaining, 0.05))
+        if not ready:
+            continue
+        line = proc.stderr.readline()
+        if not line:
+            continue
+        captured.append(line)
+        if fragment in line:
+            return line
+    raise AssertionError(f"timed out waiting for stderr line {fragment!r}: {''.join(captured)}")
+
+
 def wait_for_exec_server_file(path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -215,6 +237,174 @@ class ExecServerSmokeWebSocket:
         if opcode != 0x1:
             raise AssertionError(f"unexpected websocket opcode {opcode}")
         return payload
+
+
+class RemoteExecutorRendezvous:
+    def __init__(self) -> None:
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.host = "127.0.0.1"
+        self.port = self.listener.getsockname()[1]
+        self.sock: socket.socket | None = None
+        self.request_target: str | None = None
+
+    @property
+    def url(self) -> str:
+        return f"ws://{self.host}:{self.port}/executor/exec-1?role=executor&sig=abc"
+
+    def accept(self, timeout: float = 5.0) -> None:
+        self.listener.settimeout(timeout)
+        sock, _ = self.listener.accept()
+        self.sock = sock
+        self.sock.settimeout(timeout)
+        request = self._recv_until(b"\r\n\r\n")
+        request_line = request.split(b"\r\n", 1)[0].decode("ascii")
+        parts = request_line.split()
+        if len(parts) != 3 or parts[0] != "GET":
+            raise AssertionError(f"invalid websocket request line: {request_line}")
+        self.request_target = parts[1]
+        headers: dict[str, str] = {}
+        for line in request.split(b"\r\n")[1:]:
+            if not line:
+                break
+            name, value = line.decode("ascii").split(":", 1)
+            headers[name.lower()] = value.strip()
+        key = headers.get("sec-websocket-key")
+        if key is None:
+            raise AssertionError(f"websocket request missing key: {request!r}")
+        expected_upgrade = headers.get("upgrade", "").lower()
+        expected_connection = headers.get("connection", "").lower()
+        if expected_upgrade != "websocket" or "upgrade" not in expected_connection:
+            raise AssertionError(f"websocket request missing upgrade headers: {request!r}")
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        self.sock.sendall(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept}\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+
+    def close(self) -> None:
+        try:
+            self.close_connection()
+        finally:
+            self.listener.close()
+
+    def close_connection(self) -> None:
+        if self.sock is None:
+            return
+        try:
+            self._send_frame(0x8, b"")
+        except OSError:
+            pass
+        finally:
+            self.sock.close()
+            self.sock = None
+
+    def write_json(self, payload: dict) -> None:
+        self._send_frame(0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+    def read_json(self) -> dict:
+        payload = self._read_frame()
+        if payload is None:
+            raise AssertionError("remote exec-server websocket closed before response")
+        return json.loads(payload.decode("utf-8"))
+
+    def _recv_until(self, delimiter: bytes) -> bytes:
+        assert self.sock is not None
+        data = b""
+        while delimiter not in data:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def _recv_exact(self, size: int) -> bytes:
+        assert self.sock is not None
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise AssertionError("remote exec-server websocket closed unexpectedly")
+            data += chunk
+        return data
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        assert self.sock is not None
+        header = bytearray([0x80 | opcode])
+        if len(payload) <= 125:
+            header.append(len(payload))
+        elif len(payload) <= 0xFFFF:
+            header.append(126)
+            header.extend(len(payload).to_bytes(2, "big"))
+        else:
+            header.append(127)
+            header.extend(len(payload).to_bytes(8, "big"))
+        self.sock.sendall(bytes(header) + payload)
+
+    def _read_frame(self) -> bytes | None:
+        first, second = self._recv_exact(2)
+        opcode = first & 0x0F
+        length = second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._recv_exact(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._recv_exact(8), "big")
+        masked = (second & 0x80) != 0
+        mask = self._recv_exact(4) if masked else b""
+        payload = self._recv_exact(length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        if opcode == 0x8:
+            return None
+        if opcode != 0x1:
+            raise AssertionError(f"unexpected remote websocket opcode {opcode}")
+        return payload
+
+
+class ExecServerRemoteRegistryHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_bodies.append(json.loads(body))
+        payload = (
+            self.server.response_payloads.pop(0)
+            if self.server.response_payloads
+            else json.dumps(
+                {
+                    "id": "registration-1",
+                    "executor_id": "exec-registered",
+                    "url": self.server.rendezvous_url,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class ExecServerRemoteRegistryServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[dict]
+    rendezvous_url: str
+    response_payloads: list[bytes]
 
 
 def dump_header_value(headers: list[dict[str, str]], name: str) -> Optional[str]:
@@ -3632,6 +3822,213 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_server_remote_registration_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-server-remote-", dir="/tmp"))
+    rendezvous = RemoteExecutorRendezvous()
+    registry = ExecServerRemoteRegistryServer(("127.0.0.1", 0), ExecServerRemoteRegistryHandler)
+    registry.request_paths = []
+    registry.request_headers = []
+    registry.request_bodies = []
+    registry.rendezvous_url = rendezvous.url
+    registry.response_payloads = []
+    registry_thread = threading.Thread(target=registry.serve_forever, daemon=True)
+    registry_thread.start()
+    proc: subprocess.Popen[str] | None = None
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env["CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN"] = " registry-token "
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        base_url = f"http://127.0.0.1:{registry.server_port}/"
+        proc = subprocess.Popen(
+            [
+                str(binary.resolve()),
+                "exec-server",
+                "--remote",
+                base_url,
+                "--executor-id",
+                " exec-requested ",
+                "--name",
+                "remote-smoke",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        rendezvous.accept(timeout=5)
+        line = wait_for_stderr_line(proc, "registered with executor_id exec-registered", 5)
+        assert "codex exec-server remote executor registration-1 registered" in line
+
+        assert registry.request_paths == ["/cloud/executor/exec-requested/register"]
+        assert len(registry.request_headers) == 1
+        assert header_value(registry.request_headers[0], "authorization") == "Bearer registry-token"
+        assert header_value(registry.request_headers[0], "content-type") == "application/json"
+        assert len(registry.request_bodies) == 1
+        request_body = registry.request_bodies[0]
+        assert request_body["executor_id"] == "exec-requested"
+        assert request_body["name"] == "remote-smoke"
+        assert request_body["labels"] == {}
+        assert request_body["metadata"] == {}
+        assert request_body["idempotency_id"].startswith("codex-exec-server-")
+        assert len(request_body["idempotency_id"]) == len("codex-exec-server-") + 64
+        assert rendezvous.request_target == "/executor/exec-1?role=executor&sig=abc"
+
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-init",
+                "method": "initialize",
+                "params": {"clientName": "remote-exec-smoke"},
+            }
+        )
+        init_response = rendezvous.read_json()
+        assert init_response["id"] == "remote-init"
+        assert "sessionId" in init_response["result"]
+        rendezvous.write_json({"jsonrpc": "2.0", "method": "initialized"})
+
+        remote_file = temp_root / "remote-rendezvous.txt"
+        payload = base64.b64encode(b"remote-rendezvous-ok").decode("ascii")
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-write",
+                "method": "fs/writeFile",
+                "params": {"path": str(remote_file), "dataBase64": payload},
+            }
+        )
+        write_response = rendezvous.read_json()
+        assert write_response["id"] == "remote-write"
+        assert write_response["result"] == {}
+        assert remote_file.read_text(encoding="utf-8") == "remote-rendezvous-ok"
+
+        remote_session_id = init_response["result"]["sessionId"]
+        resume_marker = temp_root / "remote-resume-drained"
+        resume_script = (
+            "import pathlib, sys, time; "
+            "sys.stdout.write('R' * 2000000); "
+            "sys.stdout.flush(); "
+            f"pathlib.Path({str(resume_marker)!r}).write_text('drained', encoding='utf-8'); "
+            "time.sleep(30)"
+        )
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-resume-start",
+                "method": "process/start",
+                "params": {
+                    "processId": "remote-resume-proc",
+                    "argv": [sys.executable, "-c", resume_script],
+                    "cwd": str(temp_root),
+                    "env": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    "tty": False,
+                    "pipeStdin": False,
+                    "arg0": None,
+                },
+            }
+        )
+        resume_start = rendezvous.read_json()
+        assert resume_start["id"] == "remote-resume-start"
+        assert resume_start["result"]["processId"] == "remote-resume-proc"
+        rendezvous.close_connection()
+        wait_for_exec_server_file(resume_marker, proc, 10)
+
+        rendezvous.accept(timeout=10)
+        assert registry.request_paths == [
+            "/cloud/executor/exec-requested/register",
+            "/cloud/executor/exec-requested/register",
+        ]
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-resume-init",
+                "method": "initialize",
+                "params": {
+                    "clientName": "remote-exec-smoke-resume",
+                    "resumeSessionId": remote_session_id,
+                },
+            }
+        )
+        resume_init = rendezvous.read_json()
+        assert resume_init["id"] == "remote-resume-init"
+        assert resume_init["result"]["sessionId"] == remote_session_id
+        rendezvous.write_json({"jsonrpc": "2.0", "method": "initialized"})
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-resume-terminate",
+                "method": "process/terminate",
+                "params": {"processId": "remote-resume-proc"},
+            }
+        )
+        resume_terminate = rendezvous.read_json()
+        assert resume_terminate["id"] == "remote-resume-terminate"
+        assert resume_terminate["result"]["running"] is True
+
+        proc.terminate()
+        proc.wait(timeout=5)
+        proc = None
+
+        registry.response_payloads.append(b"x" * (1024 * 1024 + 1))
+        too_large_response = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec-server",
+                "--remote",
+                base_url,
+                "--executor-id",
+                "exec-too-large-response",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert too_large_response.returncode != 0
+        assert "response body too large" in too_large_response.stderr
+
+        missing_token_env = env.copy()
+        missing_token_env.pop("CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN", None)
+        missing_token = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec-server",
+                "--remote",
+                base_url,
+                "--executor-id",
+                "exec-missing-token",
+            ],
+            cwd=temp_root,
+            env=missing_token_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert missing_token.returncode != 0
+        assert "CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN" in missing_token.stderr
+        assert "is not set" in missing_token.stderr
+    finally:
+        rendezvous.close()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        registry.shutdown()
+        registry.server_close()
+        registry_thread.join(timeout=5)
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_app_command_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-command-", dir="/tmp"))
     try:
@@ -6402,6 +6799,7 @@ def main() -> None:
     run_completion_snapshot_smoke(binary)
     run_update_command_smoke(binary)
     run_exec_server_stdio_smoke(binary)
+    run_exec_server_remote_registration_smoke(binary)
     run_app_command_smoke(binary)
     run_responses_api_proxy_smoke(binary)
     run_features_profile_smoke(binary)
@@ -6432,6 +6830,7 @@ def main() -> None:
     print("cli-completion-snapshot-e2e: ok")
     print("cli-update-e2e: ok")
     print("cli-exec-server-stdio-e2e: ok")
+    print("cli-exec-server-remote-registration-e2e: ok")
     print("cli-app-command-e2e: ok")
     print("cli-responses-api-proxy-e2e: ok")
     print("cli-features-profile-e2e: ok")
