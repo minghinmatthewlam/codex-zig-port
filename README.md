@@ -127,8 +127,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   pipe-backed and macOS PTY-backed `tty`
   `process/start` / `process/read` / `process/write` / `process/terminate`
   lifecycle, `envPolicy`-based child environment filtering and overlays, Unix
-  `arg0` process titles, and explicit partial-parity errors for unsupported
-  transports
+  `arg0` process titles, filesystem read/write/mkdir/metadata/list/copy/remove
+  RPCs, and explicit partial-parity errors for unsupported transports
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
   clients
@@ -407,6 +407,8 @@ CLI MCP OAuth login validation, file-backed MCP OAuth logout, and macOS
 keychain-backed MCP OAuth logout for streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, macOS
 keychain-backed OAuth, and OAuth-discovery not-logged-in servers, verifies
+exec-server filesystem read, write, metadata, directory listing, copy, and
+remove behavior against a temporary directory, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
