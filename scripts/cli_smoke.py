@@ -1417,6 +1417,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         fs_root = temp_root / "exec-server-fs"
         fs_nested = fs_root / "nested"
         fs_file = fs_nested / "note.txt"
+        fs_missing_recursive_copy = fs_nested / "note-missing-recursive-copy.txt"
         fs_copy_file = fs_nested / "note-copy.txt"
         fs_copy_dir = fs_root / "nested-copy"
         fs_payload_bytes = b"hello from filesystem rpc\n"
@@ -1475,11 +1476,21 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
+                "id": "fs-copy-file-missing-recursive",
+                "method": "fs/copy",
+                "params": {
+                    "sourcePath": str(fs_file),
+                    "destinationPath": str(fs_missing_recursive_copy),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
                 "id": "fs-copy-file",
                 "method": "fs/copy",
                 "params": {
                     "sourcePath": str(fs_file),
                     "destinationPath": str(fs_copy_file),
+                    "recursive": False,
                 },
             },
             {
@@ -1496,6 +1507,16 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                     "sourcePath": str(fs_nested),
                     "destinationPath": str(fs_copy_dir),
                     "recursive": False,
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-copy-dir-self-dotdot",
+                "method": "fs/copy",
+                "params": {
+                    "sourcePath": str(fs_nested / ".." / "nested"),
+                    "destinationPath": str(fs_nested),
+                    "recursive": True,
                 },
             },
             {
@@ -1559,7 +1580,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert fs_result.stderr == ""
         fs_responses = [json.loads(line) for line in fs_result.stdout.splitlines()]
-        assert len(fs_responses) == 18
+        assert len(fs_responses) == 20
         fs_by_id = {response["id"]: response for response in fs_responses}
         assert fs_by_id["fs-before-init"]["error"]["code"] == -32600
         assert "client must call initialize before using filesystem methods" in fs_by_id["fs-before-init"]["error"]["message"]
@@ -1576,10 +1597,14 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert isinstance(fs_metadata["modifiedAtMs"], int)
         fs_entries = {entry["fileName"]: entry for entry in fs_by_id["fs-list"]["result"]["entries"]}
         assert fs_entries["note.txt"]["isFile"] is True
+        assert fs_by_id["fs-copy-file-missing-recursive"]["error"]["code"] == -32602
+        assert "recursive" in fs_by_id["fs-copy-file-missing-recursive"]["error"]["message"]
         assert fs_by_id["fs-copy-file"]["result"] == {}
         assert base64.b64decode(fs_by_id["fs-read-copy"]["result"]["dataBase64"]) == fs_payload_bytes
         assert fs_by_id["fs-copy-dir-nonrecursive"]["error"]["code"] == -32600
         assert "fs/copy requires recursive: true" in fs_by_id["fs-copy-dir-nonrecursive"]["error"]["message"]
+        assert fs_by_id["fs-copy-dir-self-dotdot"]["error"]["code"] == -32600
+        assert "fs/copy cannot copy a directory to itself" in fs_by_id["fs-copy-dir-self-dotdot"]["error"]["message"]
         assert fs_by_id["fs-copy-dir"]["result"] == {}
         fs_copy_entries = {entry["fileName"]: entry for entry in fs_by_id["fs-list-copy-dir"]["result"]["entries"]}
         assert fs_copy_entries["note.txt"]["isFile"] is True

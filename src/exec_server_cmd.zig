@@ -2666,7 +2666,7 @@ fn handleFsCopy(allocator: std.mem.Allocator, id_value: std.json.Value, params_v
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
-    const recursive = switch (optionalBoolFieldValue(object, "recursive", false, false)) {
+    const recursive = switch (requiredBoolFieldValue(object, "recursive", "fs/copy requires boolean recursive")) {
         .value => |value| value,
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
@@ -2715,6 +2715,12 @@ fn optionalBoolFieldValue(object: std.json.ObjectMap, field: []const u8, default
     const value = object.get(field) orelse return .{ .value = default };
     if (value == .null and null_is_default) return .{ .value = default };
     if (value != .bool) return .{ .message = "optional field must be a boolean" };
+    return .{ .value = value.bool };
+}
+
+fn requiredBoolFieldValue(object: std.json.ObjectMap, field: []const u8, message: []const u8) FsBoolField {
+    const value = object.get(field) orelse return .{ .message = message };
+    if (value != .bool) return .{ .message = message };
     return .{ .value = value.bool };
 }
 
@@ -2793,7 +2799,11 @@ fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, d
     const metadata = (try statPath(source_path, false)) orelse return error.FileNotFound;
     if (metadata.kind == .directory) {
         if (!recursive) return error.FsCopyDirectoryRequiresRecursive;
-        if (pathIsSameOrDescendant(source_path, destination_path)) return error.FsCopyDestinationInsideSource;
+        const resolved_source = try resolveExistingPath(allocator, io, source_path);
+        defer allocator.free(resolved_source);
+        const resolved_destination = try resolveExistingPath(allocator, io, destination_path);
+        defer allocator.free(resolved_destination);
+        if (pathIsSameOrDescendant(resolved_source, resolved_destination)) return error.FsCopyDestinationInsideSource;
         try std.Io.Dir.cwd().createDirPath(io, destination_path);
         var source_dir = try std.Io.Dir.openDirAbsolute(io, source_path, .{ .iterate = true });
         defer source_dir.close(io);
@@ -2818,6 +2828,39 @@ fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, d
         return;
     }
     return error.FsCopyUnsupportedFileType;
+}
+
+fn resolveExistingPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    const trimmed_path = std.mem.trimEnd(u8, path, std.fs.path.sep_str);
+    var existing_path = if (trimmed_path.len == 0) path else trimmed_path;
+    var unresolved_suffix = std.ArrayList([]const u8).empty;
+    defer unresolved_suffix.deinit(allocator);
+
+    while (!pathExists(io, existing_path)) {
+        const file_name = std.fs.path.basename(existing_path);
+        if (file_name.len == 0) break;
+        try unresolved_suffix.append(allocator, file_name);
+        existing_path = std.fs.path.dirname(existing_path) orelse break;
+    }
+
+    const resolved_existing_z = try std.Io.Dir.realPathFileAbsoluteAlloc(io, existing_path, allocator);
+    defer allocator.free(resolved_existing_z);
+    if (unresolved_suffix.items.len == 0) return allocator.dupe(u8, resolved_existing_z);
+
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    try parts.append(allocator, resolved_existing_z);
+    var index = unresolved_suffix.items.len;
+    while (index > 0) {
+        index -= 1;
+        try parts.append(allocator, unresolved_suffix.items[index]);
+    }
+    return std.fs.path.join(allocator, parts.items);
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch return false;
+    return true;
 }
 
 fn pathIsSameOrDescendant(source_path: []const u8, destination_path: []const u8) bool {
