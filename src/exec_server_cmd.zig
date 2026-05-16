@@ -20,6 +20,9 @@ const remote_protocol_version = "codex-exec-server-v1";
 const remote_error_body_preview_bytes = 4096;
 const max_remote_registry_response_bytes = 1024 * 1024;
 const max_stdio_json_rpc_line_bytes = 16 * 1024 * 1024;
+const max_json_rpc_response_envelope_slack_bytes = 64 * 1024;
+const max_http_response_result_json_bytes = max_stdio_json_rpc_line_bytes - max_json_rpc_response_envelope_slack_bytes;
+const max_http_response_body_bytes = (max_http_response_result_json_bytes / 4) * 3;
 const retained_output_bytes_per_process = 1024 * 1024;
 const retained_closed_processes = 64;
 const max_stdin_write_queue_bytes = 2 * 1024 * 1024;
@@ -478,6 +481,9 @@ const StdioServer = struct {
         if (std.mem.eql(u8, method, "process/terminate")) {
             return try self.handleProcessTerminate(id_value.?, object.get("params"));
         }
+        if (std.mem.eql(u8, method, "http/request")) {
+            return try self.handleHttpRequest(id_value.?, object.get("params"));
+        }
         if (isFsMethod(method)) {
             return try self.handleFsMethod(id_value.?, method, object.get("params"));
         }
@@ -667,6 +673,37 @@ const StdioServer = struct {
         try terminateProcess(self.allocator, process);
         self.evictExcessClosedProcesses();
         return try renderJsonRpcResult(self.allocator, id_value, "{\"running\":true}");
+    }
+
+    fn handleHttpRequest(self: *StdioServer, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+        if (!self.initialized) return try renderJsonRpcError(self.allocator, id_value, -32600, "initialized notification must be sent before http requests");
+        const params = parseHttpRequestParams(self.allocator, params_value) catch |err| switch (err) {
+            error.InvalidExecServerHttpRequestMethod => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request method is invalid"),
+            error.InvalidExecServerHttpRequestUrl => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request url is invalid"),
+            error.UnsupportedExecServerHttpRequestUrlScheme => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request only supports http and https URLs"),
+            error.InvalidExecServerHttpRequestHeaders => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request headers must be an array of objects"),
+            error.InvalidExecServerHttpRequestHeaderName => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request header name is invalid"),
+            error.InvalidExecServerHttpRequestHeaderValue => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request header value is invalid"),
+            error.InvalidExecServerHttpRequestBody => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request bodyBase64 must be valid base64"),
+            else => return renderJsonRpcError(self.allocator, id_value, -32602, "http/request params must include method, url, and requestId"),
+        };
+        defer params.deinit(self.allocator);
+        if (params.timeout_ms != null) {
+            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request timeoutMs is not implemented yet");
+        }
+        if (params.stream_response) {
+            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse is not implemented yet");
+        }
+        const result = performExecServerHttpRequest(self.allocator, params) catch |err| switch (err) {
+            error.ExecServerHttpResponseTooLarge => return renderJsonRpcError(self.allocator, id_value, -32603, "http/request response body is too large"),
+            else => {
+                const message = try std.fmt.allocPrint(self.allocator, "http/request failed: {s}", .{@errorName(err)});
+                defer self.allocator.free(message);
+                return renderJsonRpcError(self.allocator, id_value, -32603, message);
+            },
+        };
+        defer self.allocator.free(result);
+        return try renderJsonRpcResult(self.allocator, id_value, result);
     }
 
     fn handleFsMethod(self: *StdioServer, id_value: std.json.Value, method: []const u8, params_value: ?std.json.Value) ![]const u8 {
@@ -1880,6 +1917,25 @@ const ProcessWriteParams = struct {
     }
 };
 
+const HttpHeaderParam = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const HttpRequestParams = struct {
+    method: std.http.Method,
+    url: []const u8,
+    headers: []const HttpHeaderParam,
+    body: ?[]u8,
+    timeout_ms: ?u64,
+    stream_response: bool,
+
+    fn deinit(self: HttpRequestParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.headers);
+        if (self.body) |body| allocator.free(body);
+    }
+};
+
 fn parseProcessWriteParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ProcessWriteParams {
     const params = params_value orelse return error.InvalidExecServerWriteParams;
     if (params != .object) return error.InvalidExecServerWriteParams;
@@ -1891,6 +1947,417 @@ fn parseProcessWriteParams(allocator: std.mem.Allocator, params_value: ?std.json
     errdefer allocator.free(decoded);
     std.base64.standard.Decoder.decode(decoded, chunk_base64) catch return error.InvalidExecServerBase64;
     return .{ .process_id = process_id, .chunk = decoded };
+}
+
+fn parseHttpRequestParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !HttpRequestParams {
+    const params = params_value orelse return error.InvalidExecServerHttpRequestParams;
+    if (params != .object) return error.InvalidExecServerHttpRequestParams;
+    const object = params.object;
+
+    const method_text = try requiredStringField(object, "method");
+    const method = parseHttpMethod(method_text) orelse return error.InvalidExecServerHttpRequestMethod;
+    const url = try requiredStringField(object, "url");
+    const parsed_url = std.Uri.parse(url) catch return error.InvalidExecServerHttpRequestUrl;
+    if (!httpUriSchemeIsSupported(parsed_url.scheme)) return error.UnsupportedExecServerHttpRequestUrlScheme;
+    if (parsed_url.host == null) return error.InvalidExecServerHttpRequestUrl;
+    const request_id = try requiredStringField(object, "requestId");
+    if (request_id.len == 0) return error.InvalidExecServerHttpRequestParams;
+
+    const header_items = if (object.get("headers")) |headers_value| blk: {
+        if (headers_value != .array) return error.InvalidExecServerHttpRequestHeaders;
+        break :blk headers_value.array.items;
+    } else &.{};
+    const headers = try allocator.alloc(HttpHeaderParam, header_items.len);
+    errdefer allocator.free(headers);
+    for (header_items, 0..) |item, index| {
+        if (item != .object) return error.InvalidExecServerHttpRequestHeaders;
+        const header_object = item.object;
+        const name = try requiredStringField(header_object, "name");
+        const value = try requiredStringField(header_object, "value");
+        if (!httpHeaderNameIsValid(name)) return error.InvalidExecServerHttpRequestHeaderName;
+        if (!httpHeaderValueIsValid(value)) return error.InvalidExecServerHttpRequestHeaderValue;
+        headers[index] = .{ .name = name, .value = value };
+    }
+
+    var body: ?[]u8 = null;
+    errdefer if (body) |value| allocator.free(value);
+    if (object.get("bodyBase64")) |body_value| {
+        if (body_value != .null) {
+            if (body_value != .string) return error.InvalidExecServerHttpRequestBody;
+            const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(body_value.string) catch return error.InvalidExecServerHttpRequestBody;
+            const decoded = try allocator.alloc(u8, decoded_len);
+            errdefer allocator.free(decoded);
+            std.base64.standard.Decoder.decode(decoded, body_value.string) catch return error.InvalidExecServerHttpRequestBody;
+            body = decoded;
+        }
+    }
+
+    return .{
+        .method = method,
+        .url = url,
+        .headers = headers,
+        .body = body,
+        .timeout_ms = try optionalNullableU64Field(object, "timeoutMs"),
+        .stream_response = try optionalBoolField(object, "streamResponse", false),
+    };
+}
+
+fn parseHttpMethod(value: []const u8) ?std.http.Method {
+    inline for (@typeInfo(std.http.Method).@"enum".fields) |field| {
+        if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+    }
+    return null;
+}
+
+fn httpHeaderNameIsValid(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) continue;
+        switch (byte) {
+            '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => continue,
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn httpHeaderValueIsValid(value: []const u8) bool {
+    return std.mem.indexOfAny(u8, value, "\x00\r\n") == null;
+}
+
+fn httpHeaderIsSensitive(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "authorization") or
+        std.ascii.eqlIgnoreCase(name, "cookie") or
+        std.ascii.eqlIgnoreCase(name, "cookie2") or
+        std.ascii.eqlIgnoreCase(name, "proxy-authorization");
+}
+
+fn httpHeaderIsBodySpecific(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "content-length") or
+        std.ascii.eqlIgnoreCase(name, "transfer-encoding");
+}
+
+const PreparedExecServerHttpRequestHeaders = struct {
+    standard: std.http.Client.Request.Headers,
+    extra: []const std.http.Header,
+};
+
+fn performExecServerHttpRequest(allocator: std.mem.Allocator, params: HttpRequestParams) ![]const u8 {
+    const header_capacity = params.headers.len + 1;
+    var all_headers = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(all_headers);
+    var redirect_safe_headers = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(redirect_safe_headers);
+    const extra_header_buffer = try allocator.alloc(std.http.Header, header_capacity);
+    defer allocator.free(extra_header_buffer);
+    const all_header_count = params.headers.len;
+    var redirect_safe_header_count: usize = 0;
+    for (params.headers, 0..) |header, index| {
+        const client_header: std.http.Header = .{ .name = header.name, .value = header.value };
+        all_headers[index] = client_header;
+        if (!httpHeaderIsSensitive(header.name)) {
+            redirect_safe_headers[redirect_safe_header_count] = client_header;
+            redirect_safe_header_count += 1;
+        }
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var current_uri = try std.Uri.parse(params.url);
+    try normalizeHttpUriScheme(&current_uri);
+    var current_method = params.method;
+    var current_body = params.body;
+    var body_headers_allowed = true;
+    var sensitive_headers_allowed = true;
+    var redirect_count: u16 = 0;
+    var current_uri_storage: ?[]u8 = null;
+    defer if (current_uri_storage) |storage| allocator.free(storage);
+    var redirect_buffer: [8192]u8 = undefined;
+
+    while (true) {
+        const request_headers = if (sensitive_headers_allowed)
+            all_headers[0..all_header_count]
+        else
+            redirect_safe_headers[0..redirect_safe_header_count];
+        var content_length_buffer: [32]u8 = undefined;
+        const manual_content_length = if (current_body) |body| blk: {
+            if (current_method.requestHasBody()) break :blk null;
+            break :blk try std.fmt.bufPrint(&content_length_buffer, "{d}", .{body.len});
+        } else null;
+        const prepared_headers = prepareExecServerHttpRequestHeaders(
+            request_headers,
+            extra_header_buffer,
+            body_headers_allowed,
+            current_body != null or current_method.requestHasBody(),
+            manual_content_length,
+        );
+        var request = try client.request(current_method, current_uri, .{
+            .redirect_behavior = .unhandled,
+            .headers = prepared_headers.standard,
+            .extra_headers = prepared_headers.extra,
+        });
+        defer request.deinit();
+
+        if (current_body) |body| {
+            if (current_method.requestHasBody()) {
+                try request.sendBodyComplete(body);
+            } else {
+                try sendExecServerHttpRequestBodyForAnyMethod(&request, body);
+            }
+        } else if (current_method.requestHasBody()) {
+            var empty_body: [0]u8 = .{};
+            try request.sendBodyComplete(&empty_body);
+        } else {
+            try request.sendBodiless();
+        }
+
+        var response_head_buffer: [8192]u8 = undefined;
+        var response = try request.receiveHead(&response_head_buffer);
+        while (response.head.status.class() == .informational) {
+            request.response_content_length = 0;
+            request.response_transfer_encoding = .none;
+            response = try request.receiveHead(&response_head_buffer);
+        }
+        if (httpStatusIsFollowedRedirect(response.head.status)) {
+            if (response.head.location) |location| {
+                closeHttpRequestConnection(&request);
+                if (redirect_count >= 10) return error.TooManyHttpRedirects;
+                var redirect_buffer_slice: []u8 = redirect_buffer[0..];
+                if (location.len > redirect_buffer_slice.len) return error.HttpRedirectLocationOversize;
+                @memcpy(redirect_buffer_slice[0..location.len], location);
+                var next_uri = try current_uri.resolveInPlace(location.len, &redirect_buffer_slice);
+                try normalizeHttpUriScheme(&next_uri);
+                const next_uri_text = try std.fmt.allocPrint(allocator, "{f}", .{std.Uri.fmt(&next_uri, .all)});
+                errdefer allocator.free(next_uri_text);
+                const owned_next_uri = try std.Uri.parse(next_uri_text);
+                if (!httpRedirectKeepsSensitiveHeaders(current_uri, next_uri)) sensitive_headers_allowed = false;
+                const redirect_drops_body = httpRedirectDropsRequestBody(current_method, response.head.status);
+                if (httpRedirectChangesMethodToGet(current_method, response.head.status)) {
+                    current_method = .GET;
+                }
+                if (redirect_drops_body) {
+                    current_body = null;
+                    body_headers_allowed = false;
+                }
+                if (current_uri_storage) |storage| allocator.free(storage);
+                current_uri_storage = next_uri_text;
+                current_uri = owned_next_uri;
+                redirect_count += 1;
+                continue;
+            }
+        }
+
+        const response_has_body = httpResponseMayHaveBody(current_method, response.head.status);
+        const content_encoding = response.head.content_encoding;
+        const response_prefix = try renderExecServerHttpResponsePrefix(allocator, response.head, response_has_body and content_encoding != .identity);
+        defer allocator.free(response_prefix);
+        if (!response_has_body) {
+            request.response_content_length = 0;
+            request.response_transfer_encoding = .none;
+            return renderExecServerHttpResponse(allocator, response_prefix, &.{});
+        }
+        if (response.head.content_length) |content_length| {
+            const content_length_usize: usize = std.math.cast(usize, content_length) orelse {
+                closeHttpRequestConnection(&request);
+                return error.ExecServerHttpResponseTooLarge;
+            };
+            if (!execServerHttpResponseResultFits(response_prefix.len, content_length_usize)) {
+                closeHttpRequestConnection(&request);
+                return error.ExecServerHttpResponseTooLarge;
+            }
+        }
+
+        const response_storage = try allocator.alloc(u8, max_http_response_body_bytes);
+        defer allocator.free(response_storage);
+        var response_body = std.Io.Writer.fixed(response_storage);
+
+        const decompress_buffer: []u8 = switch (content_encoding) {
+            .identity => &.{},
+            .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => {
+                closeHttpRequestConnection(&request);
+                return error.UnsupportedCompressionMethod;
+            },
+        };
+        defer if (content_encoding != .identity) allocator.free(decompress_buffer);
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+        _ = reader.streamRemaining(&response_body) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            error.WriteFailed => {
+                if (response_body.end >= max_http_response_body_bytes) {
+                    closeHttpRequestConnection(&request);
+                    return error.ExecServerHttpResponseTooLarge;
+                }
+                return err;
+            },
+            else => |e| return e,
+        };
+
+        return renderExecServerHttpResponse(allocator, response_prefix, response_body.buffered());
+    }
+}
+
+fn prepareExecServerHttpRequestHeaders(
+    headers: []const std.http.Header,
+    extra_header_buffer: []std.http.Header,
+    body_headers_allowed: bool,
+    serializes_body: bool,
+    manual_content_length: ?[]const u8,
+) PreparedExecServerHttpRequestHeaders {
+    var standard_headers: std.http.Client.Request.Headers = .{};
+    var extra_header_count: usize = 0;
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "host")) {
+            standard_headers.host = .{ .override = header.value };
+        } else if (std.ascii.eqlIgnoreCase(header.name, "authorization")) {
+            standard_headers.authorization = .{ .override = header.value };
+        } else if (std.ascii.eqlIgnoreCase(header.name, "user-agent")) {
+            standard_headers.user_agent = .{ .override = header.value };
+        } else if (std.ascii.eqlIgnoreCase(header.name, "connection")) {
+            standard_headers.connection = .{ .override = header.value };
+        } else if (std.ascii.eqlIgnoreCase(header.name, "accept-encoding")) {
+            standard_headers.accept_encoding = .{ .override = header.value };
+        } else if (std.ascii.eqlIgnoreCase(header.name, "content-type")) {
+            standard_headers.content_type = .{ .override = header.value };
+        } else if ((!body_headers_allowed or serializes_body) and httpHeaderIsBodySpecific(header.name)) {
+            continue;
+        } else {
+            extra_header_buffer[extra_header_count] = header;
+            extra_header_count += 1;
+        }
+    }
+    if (manual_content_length) |content_length| {
+        extra_header_buffer[extra_header_count] = .{ .name = "Content-Length", .value = content_length };
+        extra_header_count += 1;
+    }
+    return .{ .standard = standard_headers, .extra = extra_header_buffer[0..extra_header_count] };
+}
+
+fn httpUriSchemeIsSupported(scheme: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(scheme, "http") or
+        std.ascii.eqlIgnoreCase(scheme, "https");
+}
+
+fn normalizeHttpUriScheme(uri: *std.Uri) !void {
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) {
+        uri.scheme = "http";
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) {
+        uri.scheme = "https";
+        return;
+    }
+    return error.UnsupportedExecServerHttpRequestUrlScheme;
+}
+
+fn sendExecServerHttpRequestBodyForAnyMethod(request: *std.http.Client.Request, body: []const u8) !void {
+    try request.sendBodilessUnflushed();
+    try request.connection.?.writer().writeAll(body);
+    try request.connection.?.flush();
+}
+
+fn closeHttpRequestConnection(request: *std.http.Client.Request) void {
+    if (request.connection) |connection| connection.closing = true;
+}
+
+fn httpStatusIsFollowedRedirect(status: std.http.Status) bool {
+    return status == .moved_permanently or
+        status == .found or
+        status == .see_other or
+        status == .temporary_redirect or
+        status == .permanent_redirect;
+}
+
+fn httpRedirectChangesMethodToGet(method: std.http.Method, status: std.http.Status) bool {
+    return (status == .see_other and method != .HEAD) or
+        (method == .POST and (status == .moved_permanently or status == .found));
+}
+
+fn httpRedirectDropsRequestBody(method: std.http.Method, status: std.http.Status) bool {
+    return status == .see_other or
+        (method == .POST and (status == .moved_permanently or status == .found));
+}
+
+fn httpRedirectKeepsSensitiveHeaders(source: std.Uri, destination: std.Uri) bool {
+    if (!std.ascii.eqlIgnoreCase(source.scheme, destination.scheme)) return false;
+    if (httpUriEffectivePort(source) != httpUriEffectivePort(destination)) return false;
+    const source_host = source.host orelse return false;
+    const destination_host = destination.host orelse return false;
+    return std.ascii.eqlIgnoreCase(uriComponentBytes(source_host), uriComponentBytes(destination_host));
+}
+
+fn httpUriEffectivePort(uri: std.Uri) u16 {
+    if (uri.port) |port| return port;
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return 443;
+    return 80;
+}
+
+fn uriComponentBytes(component: std.Uri.Component) []const u8 {
+    return switch (component) {
+        .raw, .percent_encoded => |value| value,
+    };
+}
+
+fn httpResponseMayHaveBody(method: std.http.Method, status: std.http.Status) bool {
+    if (!method.responseHasBody()) return false;
+    return status.class() != .informational and
+        status != .no_content and
+        status != .not_modified;
+}
+
+fn renderExecServerHttpResponsePrefix(allocator: std.mem.Allocator, head: std.http.Client.Response.Head, omit_encoded_body_headers: bool) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const prefix = try std.fmt.allocPrint(allocator, "{{\"status\":{d},\"headers\":[", .{@intFromEnum(head.status)});
+    defer allocator.free(prefix);
+    try out.appendSlice(allocator, prefix);
+    var first = true;
+    var header_iter = head.iterateHeaders();
+    while (header_iter.next()) |header| {
+        if (!std.unicode.utf8ValidateSlice(header.name) or !std.unicode.utf8ValidateSlice(header.value)) continue;
+        if (omit_encoded_body_headers and isEncodedBodyHeader(header.name)) continue;
+        if (!first) try out.append(allocator, ',');
+        first = false;
+        try out.appendSlice(allocator, "{\"name\":");
+        try appendJsonString(allocator, &out, header.name);
+        try out.appendSlice(allocator, ",\"value\":");
+        try appendJsonString(allocator, &out, header.value);
+        try out.append(allocator, '}');
+    }
+    try out.appendSlice(allocator, "],\"bodyBase64\":");
+    return out.toOwnedSlice(allocator);
+}
+
+fn isEncodedBodyHeader(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "content-encoding") or
+        std.ascii.eqlIgnoreCase(name, "content-length");
+}
+
+fn renderExecServerHttpResponse(allocator: std.mem.Allocator, prefix: []const u8, body: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, prefix);
+    const encoded_len = std.base64.standard.Encoder.calcSize(body.len);
+    if (!execServerHttpResponseResultFits(prefix.len, body.len)) return error.ExecServerHttpResponseTooLarge;
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, body);
+    try appendJsonString(allocator, &out, encoded);
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn execServerHttpResponseResultFits(prefix_len: usize, body_len: usize) bool {
+    const encoded_len = std.base64.standard.Encoder.calcSize(body_len);
+    return prefix_len + encoded_len + "\"\"}".len <= max_http_response_result_json_bytes;
 }
 
 const FsObjectParams = union(enum) {
@@ -2605,6 +3072,12 @@ fn optionalBoolField(object: std.json.ObjectMap, name: []const u8, default: bool
 fn optionalU64Field(object: std.json.ObjectMap, name: []const u8, default: u64) !u64 {
     const value = object.get(name) orelse return default;
     if (value == .null) return default;
+    return jsonIntegerAsU64(value) orelse error.InvalidExecServerField;
+}
+
+fn optionalNullableU64Field(object: std.json.ObjectMap, name: []const u8) !?u64 {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
     return jsonIntegerAsU64(value) orelse error.InvalidExecServerField;
 }
 
