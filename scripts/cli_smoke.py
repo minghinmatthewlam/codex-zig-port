@@ -1708,14 +1708,18 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             fs_outside = fs_edge_root / "outside"
             fs_fifo_source = fs_edge_root / "fifo-source"
             fs_fifo_dest = fs_edge_root / "fifo-dest"
+            fs_real_workspace = fs_edge_root / "real-workspace"
+            fs_link_workspace = fs_edge_root / "link-workspace"
             try:
                 fs_allowed.mkdir(parents=True)
                 fs_outside.mkdir()
                 fs_fifo_source.mkdir()
+                fs_real_workspace.mkdir()
                 (fs_allowed / "secret.txt").write_text("allowed", encoding="utf-8")
                 (fs_edge_root / "secret.txt").write_text("root", encoding="utf-8")
                 (fs_fifo_source / "note.txt").write_text("copy me", encoding="utf-8")
                 os.symlink(fs_outside, fs_allowed / "link")
+                os.symlink(fs_real_workspace, fs_link_workspace)
                 os.mkfifo(fs_fifo_source / "named-pipe")
             except (NotImplementedError, OSError):
                 shutil.rmtree(fs_edge_root, ignore_errors=True)
@@ -1780,6 +1784,16 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                             "sandbox": fs_workspace_write_sandbox_without_cwd(fs_allowed),
                         },
                     },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-symlink-root-write",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_link_workspace / "created.txt"),
+                            "dataBase64": base64.b64encode(b"created").decode("ascii"),
+                            "sandbox": fs_workspace_write_sandbox(fs_link_workspace),
+                        },
+                    },
                 ]
                 fs_edge_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in fs_edge_requests)
                 fs_edge_result = subprocess.run(
@@ -1795,7 +1809,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 )
                 assert fs_edge_result.stderr == ""
                 fs_edge_responses = [json.loads(line) for line in fs_edge_result.stdout.splitlines()]
-                assert len(fs_edge_responses) == 7
+                assert len(fs_edge_responses) == 8
                 fs_edge_by_id = {response["id"]: response for response in fs_edge_responses}
                 uuid.UUID(fs_edge_by_id["fs-edge-init"]["result"]["sessionId"])
                 assert base64.b64decode(fs_edge_by_id["fs-normalized-read"]["result"]["dataBase64"]) == b"allowed"
@@ -1808,6 +1822,8 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 assert not (fs_outside / "blocked.txt").exists()
                 assert fs_edge_by_id["fs-sandbox-missing-cwd"]["error"]["code"] == -32600
                 assert "dynamic permissions requires cwd" in fs_edge_by_id["fs-sandbox-missing-cwd"]["error"]["message"]
+                assert fs_edge_by_id["fs-sandbox-symlink-root-write"]["result"] == {}
+                assert (fs_real_workspace / "created.txt").read_bytes() == b"created"
 
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [

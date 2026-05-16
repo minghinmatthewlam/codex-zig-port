@@ -1286,7 +1286,13 @@ const FsSandboxAccess = enum {
 
 const FsSandboxEntry = struct {
     path: []const u8,
+    canonical_path: ?[]const u8 = null,
     access: FsSandboxAccess,
+
+    fn deinit(self: FsSandboxEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        if (self.canonical_path) |canonical_path| allocator.free(canonical_path);
+    }
 };
 
 const FsSandboxResolveMode = enum {
@@ -1298,16 +1304,16 @@ const FsSandboxPolicy = struct {
     entries: std.ArrayList(FsSandboxEntry) = .empty,
 
     fn deinit(self: *FsSandboxPolicy, allocator: std.mem.Allocator) void {
-        for (self.entries.items) |entry| allocator.free(entry.path);
+        for (self.entries.items) |entry| entry.deinit(allocator);
         self.entries.deinit(allocator);
     }
 
-    fn allowsRead(self: *const FsSandboxPolicy, path: []const u8) bool {
-        return if (self.matchAccess(path)) |access| access.allowsRead() else false;
+    fn allowsRead(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) bool {
+        return if (self.matchAccess(logical_path, resolved_path)) |access| access.allowsRead() else false;
     }
 
-    fn allowsWrite(self: *const FsSandboxPolicy, path: []const u8) bool {
-        return if (self.matchAccess(path)) |access| access.allowsWrite() else false;
+    fn allowsWrite(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) bool {
+        return if (self.matchAccess(logical_path, resolved_path)) |access| access.allowsWrite() else false;
     }
 
     fn hasEntryPath(self: *const FsSandboxPolicy, path: []const u8, access: FsSandboxAccess) bool {
@@ -1317,11 +1323,11 @@ const FsSandboxPolicy = struct {
         return false;
     }
 
-    fn matchAccess(self: *const FsSandboxPolicy, path: []const u8) ?FsSandboxAccess {
+    fn matchAccess(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) ?FsSandboxAccess {
         var best_access: ?FsSandboxAccess = null;
         var best_len: usize = 0;
         for (self.entries.items) |entry| {
-            if (!pathIsSameOrDescendant(entry.path, path)) continue;
+            if (!fsSandboxEntryMatches(entry, logical_path, resolved_path)) continue;
             const len = normalizedRootAwarePathLen(entry.path);
             if (best_access == null or len > best_len or
                 (len == best_len and entry.access.precedence() > best_access.?.precedence()))
@@ -1333,6 +1339,12 @@ const FsSandboxPolicy = struct {
         return best_access;
     }
 };
+
+fn fsSandboxEntryMatches(entry: FsSandboxEntry, logical_path: []const u8, resolved_path: []const u8) bool {
+    if (!pathIsSameOrDescendant(entry.path, logical_path)) return false;
+    const canonical_path = entry.canonical_path orelse return true;
+    return pathIsSameOrDescendant(canonical_path, resolved_path);
+}
 
 const FsSandboxPolicyResult = union(enum) {
     policy: ?FsSandboxPolicy,
@@ -2894,18 +2906,34 @@ fn parseFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, v
 }
 
 fn appendFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, path: []const u8, access: FsSandboxAccess) !void {
-    var path_owned_by_policy = false;
-    errdefer if (!path_owned_by_policy) allocator.free(path);
-    try policy.entries.append(allocator, .{ .path = path, .access = access });
-    path_owned_by_policy = true;
-
+    try appendFsSandboxEntryPath(allocator, policy, path, access);
     const alias = try fsSandboxTopLevelAliasPath(allocator, path) orelse return;
     errdefer allocator.free(alias);
     if (policy.hasEntryPath(alias, access)) {
         allocator.free(alias);
         return;
     }
-    try policy.entries.append(allocator, .{ .path = alias, .access = access });
+    try appendFsSandboxEntryPath(allocator, policy, alias, access);
+}
+
+fn appendFsSandboxEntryPath(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, path: []const u8, access: FsSandboxAccess) !void {
+    var entry = FsSandboxEntry{ .path = path, .access = access };
+    var path_owned_by_policy = false;
+    errdefer if (!path_owned_by_policy) entry.deinit(allocator);
+    entry.canonical_path = try fsSandboxCanonicalEntryPath(allocator, path);
+    try policy.entries.append(allocator, entry);
+    path_owned_by_policy = true;
+}
+
+fn fsSandboxCanonicalEntryPath(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const resolved_path = resolveExistingPath(allocator, io, path) catch return null;
+    errdefer allocator.free(resolved_path);
+    if (std.mem.eql(u8, resolved_path, path)) {
+        allocator.free(resolved_path);
+        return null;
+    }
+    return resolved_path;
 }
 
 fn fsSandboxTopLevelAliasPath(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
@@ -3017,8 +3045,8 @@ fn fsSandboxAllowsPath(
     const resolved_path = try resolveSandboxPath(allocator, io, path, mode);
     defer allocator.free(resolved_path);
     return switch (access) {
-        .read => policy.allowsRead(resolved_path),
-        .write => policy.allowsWrite(resolved_path),
+        .read => policy.allowsRead(path, resolved_path),
+        .write => policy.allowsWrite(path, resolved_path),
         .none => false,
     };
 }
