@@ -1342,8 +1342,9 @@ const FsSandboxPolicy = struct {
                 if (entry.access == .write) continue;
                 if (!fsSandboxEntryMatchesCanonical(entry, resolved_path)) continue;
                 const len = normalizedRootAwarePathLen(entry.path);
-                if (len > best_len or
-                    (len == best_len and entry.access.precedence() > best_access.?.precedence()))
+                if (fsSandboxAccessNarrows(best_access.?, entry.access) and
+                    (len > best_len or
+                        (len == best_len and entry.access.precedence() > best_access.?.precedence())))
                 {
                     best_access = entry.access;
                     best_len = len;
@@ -1363,6 +1364,14 @@ fn fsSandboxEntryMatchesLogical(entry: FsSandboxEntry, logical_path: []const u8,
 fn fsSandboxEntryMatchesCanonical(entry: FsSandboxEntry, resolved_path: []const u8) bool {
     const canonical_path = entry.canonical_path orelse return false;
     return pathIsSameOrDescendant(canonical_path, resolved_path);
+}
+
+fn fsSandboxAccessNarrows(base: FsSandboxAccess, candidate: FsSandboxAccess) bool {
+    return switch (base) {
+        .write => candidate != .write,
+        .read => candidate == .none,
+        .none => false,
+    };
 }
 
 const FsSandboxPolicyResult = union(enum) {
