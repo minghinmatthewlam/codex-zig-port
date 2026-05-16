@@ -59,6 +59,7 @@ const ExecStartParams = struct {
     env: std.json.Value,
     env_policy: ?ExecEnvPolicy,
     pipe_stdin: bool,
+    arg0: ?[]const u8,
 
     fn deinit(self: ExecStartParams, allocator: std.mem.Allocator) void {
         if (self.env_policy) |policy| policy.deinit(allocator);
@@ -422,7 +423,6 @@ const StdioServer = struct {
         const params = parseExecStartParams(self.allocator, params_value) catch |err| switch (err) {
             error.ExecServerTtyUnsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start tty is not implemented yet"),
             error.InvalidExecServerEnvPolicy => return renderJsonRpcError(self.allocator, id_value, -32602, "envPolicy must include inherit, ignoreDefaultExcludes, exclude, set, and includeOnly"),
-            error.ExecServerArg0Unsupported => return renderJsonRpcError(self.allocator, id_value, -32600, "process/start arg0 is not implemented yet"),
             else => return renderJsonRpcError(self.allocator, id_value, -32602, "process/start params must include processId, argv, cwd, env, and tty"),
         };
         defer params.deinit(self.allocator);
@@ -444,46 +444,31 @@ const StdioServer = struct {
         };
         defer child_env.deinit();
 
-        var resolved_argv = resolveExecArgv(self.allocator, params.argv, params.cwd, &child_env) catch |err| switch (err) {
-            error.ExecServerExecutableNotFound => {
-                const message = try std.fmt.allocPrint(self.allocator, "failed to start process {s}: FileNotFound", .{params.process_id});
-                defer self.allocator.free(message);
-                return renderJsonRpcError(self.allocator, id_value, -32603, message);
-            },
-            else => return err,
-        };
-        defer resolved_argv.deinit(self.allocator);
-
-        var io_instance: std.Io.Threaded = .init(self.allocator, .{
-            .environ = .{ .block = resolved_argv.path_lookup_env_block orelse .empty },
-        });
-        errdefer io_instance.deinit();
-        var child = std.process.spawn(io_instance.io(), .{
-            .argv = resolved_argv.argv,
-            .cwd = .{ .path = params.cwd },
-            .environ_map = &child_env,
-            .stdin = if (params.pipe_stdin) .pipe else .ignore,
-            .stdout = .pipe,
-            .stderr = .pipe,
-            .pgid = 0,
-        }) catch |err| {
-            const message = try std.fmt.allocPrint(self.allocator, "failed to start process {s}: {s}", .{ params.process_id, @errorName(err) });
+        var spawned = spawnExecServerProcess(self.allocator, params.argv, params.arg0, params.cwd, &child_env, params.pipe_stdin) catch |err| {
+            const message = try std.fmt.allocPrint(self.allocator, "failed to start process {s}: {s}", .{
+                params.process_id,
+                switch (err) {
+                    error.ExecServerExecutableNotFound => "FileNotFound",
+                    else => @errorName(err),
+                },
+            });
             defer self.allocator.free(message);
             return renderJsonRpcError(self.allocator, id_value, -32603, message);
         };
+        errdefer spawned.deinit(self.allocator);
         var child_owned = true;
-        errdefer if (child_owned) child.kill(io_instance.io());
+        errdefer if (child_owned) spawned.child.kill(spawned.io_instance.io());
 
         const owned_process_id = try self.allocator.dupe(u8, params.process_id);
         errdefer self.allocator.free(owned_process_id);
-        const stdin_file = child.stdin;
-        const stdout_file = child.stdout;
-        const stderr_file = child.stderr;
-        child.stdin = null;
-        child.stdout = null;
-        child.stderr = null;
+        const stdin_file = spawned.child.stdin;
+        const stdout_file = spawned.child.stdout;
+        const stderr_file = spawned.child.stderr;
+        spawned.child.stdin = null;
+        spawned.child.stdout = null;
+        spawned.child.stderr = null;
         errdefer if (child_owned) {
-            const io = io_instance.io();
+            const io = spawned.io_instance.io();
             if (stdin_file) |file| file.close(io);
             if (stdout_file) |file| file.close(io);
             if (stderr_file) |file| file.close(io);
@@ -491,16 +476,16 @@ const StdioServer = struct {
 
         try self.processes.append(self.allocator, .{
             .process_id = owned_process_id,
-            .io_instance = io_instance,
-            .child = child,
-            .process_group_id = child.id,
-            .path_lookup_env_block = resolved_argv.path_lookup_env_block,
+            .io_instance = spawned.io_instance,
+            .child = spawned.child,
+            .process_group_id = spawned.child.id,
+            .path_lookup_env_block = spawned.path_lookup_env_block,
             .stdin_file = stdin_file,
             .stdout_file = stdout_file,
             .stderr_file = stderr_file,
         });
         child_owned = false;
-        resolved_argv.path_lookup_env_block = null;
+        spawned.path_lookup_env_block = null;
 
         const result = try renderProcessStartResult(self.allocator, params.process_id);
         defer self.allocator.free(result);
@@ -801,7 +786,7 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
 
     if (object.get("arg0")) |arg0| {
         if (arg0 != .null and arg0 != .string) return error.InvalidExecServerStartParams;
-        if (arg0 == .string) return error.ExecServerArg0Unsupported;
+        if (arg0 == .string and std.mem.indexOfScalar(u8, arg0.string, 0) != null) return error.InvalidExecServerStartParams;
     }
 
     return .{
@@ -811,6 +796,10 @@ fn parseExecStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Va
         .env = env,
         .env_policy = env_policy,
         .pipe_stdin = try optionalBoolField(object, "pipeStdin", false),
+        .arg0 = if (object.get("arg0")) |arg0| switch (arg0) {
+            .string => |string| string,
+            else => null,
+        } else null,
     };
 }
 
@@ -913,6 +902,312 @@ const ResolvedExecArgv = struct {
         allocator.free(self.argv);
     }
 };
+
+const SpawnedExecProcess = struct {
+    io_instance: std.Io.Threaded,
+    child: std.process.Child,
+    path_lookup_env_block: ?std.process.Environ.Block = null,
+
+    fn deinit(self: *SpawnedExecProcess, allocator: std.mem.Allocator) void {
+        self.child.kill(self.io_instance.io());
+        self.io_instance.deinit();
+        if (self.path_lookup_env_block) |block| block.deinit(allocator);
+    }
+};
+
+fn spawnExecServerProcess(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    arg0: ?[]const u8,
+    cwd: []const u8,
+    child_env: *const std.process.Environ.Map,
+    pipe_stdin: bool,
+) !SpawnedExecProcess {
+    if (arg0) |custom_arg0| {
+        if (builtin.os.tag == .windows) return try spawnExecServerProcessDefault(allocator, argv, cwd, child_env, pipe_stdin);
+        const executable_path = try resolveExecProgramPath(allocator, argv[0], cwd, child_env);
+        defer allocator.free(executable_path);
+        const child_argv = try execArgvWithArg0(allocator, argv, custom_arg0);
+        defer allocator.free(child_argv);
+
+        var io_instance: std.Io.Threaded = .init(allocator, .{});
+        errdefer io_instance.deinit();
+        const child = try spawnUnixArg0Process(allocator, executable_path, child_argv, cwd, child_env, pipe_stdin);
+        return .{ .io_instance = io_instance, .child = child };
+    }
+
+    return try spawnExecServerProcessDefault(allocator, argv, cwd, child_env, pipe_stdin);
+}
+
+fn spawnExecServerProcessDefault(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    cwd: []const u8,
+    child_env: *const std.process.Environ.Map,
+    pipe_stdin: bool,
+) !SpawnedExecProcess {
+    var resolved_argv = try resolveExecArgv(allocator, argv, cwd, child_env);
+    errdefer resolved_argv.deinit(allocator);
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{
+        .environ = .{ .block = resolved_argv.path_lookup_env_block orelse .empty },
+    });
+    errdefer io_instance.deinit();
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = resolved_argv.argv,
+        .cwd = .{ .path = cwd },
+        .environ_map = child_env,
+        .stdin = if (pipe_stdin) .pipe else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+        .pgid = 0,
+    });
+    errdefer child.kill(io_instance.io());
+
+    const path_lookup_env_block = resolved_argv.path_lookup_env_block;
+    resolved_argv.path_lookup_env_block = null;
+    resolved_argv.deinit(allocator);
+    return .{
+        .io_instance = io_instance,
+        .child = child,
+        .path_lookup_env_block = path_lookup_env_block,
+    };
+}
+
+fn execArgvWithArg0(allocator: std.mem.Allocator, argv: []const []const u8, arg0: []const u8) ![]const []const u8 {
+    const child_argv = try allocator.alloc([]const u8, argv.len);
+    errdefer allocator.free(child_argv);
+    child_argv[0] = arg0;
+    if (argv.len > 1) @memcpy(child_argv[1..], argv[1..]);
+    return child_argv;
+}
+
+fn resolveExecProgramPath(
+    allocator: std.mem.Allocator,
+    argv0: []const u8,
+    cwd: []const u8,
+    env: *const std.process.Environ.Map,
+) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, argv0, '/') != null) return try allocator.dupe(u8, argv0);
+    const path = env.get("PATH") orelse defaultExecPath();
+    return (try resolveExecutableOnPath(allocator, argv0, cwd, path)) orelse error.ExecServerExecutableNotFound;
+}
+
+fn spawnUnixArg0Process(
+    allocator: std.mem.Allocator,
+    executable_path: []const u8,
+    argv: []const []const u8,
+    cwd: []const u8,
+    child_env: *const std.process.Environ.Map,
+    pipe_stdin: bool,
+) !std.process.Child {
+    if (builtin.os.tag == .windows) return error.ExecServerArg0Unsupported;
+
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const executable_z = try arena.dupeZ(u8, executable_path);
+    const cwd_z = try arena.dupeZ(u8, cwd);
+    const argv_buf = try arena.allocSentinel(?[*:0]const u8, argv.len, null);
+    for (argv, 0..) |arg, index| {
+        argv_buf[index] = (try arena.dupeZ(u8, arg)).ptr;
+    }
+    const env_block = try child_env.createPosixBlock(arena, .{ .zig_progress_fd = null });
+
+    const stdin_pipe: [2]std.c.fd_t = if (pipe_stdin) try makeUnixPipe() else .{ -1, -1 };
+    var stdin_read_open = pipe_stdin;
+    var stdin_write_open = pipe_stdin;
+    errdefer {
+        if (stdin_read_open) closeFd(stdin_pipe[0]);
+        if (stdin_write_open) closeFd(stdin_pipe[1]);
+    }
+
+    const dev_null_file: ?std.Io.File = if (pipe_stdin)
+        null
+    else
+        try std.Io.Dir.openFileAbsolute(std.Io.Threaded.global_single_threaded.io(), "/dev/null", .{});
+    var dev_null_open = dev_null_file != null;
+    errdefer if (dev_null_open) closeFd(dev_null_file.?.handle);
+
+    const stdout_pipe = try makeUnixPipe();
+    var stdout_read_open = true;
+    var stdout_write_open = true;
+    errdefer {
+        if (stdout_read_open) closeFd(stdout_pipe[0]);
+        if (stdout_write_open) closeFd(stdout_pipe[1]);
+    }
+
+    const stderr_pipe = try makeUnixPipe();
+    var stderr_read_open = true;
+    var stderr_write_open = true;
+    errdefer {
+        if (stderr_read_open) closeFd(stderr_pipe[0]);
+        if (stderr_write_open) closeFd(stderr_pipe[1]);
+    }
+
+    const err_pipe = try makeUnixPipe();
+    var err_read_open = true;
+    var err_write_open = true;
+    errdefer {
+        if (err_read_open) closeFd(err_pipe[0]);
+        if (err_write_open) closeFd(err_pipe[1]);
+    }
+    try setFdCloseOnExec(err_pipe[1]);
+
+    const pid_result = std.posix.system.fork();
+    switch (std.c.errno(pid_result)) {
+        .SUCCESS => {},
+        .AGAIN, .NOMEM => return error.SystemResources,
+        .NOSYS => return error.OperationUnsupported,
+        else => return error.Unexpected,
+    }
+
+    if (pid_result == 0) {
+        closeFd(err_pipe[0]);
+        if (pipe_stdin) closeFd(stdin_pipe[1]);
+        closeFd(stdout_pipe[0]);
+        closeFd(stderr_pipe[0]);
+
+        const child_stdin_fd = if (pipe_stdin) stdin_pipe[0] else dev_null_file.?.handle;
+        childDup2OrExit(child_stdin_fd, std.posix.STDIN_FILENO, err_pipe[1]);
+        childDup2OrExit(stdout_pipe[1], std.posix.STDOUT_FILENO, err_pipe[1]);
+        childDup2OrExit(stderr_pipe[1], std.posix.STDERR_FILENO, err_pipe[1]);
+        closeFd(child_stdin_fd);
+        closeFd(stdout_pipe[1]);
+        closeFd(stderr_pipe[1]);
+
+        switch (std.c.errno(std.c.chdir(cwd_z.ptr))) {
+            .SUCCESS => {},
+            else => |err| childExitWithErrno(err_pipe[1], err),
+        }
+        switch (std.c.errno(std.c.setpgid(0, 0))) {
+            .SUCCESS => {},
+            else => |err| childExitWithErrno(err_pipe[1], err),
+        }
+        _ = std.c.execve(executable_z.ptr, argv_buf.ptr, env_block.slice.ptr);
+        childExitWithErrno(err_pipe[1], std.c.errno(-1));
+    }
+
+    const pid: std.posix.pid_t = @intCast(pid_result);
+    if (pipe_stdin) {
+        closeFd(stdin_pipe[0]);
+        stdin_read_open = false;
+    } else {
+        closeFd(dev_null_file.?.handle);
+        dev_null_open = false;
+    }
+    closeFd(stdout_pipe[1]);
+    stdout_write_open = false;
+    closeFd(stderr_pipe[1]);
+    stderr_write_open = false;
+    closeFd(err_pipe[1]);
+    err_write_open = false;
+
+    if (readArg0SpawnErrno(err_pipe[0])) |err| {
+        closeFd(err_pipe[0]);
+        err_read_open = false;
+        if (pipe_stdin) {
+            closeFd(stdin_pipe[1]);
+            stdin_write_open = false;
+        }
+        closeFd(stdout_pipe[0]);
+        stdout_read_open = false;
+        closeFd(stderr_pipe[0]);
+        stderr_read_open = false;
+        var status: c_int = 0;
+        _ = std.c.waitpid(pid, &status, 0);
+        return spawnErrorFromErrno(err);
+    }
+    closeFd(err_pipe[0]);
+    err_read_open = false;
+
+    const stdin_file: ?std.Io.File = if (pipe_stdin) .{ .handle = stdin_pipe[1], .flags = .{ .nonblocking = false } } else null;
+    if (pipe_stdin) stdin_write_open = false;
+    const stdout_file: std.Io.File = .{ .handle = stdout_pipe[0], .flags = .{ .nonblocking = false } };
+    stdout_read_open = false;
+    const stderr_file: std.Io.File = .{ .handle = stderr_pipe[0], .flags = .{ .nonblocking = false } };
+    stderr_read_open = false;
+
+    return .{
+        .id = pid,
+        .thread_handle = {},
+        .stdin = stdin_file,
+        .stdout = stdout_file,
+        .stderr = stderr_file,
+        .request_resource_usage_statistics = false,
+    };
+}
+
+fn makeUnixPipe() ![2]std.c.fd_t {
+    var fds: [2]std.c.fd_t = undefined;
+    while (true) {
+        switch (std.c.errno(std.c.pipe(&fds))) {
+            .SUCCESS => return fds,
+            .INTR => continue,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn setFdCloseOnExec(fd: std.c.fd_t) !void {
+    switch (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(u32, std.posix.FD_CLOEXEC)))) {
+        .SUCCESS => {},
+        else => return error.Unexpected,
+    }
+}
+
+fn closeFd(fd: std.c.fd_t) void {
+    _ = std.c.close(fd);
+}
+
+fn childDup2OrExit(old_fd: std.c.fd_t, new_fd: std.c.fd_t, err_fd: std.c.fd_t) void {
+    switch (std.c.errno(std.c.dup2(old_fd, new_fd))) {
+        .SUCCESS => {},
+        else => |err| childExitWithErrno(err_fd, err),
+    }
+}
+
+fn childExitWithErrno(err_fd: std.c.fd_t, err: std.c.E) noreturn {
+    var errno_value: c_int = @intFromEnum(err);
+    const bytes = std.mem.asBytes(&errno_value);
+    _ = std.c.write(err_fd, bytes.ptr, bytes.len);
+    std.c._exit(127);
+}
+
+fn readArg0SpawnErrno(err_fd: std.c.fd_t) ?std.c.E {
+    var errno_value: c_int = 0;
+    const bytes = std.mem.asBytes(&errno_value);
+    var filled: usize = 0;
+    while (filled < bytes.len) {
+        const read_count = std.c.read(err_fd, bytes[filled..].ptr, bytes.len - filled);
+        switch (std.c.errno(read_count)) {
+            .SUCCESS => {
+                if (read_count == 0) return if (filled == 0) null else .INVAL;
+                filled += @intCast(read_count);
+            },
+            .INTR => continue,
+            else => return .INVAL,
+        }
+    }
+    return @enumFromInt(errno_value);
+}
+
+fn spawnErrorFromErrno(err: std.c.E) std.process.SpawnError {
+    return switch (err) {
+        .NOENT => error.FileNotFound,
+        .ACCES => error.AccessDenied,
+        .PERM => error.PermissionDenied,
+        .NOTDIR => error.NotDir,
+        .ISDIR => error.IsDir,
+        .NOMEM, .@"2BIG" => error.SystemResources,
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        else => error.Unexpected,
+    };
+}
 
 fn resolveExecArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8, env: *const std.process.Environ.Map) !ResolvedExecArgv {
     const resolved = try allocator.alloc([]const u8, argv.len);
