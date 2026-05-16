@@ -14,6 +14,11 @@ extern "c" fn openpty(
 ) c_int;
 
 const default_listen_url = "ws://127.0.0.1:0";
+const default_remote_executor_name = "codex-exec-server";
+const remote_bearer_token_env_var = "CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN";
+const remote_protocol_version = "codex-exec-server-v1";
+const remote_error_body_preview_bytes = 4096;
+const max_remote_registry_response_bytes = 1024 * 1024;
 const max_stdio_json_rpc_line_bytes = 16 * 1024 * 1024;
 const retained_output_bytes_per_process = 1024 * 1024;
 const retained_closed_processes = 64;
@@ -56,6 +61,38 @@ const windows_core_env_vars = [_][]const u8{
 const WebSocketListen = struct {
     host: []const u8,
     port: u16,
+};
+
+const RemoteExecutorConfig = struct {
+    base_url: []const u8,
+    executor_id: []const u8,
+    name: []const u8,
+    bearer_token: []const u8,
+
+    fn deinit(self: RemoteExecutorConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_url);
+        allocator.free(self.executor_id);
+        allocator.free(self.name);
+        allocator.free(self.bearer_token);
+    }
+};
+
+const RemoteRegistryResponse = struct {
+    id: []const u8,
+    executor_id: []const u8,
+    url: []const u8,
+
+    fn deinit(self: RemoteRegistryResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.executor_id);
+        allocator.free(self.url);
+    }
+};
+
+const RemoteWebSocketUrl = struct {
+    host: []const u8,
+    port: u16,
+    target: []const u8,
 };
 
 const Transport = union(enum) {
@@ -730,12 +767,7 @@ const WebSocketServer = struct {
     }
 
     fn pollDetachedSessions(self: *WebSocketServer) void {
-        for (self.detached_sessions.items) |*session| {
-            for (session.processes.items) |*process| {
-                pollProcess(self.allocator, process, 0) catch {};
-                drainAvailableProcessOutputForRead(self.allocator, process, 0, null) catch {};
-            }
-        }
+        pollDetachedExecSessions(self.allocator, &self.detached_sessions);
     }
 
     fn handleConnection(
@@ -833,6 +865,619 @@ const WebSocketServer = struct {
         }
     }
 };
+
+fn pollDetachedExecSessions(allocator: std.mem.Allocator, detached_sessions: *std.ArrayList(DetachedExecSession)) void {
+    for (detached_sessions.items) |*session| {
+        for (session.processes.items) |*process| {
+            pollProcess(allocator, process, 0) catch {};
+            drainAvailableProcessOutputForRead(allocator, process, 0, null) catch {};
+        }
+    }
+}
+
+fn sleepRemoteBackoffWithDetachedPolling(
+    allocator: std.mem.Allocator,
+    detached_sessions: *std.ArrayList(DetachedExecSession),
+    backoff_ms: u64,
+) void {
+    var remaining_ms = backoff_ms;
+    while (remaining_ms > 0) {
+        pollDetachedExecSessions(allocator, detached_sessions);
+        const step_ms = @min(remaining_ms, detached_exec_session_poll_interval_ms);
+        const sleep_ns: i96 = @as(i96, @intCast(step_ms)) * @as(i96, std.time.ns_per_ms);
+        std.Io.sleep(
+            std.Io.Threaded.global_single_threaded.io(),
+            .{ .nanoseconds = sleep_ns },
+            .awake,
+        ) catch {};
+        remaining_ms -= step_ms;
+    }
+    pollDetachedExecSessions(allocator, detached_sessions);
+}
+
+fn runRemoteExecutor(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    var config = initRemoteExecutorConfig(allocator, parsed) catch |err| switch (err) {
+        error.RemoteExecutorRegistryBaseUrlRequired => return fail(allocator, "executor registry configuration error: executor registry base URL is required\n", .{}),
+        error.RemoteExecutorIdRequired => return fail(allocator, "executor registry configuration error: executor id is required for remote exec-server registration\n", .{}),
+        error.RemoteBearerTokenEnvMissing => return fail(
+            allocator,
+            "executor registry authentication error: executor registry bearer token environment variable `{s}` is not set\n",
+            .{remote_bearer_token_env_var},
+        ),
+        error.RemoteBearerTokenEnvEmpty => return fail(
+            allocator,
+            "executor registry authentication error: executor registry bearer token environment variable `{s}` is empty\n",
+            .{remote_bearer_token_env_var},
+        ),
+        else => |e| return e,
+    };
+    defer config.deinit(allocator);
+
+    const registration_id = generateUuidBytes();
+    var detached_sessions: std.ArrayList(DetachedExecSession) = .empty;
+    defer {
+        for (detached_sessions.items) |*session| session.deinit(allocator);
+        detached_sessions.deinit(allocator);
+    }
+    var backoff_ms: u64 = 1000;
+    while (true) {
+        pollDetachedExecSessions(allocator, &detached_sessions);
+        var response = try registerRemoteExecutor(allocator, config, registration_id);
+        defer response.deinit(allocator);
+
+        const registered = try std.fmt.allocPrint(
+            allocator,
+            "codex exec-server remote executor {s} registered with executor_id {s}\n",
+            .{ response.id, response.executor_id },
+        );
+        defer allocator.free(registered);
+        try cli_utils.writeStderr(registered);
+
+        var websocket_connected = true;
+        runRemoteExecutorWebSocket(allocator, response.url, &detached_sessions) catch |err| {
+            if (err == error.RemoteExecutorWssNotImplemented) {
+                return fail(allocator, "codex-zig exec-server remote rendezvous wss:// URLs are not implemented yet\n", .{});
+            }
+            if (err == error.InvalidRemoteExecutorWebSocketUrl) {
+                return fail(allocator, "executor registry returned invalid remote exec-server websocket URL `{s}`\n", .{response.url});
+            }
+            websocket_connected = false;
+            const message = std.fmt.allocPrint(
+                allocator,
+                "failed to connect remote exec-server websocket: {s}\n",
+                .{@errorName(err)},
+            ) catch null;
+            if (message) |stderr_message| {
+                defer allocator.free(stderr_message);
+                cli_utils.writeStderr(stderr_message) catch {};
+            }
+        };
+        if (websocket_connected) backoff_ms = 1000;
+
+        sleepRemoteBackoffWithDetachedPolling(allocator, &detached_sessions, backoff_ms);
+        backoff_ms = @min(backoff_ms * 2, 30_000);
+    }
+}
+
+fn initRemoteExecutorConfig(allocator: std.mem.Allocator, parsed: ParsedOptions) !RemoteExecutorConfig {
+    const base_url = try normalizeRemoteBaseUrl(allocator, parsed.remote.?);
+    errdefer allocator.free(base_url);
+    const executor_id = try normalizeRemoteExecutorId(allocator, parsed.executor_id.?);
+    errdefer allocator.free(executor_id);
+    const name = try allocator.dupe(u8, parsed.name orelse default_remote_executor_name);
+    errdefer allocator.free(name);
+    const bearer_token = try readRemoteBearerToken(allocator);
+    errdefer allocator.free(bearer_token);
+    return .{
+        .base_url = base_url,
+        .executor_id = executor_id,
+        .name = name,
+        .bearer_token = bearer_token,
+    };
+}
+
+fn normalizeRemoteBaseUrl(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    var end = trimmed.len;
+    while (end > 0 and trimmed[end - 1] == '/') end -= 1;
+    if (end == 0) return error.RemoteExecutorRegistryBaseUrlRequired;
+    return allocator.dupe(u8, trimmed[0..end]);
+}
+
+fn normalizeRemoteExecutorId(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.RemoteExecutorIdRequired;
+    return allocator.dupe(u8, trimmed);
+}
+
+fn readRemoteBearerToken(allocator: std.mem.Allocator) ![]const u8 {
+    const raw = try getEnvVarOwned(allocator, remote_bearer_token_env_var);
+    defer if (raw) |value| allocator.free(value);
+    const value = raw orelse return error.RemoteBearerTokenEnvMissing;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return error.RemoteBearerTokenEnvEmpty;
+    return allocator.dupe(u8, trimmed);
+}
+
+fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    const name_z = try allocator.dupeZ(u8, name);
+    defer allocator.free(name_z);
+    const value = std.c.getenv(name_z.ptr) orelse return null;
+    return try allocator.dupe(u8, std.mem.span(value));
+}
+
+fn registerRemoteExecutor(
+    allocator: std.mem.Allocator,
+    config: RemoteExecutorConfig,
+    registration_id: [16]u8,
+) !RemoteRegistryResponse {
+    const endpoint = try remoteRegistryEndpointUrl(allocator, config.base_url, config.executor_id);
+    defer allocator.free(endpoint);
+    const body = try renderRemoteRegistrationRequest(allocator, config, registration_id);
+    defer allocator.free(body);
+    const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{config.bearer_token});
+    defer allocator.free(authorization);
+
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    try headers.append(allocator, .{ .name = "Authorization", .value = authorization });
+    try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    const response_storage = try allocator.alloc(u8, max_remote_registry_response_bytes);
+    defer allocator.free(response_storage);
+    var response_body = std.Io.Writer.fixed(response_storage);
+    const result = client.fetch(.{
+        .location = .{ .url = endpoint },
+        .method = .POST,
+        .payload = body,
+        .response_writer = &response_body,
+        .extra_headers = headers.items,
+    }) catch |err| {
+        if (err == error.WriteFailed and response_body.end >= max_remote_registry_response_bytes) {
+            try cli_utils.writeStderr("executor registry request failed: response body too large\n");
+            return error.ExecServerCommandFailed;
+        }
+        const message = try std.fmt.allocPrint(allocator, "executor registry request failed: {s}\n", .{@errorName(err)});
+        defer allocator.free(message);
+        try cli_utils.writeStderr(message);
+        return error.ExecServerCommandFailed;
+    };
+
+    const status_code = @intFromEnum(result.status);
+    const response_bytes = response_body.buffered();
+    if (status_code < 200 or status_code >= 300) {
+        if (result.status == .unauthorized or result.status == .forbidden) {
+            const message = try remoteRegistryAuthErrorMessage(allocator, result.status, response_bytes);
+            defer allocator.free(message);
+            try cli_utils.writeStderr(message);
+            return error.ExecServerCommandFailed;
+        }
+        const message = try remoteRegistryHttpErrorMessage(allocator, result.status, response_bytes);
+        defer allocator.free(message);
+        try cli_utils.writeStderr(message);
+        return error.ExecServerCommandFailed;
+    }
+    return parseRemoteRegistryResponse(allocator, response_bytes) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "executor registry request failed: invalid registration response ({s})\n", .{@errorName(err)});
+        defer allocator.free(message);
+        try cli_utils.writeStderr(message);
+        return error.ExecServerCommandFailed;
+    };
+}
+
+fn remoteRegistryEndpointUrl(allocator: std.mem.Allocator, base_url: []const u8, executor_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}/cloud/executor/{s}/register", .{ base_url, executor_id });
+}
+
+fn renderRemoteRegistrationRequest(
+    allocator: std.mem.Allocator,
+    config: RemoteExecutorConfig,
+    registration_id: [16]u8,
+) ![]const u8 {
+    const idempotency_id = try remoteIdempotencyId(allocator, config, registration_id);
+    defer allocator.free(idempotency_id);
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"idempotency_id\":");
+    try appendJsonString(allocator, &out, idempotency_id);
+    try out.appendSlice(allocator, ",\"executor_id\":");
+    try appendJsonString(allocator, &out, config.executor_id);
+    try out.appendSlice(allocator, ",\"name\":");
+    try appendJsonString(allocator, &out, config.name);
+    try out.appendSlice(allocator, ",\"labels\":{},\"metadata\":{}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn remoteIdempotencyId(
+    allocator: std.mem.Allocator,
+    config: RemoteExecutorConfig,
+    registration_id: [16]u8,
+) ![]const u8 {
+    var input = std.ArrayList(u8).empty;
+    defer input.deinit(allocator);
+    try input.appendSlice(allocator, config.executor_id);
+    try input.append(allocator, 0);
+    try input.appendSlice(allocator, config.name);
+    try input.append(allocator, 0);
+    try input.appendSlice(allocator, remote_protocol_version);
+    try input.append(allocator, 0);
+    try input.appendSlice(allocator, &registration_id);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(input.items, &digest, .{});
+    const hex = try hexLowerAlloc(allocator, &digest);
+    defer allocator.free(hex);
+    return std.fmt.allocPrint(allocator, "codex-exec-server-{s}", .{hex});
+}
+
+fn parseRemoteRegistryResponse(allocator: std.mem.Allocator, bytes: []const u8) !RemoteRegistryResponse {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRemoteRegistryResponse;
+    const object = parsed.value.object;
+    const id = object.get("id") orelse return error.InvalidRemoteRegistryResponse;
+    const executor_id = object.get("executor_id") orelse return error.InvalidRemoteRegistryResponse;
+    const url = object.get("url") orelse return error.InvalidRemoteRegistryResponse;
+    if (id != .string or executor_id != .string or url != .string) return error.InvalidRemoteRegistryResponse;
+    const owned_id = try allocator.dupe(u8, id.string);
+    errdefer allocator.free(owned_id);
+    const owned_executor_id = try allocator.dupe(u8, executor_id.string);
+    errdefer allocator.free(owned_executor_id);
+    const owned_url = try allocator.dupe(u8, url.string);
+    return .{
+        .id = owned_id,
+        .executor_id = owned_executor_id,
+        .url = owned_url,
+    };
+}
+
+fn remoteRegistryAuthErrorMessage(allocator: std.mem.Allocator, status: std.http.Status, body: []const u8) ![]const u8 {
+    const status_text = try httpStatusText(allocator, status);
+    defer allocator.free(status_text);
+    const body_message = (try remoteRegistryErrorMessage(allocator, body)) orelse try allocator.dupe(u8, "empty error body");
+    defer allocator.free(body_message);
+    return std.fmt.allocPrint(
+        allocator,
+        "executor registry authentication error: executor registry authentication failed ({s}): {s}\n",
+        .{ status_text, body_message },
+    );
+}
+
+fn remoteRegistryHttpErrorMessage(allocator: std.mem.Allocator, status: std.http.Status, body: []const u8) ![]const u8 {
+    const status_text = try httpStatusText(allocator, status);
+    defer allocator.free(status_text);
+    const code = try remoteRegistryErrorCode(allocator, body);
+    defer if (code) |value| allocator.free(value);
+    const code_suffix = if (code) |value|
+        try std.fmt.allocPrint(allocator, ", {s}", .{value})
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(code_suffix);
+    const body_message = (try remoteRegistryErrorMessage(allocator, body)) orelse
+        (try remoteRegistryBodyPreview(allocator, body)) orelse
+        try allocator.dupe(u8, "empty or malformed error body");
+    defer allocator.free(body_message);
+    return std.fmt.allocPrint(
+        allocator,
+        "executor registry request failed ({s}{s}): {s}\n",
+        .{ status_text, code_suffix, body_message },
+    );
+}
+
+fn httpStatusText(allocator: std.mem.Allocator, status: std.http.Status) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{d} {s}", .{ @intFromEnum(status), status.phrase() orelse "Status" });
+}
+
+fn remoteRegistryErrorMessage(allocator: std.mem.Allocator, body: []const u8) !?[]const u8 {
+    if (try remoteRegistryErrorStringField(allocator, body, "message")) |message| return message;
+    return remoteRegistryBodyPreview(allocator, body);
+}
+
+fn remoteRegistryErrorCode(allocator: std.mem.Allocator, body: []const u8) !?[]const u8 {
+    return remoteRegistryErrorStringField(allocator, body, "code");
+}
+
+fn remoteRegistryErrorStringField(allocator: std.mem.Allocator, body: []const u8, field: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const error_value = parsed.value.object.get("error") orelse return null;
+    if (error_value != .object) return null;
+    const value = error_value.object.get(field) orelse return null;
+    if (value != .string) return null;
+    return try allocator.dupe(u8, value.string);
+}
+
+fn remoteRegistryBodyPreview(allocator: std.mem.Allocator, body: []const u8) !?[]const u8 {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const len = @min(trimmed.len, remote_error_body_preview_bytes);
+    return try allocator.dupe(u8, trimmed[0..len]);
+}
+
+fn runRemoteExecutorWebSocket(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    detached_sessions: *std.ArrayList(DetachedExecSession),
+) !void {
+    const parts = try parseRemoteWebSocketUrl(url);
+    const connect_host = remoteWebSocketConnectHost(parts.host);
+    var address = remoteWebSocketAddress(connect_host, parts.port) catch |err| {
+        std.debug.print("remote exec-server websocket supports literal IP hosts or localhost only: {s}\n", .{parts.host});
+        return err;
+    };
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var input_buffer: [64 * 1024]u8 = undefined;
+    var output_buffer: [64 * 1024]u8 = undefined;
+    var reader = stream.reader(io, &input_buffer);
+    var writer = stream.writer(io, &output_buffer);
+    try performRemoteExecutorWebSocketHandshake(allocator, &reader.interface, &writer.interface, parts);
+
+    var connection = StdioServer{
+        .allocator = allocator,
+        .check_stdin_readiness = false,
+        .detached_sessions = detached_sessions,
+    };
+    // Defers run in reverse: detach before deinit so live processes can resume.
+    defer connection.deinit();
+    defer connection.detachSession() catch |err| {
+        const message = std.fmt.allocPrint(
+            allocator,
+            "[exec-server] failed to detach remote websocket session: {s}\n",
+            .{@errorName(err)},
+        ) catch null;
+        if (message) |stderr_message| {
+            defer allocator.free(stderr_message);
+            cli_utils.writeStderr(stderr_message) catch {};
+        }
+    };
+
+    while (true) {
+        const payload = try readRemoteWebSocketTextFrame(allocator, &reader.interface, &writer.interface) orelse return;
+        defer allocator.free(payload);
+        const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        const response = connection.handleLine(trimmed, "") catch |err| {
+            if (err == error.ExecServerClientDisconnected) return;
+            const message = try std.fmt.allocPrint(allocator, "[exec-server] failed to handle remote websocket message: {s}\n", .{@errorName(err)});
+            defer allocator.free(message);
+            try cli_utils.writeStderr(message);
+            continue;
+        };
+        if (response) |payload_response| {
+            defer allocator.free(payload_response);
+            try writeRemoteWebSocketTextFrame(allocator, &writer.interface, payload_response);
+        }
+    }
+}
+
+fn parseRemoteWebSocketUrl(value: []const u8) !RemoteWebSocketUrl {
+    if (std.mem.startsWith(u8, value, "wss://")) return error.RemoteExecutorWssNotImplemented;
+    if (!std.mem.startsWith(u8, value, "ws://")) return error.InvalidRemoteExecutorWebSocketUrl;
+    const rest = value["ws://".len..];
+    if (rest.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
+    if (std.mem.indexOfScalar(u8, rest, '#') != null) return error.InvalidRemoteExecutorWebSocketUrl;
+    const target_start = std.mem.indexOfAny(u8, rest, "/?") orelse rest.len;
+    const authority = rest[0..target_start];
+    if (authority.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
+    const raw_target = rest[target_start..];
+    const target = if (raw_target.len == 0)
+        "/"
+    else if (raw_target[0] == '?')
+        raw_target
+    else
+        raw_target;
+
+    const host: []const u8 = if (authority[0] == '[') blk: {
+        const close_index = std.mem.indexOfScalar(u8, authority, ']') orelse return error.InvalidRemoteExecutorWebSocketUrl;
+        if (close_index + 1 < authority.len and authority[close_index + 1] != ':') return error.InvalidRemoteExecutorWebSocketUrl;
+        break :blk authority[0 .. close_index + 1];
+    } else blk: {
+        const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':');
+        break :blk if (colon_index) |index| authority[0..index] else authority;
+    };
+    const port: u16 = if (authority[0] == '[') blk: {
+        const close_index = std.mem.indexOfScalar(u8, authority, ']') orelse return error.InvalidRemoteExecutorWebSocketUrl;
+        if (close_index + 1 == authority.len) break :blk 80;
+        const port_text = authority[close_index + 2 ..];
+        if (port_text.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
+        break :blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteExecutorWebSocketUrl;
+    } else blk: {
+        const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':') orelse break :blk 80;
+        const port_text = authority[colon_index + 1 ..];
+        if (port_text.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
+        break :blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteExecutorWebSocketUrl;
+    };
+    if (host.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
+    return .{ .host = host, .port = port, .target = target };
+}
+
+fn remoteWebSocketConnectHost(host: []const u8) []const u8 {
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        return host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+fn remoteWebSocketAddress(host: []const u8, port: u16) !net.IpAddress {
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) {
+        return .{ .ip4 = net.Ip4Address.loopback(port) };
+    }
+    return net.IpAddress.parse(host, port) catch return error.InvalidRemoteExecutorAddress;
+}
+
+fn performRemoteExecutorWebSocketHandshake(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    parts: RemoteWebSocketUrl,
+) !void {
+    var nonce: [16]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&nonce);
+    var key_buffer: [24]u8 = undefined;
+    const key = std.base64.standard.Encoder.encode(&key_buffer, &nonce);
+    const target = if (parts.target.len == 0) "/" else parts.target;
+    if (target[0] == '?') {
+        try writer.print(
+            "GET /{s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            .{ target, parts.host, parts.port, key },
+        );
+    } else {
+        try writer.print(
+            "GET {s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            .{ target, parts.host, parts.port, key },
+        );
+    }
+    try writer.flush();
+
+    const response = try readRemoteHttpHeaderBlock(allocator, reader);
+    defer allocator.free(response);
+    if (!remoteWebSocketStatusIsSwitchingProtocols(response)) {
+        return error.RemoteWebSocketHandshakeFailed;
+    }
+    const expected_accept = try websocketAcceptValue(allocator, key);
+    defer allocator.free(expected_accept);
+    const actual_accept = remoteHttpHeaderValue(response, "sec-websocket-accept") orelse return error.RemoteWebSocketHandshakeFailed;
+    if (!std.mem.eql(u8, actual_accept, expected_accept)) return error.RemoteWebSocketHandshakeFailed;
+}
+
+fn readRemoteHttpHeaderBlock(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    while (out.items.len < 64 * 1024) {
+        const byte = try reader.takeByte();
+        try out.append(allocator, byte);
+        if (out.items.len >= 4 and std.mem.eql(u8, out.items[out.items.len - 4 ..], "\r\n\r\n")) {
+            return out.toOwnedSlice(allocator);
+        }
+    }
+    return error.RemoteWebSocketHandshakeTooLarge;
+}
+
+fn remoteWebSocketStatusIsSwitchingProtocols(response: []const u8) bool {
+    const line_end = std.mem.indexOf(u8, response, "\r\n") orelse return false;
+    const status_line = response[0..line_end];
+    return std.mem.startsWith(u8, status_line, "HTTP/") and std.mem.indexOf(u8, status_line, " 101 ") != null;
+}
+
+fn remoteHttpHeaderValue(response: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, response, "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) return null;
+        const separator = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const header_name = std.mem.trim(u8, line[0..separator], " \t");
+        if (!std.ascii.eqlIgnoreCase(header_name, name)) continue;
+        return std.mem.trim(u8, line[separator + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn writeRemoteWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    payload: []const u8,
+) !void {
+    try writeRemoteWebSocketFrame(allocator, writer, 0x1, payload);
+}
+
+fn writeRemoteWebSocketFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    opcode: u8,
+    payload: []const u8,
+) !void {
+    var mask: [4]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&mask);
+    const masked = try allocator.alloc(u8, payload.len);
+    defer allocator.free(masked);
+    for (payload, 0..) |byte, index| {
+        masked[index] = byte ^ mask[index % mask.len];
+    }
+
+    try writer.writeByte(0x80 | (opcode & 0x0f));
+    if (payload.len <= 125) {
+        try writer.writeByte(0x80 | @as(u8, @intCast(payload.len)));
+    } else if (payload.len <= std.math.maxInt(u16)) {
+        try writer.writeByte(0x80 | 126);
+        try writer.writeInt(u16, @intCast(payload.len), .big);
+    } else {
+        try writer.writeByte(0x80 | 127);
+        try writer.writeInt(u64, @intCast(payload.len), .big);
+    }
+    try writer.writeAll(&mask);
+    try writer.writeAll(masked);
+    try writer.flush();
+}
+
+fn readRemoteWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !?[]u8 {
+    while (true) {
+        const first = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return null,
+            else => return err,
+        };
+        const second = try reader.takeByte();
+        const fin = (first & 0x80) != 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) != 0;
+        var payload_len: u64 = second & 0x7f;
+        if (payload_len == 126) {
+            payload_len = try reader.takeInt(u16, .big);
+        } else if (payload_len == 127) {
+            payload_len = try reader.takeInt(u64, .big);
+        }
+        if (!fin) return error.UnsupportedWebSocketFragment;
+        if (payload_len > max_stdio_json_rpc_line_bytes) return error.WebSocketFrameTooLarge;
+
+        var zero_mask = [4]u8{ 0, 0, 0, 0 };
+        const mask: *const [4]u8 = if (masked) try reader.takeArray(4) else &zero_mask;
+        const payload = try allocator.alloc(u8, @intCast(payload_len));
+        errdefer allocator.free(payload);
+        try reader.readSliceAll(payload);
+        if (masked) {
+            for (payload, 0..) |*byte, index| {
+                byte.* ^= mask[index % mask.len];
+            }
+        }
+
+        switch (opcode) {
+            0x1 => return payload,
+            0x8 => {
+                try writeRemoteWebSocketFrame(allocator, writer, 0x8, payload);
+                allocator.free(payload);
+                return null;
+            },
+            0x9 => {
+                try writeRemoteWebSocketFrame(allocator, writer, 0xA, payload);
+                allocator.free(payload);
+                continue;
+            },
+            0xA => {
+                allocator.free(payload);
+                continue;
+            },
+            else => {
+                allocator.free(payload);
+                return error.UnsupportedWebSocketOpcode;
+            },
+        }
+    }
+}
 
 fn listenerReadyForAccept(fd: std.posix.fd_t, timeout_ms: u64) !bool {
     var fds = [_]std.posix.pollfd{.{
@@ -972,7 +1617,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     }
 
     if (parsed.remote != null) {
-        return fail(allocator, "codex-zig exec-server remote registration is parsed but not implemented yet\n", .{});
+        return runRemoteExecutor(allocator, parsed);
     }
 
     const listen_url = parsed.listen orelse default_listen_url;
@@ -3418,11 +4063,32 @@ fn renderJsonRpcError(allocator: std.mem.Allocator, id_value: ?std.json.Value, c
     );
 }
 
-fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const rendered = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(rendered);
+    try out.appendSlice(allocator, rendered);
+}
+
+fn hexLowerAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const hex = "0123456789abcdef";
+    const out = try allocator.alloc(u8, bytes.len * 2);
+    for (bytes, 0..) |byte, index| {
+        out[index * 2] = hex[byte >> 4];
+        out[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return out;
+}
+
+fn generateUuidBytes() [16]u8 {
     var bytes: [16]u8 = undefined;
     std.Io.Threaded.global_single_threaded.io().random(&bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return bytes;
+}
+
+fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
+    const bytes = generateUuidBytes();
 
     const hex = "0123456789abcdef";
     var out = try allocator.alloc(u8, 36);
@@ -3462,7 +4128,7 @@ pub fn printHelp() void {
         \\  codex-zig exec-server --remote URL --executor-id ID [--name NAME]
         \\
         \\Transport endpoint URL values match Rust Codex: `ws://IP:PORT`, `stdio`, or `stdio://`.
-        \\The current Zig parity slice implements stdio/websocket initialize plus non-tty process lifecycle RPCs.
+        \\Remote registration reads CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN and serves the returned ws:// rendezvous URL.
         \\
     , .{});
 }
