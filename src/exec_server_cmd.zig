@@ -2440,8 +2440,17 @@ fn handleFsReadFile(allocator: std.mem.Allocator, id_value: std.json.Value, para
         .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
     };
 
+    const metadata = statPath(path, true) catch |err| {
+        return renderFsFailure(allocator, id_value, err);
+    } orelse {
+        return renderFsFailure(allocator, id_value, error.FileNotFound);
+    };
+    if (metadata.size > max_exec_server_read_file_bytes) {
+        return renderFsFailure(allocator, id_value, error.StreamTooLong);
+    }
+
     const io = std.Io.Threaded.global_single_threaded.io();
-    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_exec_server_read_file_bytes)) catch |err| {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_exec_server_read_file_bytes + 1)) catch |err| {
         return renderFsFailure(allocator, id_value, err);
     };
     defer allocator.free(data);
@@ -2543,7 +2552,7 @@ fn handleFsGetMetadata(allocator: std.mem.Allocator, id_value: std.json.Value, p
             metadata.kind == .directory,
             metadata.kind == .file,
             symlink_metadata.kind == .sym_link,
-            0,
+            createdAtMs(path),
             timestampMs(metadata.mtime),
         },
     );
@@ -2729,7 +2738,6 @@ fn renderFsFailure(allocator: std.mem.Allocator, id_value: std.json.Value, err: 
 
 fn fsFailureMessage(allocator: std.mem.Allocator, err: anyerror) ![]const u8 {
     return switch (err) {
-        error.FsSandboxUnsupported => allocator.dupe(u8, "direct filesystem operations do not accept sandbox context"),
         error.FsCopyDirectoryRequiresRecursive => allocator.dupe(u8, "fs/copy requires recursive: true when sourcePath is a directory"),
         error.FsCopyDestinationInsideSource => allocator.dupe(u8, "fs/copy cannot copy a directory to itself or one of its descendants"),
         error.FsCopyUnsupportedFileType => allocator.dupe(u8, "fs/copy only supports regular files, directories, and symlinks"),
@@ -2747,7 +2755,6 @@ fn fsFailureCode(err: anyerror) i64 {
         error.BadPathName,
         error.NameTooLong,
         error.StreamTooLong,
-        error.FsSandboxUnsupported,
         error.FsCopyDirectoryRequiresRecursive,
         error.FsCopyDestinationInsideSource,
         error.FsCopyUnsupportedFileType,
@@ -2766,6 +2773,26 @@ fn statPath(path: []const u8, follow_symlinks: bool) !?std.Io.File.Stat {
 
 fn timestampMs(value: std.Io.Timestamp) i64 {
     return @divTrunc(@as(i64, @intCast(value.nanoseconds)), 1_000_000);
+}
+
+fn createdAtMs(path: []const u8) i64 {
+    if (builtin.os.tag != .macos) return 0;
+
+    const path_c = std.posix.toPosixPath(path) catch return 0;
+    var stat = std.mem.zeroes(std.c.Stat);
+    while (true) {
+        switch (std.c.errno(std.c.fstatat(std.c.AT.FDCWD, &path_c, &stat, 0))) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => return 0,
+        }
+    }
+    if (@hasDecl(std.c.Stat, "birthtime")) return timespecToUnixMs(stat.birthtime());
+    return 0;
+}
+
+fn timespecToUnixMs(value: std.c.timespec) i64 {
+    return @as(i64, @intCast(value.sec)) * 1000 + @divTrunc(@as(i64, @intCast(value.nsec)), 1_000_000);
 }
 
 fn copyPath(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, destination_path: []const u8, recursive: bool) !void {
