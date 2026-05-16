@@ -1466,6 +1466,11 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "useLegacyLandlock": False,
             }
 
+        def fs_workspace_write_sandbox_without_cwd(cwd: Path) -> dict:
+            sandbox = fs_workspace_write_sandbox(cwd)
+            del sandbox["cwd"]
+            return sandbox
+
         fs_requests = [
             {
                 "jsonrpc": "2.0",
@@ -1755,6 +1760,26 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                             "recursive": False,
                         },
                     },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-symlink-write",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_allowed / "link" / "blocked.txt"),
+                            "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                            "sandbox": fs_workspace_write_sandbox(fs_allowed),
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "fs-sandbox-missing-cwd",
+                        "method": "fs/writeFile",
+                        "params": {
+                            "path": str(fs_allowed / "missing-cwd.txt"),
+                            "dataBase64": base64.b64encode(b"blocked").decode("ascii"),
+                            "sandbox": fs_workspace_write_sandbox_without_cwd(fs_allowed),
+                        },
+                    },
                 ]
                 fs_edge_payload = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in fs_edge_requests)
                 fs_edge_result = subprocess.run(
@@ -1770,7 +1795,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 )
                 assert fs_edge_result.stderr == ""
                 fs_edge_responses = [json.loads(line) for line in fs_edge_result.stdout.splitlines()]
-                assert len(fs_edge_responses) == 5
+                assert len(fs_edge_responses) == 7
                 fs_edge_by_id = {response["id"]: response for response in fs_edge_responses}
                 uuid.UUID(fs_edge_by_id["fs-edge-init"]["result"]["sessionId"])
                 assert base64.b64decode(fs_edge_by_id["fs-normalized-read"]["result"]["dataBase64"]) == b"allowed"
@@ -1779,6 +1804,10 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 assert not (fs_fifo_dest / "named-pipe").exists()
                 assert fs_edge_by_id["fs-copy-standalone-fifo"]["error"]["code"] == -32600
                 assert "fs/copy only supports regular files" in fs_edge_by_id["fs-copy-standalone-fifo"]["error"]["message"]
+                assert fs_edge_by_id["fs-sandbox-symlink-write"]["error"]["code"] == -32600
+                assert not (fs_outside / "blocked.txt").exists()
+                assert fs_edge_by_id["fs-sandbox-missing-cwd"]["error"]["code"] == -32600
+                assert "dynamic permissions requires cwd" in fs_edge_by_id["fs-sandbox-missing-cwd"]["error"]["message"]
 
         bash = shutil.which("bash") or "/bin/bash"
         arg0_requests = [
