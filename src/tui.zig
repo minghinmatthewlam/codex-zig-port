@@ -777,6 +777,19 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "new")) {
+        const trimmed = std.mem.trim(u8, parts.args, " \t\r\n");
+        if (trimmed.len != 0) {
+            std.debug.print("usage: /new\n", .{});
+            return .handled;
+        }
+        const next_thread_id = try startRemoteThread(allocator, transport, cwd, state);
+        allocator.free(thread_id.*);
+        thread_id.* = next_thread_id;
+        std.debug.print("started remote thread: {s}\n", .{thread_id.*});
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "resume")) {
         if (try switchRemoteThread(allocator, transport, thread_id, "resume", "thread/resume", cwd, state, stdin_reader, parts.args)) {
             std.debug.print("resumed remote thread: {s}\n", .{thread_id.*});
@@ -808,6 +821,7 @@ fn printRemoteSlashHelp() void {
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
         \\  /sessions [N]
+        \\  /new
         \\  /resume [TARGET|last]
         \\  /fork [TARGET|last]
         \\  /quit
@@ -963,15 +977,23 @@ fn openRemoteThread(
         return thread_id;
     }
 
-    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, state.overrides);
+    return try startRemoteThread(allocator, transport, cwd, state);
+}
+
+fn startRemoteThread(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    cwd: []const u8,
+    state: *RemoteTuiState,
+) ![]const u8 {
+    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, state.overrides, state.service_tier_cleared);
     defer allocator.free(thread_start);
     try transport.writeJson(thread_start);
     var thread_response = try readRemoteResponse(transport, "thread-start");
     defer thread_response.deinit();
     try state.updateFromLifecycleResponse(allocator, thread_response.value);
     const thread_id_raw = try remoteNestedString(thread_response.value, &.{ "result", "thread", "id" });
-    const thread_id = try allocator.dupe(u8, thread_id_raw);
-    return thread_id;
+    return try allocator.dupe(u8, thread_id_raw);
 }
 
 fn promptRemoteSessionPicker(
@@ -1105,6 +1127,7 @@ fn renderRemoteThreadStartRequest(
     allocator: std.mem.Allocator,
     cwd: []const u8,
     overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1112,7 +1135,7 @@ fn renderRemoteThreadStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, false);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -3639,7 +3662,7 @@ test "remote TUI serializes supported runtime overrides" {
         .sandbox_mode = .read_only,
         .service_tier = "flex",
         .personality = .friendly,
-    });
+    }, false);
     defer allocator.free(thread_start);
 
     var parsed_thread = try std.json.parseFromSlice(std.json.Value, allocator, thread_start, .{});
@@ -3650,6 +3673,14 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("read-only", thread_params.get("sandbox").?.string);
     try std.testing.expectEqualStrings("flex", thread_params.get("serviceTier").?.string);
     try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
+
+    const cleared_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, true);
+    defer allocator.free(cleared_thread_start);
+
+    var parsed_cleared_thread = try std.json.parseFromSlice(std.json.Value, allocator, cleared_thread_start, .{});
+    defer parsed_cleared_thread.deinit();
+    const cleared_thread_params = parsed_cleared_thread.value.object.get("params").?.object;
+    try std.testing.expect(cleared_thread_params.get("serviceTier").? == .null);
 
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
