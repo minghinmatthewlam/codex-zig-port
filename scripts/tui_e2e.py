@@ -45,6 +45,27 @@ index 0000000..1d92452
 +}
 """
 
+APPLY_TASK_SECOND_DIFF = """diff --git a/scripts/lucas.js b/scripts/lucas.js
+new file mode 100644
+index 0000000..347f22a
+--- /dev/null
++++ b/scripts/lucas.js
+@@ -0,0 +1,12 @@
++#!/usr/bin/env node
++
++function lucas(n) {
++  if (n < 0) throw new Error("n must be non-negative");
++  if (n === 0) return 2;
++  if (n === 1) return 1;
++  let prev = 2;
++  let curr = 1;
++  for (let i = 2; i <= n; i++) {
++    [prev, curr] = [curr, prev + curr];
++  }
++  return curr;
++}
+"""
+
 
 def seed_memory_state_db(codex_home: Path) -> Path:
     db_path = codex_home / "state_5.sqlite"
@@ -220,7 +241,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                             },
                         },
                     },
+                    "current_assistant_turn": {
+                        "id": "turn-current",
+                        "attempt_placement": 0,
+                        "sibling_turn_ids": ["turn-sibling"],
+                        "output_items": [],
+                    },
                     "current_diff_task_turn": {
+                        "id": "turn-current",
+                        "attempt_placement": 0,
                         "output_items": [
                             {
                                 "type": "pr",
@@ -228,6 +257,33 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                             }
                         ]
                     },
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path in {
+            "/wham/tasks/task-ready/turns/turn-current/sibling_turns",
+            "/api/codex/tasks/task-ready/turns/turn-current/sibling_turns",
+        }:
+            payload = json.dumps(
+                {
+                    "sibling_turns": [
+                        {
+                            "id": "turn-sibling",
+                            "attempt_placement": 1,
+                            "created_at": 1760000001.0,
+                            "turn_status": "completed",
+                            "output_items": [
+                                {"type": "output_diff", "diff": APPLY_TASK_SECOND_DIFF}
+                            ],
+                        }
+                    ]
                 },
                 separators=(",", ":"),
             ).encode()
@@ -269,7 +325,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/wham/tasks/task-apply", "/api/codex/tasks/task-apply"}:
             payload = json.dumps(
                 {
+                    "current_assistant_turn": {
+                        "id": "turn-apply",
+                        "attempt_placement": 0,
+                        "sibling_turn_ids": ["turn-apply-sibling"],
+                        "output_items": [],
+                    },
                     "current_diff_task_turn": {
+                        "id": "turn-apply",
+                        "attempt_placement": 0,
                         "output_items": [
                             {"type": "message", "content": []},
                             {
@@ -278,6 +342,33 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                             },
                         ]
                     }
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path in {
+            "/wham/tasks/task-apply/turns/turn-apply/sibling_turns",
+            "/api/codex/tasks/task-apply/turns/turn-apply/sibling_turns",
+        }:
+            payload = json.dumps(
+                {
+                    "sibling_turns": [
+                        {
+                            "id": "turn-apply-sibling",
+                            "attempt_placement": 1,
+                            "created_at": 1760000001.0,
+                            "turn_status": "completed",
+                            "output_items": [
+                                {"type": "output_diff", "diff": APPLY_TASK_SECOND_DIFF}
+                            ],
+                        }
+                    ]
                 },
                 separators=(",", ":"),
             ).encode()
@@ -1578,43 +1669,38 @@ def run_unimplemented_command_smoke(
     if "diff --git a/scripts/fibonacci.js b/scripts/fibonacci.js" not in cloud_diff.stdout:
         raise AssertionError(f"expected cloud diff output:\n{cloud_diff.stdout}")
 
-    cloud_diff_wrong_attempt = subprocess.run(
-        [str(binary), "-c", cloud_base_arg, "cloud", "diff", "task-second-attempt"],
-        cwd=workspace,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if cloud_diff_wrong_attempt.returncode == 0:
-        raise AssertionError("cloud diff second current attempt unexpectedly succeeded")
-    if "CloudAttemptRuntimeUnsupported" not in cloud_diff_wrong_attempt.stderr:
-        raise AssertionError(
-            "expected cloud second-attempt runtime gap message:\n"
-            f"{cloud_diff_wrong_attempt.stderr}"
-        )
-
     cloud_diff_attempt = subprocess.run(
         [str(binary), "-c", cloud_base_arg, "cloud", "diff", "--attempt", "2", "task-ready"],
         cwd=workspace,
         env=env,
         text=True,
         capture_output=True,
+        check=True,
+    )
+    if "diff --git a/scripts/lucas.js b/scripts/lucas.js" not in cloud_diff_attempt.stdout:
+        raise AssertionError(f"expected cloud diff sibling attempt output:\n{cloud_diff_attempt.stdout}")
+
+    cloud_diff_missing_attempt = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "diff", "--attempt", "3", "task-ready"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
         check=False,
     )
-    if cloud_diff_attempt.returncode == 0:
-        raise AssertionError("cloud diff attempt 2 unexpectedly succeeded")
-    if "CloudAttemptRuntimeUnsupported" not in cloud_diff_attempt.stderr:
+    if cloud_diff_missing_attempt.returncode == 0:
+        raise AssertionError("cloud diff missing attempt unexpectedly succeeded")
+    if "CloudAttemptNotAvailable" not in cloud_diff_missing_attempt.stderr:
         raise AssertionError(
-            f"expected cloud attempt runtime gap message:\n{cloud_diff_attempt.stderr}"
+            f"expected cloud missing attempt message:\n{cloud_diff_missing_attempt.stderr}"
         )
 
     if not any(path.startswith("/api/codex/tasks/list?") for path in server.get_paths):
         raise AssertionError(f"expected cloud list backend request, saw {server.get_paths!r}")
     if "/api/codex/tasks/task-ready" not in server.get_paths:
         raise AssertionError(f"expected cloud task detail request, saw {server.get_paths!r}")
-    if "/api/codex/tasks/task-second-attempt" not in server.get_paths:
-        raise AssertionError(f"expected cloud second-attempt detail request, saw {server.get_paths!r}")
+    if "/api/codex/tasks/task-ready/turns/turn-current/sibling_turns" not in server.get_paths:
+        raise AssertionError(f"expected cloud sibling-turn request, saw {server.get_paths!r}")
     headers = server.get_headers[-1] if server.get_headers else {}
     if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
         raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
@@ -3883,42 +3969,49 @@ def run_cloud_apply_command_smoke(
     ):
         raise AssertionError(f"unexpected cloud-applied file contents:\n{contents}")
 
-    blocked_repo = workspace / "cloud-apply-blocked-repo"
-    blocked_repo.mkdir()
-    git(blocked_repo, "init")
-    git(blocked_repo, "config", "user.email", "test@example.com")
-    git(blocked_repo, "config", "user.name", "Test User")
-    (blocked_repo / "README.md").write_text("# Blocked Cloud Apply Smoke\n")
-    git(blocked_repo, "add", "README.md")
-    git(blocked_repo, "commit", "-m", "Initial commit")
+    second_repo = workspace / "cloud-apply-second-repo"
+    second_repo.mkdir()
+    git(second_repo, "init")
+    git(second_repo, "config", "user.email", "test@example.com")
+    git(second_repo, "config", "user.name", "Test User")
+    (second_repo / "README.md").write_text("# Second Cloud Apply Smoke\n")
+    git(second_repo, "add", "README.md")
+    git(second_repo, "commit", "-m", "Initial commit")
 
-    blocked = subprocess.run(
+    second = subprocess.run(
         [
             str(binary),
             "-c",
             cloud_base_arg,
             "cloud",
             "apply",
-            "task-second-attempt",
+            "--attempt",
+            "2",
+            "task-apply",
         ],
-        cwd=blocked_repo,
+        cwd=second_repo,
         env=env,
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if blocked.returncode == 0:
-        raise AssertionError("cloud apply second current attempt unexpectedly succeeded")
-    if "CloudAttemptRuntimeUnsupported" not in blocked.stderr:
-        raise AssertionError(
-            "expected cloud apply second-attempt runtime gap message:\n"
-            f"{blocked.stderr}"
-        )
-    if (blocked_repo / "scripts" / "fibonacci.js").exists():
-        raise AssertionError("cloud apply unsupported attempt mutated the working tree")
+    second_combined = second.stdout + second.stderr
+    if "Applied task task-apply locally (1 file)" not in second_combined:
+        raise AssertionError(f"expected cloud second-attempt apply success output:\n{second_combined}")
+
+    second_created = second_repo / "scripts" / "lucas.js"
+    if not second_created.exists():
+        raise AssertionError(f"expected cloud second-attempt apply command to create {second_created}")
+    second_contents = second_created.read_text()
+    if "function lucas(n)" not in second_contents or not second_contents.startswith(
+        "#!/usr/bin/env node"
+    ):
+        raise AssertionError(f"unexpected cloud-applied second-attempt file contents:\n{second_contents}")
 
     if "/api/codex/tasks/task-apply" not in server.get_paths:
         raise AssertionError(f"expected cloud apply task fetch, saw {server.get_paths!r}")
+    if "/api/codex/tasks/task-apply/turns/turn-apply/sibling_turns" not in server.get_paths:
+        raise AssertionError(f"expected cloud apply sibling-turn fetch, saw {server.get_paths!r}")
     headers = server.get_headers[-1] if server.get_headers else {}
     if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
         raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
