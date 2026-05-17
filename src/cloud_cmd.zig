@@ -1,9 +1,13 @@
 const std = @import("std");
 
+const auth = @import("auth.zig");
+const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 
 const version = "0.0.1";
+const default_cloud_base_url = "https://chatgpt.com/backend-api/codex";
 
 const Command = enum {
     tui,
@@ -49,6 +53,7 @@ const TaskAttemptOptions = struct {
 
 pub const ParsedOptions = struct {
     command: Command = .tui,
+    profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     exec: ExecOptions = .{},
@@ -61,7 +66,16 @@ pub const ParsedOptions = struct {
     }
 };
 
+pub const Options = struct {
+    profile: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
+};
+
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    return runWithOptions(allocator, args, .{});
+}
+
+pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var raw_args = std.ArrayList([]const u8).empty;
     defer raw_args.deinit(allocator);
     while (args.next()) |arg| try raw_args.append(allocator, arg);
@@ -70,12 +84,802 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
 
     var parsed = try parseArgSlice(allocator, raw_args.items);
     defer parsed.deinit(allocator);
+    if (parsed.profile == null) parsed.profile = options.profile;
+    parsed.runtime_overrides = mergeRuntimeOverrides(options.runtime_overrides, parsed.runtime_overrides);
 
+    switch (parsed.command) {
+        .list => return runList(allocator, parsed),
+        .status => return runStatus(allocator, parsed),
+        .diff => return runDiff(allocator, parsed),
+        .tui, .exec, .apply => return reportRuntimeNotImplemented(parsed.command),
+    }
+}
+
+fn mergeRuntimeOverrides(base: config.RuntimeOverrides, command: config.RuntimeOverrides) config.RuntimeOverrides {
+    var merged = base;
+    if (command.model) |value| merged.model = value;
+    if (command.openai_base_url) |value| merged.openai_base_url = value;
+    if (command.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
+    if (command.oss_provider) |value| merged.oss_provider = value;
+    if (command.approval_policy) |value| merged.approval_policy = value;
+    if (command.sandbox_mode) |value| merged.sandbox_mode = value;
+    if (command.web_search_mode) |value| merged.web_search_mode = value;
+    if (command.service_tier) |value| merged.service_tier = value;
+    if (command.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
+    if (command.syntax_theme) |value| merged.syntax_theme = value;
+    if (command.personality) |value| merged.personality = value;
+    if (command.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
+    return merged;
+}
+
+const TaskStatus = enum {
+    pending,
+    ready,
+    applied,
+    err,
+
+    fn display(self: TaskStatus) []const u8 {
+        return switch (self) {
+            .pending => "PENDING",
+            .ready => "READY",
+            .applied => "APPLIED",
+            .err => "ERROR",
+        };
+    }
+
+    fn jsonLabel(self: TaskStatus) []const u8 {
+        return switch (self) {
+            .pending => "pending",
+            .ready => "ready",
+            .applied => "applied",
+            .err => "error",
+        };
+    }
+};
+
+const DiffSummary = struct {
+    files_changed: usize = 0,
+    lines_added: usize = 0,
+    lines_removed: usize = 0,
+};
+
+const TaskSummary = struct {
+    id: []const u8,
+    title: []const u8,
+    status: TaskStatus,
+    updated_at: f64,
+    environment_id: ?[]const u8 = null,
+    environment_label: ?[]const u8 = null,
+    summary: DiffSummary = .{},
+    is_review: bool = false,
+    attempt_total: ?usize = null,
+
+    fn deinit(self: TaskSummary, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.title);
+        if (self.environment_id) |value| allocator.free(value);
+        if (self.environment_label) |value| allocator.free(value);
+    }
+};
+
+const TaskListPage = struct {
+    tasks: std.ArrayList(TaskSummary) = .empty,
+    cursor: ?[]const u8 = null,
+
+    fn deinit(self: *TaskListPage, allocator: std.mem.Allocator) void {
+        for (self.tasks.items) |task| task.deinit(allocator);
+        self.tasks.deinit(allocator);
+        if (self.cursor) |cursor| allocator.free(cursor);
+    }
+};
+
+const CloudRuntime = struct {
+    cfg: config.Config,
+    credentials: auth.Credentials,
+    base_url: []const u8,
+
+    fn deinit(self: *CloudRuntime, allocator: std.mem.Allocator) void {
+        self.cfg.deinit(allocator);
+        self.credentials.deinit(allocator);
+        allocator.free(self.base_url);
+    }
+};
+
+fn reportRuntimeNotImplemented(command: Command) !void {
     std.debug.print(
         "codex-zig {s} parsed Rust-compatible options, but Codex Cloud tasks are not implemented yet\n",
-        .{parsed.command.label()},
+        .{command.label()},
     );
     return error.CloudCommandNotImplemented;
+}
+
+fn runList(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const url = try buildListUrl(allocator, runtime.base_url, parsed.list);
+    defer allocator.free(url);
+    const body = try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+
+    var page = try parseTaskListPage(allocator, body);
+    defer page.deinit(allocator);
+
+    if (parsed.list.json) {
+        const rendered = try renderTaskListJson(allocator, runtime.base_url, page);
+        defer allocator.free(rendered);
+        try cli_utils.writeStdout(rendered);
+        return;
+    }
+
+    const rendered = try renderTaskList(allocator, runtime.base_url, page);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+}
+
+fn runStatus(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    const raw_task_id = parsed.status_task_id orelse return error.MissingCloudTaskId;
+    const task_id = try normalizeTaskId(allocator, raw_task_id);
+    defer allocator.free(task_id);
+
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
+    defer allocator.free(url);
+    const body = try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+
+    var task = try parseTaskDetailsSummary(allocator, task_id, body);
+    defer task.deinit(allocator);
+
+    const rendered = try renderTaskStatus(allocator, task, false);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+
+    if (task.status != .ready) return error.CloudTaskNotReady;
+}
+
+fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    const raw_task_id = parsed.task_attempt.task_id orelse return error.MissingCloudTaskId;
+    if (parsed.task_attempt.attempt) |attempt| {
+        if (attempt != 1) return error.CloudAttemptRuntimeUnsupported;
+    }
+    const task_id = try normalizeTaskId(allocator, raw_task_id);
+    defer allocator.free(task_id);
+
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
+    defer allocator.free(url);
+    const body = try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+
+    const diff = try extractUnifiedDiffForAttempt(allocator, body, 1);
+    defer allocator.free(diff);
+    try cli_utils.writeStdout(diff);
+}
+
+fn initRuntime(allocator: std.mem.Allocator, parsed: ParsedOptions) !CloudRuntime {
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = parsed.profile });
+    errdefer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, parsed.runtime_overrides);
+
+    var credentials = try auth.load(allocator, cfg.codex_home);
+    errdefer credentials.deinit(allocator);
+    if (credentials.mode != .chatgpt and credentials.mode != .chatgpt_auth_tokens and credentials.mode != .agent_identity) {
+        return error.ChatGptBackendAuthRequired;
+    }
+    if (credentials.account_id == null) return error.MissingChatGptAccountId;
+
+    const raw_base_url = try resolveCloudBaseUrl(allocator, cfg, parsed);
+    defer allocator.free(raw_base_url);
+    const base_url = try normalizeCloudBackendBaseUrl(allocator, raw_base_url);
+    errdefer allocator.free(base_url);
+    if (std.mem.trim(u8, base_url, " \t\r\n/").len == 0) return error.InvalidCloudBaseUrl;
+
+    return .{
+        .cfg = cfg,
+        .credentials = credentials,
+        .base_url = base_url,
+    };
+}
+
+fn resolveCloudBaseUrl(allocator: std.mem.Allocator, cfg: config.Config, parsed: ParsedOptions) ![]const u8 {
+    const cloud_env = try env.getOwned(allocator, "CODEX_CLOUD_TASKS_BASE_URL");
+    defer if (cloud_env) |value| allocator.free(value);
+    const global_env = try env.getOwned(allocator, "CODEX_ZIG_BASE_URL");
+    defer if (global_env) |value| allocator.free(value);
+    const config_base = try explicitChatGptBaseUrlFromConfig(allocator, cfg.codex_home, cfg.active_profile);
+    defer if (config_base) |value| allocator.free(value);
+
+    return selectCloudBaseUrl(
+        allocator,
+        cloud_env,
+        parsed.runtime_overrides.chatgpt_base_url,
+        global_env,
+        config_base,
+    );
+}
+
+fn selectCloudBaseUrl(
+    allocator: std.mem.Allocator,
+    cloud_env: ?[]const u8,
+    command_chatgpt_base_url: ?[]const u8,
+    global_env: ?[]const u8,
+    config_chatgpt_base_url: ?[]const u8,
+) ![]const u8 {
+    if (cloud_env) |value| return allocator.dupe(u8, value);
+    if (command_chatgpt_base_url) |value| return allocator.dupe(u8, value);
+    if (global_env) |value| return allocator.dupe(u8, value);
+    if (config_chatgpt_base_url) |value| return allocator.dupe(u8, value);
+    return allocator.dupe(u8, default_cloud_base_url);
+}
+
+fn explicitChatGptBaseUrlFromConfig(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    active_profile: ?[]const u8,
+) !?[]const u8 {
+    const path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(path);
+
+    const bytes = try config.readConfigTomlFile(allocator, path);
+    defer if (bytes) |value| allocator.free(value);
+    return explicitChatGptBaseUrlFromConfigBytes(allocator, bytes orelse "", active_profile);
+}
+
+fn explicitChatGptBaseUrlFromConfigBytes(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    active_profile: ?[]const u8,
+) !?[]const u8 {
+    return config.scopedStringValue(allocator, bytes, active_profile, "chatgpt_base_url");
+}
+
+fn fetchCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []const u8) ![]const u8 {
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+
+    const auth_header = try auth.authorizationHeader(allocator, runtime.credentials);
+    defer allocator.free(auth_header);
+    try headers.append(allocator, .{ .name = "Authorization", .value = auth_header });
+    try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-cloud/0.0.1" });
+    try headers.append(allocator, .{ .name = "ChatGPT-Account-ID", .value = runtime.credentials.account_id.? });
+    if (runtime.credentials.fedramp) {
+        try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
+    }
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_body.deinit();
+
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &response_body.writer,
+        .extra_headers = headers.items,
+    });
+
+    const body = try response_body.toOwnedSlice();
+    errdefer allocator.free(body);
+    if (@intFromEnum(result.status) < 200 or @intFromEnum(result.status) >= 300) {
+        std.debug.print("Codex Cloud request failed with status {d}: {s}\n", .{ @intFromEnum(result.status), body });
+        return error.CloudRequestFailed;
+    }
+    return body;
+}
+
+fn buildListUrl(allocator: std.mem.Allocator, base_url: []const u8, options: ListOptions) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const path_base = try cloudTasksPathBase(allocator, base_url);
+    defer allocator.free(path_base);
+    try out.print(allocator, "{s}/list?task_filter=current&limit={d}", .{
+        path_base,
+        options.limit,
+    });
+    if (options.cursor) |cursor| {
+        try out.appendSlice(allocator, "&cursor=");
+        try percentEncode(allocator, &out, cursor);
+    }
+    if (options.environment) |environment| {
+        try out.appendSlice(allocator, "&environment_id=");
+        try percentEncode(allocator, &out, environment);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn buildTaskUrl(allocator: std.mem.Allocator, base_url: []const u8, task_id: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const path_base = try cloudTasksPathBase(allocator, base_url);
+    defer allocator.free(path_base);
+    try out.appendSlice(allocator, path_base);
+    try out.append(allocator, '/');
+    try percentEncode(allocator, &out, task_id);
+    return out.toOwnedSlice(allocator);
+}
+
+fn cloudTasksPathBase(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const normalized = try normalizeCloudBackendBaseUrl(allocator, base_url);
+    defer allocator.free(normalized);
+    const trimmed = std.mem.trimEnd(u8, normalized, "/");
+    if (std.mem.indexOf(u8, trimmed, "/backend-api") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/wham/tasks", .{trimmed});
+    }
+    if (std.mem.indexOf(u8, trimmed, "/api/codex") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/tasks", .{trimmed});
+    }
+    return std.fmt.allocPrint(allocator, "{s}/api/codex/tasks", .{trimmed});
+}
+
+fn normalizeCloudBackendBaseUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, base_url, " \t\r\n/");
+    if (trimmed.len == 0) return error.InvalidCloudBaseUrl;
+    const backend_codex_suffix = "/backend-api/codex";
+    if (std.mem.endsWith(u8, trimmed, backend_codex_suffix)) {
+        return allocator.dupe(u8, trimmed[0 .. trimmed.len - "/codex".len]);
+    }
+    if ((std.mem.startsWith(u8, trimmed, "https://chatgpt.com") or
+        std.mem.startsWith(u8, trimmed, "https://chat.openai.com")) and
+        std.mem.indexOf(u8, trimmed, "/backend-api") == null)
+    {
+        return std.fmt.allocPrint(allocator, "{s}/backend-api", .{trimmed});
+    }
+    return allocator.dupe(u8, trimmed);
+}
+
+fn percentEncode(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (value) |byte| {
+        const safe = std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~';
+        if (safe) {
+            try out.append(allocator, byte);
+        } else {
+            try out.append(allocator, '%');
+            try out.append(allocator, hex[@as(usize, byte >> 4)]);
+            try out.append(allocator, hex[@as(usize, byte & 0x0f)]);
+        }
+    }
+}
+
+fn parseTaskListPage(allocator: std.mem.Allocator, body: []const u8) !TaskListPage {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+
+    const items = objectField(parsed.value, "items") orelse objectField(parsed.value, "tasks") orelse return error.InvalidCloudTaskResponse;
+    if (items != .array) return error.InvalidCloudTaskResponse;
+
+    var page = TaskListPage{};
+    errdefer page.deinit(allocator);
+    for (items.array.items) |item| {
+        if (item != .object) return error.InvalidCloudTaskResponse;
+        try page.tasks.append(allocator, try parseTaskSummaryValue(allocator, null, item));
+    }
+
+    if (objectField(parsed.value, "cursor")) |cursor| {
+        if (cursor == .string and cursor.string.len > 0) {
+            page.cursor = try allocator.dupe(u8, cursor.string);
+        }
+    }
+    return page;
+}
+
+fn parseTaskDetailsSummary(allocator: std.mem.Allocator, task_id: []const u8, body: []const u8) !TaskSummary {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+
+    var task = try parseTaskSummaryValue(allocator, task_id, parsed.value);
+    errdefer task.deinit(allocator);
+    if (task.summary.files_changed == 0 and task.summary.lines_added == 0 and task.summary.lines_removed == 0) {
+        if (extractUnifiedDiff(allocator, body)) |diff| {
+            defer allocator.free(diff);
+            task.summary = diffSummaryFromDiff(diff);
+        } else |_| {}
+    }
+    return task;
+}
+
+fn parseTaskSummaryValue(allocator: std.mem.Allocator, fallback_id: ?[]const u8, raw: std.json.Value) !TaskSummary {
+    const task_value = objectField(raw, "task") orelse raw;
+    if (task_value != .object) return error.InvalidCloudTaskResponse;
+
+    const id_source = valueString(objectField(task_value, "id")) orelse fallback_id orelse return error.InvalidCloudTaskResponse;
+    const title_source = valueString(objectField(task_value, "title")) orelse "<untitled>";
+    const status_display = objectField(raw, "task_status_display") orelse objectField(task_value, "task_status_display");
+
+    return .{
+        .id = try allocator.dupe(u8, id_source),
+        .title = try allocator.dupe(u8, title_source),
+        .status = taskStatusFromDisplay(status_display),
+        .updated_at = valueNumber(objectField(task_value, "updated_at")) orelse
+            valueNumber(objectField(task_value, "created_at")) orelse
+            latestTurnTimestamp(status_display) orelse
+            0,
+        .environment_id = try dupOptionalString(allocator, valueString(objectField(task_value, "environment_id"))),
+        .environment_label = try dupOptionalString(allocator, envLabelFromDisplay(status_display)),
+        .summary = diffSummaryFromDisplay(status_display),
+        .is_review = valueBool(objectField(task_value, "is_review")) orelse pullRequestsPresent(task_value),
+        .attempt_total = attemptTotalFromDisplay(status_display),
+    };
+}
+
+fn extractUnifiedDiff(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+
+    if (objectField(parsed.value, "current_diff_task_turn")) |turn| {
+        if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
+    }
+    if (objectField(parsed.value, "current_assistant_turn")) |turn| {
+        if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
+    }
+    return error.NoCloudTaskDiff;
+}
+
+fn extractUnifiedDiffForAttempt(allocator: std.mem.Allocator, body: []const u8, attempt: usize) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+
+    var saw_other_attempt = false;
+    if (objectField(parsed.value, "current_diff_task_turn")) |turn| {
+        if (try turnMatchesAttempt(turn, attempt)) {
+            if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
+        } else {
+            saw_other_attempt = true;
+        }
+    }
+    if (objectField(parsed.value, "current_assistant_turn")) |turn| {
+        if (try turnMatchesAttempt(turn, attempt)) {
+            if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
+        } else {
+            saw_other_attempt = true;
+        }
+    }
+    if (saw_other_attempt) return error.CloudAttemptRuntimeUnsupported;
+    return error.NoCloudTaskDiff;
+}
+
+fn extractDiffFromTurn(allocator: std.mem.Allocator, turn: std.json.Value) !?[]const u8 {
+    if (turn == .null) return null;
+    if (turn != .object) return error.InvalidCloudTaskResponse;
+    const items = objectField(turn, "output_items") orelse return null;
+    if (items != .array) return error.InvalidCloudTaskResponse;
+    for (items.array.items) |item| {
+        if (item != .object) continue;
+        const kind = valueString(objectField(item, "type")) orelse continue;
+        if (std.mem.eql(u8, kind, "output_diff")) {
+            if (valueString(objectField(item, "diff"))) |diff| {
+                if (diff.len > 0) return try allocator.dupe(u8, diff);
+            }
+        }
+        if (std.mem.eql(u8, kind, "pr")) {
+            const output_diff = objectField(item, "output_diff") orelse continue;
+            if (valueString(objectField(output_diff, "diff"))) |diff| {
+                if (diff.len > 0) return try allocator.dupe(u8, diff);
+            }
+        }
+    }
+    return null;
+}
+
+fn turnMatchesAttempt(turn: std.json.Value, attempt: usize) !bool {
+    if (turn == .null) return false;
+    if (turn != .object) return error.InvalidCloudTaskResponse;
+    if (turnAttemptPlacement(objectField(turn, "attempt_placement"))) |placement| {
+        return placement == attempt;
+    }
+    if (turnHasSiblingAttempts(turn)) return false;
+    return attempt == 1;
+}
+
+fn turnAttemptPlacement(value: ?std.json.Value) ?usize {
+    const actual = value orelse return null;
+    const number: i64 = switch (actual) {
+        .integer => |raw| raw,
+        .float => |raw| @as(i64, @intFromFloat(raw)),
+        .number_string => |bytes| std.fmt.parseInt(i64, bytes, 10) catch return null,
+        else => return null,
+    };
+    if (number <= 0) return null;
+    return @intCast(number);
+}
+
+fn turnHasSiblingAttempts(turn: std.json.Value) bool {
+    const siblings = objectField(turn, "sibling_turn_ids") orelse return false;
+    return siblings == .array and siblings.array.items.len > 0;
+}
+
+fn renderTaskList(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage) ![]const u8 {
+    if (page.tasks.items.len == 0) return allocator.dupe(u8, "No tasks found.\n");
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (page.tasks.items, 0..) |task, index| {
+        const url = try taskUrl(allocator, base_url, task.id);
+        defer allocator.free(url);
+        try out.appendSlice(allocator, url);
+        try out.append(allocator, '\n');
+        const status = try renderTaskStatus(allocator, task, true);
+        defer allocator.free(status);
+        try out.appendSlice(allocator, status);
+        if (index + 1 < page.tasks.items.len) try out.append(allocator, '\n');
+    }
+    if (page.cursor) |cursor| {
+        try out.print(allocator, "\nTo fetch the next page, run codex cloud list --cursor='{s}'\n", .{cursor});
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderTaskStatus(allocator: std.mem.Allocator, task: TaskSummary, indent: bool) ![]const u8 {
+    const prefix = if (indent) "  " else "";
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const relative = try formatRelativeTime(allocator, task.updated_at);
+    defer allocator.free(relative);
+    const summary = try renderSummaryLine(allocator, task.summary);
+    defer allocator.free(summary);
+    try out.print(allocator, "{s}[{s}] {s}\n", .{ prefix, task.status.display(), task.title });
+    if (task.environment_label orelse task.environment_id) |environment| {
+        try out.print(allocator, "{s}{s} - {s}\n", .{ prefix, environment, relative });
+    } else {
+        try out.print(allocator, "{s}{s}\n", .{ prefix, relative });
+    }
+    try out.print(allocator, "{s}{s}\n", .{ prefix, summary });
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderTaskListJson(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"tasks\":[");
+    for (page.tasks.items, 0..) |task, index| {
+        if (index > 0) try out.append(allocator, ',');
+        const id_json = try std.json.Stringify.valueAlloc(allocator, task.id, .{});
+        defer allocator.free(id_json);
+        const url = try taskUrl(allocator, base_url, task.id);
+        defer allocator.free(url);
+        const url_json = try std.json.Stringify.valueAlloc(allocator, url, .{});
+        defer allocator.free(url_json);
+        const title_json = try std.json.Stringify.valueAlloc(allocator, task.title, .{});
+        defer allocator.free(title_json);
+        const status_json = try std.json.Stringify.valueAlloc(allocator, task.status.jsonLabel(), .{});
+        defer allocator.free(status_json);
+        const updated_at = try formatUpdatedAt(allocator, task.updated_at);
+        defer allocator.free(updated_at);
+        const updated_json = try std.json.Stringify.valueAlloc(allocator, updated_at, .{});
+        defer allocator.free(updated_json);
+        try out.print(
+            allocator,
+            "{{\"id\":{s},\"url\":{s},\"title\":{s},\"status\":{s},\"updated_at\":{s},",
+            .{ id_json, url_json, title_json, status_json, updated_json },
+        );
+        try appendOptionalStringJson(allocator, &out, "environment_id", task.environment_id);
+        try out.append(allocator, ',');
+        try appendOptionalStringJson(allocator, &out, "environment_label", task.environment_label);
+        try out.print(
+            allocator,
+            ",\"summary\":{{\"files_changed\":{d},\"lines_added\":{d},\"lines_removed\":{d}}},\"is_review\":{},",
+            .{ task.summary.files_changed, task.summary.lines_added, task.summary.lines_removed, task.is_review },
+        );
+        if (task.attempt_total) |attempt_total| {
+            try out.print(allocator, "\"attempt_total\":{d}}}", .{attempt_total});
+        } else {
+            try out.appendSlice(allocator, "\"attempt_total\":null}");
+        }
+    }
+    try out.appendSlice(allocator, "],\"cursor\":");
+    if (page.cursor) |cursor| {
+        const cursor_json = try std.json.Stringify.valueAlloc(allocator, cursor, .{});
+        defer allocator.free(cursor_json);
+        try out.appendSlice(allocator, cursor_json);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}\n");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendOptionalStringJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: ?[]const u8) !void {
+    const name_json = try std.json.Stringify.valueAlloc(allocator, name, .{});
+    defer allocator.free(name_json);
+    try out.print(allocator, "{s}:", .{name_json});
+    if (value) |actual| {
+        const value_json = try std.json.Stringify.valueAlloc(allocator, actual, .{});
+        defer allocator.free(value_json);
+        try out.appendSlice(allocator, value_json);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+}
+
+fn renderSummaryLine(allocator: std.mem.Allocator, summary: DiffSummary) ![]const u8 {
+    if (summary.files_changed == 0 and summary.lines_added == 0 and summary.lines_removed == 0) {
+        return allocator.dupe(u8, "no diff");
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "+{d}/-{d} - {d} file{s}",
+        .{
+            summary.lines_added,
+            summary.lines_removed,
+            summary.files_changed,
+            if (summary.files_changed == 1) "" else "s",
+        },
+    );
+}
+
+fn taskUrl(allocator: std.mem.Allocator, base_url: []const u8, task_id: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (std.mem.indexOf(u8, trimmed, "/backend-api")) |index| {
+        return std.fmt.allocPrint(allocator, "{s}/codex/tasks/{s}", .{ trimmed[0..index], task_id });
+    }
+    if (std.mem.indexOf(u8, trimmed, "/api/codex")) |index| {
+        return std.fmt.allocPrint(allocator, "{s}/codex/tasks/{s}", .{ trimmed[0..index], task_id });
+    }
+    if (std.mem.endsWith(u8, trimmed, "/codex")) {
+        return std.fmt.allocPrint(allocator, "{s}/tasks/{s}", .{ trimmed, task_id });
+    }
+    return std.fmt.allocPrint(allocator, "{s}/codex/tasks/{s}", .{ trimmed, task_id });
+}
+
+fn normalizeTaskId(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const without_fragment = if (std.mem.indexOfScalar(u8, raw, '#')) |index| raw[0..index] else raw;
+    const without_query = if (std.mem.indexOfScalar(u8, without_fragment, '?')) |index| without_fragment[0..index] else without_fragment;
+    const after_slash = if (std.mem.lastIndexOfScalar(u8, without_query, '/')) |index| without_query[index + 1 ..] else without_query;
+    const trimmed = std.mem.trim(u8, after_slash, " \t\r\n");
+    if (trimmed.len == 0) return error.MissingCloudTaskId;
+    return allocator.dupe(u8, trimmed);
+}
+
+fn objectField(value: std.json.Value, name: []const u8) ?std.json.Value {
+    if (value != .object) return null;
+    return value.object.get(name);
+}
+
+fn valueString(value: ?std.json.Value) ?[]const u8 {
+    const actual = value orelse return null;
+    if (actual != .string) return null;
+    return actual.string;
+}
+
+fn valueBool(value: ?std.json.Value) ?bool {
+    const actual = value orelse return null;
+    if (actual != .bool) return null;
+    return actual.bool;
+}
+
+fn valueNumber(value: ?std.json.Value) ?f64 {
+    const actual = value orelse return null;
+    return switch (actual) {
+        .float => |number| number,
+        .integer => |number| @floatFromInt(number),
+        .number_string => |bytes| std.fmt.parseFloat(f64, bytes) catch null,
+        else => null,
+    };
+}
+
+fn dupOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    const actual = value orelse return null;
+    return try allocator.dupe(u8, actual);
+}
+
+fn taskStatusFromDisplay(display: ?std.json.Value) TaskStatus {
+    if (display) |value| {
+        if (objectField(value, "latest_turn_status_display")) |latest| {
+            if (valueString(objectField(latest, "turn_status"))) |status| {
+                if (std.mem.eql(u8, status, "failed") or std.mem.eql(u8, status, "cancelled")) return .err;
+                if (std.mem.eql(u8, status, "completed")) return .ready;
+                if (std.mem.eql(u8, status, "in_progress") or std.mem.eql(u8, status, "pending")) return .pending;
+            }
+        }
+        if (valueString(objectField(value, "state"))) |state| {
+            if (std.mem.eql(u8, state, "ready")) return .ready;
+            if (std.mem.eql(u8, state, "applied")) return .applied;
+            if (std.mem.eql(u8, state, "error")) return .err;
+            if (std.mem.eql(u8, state, "pending")) return .pending;
+        }
+    }
+    return .pending;
+}
+
+fn diffSummaryFromDisplay(display: ?std.json.Value) DiffSummary {
+    const latest = if (display) |value| objectField(value, "latest_turn_status_display") else null;
+    const diff_stats = if (latest) |value| objectField(value, "diff_stats") else null;
+    const stats = diff_stats orelse return .{};
+    return .{
+        .files_changed = positiveUsize(objectField(stats, "files_modified")),
+        .lines_added = positiveUsize(objectField(stats, "lines_added")),
+        .lines_removed = positiveUsize(objectField(stats, "lines_removed")),
+    };
+}
+
+fn diffSummaryFromDiff(diff: []const u8) DiffSummary {
+    var summary = DiffSummary{};
+    var lines = std.mem.splitScalar(u8, diff, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "diff --git ")) {
+            summary.files_changed += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "+++") or std.mem.startsWith(u8, line, "---") or std.mem.startsWith(u8, line, "@@")) {
+            continue;
+        }
+        if (line.len == 0) continue;
+        if (line[0] == '+') summary.lines_added += 1;
+        if (line[0] == '-') summary.lines_removed += 1;
+    }
+    if (summary.files_changed == 0 and std.mem.trim(u8, diff, " \t\r\n").len > 0) summary.files_changed = 1;
+    return summary;
+}
+
+fn positiveUsize(value: ?std.json.Value) usize {
+    const actual = value orelse return 0;
+    const number: i64 = switch (actual) {
+        .integer => |raw| raw,
+        .float => |raw| @as(i64, @intFromFloat(raw)),
+        .number_string => |bytes| std.fmt.parseInt(i64, bytes, 10) catch 0,
+        else => return 0,
+    };
+    if (number <= 0) return 0;
+    return @intCast(number);
+}
+
+fn latestTurnTimestamp(display: ?std.json.Value) ?f64 {
+    const latest = if (display) |value| objectField(value, "latest_turn_status_display") else null;
+    if (latest) |value| {
+        return valueNumber(objectField(value, "updated_at")) orelse valueNumber(objectField(value, "created_at"));
+    }
+    return null;
+}
+
+fn envLabelFromDisplay(display: ?std.json.Value) ?[]const u8 {
+    const value = display orelse return null;
+    return valueString(objectField(value, "environment_label"));
+}
+
+fn attemptTotalFromDisplay(display: ?std.json.Value) ?usize {
+    const latest = if (display) |value| objectField(value, "latest_turn_status_display") else null;
+    const siblings = if (latest) |value| objectField(value, "sibling_turn_ids") else null;
+    const actual = siblings orelse return null;
+    if (actual != .array) return null;
+    return actual.array.items.len + 1;
+}
+
+fn pullRequestsPresent(value: std.json.Value) bool {
+    const prs = objectField(value, "pull_requests") orelse return false;
+    return prs == .array and prs.array.items.len > 0;
+}
+
+fn formatRelativeTime(allocator: std.mem.Allocator, updated_at: f64) ![]const u8 {
+    if (updated_at <= 0) return allocator.dupe(u8, "unknown time");
+    const updated_secs: i64 = @intFromFloat(@floor(updated_at));
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    const now_secs: i64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
+    const delta = now_secs - updated_secs;
+    if (delta < 60) return allocator.dupe(u8, "just now");
+    if (delta < 3600) return std.fmt.allocPrint(allocator, "{d}m ago", .{@divTrunc(delta, 60)});
+    if (delta < 86400) return std.fmt.allocPrint(allocator, "{d}h ago", .{@divTrunc(delta, 3600)});
+    return std.fmt.allocPrint(allocator, "{d}d ago", .{@divTrunc(delta, 86400)});
+}
+
+fn formatUpdatedAt(allocator: std.mem.Allocator, updated_at: f64) ![]const u8 {
+    if (updated_at <= 0) return allocator.dupe(u8, "1970-01-01T00:00:00Z");
+    const updated_secs: u64 = @as(u64, @intFromFloat(@floor(updated_at)));
+    return auth.rfc3339FromSeconds(allocator, updated_secs);
 }
 
 const ParseMode = struct {
@@ -147,11 +951,13 @@ fn parseArgSliceWithMode(allocator: std.mem.Allocator, args: []const []const u8,
             parsed.command = command;
             index += 1;
             try parseSubcommandArgs(allocator, args, &index, &parsed, &profile, mode);
+            parsed.profile = profile;
             return parsed;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownCloudOption;
         return error.UnknownCloudSubcommand;
     }
+    parsed.profile = profile;
     return parsed;
 }
 
@@ -662,6 +1468,119 @@ test "cloud command rejects option-looking missing values" {
 
     const missing_limit = [_][]const u8{ "list", "--limit", "--json" };
     try std.testing.expectError(error.MissingCloudLimit, parseArgSlice(allocator, missing_limit[0..]));
+}
+
+test "cloud command normalizes backend and browser task URLs" {
+    const allocator = std.testing.allocator;
+
+    const normalized_default = try normalizeCloudBackendBaseUrl(allocator, "https://chatgpt.com/backend-api/codex/");
+    defer allocator.free(normalized_default);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api", normalized_default);
+
+    const normalized_host = try normalizeCloudBackendBaseUrl(allocator, "https://chatgpt.com/");
+    defer allocator.free(normalized_host);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api", normalized_host);
+
+    const list_url = try buildListUrl(allocator, "https://chatgpt.com/backend-api/codex/", .{ .limit = 2 });
+    defer allocator.free(list_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/tasks/list?task_filter=current&limit=2", list_url);
+
+    const task_api_url = try buildTaskUrl(allocator, "https://chatgpt.com/backend-api/codex/", "task 1");
+    defer allocator.free(task_api_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/tasks/task%201", task_api_url);
+
+    const plain_api_url = try buildTaskUrl(allocator, "https://api.example.com", "task_3");
+    defer allocator.free(plain_api_url);
+    try std.testing.expectEqualStrings("https://api.example.com/api/codex/tasks/task_3", plain_api_url);
+
+    const browser_url = try taskUrl(allocator, "https://chatgpt.com/backend-api", "task_1");
+    defer allocator.free(browser_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/codex/tasks/task_1", browser_url);
+
+    const codex_api_browser_url = try taskUrl(allocator, "https://api.example.com/api/codex", "task_2");
+    defer allocator.free(codex_api_browser_url);
+    try std.testing.expectEqualStrings("https://api.example.com/codex/tasks/task_2", codex_api_browser_url);
+}
+
+test "cloud base URL ignores model provider fallback" {
+    const allocator = std.testing.allocator;
+
+    const default_base = try selectCloudBaseUrl(allocator, null, null, null, null);
+    defer allocator.free(default_base);
+    try std.testing.expectEqualStrings(default_cloud_base_url, default_base);
+
+    const global_env = try selectCloudBaseUrl(allocator, null, null, "http://127.0.0.1:9000", null);
+    defer allocator.free(global_env);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9000", global_env);
+
+    const command_override = try selectCloudBaseUrl(
+        allocator,
+        null,
+        "http://127.0.0.1:9001",
+        "http://127.0.0.1:9000",
+        "https://config.example/backend-api",
+    );
+    defer allocator.free(command_override);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9001", command_override);
+
+    const cloud_env = try selectCloudBaseUrl(
+        allocator,
+        "http://127.0.0.1:9002",
+        "http://127.0.0.1:9001",
+        "http://127.0.0.1:9000",
+        "https://config.example/backend-api",
+    );
+    defer allocator.free(cloud_env);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9002", cloud_env);
+
+    const provider_only =
+        \\model_provider = "custom"
+        \\
+        \\[model_providers.custom]
+        \\base_url = "https://proxy.example/v1"
+        \\
+    ;
+    const ignored_provider = try explicitChatGptBaseUrlFromConfigBytes(allocator, provider_only, null);
+    try std.testing.expect(ignored_provider == null);
+
+    const explicit_top_level =
+        \\model_provider = "custom"
+        \\chatgpt_base_url = "https://cloud.example/backend-api"
+        \\
+        \\[model_providers.custom]
+        \\base_url = "https://proxy.example/v1"
+        \\
+    ;
+    const top_level = try explicitChatGptBaseUrlFromConfigBytes(allocator, explicit_top_level, null);
+    defer allocator.free(top_level.?);
+    try std.testing.expectEqualStrings("https://cloud.example/backend-api", top_level.?);
+
+    const profile_override =
+        \\chatgpt_base_url = "https://base.example/backend-api"
+        \\
+        \\[profiles.work]
+        \\chatgpt_base_url = "https://profile.example/backend-api"
+        \\
+    ;
+    const profile_value = try explicitChatGptBaseUrlFromConfigBytes(allocator, profile_override, "work");
+    defer allocator.free(profile_value.?);
+    try std.testing.expectEqualStrings("https://profile.example/backend-api", profile_value.?);
+}
+
+test "cloud diff refuses non-first current attempt" {
+    const allocator = std.testing.allocator;
+
+    const first_attempt_body =
+        \\{"current_diff_task_turn":{"attempt_placement":1,"output_items":[{"type":"output_diff","diff":"diff --git a/a b/a\n"}]}}
+    ;
+    const first_attempt_diff = try extractUnifiedDiffForAttempt(allocator, first_attempt_body, 1);
+    defer allocator.free(first_attempt_diff);
+    try std.testing.expectEqualStrings("diff --git a/a b/a\n", first_attempt_diff);
+
+    const second_attempt_body =
+        \\{"current_diff_task_turn":{"attempt_placement":2,"sibling_turn_ids":["turn-1"],"output_items":[{"type":"output_diff","diff":"diff --git a/b b/b\n"}]}}
+    ;
+    try std.testing.expectError(error.CloudAttemptRuntimeUnsupported, extractUnifiedDiffForAttempt(allocator, second_attempt_body, 1));
 }
 
 test "cloud command rejects duplicate singleton options" {

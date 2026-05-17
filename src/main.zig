@@ -413,7 +413,10 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (isCloudCommand(cmd)) {
-            try cloud_cmd.run(allocator, &args);
+            try cloud_cmd.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "completion")) {
