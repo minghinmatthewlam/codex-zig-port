@@ -65,6 +65,18 @@ GRANULAR_APPROVAL_POLICY = {
 }
 
 
+def request_input_texts_by_role(body):
+    texts_by_role = {}
+    for item in body.get("input", []):
+        role = item.get("role")
+        if role is None:
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "input_text":
+                texts_by_role.setdefault(role, []).append(content.get("text", ""))
+    return texts_by_role
+
+
 def experimental_api_field_cases(thread_id: str):
     permission_profile = {"type": "profile", "id": ":workspace"}
     turn_input = [{"type": "text", "text": "field gate"}]
@@ -13887,6 +13899,2021 @@ def run_hooks_list_rpc_smoke(binary: Path) -> None:
         assert invalid["id"] == "hooks-invalid"
         assert invalid["error"]["code"] == -32602
     finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-runtime-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    hook_log = root / "user_prompt_submit_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-runtime"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    "transcript_path = Path(payload['transcript_path'])",
+                    "payload['transcript_exists'] = transcript_path.exists()",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': '  hook context from runtime\\n    indented line  '}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    'statusMessage = "running prompt hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env.pop("SHELL", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-runtime",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "thread-start-for-hook-runtime"
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-runtime",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            assert hooks["id"] == "hooks-list-for-runtime"
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+            assert prompt_hook["eventName"] == "userPromptSubmit"
+            assert prompt_hook["trustStatus"] == "untrusted"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-user-prompt-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            trust_response = read_json_line(proc, 5)
+            assert trust_response["id"] == "trust-user-prompt-hook"
+            assert trust_response["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-prompt-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "hook runtime prompt"}],
+                    },
+                },
+            )
+            turn_response = read_json_line(proc, 5)
+            assert turn_response["id"] == "turn-start-with-prompt-hook"
+            turn_id = turn_response["result"]["turn"]["id"]
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+            assert read_json_line(proc, 5)["method"] == "turn/started"
+
+            hook_started = read_json_line(proc, 5)
+            assert hook_started["method"] == "hook/started"
+            started_params = hook_started["params"]
+            assert started_params["threadId"] == thread_id
+            assert started_params["turnId"] == turn_id
+            started_run = started_params["run"]
+            assert started_run["eventName"] == "userPromptSubmit"
+            assert started_run["handlerType"] == "command"
+            assert started_run["executionMode"] == "sync"
+            assert started_run["scope"] == "turn"
+            assert started_run["source"] == "project"
+            assert started_run["displayOrder"] == prompt_hook["displayOrder"]
+            assert started_run["status"] == "running"
+            assert started_run["statusMessage"] == "running prompt hook"
+            assert started_run["entries"] == []
+
+            hook_completed = read_json_line(proc, 5)
+            assert hook_completed["method"] == "hook/completed"
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["id"] == started_run["id"]
+            assert completed_run["status"] == "completed"
+            assert completed_run["completedAt"] >= completed_run["startedAt"]
+            assert completed_run["durationMs"] >= 0
+            assert completed_run["entries"] == [
+                {
+                    "kind": "context",
+                    "text": "  hook context from runtime\n    indented line  ",
+                }
+            ]
+
+            assert read_json_line(proc, 5)["method"] == "item/started"
+            assert read_json_line(proc, 5)["method"] == "item/completed"
+            assert read_json_line(proc, 5)["method"] == "item/started"
+            assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+            assert read_json_line(proc, 5)["method"] == "item/completed"
+            assert read_json_line(proc, 5)["method"] == "turn/completed"
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+
+            hook_inputs = [
+                json.loads(line)
+                for line in hook_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(hook_inputs) == 1
+            hook_input = hook_inputs[0]
+            assert hook_input["session_id"] == thread_id
+            assert hook_input["turn_id"] == turn_id
+            assert hook_input["cwd"] == os.path.realpath(cwd)
+            assert hook_input["hook_event_name"] == "UserPromptSubmit"
+            assert hook_input["model"] == "gpt-hook-runtime"
+            assert hook_input["permission_mode"] == "bypassPermissions"
+            assert hook_input["prompt"] == "hook runtime prompt"
+            assert hook_input["transcript_exists"] is True
+
+            assert server.request_bodies
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            assert request_texts_by_role.get("user") == ["hook runtime prompt"]
+            assert request_texts_by_role.get("developer") == [
+                "  hook context from runtime\n    indented line  "
+            ]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_plugin_hook_environment_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-hook-env-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    plugin_root = codex_home / "plugins" / "cache" / "test" / "demo" / "local"
+    plugin_data_root = codex_home / "plugins" / "data" / "demo-test"
+    hook_script = plugin_root / "hooks" / "user_prompt_submit_hook.py"
+    hook_log = root / "plugin_hook_env.json"
+    try:
+        cwd.mkdir(parents=True)
+        plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        hook_script.parent.mkdir(parents=True)
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-plugin-hook-env"',
+                    "",
+                    "[features]",
+                    "hooks = true",
+                    "plugins = true",
+                    "plugin_hooks = true",
+                    "",
+                    '[plugins."demo@test"]',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            '{"name":"demo"}',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import os",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    "data_root = Path(os.environ['PLUGIN_DATA'])",
+                    "data_root.mkdir(parents=True, exist_ok=True)",
+                    "arg_marker = Path(sys.argv[1])",
+                    "data_root.joinpath('marker.txt').write_text(payload['prompt'], encoding='utf-8')",
+                    "arg_marker.write_text('arg:' + payload['prompt'], encoding='utf-8')",
+                    "env = {key: os.environ[key] for key in ['PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']}",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(env, sort_keys=True), encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'plugin hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        plugin_root.joinpath("hooks", "hooks.json").write_text(
+            "\n".join(
+                [
+                    "{",
+                    '  "hooks": {',
+                    '    "UserPromptSubmit": [',
+                    "      {",
+                    '        "hooks": [',
+                    "          {",
+                    '            "type": "command",',
+                    '            "command": "python3 \'${PLUGIN_ROOT}/hooks/user_prompt_submit_hook.py\' \'${PLUGIN_DATA}/arg-marker.txt\'",',
+                    '            "statusMessage": "running plugin prompt hook"',
+                    "          }",
+                    "        ]",
+                    "      }",
+                    "    ]",
+                    "  }",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "experimentalApi": True,
+                            "optOutNotificationMethods": ["configWarning", "warning"],
+                        },
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-plugin-hook-env",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-plugin-hook-env",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+            assert prompt_hook["eventName"] == "userPromptSubmit"
+            assert prompt_hook["source"] == "plugin"
+            assert prompt_hook["pluginId"] == "demo@test"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-plugin-hook-env",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-plugin-hook-env",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "plugin env prompt"}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "turn-start-with-plugin-hook-env"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = [
+                message
+                for message in messages
+                if message.get("method") == "hook/completed"
+            ][0]
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["source"] == "plugin"
+            assert completed_run["status"] == "completed"
+            assert completed_run["entries"] == [
+                {"kind": "context", "text": "plugin hook context"}
+            ]
+
+            hook_env = json.loads(hook_log.read_text(encoding="utf-8"))
+            assert hook_env == {
+                "CLAUDE_PLUGIN_DATA": str(plugin_data_root),
+                "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+                "PLUGIN_DATA": str(plugin_data_root),
+                "PLUGIN_ROOT": str(plugin_root),
+            }
+            assert plugin_data_root.joinpath("marker.txt").read_text(encoding="utf-8") == "plugin env prompt"
+            assert plugin_data_root.joinpath("arg-marker.txt").read_text(encoding="utf-8") == "arg:plugin env prompt"
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_block_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-block-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    hook_log = root / "user_prompt_submit_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-block"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "import time",
+                    "payload = json.load(sys.stdin)",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "time.sleep(1.1)",
+                    "print('blocked by prompt hook', file=sys.stderr)",
+                    "sys.exit(2)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    'statusMessage = "blocking prompt hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-block",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "thread-start-for-hook-block"
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-block",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-block",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-blocking-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "blocked prompt"}],
+                    },
+                },
+            )
+            turn_response = read_json_line(proc, 5)
+            assert turn_response["id"] == "turn-start-with-blocking-hook"
+            turn_id = turn_response["result"]["turn"]["id"]
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            methods = [message.get("method") for message in messages]
+            assert methods == [
+                "thread/status/changed",
+                "turn/started",
+                "hook/started",
+                "hook/completed",
+                "turn/completed",
+                "thread/status/changed",
+            ]
+            assert messages[0]["params"]["status"]["type"] == "active"
+            assert messages[-1]["params"]["status"]["type"] == "idle"
+            turn_started = messages[1]
+            hook_started = messages[2]
+            hook_completed = messages[3]
+            turn_completed = messages[4]
+            assert (
+                turn_started["params"]["turn"]["startedAt"]
+                <= hook_started["params"]["run"]["startedAt"]
+            )
+            assert (
+                turn_completed["params"]["turn"]["completedAt"]
+                >= hook_completed["params"]["run"]["completedAt"]
+            )
+            assert hook_completed["params"]["threadId"] == thread_id
+            assert hook_completed["params"]["turnId"] == turn_id
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["status"] == "blocked"
+            assert completed_run["entries"] == [
+                {"kind": "feedback", "text": "blocked by prompt hook"}
+            ]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turns-after-blocking-hook",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            turns_after_block = read_json_line(proc, 5)
+            assert turns_after_block["id"] == "turns-after-blocking-hook"
+            assert turns_after_block["error"]["code"] == -32600
+            assert (
+                "thread/turns/list is unavailable before first user message"
+                in turns_after_block["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-after-blocking-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "blocked prompt again"}],
+                    },
+                },
+            )
+            next_turn_response = read_json_line(proc, 5)
+            assert next_turn_response["id"] == "turn-start-after-blocking-hook"
+            next_turn_id = next_turn_response["result"]["turn"]["id"]
+            assert next_turn_id == "turn-0"
+            next_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            next_hook_completed = [
+                message
+                for message in next_messages
+                if message.get("method") == "hook/completed"
+            ][0]
+            assert next_hook_completed["params"]["turnId"] == next_turn_id
+            assert next_hook_completed["params"]["run"]["status"] == "blocked"
+            assert server.request_bodies == []
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_runs_all_after_block_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-run-all-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    first_hook = cwd / ".codex" / "first_hook.py"
+    second_hook = cwd / ".codex" / "second_hook.py"
+    second_log = root / "second_hook_ran.txt"
+    try:
+        codex_home.mkdir()
+        first_hook.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-run-all"\n',
+            encoding="utf-8",
+        )
+        first_hook.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import time",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    "if payload['prompt'] != 'run all hooks prompt':",
+                    "    time.sleep(0.05)",
+                    "    sys.exit(0)",
+                    "time.sleep(0.1)",
+                    "print('first hook blocked prompt', file=sys.stderr)",
+                    "sys.exit(2)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        second_hook.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import time",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    "if payload['prompt'] == 'run all hooks prompt':",
+                    "    time.sleep(1.1)",
+                    f"    Path({json.dumps(str(second_log))}).open('a', encoding='utf-8').write('first\\n')",
+                    "    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'second hook context'}}))",
+                    "else:",
+                    "    time.sleep(0.05)",
+                    f"    Path({json.dumps(str(second_log))}).open('a', encoding='utf-8').write('followup\\n')",
+                    "    sys.exit(0)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {first_hook}"',
+                    'statusMessage = "first hook"',
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {second_hook}"',
+                    'statusMessage = "second hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-run-all",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-run-all",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hooks = hooks["result"]["data"][0]["hooks"]
+            assert len(prompt_hooks) == 2
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-run-all",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": hook["currentHash"],
+                                    }
+                                    for hook in prompt_hooks
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-run-all-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "run all hooks prompt"}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "turn-start-with-run-all-hook"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = [
+                message for message in messages if message.get("method") == "hook/completed"
+            ]
+            hook_methods = [
+                message.get("method")
+                for message in messages
+                if message.get("method", "").startswith("hook/")
+            ]
+            assert hook_methods == [
+                "hook/started",
+                "hook/started",
+                "hook/completed",
+                "hook/completed",
+            ]
+            assert [message["params"]["run"]["status"] for message in hook_completed] == [
+                "blocked",
+                "completed",
+            ]
+            assert hook_completed[0]["params"]["run"]["durationMs"] < 700
+            assert hook_completed[1]["params"]["run"]["durationMs"] >= 900
+            assert hook_completed[1]["params"]["run"]["entries"] == [
+                {"kind": "context", "text": "second hook context"}
+            ]
+            assert second_log.read_text(encoding="utf-8") == "first\n"
+            assert server.request_bodies == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turns-after-hidden-hook-context",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            turns_after_hidden_context = read_json_line(proc, 5)
+            assert turns_after_hidden_context["id"] == "turns-after-hidden-hook-context"
+            assert turns_after_hidden_context["error"]["code"] == -32600
+            assert (
+                "thread/turns/list is unavailable before first user message"
+                in turns_after_hidden_context["error"]["message"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-after-run-all-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [
+                            {"type": "text", "text": "accepted after blocked context"}
+                        ],
+                    },
+                },
+            )
+            accepted_response = read_json_line(proc, 5)
+            assert accepted_response["id"] == "turn-start-after-run-all-hook"
+            assert accepted_response["result"]["turn"]["id"] == "turn-0"
+            accepted_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            assert any(
+                message.get("method") == "turn/completed"
+                for message in accepted_messages
+            )
+            assert len(server.request_bodies) == 1
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            request_texts = [
+                text
+                for texts in request_texts_by_role.values()
+                for text in texts
+            ]
+            assert "second hook context" in request_texts_by_role.get("developer", [])
+            assert any(
+                "accepted after blocked context" in text
+                for text in request_texts_by_role.get("user", [])
+            )
+            assert all("run all hooks prompt" not in text for text in request_texts)
+            assert second_log.read_text(encoding="utf-8") == "first\nfollowup\n"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turns-after-accepted-hook-context",
+                    "method": "thread/turns/list",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            turns_after_accept = read_json_line(proc, 5)
+            assert turns_after_accept["id"] == "turns-after-accepted-hook-context"
+            assert [turn["id"] for turn in turns_after_accept["result"]["data"]] == [
+                "turn-1",
+                "turn-0",
+            ]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_invalid_block_context_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-invalid-block-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-invalid-block"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "print(json.dumps({'decision': 'block', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'invalid context must not reach model'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-invalid-block",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-invalid-block",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-invalid-block-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-invalid-block-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "invalid block prompt"}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "turn-start-with-invalid-block-hook"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = next(
+                message for message in messages if message.get("method") == "hook/completed"
+            )
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["status"] == "failed"
+            assert completed_run["entries"] == [
+                {
+                    "kind": "error",
+                    "text": "UserPromptSubmit hook returned decision:block without a non-empty reason",
+                }
+            ]
+
+            assert server.request_bodies
+            request_texts = [
+                content.get("text", "")
+                for item in server.request_bodies[0]["input"]
+                for content in item.get("content", [])
+                if content.get("type") == "input_text"
+            ]
+            assert any("invalid block prompt" in text for text in request_texts)
+            assert all("invalid context must not reach model" not in text for text in request_texts)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_malformed_output_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-malformed-output-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-malformed-output"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "print(json.dumps({'continue': 'false'}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-malformed-output",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-malformed-output",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-malformed-output-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-malformed-output-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "malformed output prompt"}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "turn-start-with-malformed-output-hook"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = next(
+                message for message in messages if message.get("method") == "hook/completed"
+            )
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["status"] == "failed"
+            assert completed_run["entries"] == [
+                {
+                    "kind": "error",
+                    "text": "hook returned invalid user prompt submit JSON output",
+                }
+            ]
+
+            assert server.request_bodies
+            request_texts = [
+                content.get("text", "")
+                for item in server.request_bodies[0]["input"]
+                for content in item.get("content", [])
+                if content.get("type") == "input_text"
+            ]
+            assert any("malformed output prompt" in text for text in request_texts)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_model_error_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-model-error-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    hook_log = root / "user_prompt_submit_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-model-error"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'model error hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-model-error",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-model-error",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-model-error",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            server.response_payloads.append(
+                b"event: response.failed\n"
+                b'data: {"type":"response.failed","response":{"id":"resp-failed","error":{"code":"server_error","message":"simulated failure"}}}\n\n'
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-model-error-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "model error prompt"}],
+                    },
+                },
+            )
+            turn_response = read_json_line(proc, 10)
+            assert turn_response["id"] == "turn-start-with-model-error-hook"
+            assert "error" in turn_response
+            messages = read_json_lines_until(
+                proc,
+                10,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "systemError"
+                    for message in seen
+                ),
+            )
+            methods = [message.get("method") for message in messages]
+            assert methods[:4] == [
+                "thread/status/changed",
+                "turn/started",
+                "hook/started",
+                "hook/completed",
+            ]
+            assert "error" in methods
+            hook_completed = next(
+                message for message in messages if message.get("method") == "hook/completed"
+            )
+            assert hook_completed["params"]["run"]["status"] == "completed"
+            assert hook_completed["params"]["run"]["entries"] == [
+                {"kind": "context", "text": "model error hook context"}
+            ]
+            hook_inputs = [
+                json.loads(line)
+                for line in hook_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(hook_inputs) == 1
+            assert hook_inputs[0]["prompt"] == "model error prompt"
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_notification_opt_out_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-opt-out-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-opt-out"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text("print('')\n", encoding="utf-8")
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            capabilities = {
+                **EXPERIMENTAL_API_CAPABILITIES,
+                "optOutNotificationMethods": ["hook/started", "hook/completed"],
+            }
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": capabilities,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-opt-out",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-opt-out",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-opt-out",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-opted-out-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "opted out hook prompt"}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "turn-start-with-opted-out-hook"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            methods = [message.get("method") for message in messages]
+            assert "hook/started" not in methods
+            assert "hook/completed" not in methods
+            assert "turn/started" in methods
+            assert "turn/completed" in methods
+            assert server.request_bodies
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_closed_stdin_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-closed-stdin-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-closed-stdin"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'closed stdin context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-closed-stdin",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-closed-stdin",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-closed-stdin",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            large_prompt = "x" * (48 * 1024)
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-closed-stdin-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": large_prompt}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 10)["id"] == "turn-start-with-closed-stdin-hook"
+            messages = read_json_lines_until(
+                proc,
+                10,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = next(
+                message for message in messages if message.get("method") == "hook/completed"
+            )
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["status"] == "completed"
+            assert completed_run["entries"] == [
+                {"kind": "context", "text": "closed stdin context"}
+            ]
+
+            assert server.request_bodies
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            assert "closed stdin context" in request_texts_by_role.get("developer", [])
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_user_prompt_submit_hook_stdin_timeout_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-stdin-timeout-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "user_prompt_submit_hook.py"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-timeout"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "import time\n" "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "timeout = 1",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-hook-stdin-timeout",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-hook-stdin-timeout",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-hook-stdin-timeout",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            large_prompt = "x" * (48 * 1024)
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-stdin-timeout-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": large_prompt}],
+                    },
+                },
+            )
+            assert read_json_line(proc, 10)["id"] == "turn-start-with-stdin-timeout-hook"
+            messages = read_json_lines_until(
+                proc,
+                10,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            hook_completed = next(
+                message for message in messages if message.get("method") == "hook/completed"
+            )
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["status"] == "failed"
+            assert completed_run["entries"] == [
+                {"kind": "error", "text": "hook exited with code 124"}
+            ]
+            assert server.request_bodies
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -34988,6 +37015,26 @@ def main() -> None:
     print("app-server-plugin-rpc-e2e: ok")
     run_hooks_list_rpc_smoke(binary)
     print("app-server-hooks-list-rpc-e2e: ok")
+    run_user_prompt_submit_hook_notification_smoke(binary)
+    print("app-server-user-prompt-submit-hook-notification-e2e: ok")
+    run_user_prompt_submit_plugin_hook_environment_smoke(binary)
+    print("app-server-user-prompt-submit-plugin-hook-environment-e2e: ok")
+    run_user_prompt_submit_hook_block_smoke(binary)
+    print("app-server-user-prompt-submit-hook-block-e2e: ok")
+    run_user_prompt_submit_hook_runs_all_after_block_smoke(binary)
+    print("app-server-user-prompt-submit-hook-run-all-after-block-e2e: ok")
+    run_user_prompt_submit_hook_invalid_block_context_smoke(binary)
+    print("app-server-user-prompt-submit-hook-invalid-block-context-e2e: ok")
+    run_user_prompt_submit_hook_malformed_output_smoke(binary)
+    print("app-server-user-prompt-submit-hook-malformed-output-e2e: ok")
+    run_user_prompt_submit_hook_model_error_notification_smoke(binary)
+    print("app-server-user-prompt-submit-hook-model-error-notification-e2e: ok")
+    run_user_prompt_submit_hook_notification_opt_out_smoke(binary)
+    print("app-server-user-prompt-submit-hook-notification-opt-out-e2e: ok")
+    run_user_prompt_submit_hook_closed_stdin_smoke(binary)
+    print("app-server-user-prompt-submit-hook-closed-stdin-e2e: ok")
+    run_user_prompt_submit_hook_stdin_timeout_smoke(binary)
+    print("app-server-user-prompt-submit-hook-stdin-timeout-e2e: ok")
     run_hook_startup_warning_smoke(binary)
     print("app-server-hook-startup-warning-e2e: ok")
     run_skills_list_rpc_smoke(binary)
