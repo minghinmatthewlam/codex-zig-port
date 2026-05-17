@@ -11,6 +11,8 @@ pub const Config = struct {
     active_profile: ?[]const u8,
     model: []const u8,
     review_model: ?[]const u8 = null,
+    model_context_window: ?i64 = null,
+    model_auto_compact_token_limit: ?i64 = null,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
     model_provider_wire_api: ModelProviderWireApi = .responses,
@@ -27,6 +29,7 @@ pub const Config = struct {
     web_search_mode: ?WebSearchMode,
     model_reasoning_effort: ?ReasoningEffort,
     model_reasoning_summary: ?ReasoningSummary = null,
+    model_verbosity: ?Verbosity = null,
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
@@ -165,6 +168,8 @@ pub const LoadOptions = struct {
 pub const RuntimeOverrides = struct {
     model: ?[]const u8 = null,
     review_model: ?[]const u8 = null,
+    model_context_window: ?i64 = null,
+    model_auto_compact_token_limit: ?i64 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
     oss_provider: ?[]const u8 = null,
@@ -173,6 +178,7 @@ pub const RuntimeOverrides = struct {
     web_search_mode: ?WebSearchMode = null,
     service_tier: ?[]const u8 = null,
     model_reasoning_summary: ?ReasoningSummary = null,
+    model_verbosity: ?Verbosity = null,
     syntax_theme: ?[]const u8 = null,
     personality: ?Personality = null,
     tui_alternate_screen: ?AltScreenMode = null,
@@ -256,6 +262,12 @@ pub fn applyRuntimeOverrides(
         if (cfg.review_model) |existing| allocator.free(existing);
         cfg.review_model = next_review_model;
     }
+    if (overrides.model_context_window) |value| {
+        cfg.model_context_window = value;
+    }
+    if (overrides.model_auto_compact_token_limit) |value| {
+        cfg.model_auto_compact_token_limit = value;
+    }
     if (overrides.openai_base_url) |openai_base_url| {
         const next_openai_base_url = try allocator.dupe(u8, openai_base_url);
         allocator.free(cfg.openai_base_url);
@@ -296,6 +308,9 @@ pub fn applyRuntimeOverrides(
     if (overrides.model_reasoning_summary) |summary| {
         cfg.model_reasoning_summary = summary;
     }
+    if (overrides.model_verbosity) |verbosity| {
+        cfg.model_verbosity = verbosity;
+    }
     if (overrides.tui_alternate_screen) |mode| {
         cfg.tui_alternate_screen = mode;
     }
@@ -317,6 +332,10 @@ pub fn applyRawConfigOverride(
         runtime_overrides.model = value;
     } else if (std.mem.eql(u8, key, "review_model")) {
         runtime_overrides.review_model = value;
+    } else if (std.mem.eql(u8, key, "model_context_window")) {
+        runtime_overrides.model_context_window = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
+    } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
+        runtime_overrides.model_auto_compact_token_limit = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
     } else if (std.mem.eql(u8, key, "openai_base_url")) {
         runtime_overrides.openai_base_url = value;
     } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
@@ -337,6 +356,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.personality = try Personality.parse(value);
     } else if (std.mem.eql(u8, key, "model_reasoning_summary")) {
         runtime_overrides.model_reasoning_summary = try ReasoningSummary.parse(value);
+    } else if (std.mem.eql(u8, key, "model_verbosity")) {
+        runtime_overrides.model_verbosity = try Verbosity.parse(value);
     } else if (std.mem.eql(u8, key, "tui.alternate_screen") or std.mem.eql(u8, key, "tui_alternate_screen")) {
         runtime_overrides.tui_alternate_screen = try AltScreenMode.parse(value);
     }
@@ -523,6 +544,27 @@ pub const ReasoningSummary = enum {
     }
 };
 
+pub const Verbosity = enum {
+    low,
+    medium,
+    high,
+
+    pub fn label(self: Verbosity) []const u8 {
+        return switch (self) {
+            .low => "low",
+            .medium => "medium",
+            .high => "high",
+        };
+    }
+
+    pub fn parse(value: []const u8) !Verbosity {
+        if (std.mem.eql(u8, value, "low")) return .low;
+        if (std.mem.eql(u8, value, "medium")) return .medium;
+        if (std.mem.eql(u8, value, "high")) return .high;
+        return error.InvalidVerbosity;
+    }
+};
+
 pub const Personality = enum {
     none,
     friendly,
@@ -685,6 +727,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer allocator.free(model);
     const review_model = try resolveReviewModel(allocator, config_view);
     errdefer if (review_model) |value| allocator.free(value);
+    const model_context_window = try resolveModelContextWindow(config_view);
+    const model_auto_compact_token_limit = try resolveModelAutoCompactTokenLimit(config_view);
 
     const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
@@ -710,6 +754,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
     const model_reasoning_effort = try resolveModelReasoningEffort(allocator, config_view, active_profile);
     const model_reasoning_summary = try resolveModelReasoningSummary(allocator, config_view, active_profile);
+    const model_verbosity = try resolveModelVerbosity(allocator, config_view, active_profile);
     const service_tier = try resolveServiceTier(allocator, config_view, active_profile);
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
@@ -730,6 +775,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .active_profile = active_profile,
         .model = model,
         .review_model = review_model,
+        .model_context_window = model_context_window,
+        .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
         .model_provider_wire_api = model_provider_wire_api,
@@ -746,6 +793,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
         .model_reasoning_summary = model_reasoning_summary,
+        .model_verbosity = model_verbosity,
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
@@ -793,6 +841,14 @@ fn resolveModel(allocator: std.mem.Allocator, config_view: ConfigView, active_pr
 
 fn resolveReviewModel(allocator: std.mem.Allocator, config_view: ConfigView) !?[]const u8 {
     return config_view.getTopLevelString(allocator, "review_model");
+}
+
+fn resolveModelContextWindow(config_view: ConfigView) !?i64 {
+    return config_view.getTopLevelI64("model_context_window");
+}
+
+fn resolveModelAutoCompactTokenLimit(config_view: ConfigView) !?i64 {
+    return config_view.getTopLevelI64("model_auto_compact_token_limit");
 }
 
 fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !BaseUrls {
@@ -1000,6 +1056,20 @@ fn resolveModelReasoningSummary(allocator: std.mem.Allocator, config_view: Confi
     return null;
 }
 
+fn resolveModelVerbosity(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?Verbosity {
+    if (try env.getOwned(allocator, "CODEX_ZIG_MODEL_VERBOSITY")) |value| {
+        defer allocator.free(value);
+        return try Verbosity.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "model_verbosity")) |value| {
+        defer allocator.free(value);
+        return try Verbosity.parse(value);
+    }
+
+    return null;
+}
+
 fn resolveServiceTier(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
     if (try env.getOwned(allocator, "CODEX_ZIG_SERVICE_TIER")) |value| {
         defer allocator.free(value);
@@ -1110,6 +1180,10 @@ pub fn readConfigTomlFile(allocator: std.mem.Allocator, path: []const u8) !?[]co
 
 pub fn topLevelStringValue(allocator: std.mem.Allocator, bytes: []const u8, key: []const u8) !?[]const u8 {
     return (ConfigView{ .bytes = bytes }).getTopLevelString(allocator, key);
+}
+
+pub fn topLevelI64Value(bytes: []const u8, key: []const u8) !?i64 {
+    return (ConfigView{ .bytes = bytes }).getTopLevelI64(key);
 }
 
 pub fn scopedStringValue(allocator: std.mem.Allocator, bytes: []const u8, profile: ?[]const u8, key: []const u8) !?[]const u8 {
@@ -1634,6 +1708,17 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getTopLevelI64(self: ConfigView, key: []const u8) !?i64 {
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') break;
+            if (try i64ValueForKey(line, key)) |value| return value;
+        }
+        return null;
+    }
+
     fn getProfileString(
         self: ConfigView,
         allocator: std.mem.Allocator,
@@ -2131,6 +2216,19 @@ fn u64ValueForKey(line: []const u8, key: []const u8) !?u64 {
     return std.fmt.parseUnsigned(u64, rhs, 10) catch error.InvalidTomlInteger;
 }
 
+fn i64ValueForKey(line: []const u8, key: []const u8) !?i64 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs = tomlScalarWithoutInlineComment(std.mem.trim(u8, line[eq + 1 ..], " \t"));
+    return std.fmt.parseInt(i64, rhs, 10) catch error.InvalidTomlInteger;
+}
+
+fn tomlScalarWithoutInlineComment(rhs: []const u8) []const u8 {
+    const comment = std.mem.indexOfScalar(u8, rhs, '#') orelse return rhs;
+    return std.mem.trim(u8, rhs[0..comment], " \t\r");
+}
+
 fn parseProviderAuthInlineTable(allocator: std.mem.Allocator, contents: []const u8) !?ProviderAuthCommand {
     var command: ?[]const u8 = null;
     errdefer if (command) |value| allocator.free(value);
@@ -2603,6 +2701,7 @@ test "profile values override top-level config values" {
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
         \\model_reasoning_effort = "low"
+        \\model_verbosity = "low"
         \\service_tier = "flex"
         \\syntax_theme = "github"
         \\personality = "friendly"
@@ -2617,6 +2716,7 @@ test "profile values override top-level config values" {
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
         \\model_reasoning_effort = "high"
+        \\model_verbosity = "high"
         \\service_tier = "fast"
         \\syntax_theme = "dracula"
         \\personality = "pragmatic"
@@ -2649,6 +2749,7 @@ test "profile values override top-level config values" {
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
     try std.testing.expectEqual(WebSearchMode.live, (try resolveWebSearchMode(allocator, view, active_profile.?)).?);
     try std.testing.expectEqual(ReasoningEffort.high, (try resolveModelReasoningEffort(allocator, view, active_profile.?)).?);
+    try std.testing.expectEqual(Verbosity.high, (try resolveModelVerbosity(allocator, view, active_profile.?)).?);
     const service_tier = try resolveServiceTier(allocator, view, active_profile.?);
     defer allocator.free(service_tier.?);
     try std.testing.expectEqualStrings("priority", service_tier.?);
@@ -2678,6 +2779,19 @@ test "review model resolves from top-level config" {
     const review_model = try resolveReviewModel(allocator, view);
     defer allocator.free(review_model.?);
     try std.testing.expectEqualStrings("review-model", review_model.?);
+}
+
+test "model context limits resolve from top-level config" {
+    const view = ConfigView{
+        .bytes =
+        \\model_context_window = 128000 # tokens
+        \\model_auto_compact_token_limit = 96_000 # tokens
+        \\
+        ,
+    };
+
+    try std.testing.expectEqual(@as(?i64, 128000), try resolveModelContextWindow(view));
+    try std.testing.expectEqual(@as(?i64, 96000), try resolveModelAutoCompactTokenLimit(view));
 }
 
 test "tui theme table overrides legacy syntax theme key" {
@@ -3194,6 +3308,8 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "profile=\"work\"");
     try applyRawConfigOverride(&runtime, &profile, "model=gpt-test");
     try applyRawConfigOverride(&runtime, &profile, "review_model=gpt-review");
+    try applyRawConfigOverride(&runtime, &profile, "model_context_window=128000");
+    try applyRawConfigOverride(&runtime, &profile, "model_auto_compact_token_limit=96000");
     try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
     try applyRawConfigOverride(&runtime, &profile, "oss_provider=ollama");
@@ -3204,12 +3320,15 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
     try applyRawConfigOverride(&runtime, &profile, "personality=friendly");
     try applyRawConfigOverride(&runtime, &profile, "model_reasoning_summary=detailed");
+    try applyRawConfigOverride(&runtime, &profile, "model_verbosity=high");
     try applyRawConfigOverride(&runtime, &profile, "tui.alternate_screen=never");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
     try std.testing.expectEqualStrings("gpt-test", runtime.model.?);
     try std.testing.expectEqualStrings("gpt-review", runtime.review_model.?);
+    try std.testing.expectEqual(@as(i64, 128000), runtime.model_context_window.?);
+    try std.testing.expectEqual(@as(i64, 96000), runtime.model_auto_compact_token_limit.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("ollama", runtime.oss_provider.?);
@@ -3220,6 +3339,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
     try std.testing.expectEqual(Personality.friendly, runtime.personality.?);
     try std.testing.expectEqual(ReasoningSummary.detailed, runtime.model_reasoning_summary.?);
+    try std.testing.expectEqual(Verbosity.high, runtime.model_verbosity.?);
     try std.testing.expectEqual(AltScreenMode.never, runtime.tui_alternate_screen.?);
 }
 
