@@ -5,6 +5,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
+const git_apply = @import("git_apply.zig");
 
 const version = "0.0.1";
 const default_cloud_base_url = "https://chatgpt.com/backend-api/codex";
@@ -90,8 +91,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     switch (parsed.command) {
         .list => return runList(allocator, parsed),
         .status => return runStatus(allocator, parsed),
+        .apply => return runApply(allocator, parsed),
         .diff => return runDiff(allocator, parsed),
-        .tui, .exec, .apply => return reportRuntimeNotImplemented(parsed.command),
+        .tui, .exec => return reportRuntimeNotImplemented(parsed.command),
     }
 }
 
@@ -259,6 +261,54 @@ fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const diff = try extractUnifiedDiffForAttempt(allocator, body, 1);
     defer allocator.free(diff);
     try cli_utils.writeStdout(diff);
+}
+
+fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    const raw_task_id = parsed.task_attempt.task_id orelse return error.MissingCloudTaskId;
+    if (parsed.task_attempt.attempt) |attempt| {
+        if (attempt != 1) return error.CloudAttemptRuntimeUnsupported;
+    }
+    const task_id = try normalizeTaskId(allocator, raw_task_id);
+    defer allocator.free(task_id);
+
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
+    defer allocator.free(url);
+    const body = try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+
+    const diff = try extractUnifiedDiffForAttempt(allocator, body, 1);
+    defer allocator.free(diff);
+    if (!git_apply.isUnifiedDiff(diff)) return error.InvalidCloudTaskDiff;
+
+    var result = try git_apply.applyUnifiedDiff(allocator, diff);
+    defer result.deinit(allocator);
+
+    try cli_utils.writeStdout(result.stdout);
+    try cli_utils.writeStderr(result.stderr);
+
+    const summary = diffSummaryFromDiff(diff);
+    if (result.exit_code == 0) {
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "Applied task {s} locally ({d} file{s})\n",
+            .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+        );
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+        return;
+    }
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Apply failed for task {s} ({d} file{s})\n",
+        .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+    return error.CloudTaskApplyFailed;
 }
 
 fn initRuntime(allocator: std.mem.Allocator, parsed: ParsedOptions) !CloudRuntime {
