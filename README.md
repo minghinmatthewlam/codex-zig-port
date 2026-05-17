@@ -288,6 +288,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - list user and per-cwd project command hooks from `config.toml` and
   `hooks.json` with app-server `hooks/list`, including user hook-state
   enable/trust metadata and enabled local plugin-cache hooks
+- execute trusted app-server `SessionStart` and `UserPromptSubmit` command
+  hooks during `turn/start`, including hook lifecycle notifications, Rust-shaped
+  stdin payloads, and hidden developer-message context injection
 - list local app-server skills from repo, user, and per-cwd extra roots with
   `skills/list`, including enabled local plugin-cache skill roots,
   `forceReload` cache refreshes, and `agents/openai.yaml` interface/dependency metadata plus
