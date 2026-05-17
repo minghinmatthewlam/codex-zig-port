@@ -573,7 +573,7 @@ fn prepareTemporaryGitIndex(allocator: std.mem.Allocator, git_root: []const u8) 
     const source_index = try resolveGitInternalPath(allocator, git_root, "index");
     defer allocator.free(source_index);
 
-    const temp_index = try temporaryApplyPath(allocator, ".index");
+    const temp_index = try temporaryGitIndexPath(allocator, git_root);
     errdefer allocator.free(temp_index);
     errdefer std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), temp_index) catch {};
 
@@ -651,8 +651,12 @@ fn stageExistingDiffPaths(
         .stdout_limit = .limited(128 * 1024),
         .stderr_limit = .limited(128 * 1024),
     });
-    allocator.free(result.stdout);
-    allocator.free(result.stderr);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.GitStageFailed,
+        else => return error.GitStageTerminated,
+    }
 }
 
 pub fn isUnifiedDiff(diff: []const u8) bool {
@@ -1216,6 +1220,19 @@ fn temporaryApplyPath(allocator: std.mem.Allocator, suffix: []const u8) ![]const
     defer allocator.free(filename);
 
     return std.fs.path.join(allocator, &.{ dir, filename });
+}
+
+fn temporaryGitIndexPath(allocator: std.mem.Allocator, git_root: []const u8) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const timestamp = std.Io.Timestamp.now(io, .real).nanoseconds;
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const random_id = std.mem.readInt(u64, &random_bytes, .little);
+
+    const filename = try std.fmt.allocPrint(allocator, "codex-zig-apply-{d}-{x}.index", .{ timestamp, random_id });
+    defer allocator.free(filename);
+
+    return resolveGitInternalPath(allocator, git_root, filename);
 }
 
 fn writeTemporaryPatch(allocator: std.mem.Allocator, diff: []const u8) ![]const u8 {
