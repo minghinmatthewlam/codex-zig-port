@@ -609,12 +609,13 @@ Additional Cloud Tasks command coverage: `codex-zig cloud` and the
 validate Rust ranges for attempts and list limits, forward root config
 overrides into Cloud runtime commands, and run authenticated backend reads for
 `list`, `status`, and first-attempt `diff` against the Cloud Tasks task-list and
-task-detail endpoints. `apply` fetches the same first-attempt diff and applies
-it to the current git repository with `git apply --3way`. `exec` creates Cloud
-tasks from environment ids or case-insensitive environment labels, argument/stdin
-prompts, branch overrides or current-branch fallback, best-of-N metadata, and
-`CODEX_STARTING_DIFF` pre-apply items. The interactive Cloud picker UI,
-sibling-attempt fetching, and full apply preflight/parity diagnostics remain
+task-detail endpoints. `list --env` resolves environment ids or case-insensitive
+environment labels before filtering. `apply` fetches the same first-attempt diff
+and applies it to the current git repository with `git apply --3way`. `exec`
+creates Cloud tasks from environment ids or case-insensitive environment labels,
+argument/stdin prompts, branch overrides or current-branch fallback, best-of-N
+metadata, and `CODEX_STARTING_DIFF` pre-apply items. The interactive Cloud picker
+UI, sibling-attempt fetching, and full apply preflight/parity diagnostics remain
 planned.
 
 Additional app-server websocket transport coverage: `app-server --listen
