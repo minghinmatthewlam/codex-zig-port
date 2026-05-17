@@ -581,6 +581,21 @@ class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        if self.path == "/stream-timeout":
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Exec-Stream", "timeout")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(b"5\r\nhello\r\n")
+                self.wfile.flush()
+                time.sleep(10)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if self.path == "/stream-fixed-close":
             payload = b"hello"
             self.close_connection = True
@@ -827,8 +842,42 @@ def run_exec_server_stream_response_smoke(
         )
         stream_timeout = read_event(5)
         assert stream_timeout["id"] == "stream-timeout-request"
-        assert stream_timeout["error"]["code"] == -32601
-        assert "streamResponse timeoutMs is not implemented yet" in stream_timeout["error"]["message"]
+        assert stream_timeout["result"]["status"] == 200
+        assert dump_header_value(stream_timeout["result"]["headers"], "x-exec-stream") == "timeout"
+        assert base64.b64decode(stream_timeout["result"]["bodyBase64"]) == b""
+        stream_timeout_first = read_event(5)
+        assert stream_timeout_first["method"] == "http/request/bodyDelta"
+        assert stream_timeout_first["params"]["requestId"] == "http-smoke-stream-timeout"
+        assert stream_timeout_first["params"]["seq"] == 1
+        assert base64.b64decode(stream_timeout_first["params"]["deltaBase64"]) == b"hello"
+        assert stream_timeout_first["params"]["done"] is False
+        assert stream_timeout_first["params"]["error"] is None
+        stream_timeout_terminal = read_event(5)
+        assert stream_timeout_terminal["method"] == "http/request/bodyDelta"
+        assert stream_timeout_terminal["params"]["requestId"] == "http-smoke-stream-timeout"
+        assert stream_timeout_terminal["params"]["seq"] == 2
+        assert base64.b64decode(stream_timeout_terminal["params"]["deltaBase64"]) == b""
+        assert stream_timeout_terminal["params"]["done"] is True
+        assert stream_timeout_terminal["params"]["error"] == "Timeout"
+
+        write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "stream-preheader-timeout-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-slow-head",
+                    "requestId": "http-smoke-stream-preheader-timeout",
+                    "timeoutMs": 100,
+                    "streamResponse": True,
+                },
+            }
+        )
+        stream_preheader_timeout = read_event(5)
+        assert stream_preheader_timeout["id"] == "stream-preheader-timeout-request"
+        assert stream_preheader_timeout["error"]["code"] == -32603
+        assert "http/request failed: Timeout" in stream_preheader_timeout["error"]["message"]
 
         write_json(
             {
@@ -933,6 +982,40 @@ def run_exec_server_websocket_stream_response_smoke(
         assert b"".join(base64.b64decode(delta["deltaBase64"]) for delta in stream_deltas) == b"hello stream"
         assert [delta["done"] for delta in stream_deltas] == [False, False, True]
         assert [delta["error"] for delta in stream_deltas] == [None, None, None]
+
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-stream-timeout-request",
+                "method": "http/request",
+                "params": {
+                    "method": "GET",
+                    "url": f"{http_url}/stream-timeout",
+                    "requestId": "http-smoke-websocket-stream-timeout",
+                    "timeoutMs": 100,
+                    "streamResponse": True,
+                },
+            }
+        )
+        stream_timeout = websocket.read_json()
+        assert stream_timeout["id"] == "websocket-stream-timeout-request"
+        assert stream_timeout["result"]["status"] == 200
+        assert dump_header_value(stream_timeout["result"]["headers"], "x-exec-stream") == "timeout"
+        assert base64.b64decode(stream_timeout["result"]["bodyBase64"]) == b""
+        stream_timeout_first = websocket.read_json()
+        assert stream_timeout_first["method"] == "http/request/bodyDelta"
+        assert stream_timeout_first["params"]["requestId"] == "http-smoke-websocket-stream-timeout"
+        assert stream_timeout_first["params"]["seq"] == 1
+        assert base64.b64decode(stream_timeout_first["params"]["deltaBase64"]) == b"hello"
+        assert stream_timeout_first["params"]["done"] is False
+        assert stream_timeout_first["params"]["error"] is None
+        stream_timeout_terminal = websocket.read_json()
+        assert stream_timeout_terminal["method"] == "http/request/bodyDelta"
+        assert stream_timeout_terminal["params"]["requestId"] == "http-smoke-websocket-stream-timeout"
+        assert stream_timeout_terminal["params"]["seq"] == 2
+        assert base64.b64decode(stream_timeout_terminal["params"]["deltaBase64"]) == b""
+        assert stream_timeout_terminal["params"]["done"] is True
+        assert stream_timeout_terminal["params"]["error"] == "Timeout"
     finally:
         if websocket is not None:
             websocket.close()
