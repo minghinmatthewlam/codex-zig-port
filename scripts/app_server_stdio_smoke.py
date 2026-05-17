@@ -2909,14 +2909,18 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
-            "id": "thread-goal-enable-feature",
-            "method": "experimentalFeature/enablement/set",
-            "params": {"enablement": {"goals": True}},
+            "id": "thread-goal-enable-config",
+            "method": "config/value/write",
+            "params": {
+                "keyPath": "features.goals",
+                "value": True,
+                "mergeStrategy": "upsert",
+            },
         }
     )
-    thread_goal_enable_feature = read_line()
-    assert thread_goal_enable_feature["id"] == "thread-goal-enable-feature"
-    assert thread_goal_enable_feature["result"]["enablement"] == {"goals": True}
+    thread_goal_enable_config = read_line()
+    assert thread_goal_enable_config["id"] == "thread-goal-enable-config"
+    assert thread_goal_enable_config["result"]["status"] == "ok"
 
     write_line(
         {
@@ -4342,7 +4346,15 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-start-", dir="/tmp"))
     try:
         codex_home.joinpath("config.toml").write_text(
-            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-smoke"\n',
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-turn-smoke"',
+                    "[features]",
+                    "goals = true",
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
         env = os.environ.copy()
@@ -4372,19 +4384,6 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 },
             )
             assert read_json_line(proc, 5)["id"] == "initialize"
-
-            write_json_line(
-                proc,
-                {
-                    "jsonrpc": "2.0",
-                    "id": "enable-goals-for-loaded-thread",
-                    "method": "experimentalFeature/enablement/set",
-                    "params": {"enablement": {"goals": True}},
-                },
-            )
-            enable_goals = read_json_line(proc, 5)
-            assert enable_goals["id"] == "enable-goals-for-loaded-thread"
-            assert enable_goals["result"]["enablement"] == {"goals": True}
 
             with tempfile.TemporaryDirectory(prefix="codex-zig-turn-start-cwd-", dir="/tmp") as cwd:
                 write_json_line(
@@ -26932,6 +26931,19 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         assert unsupported_enablement["id"] == "feature-enable-unsupported"
         assert unsupported_enablement["error"]["code"] == -32600
         assert "unsupported feature enablement `personality`" in unsupported_enablement["error"]["message"]
+
+        unsupported_goals_enablement = rpc(
+            "feature-enable-unsupported-goals",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"goals": True}},
+        )
+        assert unsupported_goals_enablement["id"] == "feature-enable-unsupported-goals"
+        assert unsupported_goals_enablement["error"]["code"] == -32600
+        assert (
+            "unsupported feature enablement `goals`"
+            in unsupported_goals_enablement["error"]["message"]
+        )
+        assert "apps, memories, plugins" in unsupported_goals_enablement["error"]["message"]
 
         unknown_enablement = rpc(
             "feature-enable-unknown",

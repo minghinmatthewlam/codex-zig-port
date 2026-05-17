@@ -50506,7 +50506,6 @@ fn experimentalFeatureStageLabel(stage: []const u8) []const u8 {
 
 const supported_experimental_feature_enablement = [_][]const u8{
     "apps",
-    "goals",
     "memories",
     "plugins",
     "remote_control",
@@ -50515,7 +50514,7 @@ const supported_experimental_feature_enablement = [_][]const u8{
     "tool_call_mcp_elicitation",
 };
 
-const supported_experimental_feature_enablement_message = "apps, goals, memories, plugins, remote_control, tool_search, tool_suggest, tool_call_mcp_elicitation";
+const supported_experimental_feature_enablement_message = "apps, memories, plugins, remote_control, tool_search, tool_suggest, tool_call_mcp_elicitation";
 
 fn handleExperimentalFeatureEnablementSet(
     allocator: std.mem.Allocator,
