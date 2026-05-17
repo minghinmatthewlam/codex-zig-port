@@ -1,5 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const regex_c = @cImport({
+    @cInclude("regex.h");
+});
 
 const account_nudge = @import("account_nudge.zig");
 const account_rate_limits = @import("account_rate_limits.zig");
@@ -201,6 +204,7 @@ const LoadedThread = struct {
     transcript: session_mod.Transcript,
     turns_json: []const u8,
     next_turn_index: usize,
+    pending_session_start_source: ?[]const u8,
     created_at: i64,
     updated_at: i64,
     status: ThreadRuntimeStatus = .idle,
@@ -238,6 +242,7 @@ const LoadedThread = struct {
         if (self.goal) |*goal| goal.deinit(allocator);
         self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
+        if (self.pending_session_start_source) |value| allocator.free(value);
     }
 };
 
@@ -25877,18 +25882,43 @@ fn handleTurnStart(
     const started_at_ms = currentUnixMilliseconds();
     const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
     try materializeHookTranscriptForThread(allocator, thread);
-    var user_prompt_hooks = try runUserPromptSubmitHooks(
-        allocator,
-        cfg.codex_home,
-        thread.id,
-        turn_id,
-        thread.path,
-        thread.cwd,
-        cfg.model,
-        hookPermissionMode(cfg.approval_policy),
-        input.prompt,
-    );
+
+    var session_start_hooks = HookRuntimeResult{};
+    defer session_start_hooks.deinit(allocator);
+    if (thread.pending_session_start_source) |source| {
+        thread.pending_session_start_source = null;
+        defer allocator.free(source);
+        session_start_hooks = try runSessionStartHooks(
+            allocator,
+            cfg.codex_home,
+            thread.id,
+            turn_id,
+            thread.path,
+            thread.cwd,
+            cfg.model,
+            hookPermissionMode(cfg.approval_policy),
+            source,
+        );
+    }
+    if (session_start_hooks.contexts.items.len > 0) {
+        try persistHookContextsForNextTurn(allocator, thread, session_start_hooks.contexts.items);
+    }
+
+    var user_prompt_hooks = HookRuntimeResult{};
     defer user_prompt_hooks.deinit(allocator);
+    if (!session_start_hooks.should_stop) {
+        user_prompt_hooks = try runUserPromptSubmitHooks(
+            allocator,
+            cfg.codex_home,
+            thread.id,
+            turn_id,
+            thread.path,
+            thread.cwd,
+            cfg.model,
+            hookPermissionMode(cfg.approval_policy),
+            input.prompt,
+        );
+    }
 
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
@@ -25975,7 +26005,7 @@ fn handleTurnStart(
         .notifications = &turn_update_notifications,
     };
 
-    if (user_prompt_hooks.should_stop) {
+    if (session_start_hooks.should_stop or user_prompt_hooks.should_stop) {
         const completed_at_ms = currentUnixMilliseconds();
         const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
         const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
@@ -25991,6 +26021,7 @@ fn handleTurnStart(
         try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
         try queueTurnNotification(allocator, state, "turn/started", started_notification);
         started_notification_moved = true;
+        try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
         try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
         try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
         completed_notification_moved = true;
@@ -26058,11 +26089,12 @@ fn handleTurnStart(
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
-        if (user_prompt_hooks.notifications.items.len > 0) {
+        if (session_start_hooks.notifications.items.len > 0 or user_prompt_hooks.notifications.items.len > 0) {
             thread.status = .active;
             try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
             try queueTurnNotification(allocator, state, "turn/started", started_notification);
             started_notification_moved = true;
+            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
             try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
         }
         thread.status = .system_error;
@@ -26091,6 +26123,7 @@ fn handleTurnStart(
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
     try queueTurnNotification(allocator, state, "turn/started", started_notification);
     started_notification_moved = true;
+    try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
     try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
     if (user_item_index < thread.transcript.history.items.len) {
         const user_item = thread.transcript.history.items[user_item_index];
@@ -26561,21 +26594,21 @@ const HookOutputEntry = struct {
     }
 };
 
-const UserPromptSubmitHookRun = struct {
+const HookCommandRun = struct {
     hook: hooks_list.Hook,
     hook_run_id: []const u8,
     started_at_ms: i64,
     started_at: i64,
-    worker: UserPromptSubmitHookWorker,
+    worker: HookCommandWorker,
     thread: ?std.Thread = null,
 
-    fn deinit(self: *UserPromptSubmitHookRun, allocator: std.mem.Allocator) void {
+    fn deinit(self: *HookCommandRun, allocator: std.mem.Allocator) void {
         allocator.free(self.hook_run_id);
         if (self.worker.result) |*result| result.deinit(std.heap.page_allocator);
     }
 };
 
-const UserPromptSubmitHookWorker = struct {
+const HookCommandWorker = struct {
     codex_home: []const u8,
     hook: hooks_list.Hook,
     cwd: []const u8,
@@ -26584,6 +26617,100 @@ const UserPromptSubmitHookWorker = struct {
     error_name: ?[]const u8 = null,
     completed_at_ms: ?i64 = null,
 };
+
+fn runSessionStartHooks(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    transcript_path: ?[]const u8,
+    cwd: []const u8,
+    model: []const u8,
+    permission_mode: []const u8,
+    source: []const u8,
+) !HookRuntimeResult {
+    var runtime = HookRuntimeResult{};
+    errdefer runtime.deinit(allocator);
+
+    var listed = try hooks_list.list(allocator, codex_home, &.{cwd});
+    defer listed.deinit(allocator);
+    if (listed.entries.len == 0) return runtime;
+
+    const input_json = try renderSessionStartHookInput(allocator, thread_id, transcript_path, cwd, model, permission_mode, source);
+    defer allocator.free(input_json);
+
+    var runs = std.ArrayList(HookCommandRun).empty;
+    defer deinitHookCommandRuns(allocator, &runs);
+    defer joinPendingHookCommandRuns(&runs);
+
+    for (listed.entries[0].hooks) |hook| {
+        if (hook.event_name != .session_start or !hook.shouldRun() or !(try hookMatcherMatchesInput(allocator, hook.matcher, source))) continue;
+        const hook_run_id = try renderHookRunId(allocator, hook);
+        var hook_run_id_moved = false;
+        errdefer if (!hook_run_id_moved) allocator.free(hook_run_id);
+
+        const started_at_ms = currentUnixMilliseconds();
+        const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+        const started = try renderHookNotification(allocator, "hook/started", thread_id, turn_id, hook, hook_run_id, "running", started_at, null, null, &.{});
+        errdefer allocator.free(started);
+        try runtime.notifications.append(allocator, .{ .method = "hook/started", .payload = started });
+
+        try runs.append(allocator, .{
+            .hook = hook,
+            .hook_run_id = hook_run_id,
+            .started_at_ms = started_at_ms,
+            .started_at = started_at,
+            .worker = .{
+                .codex_home = codex_home,
+                .hook = hook,
+                .cwd = cwd,
+                .input_json = input_json,
+            },
+        });
+        hook_run_id_moved = true;
+    }
+
+    for (runs.items) |*hook_run| {
+        hook_run.thread = try std.Thread.spawn(.{}, runHookCommandWorker, .{&hook_run.worker});
+    }
+
+    joinPendingHookCommandRuns(&runs);
+
+    for (runs.items) |*hook_run| {
+        var entries = std.ArrayList(HookOutputEntry).empty;
+        defer deinitHookOutputEntries(allocator, &entries);
+
+        const status = if (hook_run.worker.error_name) |error_name| blk: {
+            const message = try std.fmt.allocPrint(allocator, "hook failed to run: {s}", .{error_name});
+            defer allocator.free(message);
+            try appendHookOutputEntry(allocator, &entries, "error", message);
+            break :blk "failed";
+        } else blk: {
+            const result = hook_run.worker.result orelse return error.HookCommandMissingResult;
+            break :blk try collectSessionStartHookEntries(allocator, &result, &entries, &runtime.contexts);
+        };
+
+        if (std.mem.eql(u8, status, "stopped")) runtime.should_stop = true;
+        const completed_at_ms = hook_run.worker.completed_at_ms orelse currentUnixMilliseconds();
+        const completed = try renderHookNotification(
+            allocator,
+            "hook/completed",
+            thread_id,
+            turn_id,
+            hook_run.hook,
+            hook_run.hook_run_id,
+            status,
+            hook_run.started_at,
+            @divTrunc(completed_at_ms, std.time.ms_per_s),
+            @max(completed_at_ms - hook_run.started_at_ms, 0),
+            entries.items,
+        );
+        errdefer allocator.free(completed);
+        try runtime.notifications.append(allocator, .{ .method = "hook/completed", .payload = completed });
+    }
+
+    return runtime;
+}
 
 fn runUserPromptSubmitHooks(
     allocator: std.mem.Allocator,
@@ -26606,9 +26733,9 @@ fn runUserPromptSubmitHooks(
     const input_json = try renderUserPromptSubmitHookInput(allocator, thread_id, turn_id, transcript_path, cwd, model, permission_mode, prompt);
     defer allocator.free(input_json);
 
-    var runs = std.ArrayList(UserPromptSubmitHookRun).empty;
-    defer deinitUserPromptSubmitHookRuns(allocator, &runs);
-    defer joinPendingUserPromptSubmitHookRuns(&runs);
+    var runs = std.ArrayList(HookCommandRun).empty;
+    defer deinitHookCommandRuns(allocator, &runs);
+    defer joinPendingHookCommandRuns(&runs);
 
     for (listed.entries[0].hooks) |hook| {
         if (hook.event_name != .user_prompt_submit or !hook.shouldRun()) continue;
@@ -26638,10 +26765,10 @@ fn runUserPromptSubmitHooks(
     }
 
     for (runs.items) |*hook_run| {
-        hook_run.thread = try std.Thread.spawn(.{}, runUserPromptSubmitHookCommandWorker, .{&hook_run.worker});
+        hook_run.thread = try std.Thread.spawn(.{}, runHookCommandWorker, .{&hook_run.worker});
     }
 
-    joinPendingUserPromptSubmitHookRuns(&runs);
+    joinPendingHookCommandRuns(&runs);
 
     for (runs.items) |*hook_run| {
         var entries = std.ArrayList(HookOutputEntry).empty;
@@ -26679,12 +26806,12 @@ fn runUserPromptSubmitHooks(
     return runtime;
 }
 
-fn deinitUserPromptSubmitHookRuns(allocator: std.mem.Allocator, runs: *std.ArrayList(UserPromptSubmitHookRun)) void {
+fn deinitHookCommandRuns(allocator: std.mem.Allocator, runs: *std.ArrayList(HookCommandRun)) void {
     for (runs.items) |*hook_run| hook_run.deinit(allocator);
     runs.deinit(allocator);
 }
 
-fn joinPendingUserPromptSubmitHookRuns(runs: *std.ArrayList(UserPromptSubmitHookRun)) void {
+fn joinPendingHookCommandRuns(runs: *std.ArrayList(HookCommandRun)) void {
     for (runs.items) |*hook_run| {
         if (hook_run.thread) |thread| {
             thread.join();
@@ -26693,8 +26820,8 @@ fn joinPendingUserPromptSubmitHookRuns(runs: *std.ArrayList(UserPromptSubmitHook
     }
 }
 
-fn runUserPromptSubmitHookCommandWorker(worker: *UserPromptSubmitHookWorker) void {
-    worker.result = runTrustedUserPromptSubmitHookCommand(
+fn runHookCommandWorker(worker: *HookCommandWorker) void {
+    worker.result = runTrustedHookCommand(
         std.heap.page_allocator,
         worker.codex_home,
         worker.hook,
@@ -26708,7 +26835,7 @@ fn runUserPromptSubmitHookCommandWorker(worker: *UserPromptSubmitHookWorker) voi
     worker.completed_at_ms = currentUnixMilliseconds();
 }
 
-fn runTrustedUserPromptSubmitHookCommand(
+fn runTrustedHookCommand(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     hook: hooks_list.Hook,
@@ -26718,12 +26845,12 @@ fn runTrustedUserPromptSubmitHookCommand(
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
     const shell = currentHookShell();
-    const command = try userPromptSubmitHookCommand(allocator, codex_home, hook);
+    const command = try hookCommand(allocator, codex_home, hook);
     defer allocator.free(command);
     const argv = [_][]const u8{ shell, "-lc", command };
     const timeout_sec = @min(hook.timeout_sec, @as(u64, @intCast(std.math.maxInt(i64) / 1000)));
     const timeout_ms: i64 = @intCast(timeout_sec * 1000);
-    var child_env = try userPromptSubmitHookEnvironment(allocator, codex_home, hook);
+    var child_env = try hookEnvironment(allocator, codex_home, hook);
     defer if (child_env) |*hook_env| hook_env.deinit();
     const env_map = if (child_env) |*hook_env| hook_env else null;
     return runCommandExecProcess(
@@ -26738,7 +26865,7 @@ fn runTrustedUserPromptSubmitHookCommand(
     );
 }
 
-fn userPromptSubmitHookCommand(
+fn hookCommand(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     hook: hooks_list.Hook,
@@ -26783,7 +26910,7 @@ fn replaceHookCommandPlaceholder(
     command.* = next;
 }
 
-fn userPromptSubmitHookEnvironment(
+fn hookEnvironment(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     hook: hooks_list.Hook,
@@ -26834,11 +26961,351 @@ fn renderUserPromptSubmitHookInput(
     return out.toOwnedSlice(allocator);
 }
 
+fn renderSessionStartHookInput(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    transcript_path: ?[]const u8,
+    cwd: []const u8,
+    model: []const u8,
+    permission_mode: []const u8,
+    source: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"session_id\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"transcript_path\":");
+    try appendOptionalJsonString(allocator, &out, transcript_path);
+    try out.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, &out, cwd);
+    try out.appendSlice(allocator, ",\"hook_event_name\":\"SessionStart\",\"model\":");
+    try appendJsonString(allocator, &out, model);
+    try out.appendSlice(allocator, ",\"permission_mode\":");
+    try appendJsonString(allocator, &out, permission_mode);
+    try out.appendSlice(allocator, ",\"source\":");
+    try appendJsonString(allocator, &out, source);
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn hookMatcherMatchesInput(allocator: std.mem.Allocator, matcher: ?[]const u8, input: []const u8) !bool {
+    const value = matcher orelse return true;
+    if (value.len == 0 or std.mem.eql(u8, value, "*")) return true;
+    if (!hookMatcherIsExact(value)) return hookRegexMatcherMatchesInput(allocator, value, input);
+
+    var parts = std.mem.splitScalar(u8, value, '|');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, input)) return true;
+    }
+    return false;
+}
+
+fn hookMatcherIsExact(matcher: []const u8) bool {
+    for (matcher) |ch| {
+        if ((ch >= 'a' and ch <= 'z') or
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '_' or
+            ch == '|')
+        {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn hookRegexMatcherMatchesInput(allocator: std.mem.Allocator, matcher: []const u8, input: []const u8) !bool {
+    const translated = try translateRustRegexForPosix(allocator, matcher);
+    defer translated.deinit(allocator);
+    return hookPosixRegexMatcherMatchesInput(allocator, translated.pattern, input, translated.flags);
+}
+
+const TranslatedHookRegex = struct {
+    pattern: []const u8,
+    flags: c_int,
+
+    fn deinit(self: TranslatedHookRegex, allocator: std.mem.Allocator) void {
+        allocator.free(self.pattern);
+    }
+};
+
+fn translateRustRegexForPosix(allocator: std.mem.Allocator, matcher: []const u8) !TranslatedHookRegex {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var flags: c_int = regex_c.REG_EXTENDED;
+    var index: usize = 0;
+    while (index < matcher.len) {
+        if (try appendTranslatedRustRegexGroup(allocator, &out, matcher, &index, &flags)) {
+            continue;
+        }
+
+        const ch = matcher[index];
+        if (ch == '\\' and index + 1 < matcher.len) {
+            const next = matcher[index + 1];
+            switch (next) {
+                'd' => {
+                    try out.appendSlice(allocator, "[[:digit:]]");
+                    index += 2;
+                    continue;
+                },
+                'D' => {
+                    try out.appendSlice(allocator, "[^[:digit:]]");
+                    index += 2;
+                    continue;
+                },
+                's' => {
+                    try out.appendSlice(allocator, "[[:space:]]");
+                    index += 2;
+                    continue;
+                },
+                'S' => {
+                    try out.appendSlice(allocator, "[^[:space:]]");
+                    index += 2;
+                    continue;
+                },
+                'w' => {
+                    try out.appendSlice(allocator, "[[:alnum:]_]");
+                    index += 2;
+                    continue;
+                },
+                'W' => {
+                    try out.appendSlice(allocator, "[^[:alnum:]_]");
+                    index += 2;
+                    continue;
+                },
+                else => {},
+            }
+            try out.append(allocator, ch);
+            try out.append(allocator, next);
+            index += 2;
+            continue;
+        }
+
+        if ((ch == '*' or ch == '+' or ch == '?') and index + 1 < matcher.len and matcher[index + 1] == '?') {
+            try out.append(allocator, ch);
+            index += 2;
+            continue;
+        }
+
+        try out.append(allocator, ch);
+        index += 1;
+    }
+    return .{ .pattern = try out.toOwnedSlice(allocator), .flags = flags };
+}
+
+fn appendTranslatedRustRegexGroup(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    matcher: []const u8,
+    index: *usize,
+    flags: *c_int,
+) !bool {
+    if (index.* + 2 >= matcher.len) return false;
+    if (matcher[index.*] != '(' or matcher[index.* + 1] != '?') return false;
+
+    const kind = matcher[index.* + 2];
+    if (kind == ':') {
+        try out.append(allocator, '(');
+        index.* += 3;
+        return true;
+    }
+    if (kind == '<') {
+        if (std.mem.indexOfScalarPos(u8, matcher, index.* + 3, '>')) |end| {
+            try out.append(allocator, '(');
+            index.* = end + 1;
+            return true;
+        }
+        return false;
+    }
+    if (kind == 'P' and index.* + 3 < matcher.len and matcher[index.* + 3] == '<') {
+        if (std.mem.indexOfScalarPos(u8, matcher, index.* + 4, '>')) |end| {
+            try out.append(allocator, '(');
+            index.* = end + 1;
+            return true;
+        }
+        return false;
+    }
+
+    var cursor = index.* + 2;
+    var saw_flag = false;
+    var negating = false;
+    while (cursor < matcher.len) : (cursor += 1) {
+        switch (matcher[cursor]) {
+            'i' => {
+                saw_flag = true;
+                if (!negating) flags.* |= regex_c.REG_ICASE;
+            },
+            'm', 's', 'U', 'x' => saw_flag = true,
+            '-' => {
+                saw_flag = true;
+                negating = true;
+            },
+            ':' => {
+                if (!saw_flag) return false;
+                try out.append(allocator, '(');
+                index.* = cursor + 1;
+                return true;
+            },
+            ')' => {
+                if (!saw_flag) return false;
+                index.* = cursor + 1;
+                return true;
+            },
+            else => return false,
+        }
+    }
+    return false;
+}
+
+fn hookPosixRegexMatcherMatchesInput(allocator: std.mem.Allocator, matcher: []const u8, input: []const u8, flags: c_int) !bool {
+    const matcher_z = try allocator.dupeZ(u8, matcher);
+    defer allocator.free(matcher_z);
+    const input_z = try allocator.dupeZ(u8, input);
+    defer allocator.free(input_z);
+
+    var regex: regex_c.regex_t = undefined;
+    if (regex_c.regcomp(&regex, matcher_z.ptr, flags) != 0) return false;
+    defer regex_c.regfree(&regex);
+    return regex_c.regexec(&regex, input_z.ptr, 0, null, 0) == 0;
+}
+
+test "app-server hook matcher supports exact alternatives and regexes" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, null, "startup"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "", "startup"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "*", "clear"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "startup|resume", "resume"));
+    try std.testing.expect(!try hookMatcherMatchesInput(allocator, "startup|resume", "clear"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "^start.*$", "startup"));
+    try std.testing.expect(!try hookMatcherMatchesInput(allocator, "^start.*$", "resume"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "(?i)^(?:STARTUP|RESUME)$", "startup"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "^(?:startup|resume)$", "resume"));
+    try std.testing.expect(try hookMatcherMatchesInput(allocator, "^sta\\w+?$", "startup"));
+    try std.testing.expect(!try hookMatcherMatchesInput(allocator, "[", "startup"));
+}
+
 fn renderHookRunId(
     allocator: std.mem.Allocator,
     hook: hooks_list.Hook,
 ) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}:{d}:{s}", .{ hook.event_name.runIdLabel(), hook.display_order, hook.source_path });
+}
+
+fn collectSessionStartHookEntries(
+    allocator: std.mem.Allocator,
+    result: *const CommandExecRunResult,
+    entries: *std.ArrayList(HookOutputEntry),
+    contexts: *std.ArrayList([]const u8),
+) ![]const u8 {
+    if (result.exit_code == 0) {
+        const trimmed_stdout = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (trimmed_stdout.len == 0) return "completed";
+        if (try collectJsonSessionStartHookOutput(allocator, trimmed_stdout, entries, contexts)) |status| return status;
+        if (looksLikeJson(trimmed_stdout)) {
+            try appendHookOutputEntry(allocator, entries, "error", "hook returned invalid session start JSON output");
+            return "failed";
+        }
+        try appendHookContextEntry(allocator, entries, contexts, trimmed_stdout);
+        return "completed";
+    }
+    const message = try std.fmt.allocPrint(allocator, "hook exited with code {d}", .{result.exit_code});
+    defer allocator.free(message);
+    try appendHookOutputEntry(allocator, entries, "error", message);
+    return "failed";
+}
+
+fn collectJsonSessionStartHookOutput(
+    allocator: std.mem.Allocator,
+    stdout: []const u8,
+    entries: *std.ArrayList(HookOutputEntry),
+    contexts: *std.ArrayList([]const u8),
+) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, stdout, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isValidSessionStartOutputObject(object)) return try appendInvalidSessionStartJsonOutput(allocator, entries);
+
+    if (optionalHookStringField(object, "systemMessage")) |message| {
+        try appendHookOutputEntry(allocator, entries, "warning", message);
+    }
+
+    if (object.get("hookSpecificOutput")) |specific| {
+        if (specific == .null) {
+            // Explicit null matches the Rust optional hookSpecificOutput field.
+        } else if (specific == .object) {
+            const event_name = optionalHookStringField(specific.object, "hookEventName") orelse return try appendInvalidSessionStartJsonOutput(allocator, entries);
+            if (!std.mem.eql(u8, event_name, "SessionStart")) return try appendInvalidSessionStartJsonOutput(allocator, entries);
+            if (optionalHookStringField(specific.object, "additionalContext")) |context| {
+                try appendHookContextEntry(allocator, entries, contexts, context);
+            }
+        } else {
+            return try appendInvalidSessionStartJsonOutput(allocator, entries);
+        }
+    }
+
+    if (optionalBoolField(object, "continue")) |continue_processing| {
+        if (!continue_processing) {
+            if (optionalHookStringField(object, "stopReason")) |reason| {
+                try appendHookOutputEntry(allocator, entries, "stop", reason);
+            }
+            return "stopped";
+        }
+    }
+
+    return "completed";
+}
+
+fn appendInvalidSessionStartJsonOutput(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(HookOutputEntry),
+) ![]const u8 {
+    try appendHookOutputEntry(allocator, entries, "error", "hook returned invalid session start JSON output");
+    return "failed";
+}
+
+fn isValidSessionStartOutputObject(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "continue") or std.mem.eql(u8, key, "suppressOutput")) {
+            if (value != .bool) return false;
+        } else if (std.mem.eql(u8, key, "systemMessage") or std.mem.eql(u8, key, "stopReason")) {
+            if (!isNullOrString(value)) return false;
+        } else if (std.mem.eql(u8, key, "hookSpecificOutput")) {
+            if (!isValidSessionStartHookSpecificOutput(value)) return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isValidSessionStartHookSpecificOutput(value: std.json.Value) bool {
+    if (value == .null) return true;
+    if (value != .object) return false;
+    const object = value.object;
+    const event_name = object.get("hookEventName") orelse return false;
+    if (event_name != .string or !std.mem.eql(u8, event_name.string, "SessionStart")) return false;
+
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const field_value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "hookEventName")) {
+            if (field_value != .string or !std.mem.eql(u8, field_value.string, "SessionStart")) return false;
+        } else if (std.mem.eql(u8, key, "additionalContext")) {
+            if (!isNullOrString(field_value)) return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn collectUserPromptSubmitHookEntries(
@@ -27090,7 +27557,9 @@ fn renderHookNotification(
     try appendJsonString(allocator, &notification, hook_run_id);
     try notification.appendSlice(allocator, ",\"eventName\":");
     try appendJsonString(allocator, &notification, hook.event_name.jsonLabel());
-    try notification.appendSlice(allocator, ",\"handlerType\":\"command\",\"executionMode\":\"sync\",\"scope\":\"turn\",\"sourcePath\":");
+    try notification.appendSlice(allocator, ",\"handlerType\":\"command\",\"executionMode\":\"sync\",\"scope\":");
+    try appendJsonString(allocator, &notification, hookScopeLabel(hook.event_name));
+    try notification.appendSlice(allocator, ",\"sourcePath\":");
     try appendJsonString(allocator, &notification, hook.source_path);
     try notification.appendSlice(allocator, ",\"source\":");
     try appendJsonString(allocator, &notification, hook.source.label());
@@ -27117,6 +27586,13 @@ fn renderHookNotification(
     }
     try notification.appendSlice(allocator, "]}}}");
     return notification.toOwnedSlice(allocator);
+}
+
+fn hookScopeLabel(event_name: hooks_list.HookEvent) []const u8 {
+    return switch (event_name) {
+        .session_start => "thread",
+        else => "turn",
+    };
 }
 
 fn allocateNextTurnIdForThread(allocator: std.mem.Allocator, thread: *LoadedThread) ![]const u8 {
@@ -30790,6 +31266,8 @@ fn createLoadedThreadFromStartParams(
     else
         null;
     errdefer if (thread_source) |value| allocator.free(value);
+    const pending_session_start_source = try allocator.dupe(u8, optionalStringParam(params, "sessionStartSource") orelse "startup");
+    errdefer allocator.free(pending_session_start_source);
 
     var transcript = session_mod.Transcript{};
     errdefer transcript.deinit(allocator);
@@ -30856,6 +31334,7 @@ fn createLoadedThreadFromStartParams(
         .transcript = transcript,
         .turns_json = turns_json,
         .next_turn_index = turnCountForTranscript(&transcript),
+        .pending_session_start_source = pending_session_start_source,
         .created_at = now,
         .updated_at = now,
     };
@@ -30929,6 +31408,8 @@ fn createLoadedThreadFromHistoryParams(
 
     const path = try session_store.createSessionPathForId(allocator, cfg.codex_home, thread_id);
     errdefer allocator.free(path);
+    const pending_session_start_source = try allocator.dupe(u8, "startup");
+    errdefer allocator.free(pending_session_start_source);
 
     const now = currentUnixSeconds();
     try transcript.setId(allocator, thread_id);
@@ -30992,6 +31473,7 @@ fn createLoadedThreadFromHistoryParams(
         .transcript = transcript,
         .turns_json = turns_json,
         .next_turn_index = turnCountForTranscript(&transcript),
+        .pending_session_start_source = pending_session_start_source,
         .created_at = now,
         .updated_at = now,
     };
@@ -31084,6 +31566,8 @@ fn createLoadedThreadFromResumeParams(
     const collaboration_mode = try allocator.dupe(u8, "default");
     errdefer allocator.free(collaboration_mode);
     const collaboration_developer_instructions: ?[]const u8 = null;
+    const pending_session_start_source = try allocator.dupe(u8, "resume");
+    errdefer allocator.free(pending_session_start_source);
 
     const now = currentUnixSeconds();
     return .{
@@ -31141,6 +31625,7 @@ fn createLoadedThreadFromResumeParams(
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .next_turn_index = turnCountForTranscript(&transcript_copy),
+        .pending_session_start_source = pending_session_start_source,
         .created_at = now,
         .updated_at = now,
     };
@@ -31272,6 +31757,8 @@ fn createLoadedThreadFromForkParams(
     else
         null;
     errdefer if (thread_source) |value| allocator.free(value);
+    const pending_session_start_source = try allocator.dupe(u8, "startup");
+    errdefer allocator.free(pending_session_start_source);
 
     const now = currentUnixSeconds();
     try transcript.setId(allocator, thread_id);
@@ -31339,6 +31826,7 @@ fn createLoadedThreadFromForkParams(
         .transcript = transcript,
         .turns_json = turns_json,
         .next_turn_index = turnCountForTranscript(&transcript),
+        .pending_session_start_source = pending_session_start_source,
         .created_at = now,
         .updated_at = now,
     };
@@ -34325,6 +34813,11 @@ fn validateThreadStartParams(params_value: ?std.json.Value) ?[]const u8 {
     if (object.get("threadSource")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "user", "subagent", "memory_consolidation" })) {
             return "threadSource must be user, subagent, memory_consolidation, or null";
+        }
+    }
+    if (object.get("sessionStartSource")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "startup", "clear" })) {
+            return "sessionStartSource must be startup, clear, or null";
         }
     }
     return null;
