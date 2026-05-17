@@ -297,6 +297,23 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             request = {}
 
+        parsed = urlparse(self.path)
+        if parsed.path in {"/wham/tasks", "/api/codex/tasks"}:
+            self.server.request_count += 1
+            self.server.request_bodies.append(request)
+            self.server.post_paths.append(self.path)
+            self.server.post_headers.append(dict(self.headers.items()))
+            payload = json.dumps(
+                {"task": {"id": f"task-created-{len(self.server.post_paths)}"}},
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         items = request.get("input", [])
         if not isinstance(items, list):
             items = []
@@ -480,6 +497,8 @@ class MockResponsesServer(ThreadingHTTPServer):
     request_bodies: list[dict]
     get_paths: list[str]
     get_headers: list[dict[str, str]]
+    post_paths: list[str]
+    post_headers: list[dict[str, str]]
     remote_fork_bundle: bytes
 
 
@@ -489,6 +508,8 @@ def start_mock_server(port: int) -> MockResponsesServer:
     server.request_bodies = []
     server.get_paths = []
     server.get_headers = []
+    server.post_paths = []
+    server.post_headers = []
     server.remote_fork_bundle = b""
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1228,9 +1249,14 @@ def run_unimplemented_command_smoke(
             f"expected cloud help after global options:\n{cloud_global_help.stderr}"
         )
 
+    cloud_base_arg = f"chatgpt_base_url=http://127.0.0.1:{port}"
+    cloud_post_start = len(server.post_paths)
+    cloud_body_start = len(server.request_bodies)
     cloud_exec = subprocess.run(
         [
             str(binary),
+            "-c",
+            cloud_base_arg,
             "cloud",
             "exec",
             "--env",
@@ -1245,56 +1271,115 @@ def run_unimplemented_command_smoke(
         env=env,
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if cloud_exec.returncode == 0:
-        raise AssertionError("cloud exec unexpectedly succeeded")
-    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_exec.stderr:
-        raise AssertionError(f"expected cloud exec parse message:\n{cloud_exec.stderr}")
+    if cloud_exec.stdout.strip() != f"http://127.0.0.1:{port}/codex/tasks/task-created-1":
+        raise AssertionError(f"expected cloud exec task URL:\n{cloud_exec.stdout}")
+    if server.post_paths[cloud_post_start:] != ["/api/codex/tasks"]:
+        raise AssertionError(f"expected cloud task create path, saw {server.post_paths!r}")
+    created_body = server.request_bodies[cloud_body_start]
+    if created_body["new_task"] != {
+        "environment_id": "env-id",
+        "branch": "feature",
+        "run_environment_in_qa_mode": False,
+    }:
+        raise AssertionError(f"unexpected cloud exec new_task body: {created_body!r}")
+    if created_body["metadata"] != {"best_of_n": 4}:
+        raise AssertionError(f"unexpected cloud exec metadata: {created_body!r}")
+    first_item = created_body["input_items"][0]
+    if first_item["content"][0]["text"] != "write tests":
+        raise AssertionError(f"unexpected cloud exec prompt item: {created_body!r}")
+    headers = server.post_headers[-1] if server.post_headers else {}
+    if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
+        raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
+    if headers.get("Authorization") != "Bearer tui-e2e-token":
+        raise AssertionError(f"expected bearer auth header, saw {headers!r}")
 
     cloud_plus_attempt = subprocess.run(
-        [str(binary), "cloud", "exec", "--env", "env-id", "--attempts", "+1", "write tests"],
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "exec",
+            "--env",
+            "env-id",
+            "--attempts",
+            "+1",
+            "write tests",
+        ],
         cwd=workspace,
         env=env,
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if cloud_plus_attempt.returncode == 0:
-        raise AssertionError("cloud exec with plus-prefixed attempt unexpectedly succeeded")
-    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_plus_attempt.stderr:
+    if "task-created-2" not in cloud_plus_attempt.stdout:
         raise AssertionError(
-            f"expected cloud exec plus-prefixed attempt to parse:\n{cloud_plus_attempt.stderr}"
+            f"expected cloud exec plus-prefixed attempt to create task:\n{cloud_plus_attempt.stdout}\n{cloud_plus_attempt.stderr}"
         )
 
     cloud_stdin_query = subprocess.run(
-        [str(binary), "cloud", "exec", "--env", "env-id", "-"],
+        [str(binary), "-c", cloud_base_arg, "cloud", "exec", "--env", "env-id", "-"],
         cwd=workspace,
         env=env,
+        input="stdin cloud prompt\n",
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if cloud_stdin_query.returncode == 0:
-        raise AssertionError("cloud exec with stdin query marker unexpectedly succeeded")
-    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_stdin_query.stderr:
-        raise AssertionError(
-            f"expected cloud exec stdin query marker to parse:\n{cloud_stdin_query.stderr}"
-        )
+    if "task-created-3" not in cloud_stdin_query.stdout:
+        raise AssertionError(f"expected cloud exec stdin task URL:\n{cloud_stdin_query.stdout}")
+    stdin_body = server.request_bodies[-1]
+    if stdin_body["input_items"][0]["content"][0]["text"] != "stdin cloud prompt\n":
+        raise AssertionError(f"unexpected cloud exec stdin prompt body: {stdin_body!r}")
 
     cloud_dash_query = subprocess.run(
-        [str(binary), "cloud", "exec", "--env", "env-id", "--", "--fix"],
+        [str(binary), "-c", cloud_base_arg, "cloud", "exec", "--env", "env-id", "--", "--fix"],
         cwd=workspace,
         env=env,
         text=True,
         capture_output=True,
+        check=True,
+    )
+    if "task-created-4" not in cloud_dash_query.stdout:
+        raise AssertionError(
+            f"expected cloud exec dash-prefixed query to create task:\n{cloud_dash_query.stdout}\n{cloud_dash_query.stderr}"
+        )
+    dash_body = server.request_bodies[-1]
+    if dash_body["input_items"][0]["content"][0]["text"] != "--fix":
+        raise AssertionError(f"unexpected cloud exec dash prompt body: {dash_body!r}")
+
+    starting_diff_env = env.copy()
+    starting_diff_env["CODEX_STARTING_DIFF"] = APPLY_TASK_DIFF
+    cloud_starting_diff = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "exec", "--env", "env-id", "include diff"],
+        cwd=workspace,
+        env=starting_diff_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "task-created-5" not in cloud_starting_diff.stdout:
+        raise AssertionError(f"expected cloud exec starting-diff task URL:\n{cloud_starting_diff.stdout}")
+    starting_diff_body = server.request_bodies[-1]
+    if starting_diff_body["input_items"][1]["type"] != "pre_apply_patch":
+        raise AssertionError(f"expected starting diff pre-apply item: {starting_diff_body!r}")
+
+    cloud_empty_stdin_query = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "exec", "--env", "env-id", "-"],
+        cwd=workspace,
+        env=env,
+        input="",
+        text=True,
+        capture_output=True,
         check=False,
     )
-    if cloud_dash_query.returncode == 0:
-        raise AssertionError("cloud exec with dash-prefixed query unexpectedly succeeded")
-    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_dash_query.stderr:
+    if cloud_empty_stdin_query.returncode == 0:
+        raise AssertionError("cloud exec with empty stdin query unexpectedly succeeded")
+    if "MissingCloudQuery" not in cloud_empty_stdin_query.stderr:
         raise AssertionError(
-            f"expected cloud exec dash-prefixed query to parse:\n{cloud_dash_query.stderr}"
+            f"expected cloud exec empty stdin validation error:\n{cloud_empty_stdin_query.stderr}"
         )
 
     cloud_missing_env = subprocess.run(
@@ -1385,7 +1470,6 @@ def run_unimplemented_command_smoke(
             f"expected cloud attempt validation error:\n{cloud_bad_attempts.stderr}"
         )
 
-    cloud_base_arg = f"chatgpt_base_url=http://127.0.0.1:{port}"
     cloud_list_json = subprocess.run(
         [str(binary), "-c", cloud_base_arg, "cloud", "list", "--limit", "2", "--json"],
         cwd=workspace,
