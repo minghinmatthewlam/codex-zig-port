@@ -777,15 +777,19 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
-    if (std.ascii.eqlIgnoreCase(parts.name, "new")) {
+    if (std.ascii.eqlIgnoreCase(parts.name, "new") or std.ascii.eqlIgnoreCase(parts.name, "clear")) {
         const trimmed = std.mem.trim(u8, parts.args, " \t\r\n");
         if (trimmed.len != 0) {
-            std.debug.print("usage: /new\n", .{});
+            std.debug.print("usage: /{s}\n", .{parts.name});
             return .handled;
         }
         const next_thread_id = try startRemoteThread(allocator, transport, cwd, state);
         allocator.free(thread_id.*);
         thread_id.* = next_thread_id;
+        if (std.ascii.eqlIgnoreCase(parts.name, "clear")) {
+            std.debug.print("\x1b[2J\x1b[H", .{});
+            printRemoteHeader(remote, cwd);
+        }
         std.debug.print("started remote thread: {s}\n", .{thread_id.*});
         return .handled;
     }
@@ -821,6 +825,7 @@ fn printRemoteSlashHelp() void {
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
         \\  /sessions [N]
+        \\  /clear
         \\  /new
         \\  /resume [TARGET|last]
         \\  /fork [TARGET|last]
