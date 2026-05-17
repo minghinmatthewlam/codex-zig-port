@@ -94,7 +94,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .status => return runStatus(allocator, parsed),
         .apply => return runApply(allocator, parsed),
         .diff => return runDiff(allocator, parsed),
-        .tui => return reportRuntimeNotImplemented(parsed.command),
+        .tui => return runPicker(allocator, parsed),
     }
 }
 
@@ -210,14 +210,6 @@ const EnvironmentRow = struct {
     }
 };
 
-fn reportRuntimeNotImplemented(command: Command) !void {
-    std.debug.print(
-        "codex-zig {s} parsed Rust-compatible options, but Codex Cloud tasks are not implemented yet\n",
-        .{command.label()},
-    );
-    return error.CloudCommandNotImplemented;
-}
-
 fn runExec(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const raw_environment = parsed.exec.environment orelse return error.MissingCloudEnvironment;
     if (std.mem.trim(u8, raw_environment, " \t\r\n").len == 0) return error.MissingCloudEnvironment;
@@ -294,19 +286,7 @@ fn runStatus(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     var runtime = try initRuntime(allocator, parsed);
     defer runtime.deinit(allocator);
 
-    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
-    defer allocator.free(url);
-    const body = try fetchCloudTasks(allocator, runtime, url);
-    defer allocator.free(body);
-
-    var task = try parseTaskDetailsSummary(allocator, task_id, body);
-    defer task.deinit(allocator);
-
-    const rendered = try renderTaskStatus(allocator, task, false);
-    defer allocator.free(rendered);
-    try cli_utils.writeStdout(rendered);
-
-    if (task.status != .ready) return error.CloudTaskNotReady;
+    try writeTaskStatus(allocator, runtime, task_id, true);
 }
 
 fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
@@ -317,16 +297,7 @@ fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     var runtime = try initRuntime(allocator, parsed);
     defer runtime.deinit(allocator);
 
-    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
-    defer allocator.free(url);
-    const body = try fetchCloudTasks(allocator, runtime, url);
-    defer allocator.free(body);
-
-    var attempts = try collectAttemptDiffs(allocator, runtime, task_id, body);
-    defer deinitAttemptDiffs(allocator, &attempts);
-
-    const selected = try selectAttemptDiff(attempts.items, parsed.task_attempt.attempt orelse 1);
-    try cli_utils.writeStdout(selected.diff);
+    try writeTaskDiff(allocator, runtime, task_id, parsed.task_attempt.attempt orelse 1);
 }
 
 fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
@@ -337,15 +308,257 @@ fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     var runtime = try initRuntime(allocator, parsed);
     defer runtime.deinit(allocator);
 
-    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
+    try applyTaskDiff(allocator, runtime, task_id, parsed.task_attempt.attempt orelse 1);
+}
+
+fn runPicker(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    var environment: ?[]const u8 = null;
+    defer if (environment) |value| allocator.free(value);
+    var cursor: ?[]const u8 = null;
+    defer if (cursor) |value| allocator.free(value);
+
+    var page = try loadTaskListPage(allocator, runtime, environment, cursor);
+    defer page.deinit(allocator);
+    try writePickerPage(allocator, runtime.base_url, page, environment);
+
+    var input_buffer: [4096]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
+    while (true) {
+        try cli_utils.writeStdout("cloud> ");
+        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
+        const raw_line = line_opt orelse break;
+        const line = std.mem.trim(u8, raw_line, " \t\r\n");
+        const action = handlePickerLine(allocator, runtime, &page, &environment, &cursor, line) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "error: {s}\n", .{@errorName(err)});
+            defer allocator.free(message);
+            try cli_utils.writeStderr(message);
+            continue;
+        };
+        if (action == .quit) break;
+    }
+    try cli_utils.writeStdout("bye\n");
+}
+
+const PickerAction = enum {
+    keep_running,
+    quit,
+};
+
+fn handlePickerLine(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    page: *TaskListPage,
+    environment: *?[]const u8,
+    cursor: *?[]const u8,
+    line: []const u8,
+) !PickerAction {
+    if (line.len == 0) return .keep_running;
+
+    var tokens = std.mem.tokenizeAny(u8, line, " \t\r\n");
+    const command = tokens.next() orelse return .keep_running;
+
+    if (std.ascii.eqlIgnoreCase(command, "q") or std.ascii.eqlIgnoreCase(command, "quit") or std.ascii.eqlIgnoreCase(command, "exit")) {
+        return .quit;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "h") or std.ascii.eqlIgnoreCase(command, "help") or std.mem.eql(u8, command, "?")) {
+        try writePickerHelp();
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "r") or std.ascii.eqlIgnoreCase(command, "refresh")) {
+        try reloadPickerPage(allocator, runtime, page, environment.*, cursor.*);
+        try writePickerPage(allocator, runtime.base_url, page.*, environment.*);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "n") or std.ascii.eqlIgnoreCase(command, "next")) {
+        const next_cursor = page.cursor orelse {
+            try cli_utils.writeStdout("No next page.\n");
+            return .keep_running;
+        };
+        const cursor_copy = try allocator.dupe(u8, next_cursor);
+        errdefer allocator.free(cursor_copy);
+        try reloadPickerPage(allocator, runtime, page, environment.*, cursor_copy);
+        if (cursor.*) |old| allocator.free(old);
+        cursor.* = cursor_copy;
+        try writePickerPage(allocator, runtime.base_url, page.*, environment.*);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "all")) {
+        if (environment.*) |old| allocator.free(old);
+        environment.* = null;
+        if (cursor.*) |old| allocator.free(old);
+        cursor.* = null;
+        try reloadPickerPage(allocator, runtime, page, null, null);
+        try writePickerPage(allocator, runtime.base_url, page.*, null);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "env") or std.ascii.eqlIgnoreCase(command, "environment")) {
+        const requested = std.mem.trim(u8, line[command.len..], " \t\r\n");
+        if (requested.len == 0) {
+            if (environment.*) |old| allocator.free(old);
+            environment.* = null;
+            if (cursor.*) |old| allocator.free(old);
+            cursor.* = null;
+            try reloadPickerPage(allocator, runtime, page, null, null);
+            try writePickerPage(allocator, runtime.base_url, page.*, null);
+            return .keep_running;
+        }
+        const resolved = try resolveEnvironmentId(allocator, runtime, requested);
+        errdefer allocator.free(resolved);
+        try reloadPickerPage(allocator, runtime, page, resolved, null);
+        if (environment.*) |old| allocator.free(old);
+        environment.* = resolved;
+        if (cursor.*) |old| allocator.free(old);
+        cursor.* = null;
+        try writePickerPage(allocator, runtime.base_url, page.*, environment.*);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "s") or std.ascii.eqlIgnoreCase(command, "status")) {
+        const target = tokens.next() orelse return error.MissingCloudTaskId;
+        if (tokens.next() != null) return error.UnexpectedCloudArgument;
+        const task_id = try pickerTaskId(allocator, page.*, target);
+        defer allocator.free(task_id);
+        try writeTaskStatus(allocator, runtime, task_id, false);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "d") or std.ascii.eqlIgnoreCase(command, "diff")) {
+        const target = try parsePickerTaskAttempt(allocator, page.*, &tokens);
+        defer target.deinit(allocator);
+        try writeTaskDiff(allocator, runtime, target.task_id, target.attempt);
+        return .keep_running;
+    }
+    if (std.ascii.eqlIgnoreCase(command, "a") or std.ascii.eqlIgnoreCase(command, "apply")) {
+        const target = try parsePickerTaskAttempt(allocator, page.*, &tokens);
+        defer target.deinit(allocator);
+        try applyTaskDiff(allocator, runtime, target.task_id, target.attempt);
+        return .keep_running;
+    }
+    return error.UnknownCloudPickerCommand;
+}
+
+const PickerTaskAttempt = struct {
+    task_id: []const u8,
+    attempt: usize = 1,
+
+    fn deinit(self: PickerTaskAttempt, allocator: std.mem.Allocator) void {
+        allocator.free(self.task_id);
+    }
+};
+
+fn parsePickerTaskAttempt(allocator: std.mem.Allocator, page: TaskListPage, tokens: anytype) !PickerTaskAttempt {
+    var attempt: usize = 1;
+    var target: ?[]const u8 = null;
+    while (tokens.next()) |token| {
+        if (std.mem.eql(u8, token, "--attempt")) {
+            attempt = try parseAttempts(tokens.next() orelse return error.MissingCloudAttempt);
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "--attempt=")) {
+            attempt = try parseAttempts(token["--attempt=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "-")) return error.UnknownCloudOption;
+        if (target != null) return error.UnexpectedCloudArgument;
+        target = token;
+    }
+    const raw_target = target orelse return error.MissingCloudTaskId;
+    return .{
+        .task_id = try pickerTaskId(allocator, page, raw_target),
+        .attempt = attempt,
+    };
+}
+
+fn pickerTaskId(allocator: std.mem.Allocator, page: TaskListPage, target: []const u8) ![]const u8 {
+    if (parsePickerIndex(target)) |index| {
+        if (index < page.tasks.items.len) return allocator.dupe(u8, page.tasks.items[index].id);
+        return error.CloudPickerSelectionOutOfRange;
+    }
+    return normalizeTaskId(allocator, target);
+}
+
+fn parsePickerIndex(target: []const u8) ?usize {
+    const parsed = std.fmt.parseUnsigned(usize, target, 10) catch return null;
+    if (parsed == 0) return null;
+    return parsed - 1;
+}
+
+fn loadTaskListPage(allocator: std.mem.Allocator, runtime: CloudRuntime, environment: ?[]const u8, cursor: ?[]const u8) !TaskListPage {
+    const url = try buildListUrl(allocator, runtime.base_url, .{ .environment = environment, .cursor = cursor });
     defer allocator.free(url);
     const body = try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+    return parseTaskListPage(allocator, body);
+}
+
+fn reloadPickerPage(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    page: *TaskListPage,
+    environment: ?[]const u8,
+    cursor: ?[]const u8,
+) !void {
+    var next_page = try loadTaskListPage(allocator, runtime, environment, cursor);
+    errdefer next_page.deinit(allocator);
+    page.deinit(allocator);
+    page.* = next_page;
+}
+
+fn writePickerPage(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage, environment: ?[]const u8) !void {
+    const rendered = try renderPickerPage(allocator, base_url, page, environment);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+}
+
+fn writePickerHelp() !void {
+    try cli_utils.writeStdout(
+        \\Commands:
+        \\  status <N|TASK_ID>             Show task status
+        \\  diff [--attempt N] <N|TASK_ID> Show a task diff
+        \\  apply [--attempt N] <N|TASK_ID> Apply a task diff locally
+        \\  refresh                        Reload the current page
+        \\  next                           Fetch the next page when available
+        \\  env <ENV_ID_OR_LABEL>          Filter by environment
+        \\  all                            Clear the environment filter
+        \\  quit                           Exit
+        \\
+    );
+}
+
+fn writeTaskStatus(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8, require_ready: bool) !void {
+    const body = try fetchTaskBody(allocator, runtime, task_id);
+    defer allocator.free(body);
+
+    var task = try parseTaskDetailsSummary(allocator, task_id, body);
+    defer task.deinit(allocator);
+
+    const rendered = try renderTaskStatus(allocator, task, false);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+
+    if (require_ready and task.status != .ready) return error.CloudTaskNotReady;
+}
+
+fn writeTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8, attempt: usize) !void {
+    const body = try fetchTaskBody(allocator, runtime, task_id);
     defer allocator.free(body);
 
     var attempts = try collectAttemptDiffs(allocator, runtime, task_id, body);
     defer deinitAttemptDiffs(allocator, &attempts);
 
-    const selected = try selectAttemptDiff(attempts.items, parsed.task_attempt.attempt orelse 1);
+    const selected = try selectAttemptDiff(attempts.items, attempt);
+    try cli_utils.writeStdout(selected.diff);
+}
+
+fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8, attempt: usize) !void {
+    const body = try fetchTaskBody(allocator, runtime, task_id);
+    defer allocator.free(body);
+
+    var attempts = try collectAttemptDiffs(allocator, runtime, task_id, body);
+    defer deinitAttemptDiffs(allocator, &attempts);
+
+    const selected = try selectAttemptDiff(attempts.items, attempt);
     const diff = selected.diff;
     if (!git_apply.isUnifiedDiff(diff)) return error.InvalidCloudTaskDiff;
 
@@ -375,6 +588,12 @@ fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
     return error.CloudTaskApplyFailed;
+}
+
+fn fetchTaskBody(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8) ![]const u8 {
+    const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
+    defer allocator.free(url);
+    return fetchCloudTasks(allocator, runtime, url);
 }
 
 fn resolveEnvironmentId(allocator: std.mem.Allocator, runtime: CloudRuntime, requested: []const u8) ![]const u8 {
@@ -1358,6 +1577,43 @@ fn renderTaskList(allocator: std.mem.Allocator, base_url: []const u8, page: Task
     if (page.cursor) |cursor| {
         try out.print(allocator, "\nTo fetch the next page, run codex cloud list --cursor='{s}'\n", .{cursor});
     }
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderPickerPage(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage, environment: ?[]const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.print(allocator, "Cloud Tasks", .{});
+    if (environment) |env_id| {
+        try out.print(allocator, " - env {s}", .{env_id});
+    } else {
+        try out.appendSlice(allocator, " - all environments");
+    }
+    try out.append(allocator, '\n');
+
+    if (page.tasks.items.len == 0) {
+        try out.appendSlice(allocator, "No tasks found.\n");
+    } else {
+        for (page.tasks.items, 0..) |task, index| {
+            const relative = try formatRelativeTime(allocator, task.updated_at);
+            defer allocator.free(relative);
+            const summary = try renderSummaryLine(allocator, task.summary);
+            defer allocator.free(summary);
+            const url = try taskUrl(allocator, base_url, task.id);
+            defer allocator.free(url);
+            try out.print(allocator, "{d}. [{s}] {s}\n", .{ index + 1, task.status.display(), task.title });
+            if (task.environment_label orelse task.environment_id) |env_label| {
+                try out.print(allocator, "   {s} - {s} - {s}\n", .{ env_label, relative, summary });
+            } else {
+                try out.print(allocator, "   {s} - {s}\n", .{ relative, summary });
+            }
+            try out.print(allocator, "   {s}\n", .{url});
+        }
+    }
+    if (page.cursor != null) {
+        try out.appendSlice(allocator, "Next page available: type `next`.\n");
+    }
+    try out.appendSlice(allocator, "Type `help` for commands, `quit` to exit.\n");
     return out.toOwnedSlice(allocator);
 }
 
@@ -2491,6 +2747,50 @@ test "cloud attempt diffs include sorted sibling turns" {
     try std.testing.expectEqualStrings("diff --git a/a b/a\n", (try selectAttemptDiff(attempts.items, 1)).diff);
     try std.testing.expectEqualStrings("diff --git a/b b/b\n", (try selectAttemptDiff(attempts.items, 2)).diff);
     try std.testing.expectError(error.CloudAttemptNotAvailable, selectAttemptDiff(attempts.items, 3));
+}
+
+test "cloud picker resolves indexed and raw task targets" {
+    const allocator = std.testing.allocator;
+
+    var page = TaskListPage{};
+    defer page.tasks.deinit(allocator);
+    try page.tasks.append(allocator, .{
+        .id = "task-one",
+        .title = "First",
+        .status = .ready,
+        .updated_at = 1760000000.0,
+    });
+
+    const indexed = try pickerTaskId(allocator, page, "1");
+    defer allocator.free(indexed);
+    try std.testing.expectEqualStrings("task-one", indexed);
+
+    const raw = try pickerTaskId(allocator, page, "https://chatgpt.com/codex/tasks/task-two?x=1");
+    defer allocator.free(raw);
+    try std.testing.expectEqualStrings("task-two", raw);
+
+    try std.testing.expectError(error.CloudPickerSelectionOutOfRange, pickerTaskId(allocator, page, "2"));
+}
+
+test "cloud picker page renders indexed task rows" {
+    const allocator = std.testing.allocator;
+
+    var page = TaskListPage{};
+    defer page.tasks.deinit(allocator);
+    try page.tasks.append(allocator, .{
+        .id = "task-one",
+        .title = "First task",
+        .status = .ready,
+        .updated_at = 1760000000.0,
+        .environment_label = "Demo env",
+        .summary = .{ .files_changed = 1, .lines_added = 3, .lines_removed = 1 },
+    });
+
+    const rendered = try renderPickerPage(allocator, "https://chatgpt.com/backend-api", page, null);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Cloud Tasks - all environments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "1. [READY] First task") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "https://chatgpt.com/codex/tasks/task-one") != null);
 }
 
 test "cloud sibling turns URL follows task backend path style" {
