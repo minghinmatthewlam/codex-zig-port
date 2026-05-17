@@ -101,6 +101,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 fn mergeRuntimeOverrides(base: config.RuntimeOverrides, command: config.RuntimeOverrides) config.RuntimeOverrides {
     var merged = base;
     if (command.model) |value| merged.model = value;
+    if (command.review_model) |value| merged.review_model = value;
     if (command.openai_base_url) |value| merged.openai_base_url = value;
     if (command.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (command.oss_provider) |value| merged.oss_provider = value;

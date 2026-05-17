@@ -364,6 +364,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer if (active_profile) |value| allocator.free(value);
     const model = try allocator.dupe(u8, source.model);
     errdefer allocator.free(model);
+    const review_model = if (source.review_model) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (review_model) |value| allocator.free(value);
     const openai_base_url = try allocator.dupe(u8, source.openai_base_url);
     errdefer allocator.free(openai_base_url);
     const chatgpt_base_url = try allocator.dupe(u8, source.chatgpt_base_url);
@@ -401,6 +403,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .codex_home = codex_home,
         .active_profile = active_profile,
         .model = model,
+        .review_model = review_model,
         .openai_base_url = openai_base_url,
         .chatgpt_base_url = chatgpt_base_url,
         .model_provider_wire_api = source.model_provider_wire_api,

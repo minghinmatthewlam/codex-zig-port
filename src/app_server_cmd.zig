@@ -44583,6 +44583,8 @@ fn renderManagedConfigWriteOverrideValueJson(
 ) !?[]const u8 {
     if (std.mem.eql(u8, key_path, "model")) {
         if (layer.model) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "review_model")) {
+        if (layer.review_model) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (layer.approval_policy) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "sandbox_mode")) {
@@ -44630,6 +44632,9 @@ fn configWriteUserScalarValue(
 ) !?[]const u8 {
     if (std.mem.eql(u8, key_path, "model")) {
         return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model");
+    }
+    if (std.mem.eql(u8, key_path, "review_model")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "review_model");
     }
     if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "approval_policy")) |value| {
@@ -44770,6 +44775,10 @@ fn renderConfigReadResponse(
     const system_model = if (system_layer) |layer| layer.model else null;
     const model = if (managed_layer) |layer| layer.model orelse project_layers.model() orelse configReadUserOrSystemString(cfg.model, user_layer, "model", system_model) else project_layers.model() orelse configReadUserOrSystemString(cfg.model, user_layer, "model", system_model);
     try appendJsonStringField(allocator, &result, &first, "model", model);
+    const system_review_model = if (system_layer) |layer| layer.review_model else null;
+    const managed_review_model = if (managed_layer) |layer| layer.review_model else null;
+    const review_model = managed_review_model orelse project_layers.reviewModel() orelse configReadUserOrSystemMaybeString(cfg.review_model, user_layer, "review_model", system_review_model);
+    try appendJsonMaybeStringField(allocator, &result, &first, "review_model", review_model);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
     const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
     const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
@@ -44820,6 +44829,7 @@ const ConfigReadManagedLayer = struct {
     version: []const u8,
     origin_keys: []const []const u8,
     model: ?[]const u8 = null,
+    review_model: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     web_search_mode: ?config.WebSearchMode = null,
@@ -44835,6 +44845,7 @@ const ConfigReadManagedLayer = struct {
         allocator.free(self.file_path);
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
+        if (self.review_model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -44865,6 +44876,7 @@ const ConfigReadProjectLayer = struct {
     version: []const u8,
     origin_keys: []const []const u8,
     model: ?[]const u8,
+    review_model: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
@@ -44880,6 +44892,7 @@ const ConfigReadProjectLayer = struct {
         allocator.free(self.dot_codex_folder);
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
+        if (self.review_model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -44895,6 +44908,7 @@ const ConfigReadSystemLayer = struct {
     version: []const u8,
     origin_keys: []const []const u8,
     model: ?[]const u8,
+    review_model: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
@@ -44910,6 +44924,7 @@ const ConfigReadSystemLayer = struct {
         allocator.free(self.file_path);
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
+        if (self.review_model) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -45000,6 +45015,13 @@ const ConfigReadProjectLayers = struct {
     fn model(self: ConfigReadProjectLayers) ?[]const u8 {
         for (self.items) |layer| {
             if (layer.model) |value| return value;
+        }
+        return null;
+    }
+
+    fn reviewModel(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.review_model) |value| return value;
         }
         return null;
     }
@@ -45898,6 +45920,8 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
 
     var model: ?[]const u8 = null;
     errdefer if (model) |value| allocator.free(value);
+    var review_model: ?[]const u8 = null;
+    errdefer if (review_model) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -45915,6 +45939,10 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     if (try config.topLevelStringValue(allocator, payload, "model")) |value| {
         model = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "review_model")) |value| {
+        review_model = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -45967,6 +45995,7 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .version = try configVersionAlloc(allocator, payload),
         .origin_keys = owned_origin_keys,
         .model = model,
+        .review_model = review_model,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -45995,6 +46024,8 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
 
     var model: ?[]const u8 = null;
     errdefer if (model) |value| allocator.free(value);
+    var review_model: ?[]const u8 = null;
+    errdefer if (review_model) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -46012,6 +46043,10 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     if (try config.topLevelStringValue(allocator, payload, "model")) |value| {
         model = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "review_model")) |value| {
+        review_model = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -46064,6 +46099,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .version = try configVersionAlloc(allocator, payload),
         .origin_keys = owned_origin_keys,
         .model = model,
+        .review_model = review_model,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -46309,6 +46345,8 @@ fn loadConfigReadProjectLayer(
     }
     var model: ?[]const u8 = null;
     errdefer if (model) |value| allocator.free(value);
+    var review_model: ?[]const u8 = null;
+    errdefer if (review_model) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -46328,6 +46366,10 @@ fn loadConfigReadProjectLayer(
         if (try config.topLevelStringValue(allocator, config_bytes, "model")) |value| {
             model = value;
             try appendUniqueOriginKey(allocator, &origin_keys, "model");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "review_model")) |value| {
+            review_model = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
         }
         if (try config.topLevelStringValue(allocator, config_bytes, "approval_policy")) |value| {
             defer allocator.free(value);
@@ -46378,6 +46420,7 @@ fn loadConfigReadProjectLayer(
         .version = version,
         .origin_keys = owned_origin_keys,
         .model = model,
+        .review_model = review_model,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -46420,6 +46463,7 @@ fn profileSectionNameMatches(raw_name: []const u8, profile: []const u8) bool {
 
 fn isConfigReadOriginField(key: []const u8) bool {
     return std.mem.eql(u8, key, "model") or
+        std.mem.eql(u8, key, "review_model") or
         std.mem.eql(u8, key, "profile") or
         std.mem.eql(u8, key, "approval_policy") or
         std.mem.eql(u8, key, "sandbox_mode") or
@@ -47328,6 +47372,8 @@ fn appendConfigReadProjectLayerConfig(
     for (layer.origin_keys) |key| {
         if (std.mem.eql(u8, key, "model")) {
             if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
+        } else if (std.mem.eql(u8, key, "review_model")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.review_model);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -47367,6 +47413,7 @@ fn appendConfigReadManagedLayerConfig(
     try result.append(allocator, '{');
     var first = true;
     if (layer.model) |value| try appendJsonStringField(allocator, result, &first, "model", value);
+    if (layer.review_model) |value| try appendJsonStringField(allocator, result, &first, "review_model", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
     if (layer.forced_chatgpt_workspace_id) |value| try appendJsonStringField(allocator, result, &first, "forced_chatgpt_workspace_id", value);
@@ -47399,6 +47446,8 @@ fn appendConfigReadSystemLayerConfig(
     for (layer.origin_keys) |key| {
         if (std.mem.eql(u8, key, "model")) {
             if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
+        } else if (std.mem.eql(u8, key, "review_model")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.review_model);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -47441,6 +47490,8 @@ fn appendConfigReadUserLayerConfig(
     for (layer.origin_keys) |key| {
         if (std.mem.eql(u8, key, "model")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.model);
+        } else if (std.mem.eql(u8, key, "review_model")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.review_model);
         } else if (std.mem.eql(u8, key, "profile")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.active_profile);
         } else if (std.mem.eql(u8, key, "approval_policy")) {

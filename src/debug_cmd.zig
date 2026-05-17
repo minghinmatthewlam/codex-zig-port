@@ -229,6 +229,7 @@ fn appendDebugAppServerChildOptions(
     }
     const overrides = options.runtime_overrides;
     if (overrides.model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model", value);
+    if (overrides.review_model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "review_model", value);
     if (overrides.openai_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "openai_base_url", value);
     if (overrides.chatgpt_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "chatgpt_base_url", value);
     if (overrides.oss_provider) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "oss_provider", value);
