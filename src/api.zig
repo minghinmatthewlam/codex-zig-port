@@ -4,6 +4,7 @@ const agents_md = @import("agents_md.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const model_catalog = @import("model_catalog.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 
 pub const FunctionCall = struct {
@@ -159,6 +160,7 @@ const ClientMetadata = struct {
 };
 
 const TextControls = struct {
+    verbosity: ?[]const u8 = null,
     format: ?TextFormat = null,
 };
 
@@ -731,8 +733,12 @@ pub fn buildRequestBodyWithOptions(
     const instructions = try agents_md.buildInstructions(allocator, base_instructions);
     defer allocator.free(instructions);
 
-    const text_controls: ?TextControls = if (options.output_schema) |schema|
-        .{ .format = .{ .schema = schema } }
+    const verbosity = verbosityForRequest(cfg);
+    const text_controls: ?TextControls = if (options.output_schema != null or verbosity != null)
+        .{
+            .verbosity = verbosity,
+            .format = if (options.output_schema) |schema| .{ .schema = schema } else null,
+        }
     else
         null;
 
@@ -751,6 +757,13 @@ pub fn buildRequestBodyWithOptions(
         .client_metadata = .{ .@"x-codex-installation-id" = cfg.installation_id },
     };
     return std.json.Stringify.valueAlloc(allocator, req, .{ .emit_null_optional_fields = false });
+}
+
+fn verbosityForRequest(cfg: config.Config) ?[]const u8 {
+    const model = model_catalog.bundledModel(cfg.model) orelse return null;
+    if (!model.support_verbosity) return null;
+    if (cfg.model_verbosity) |verbosity| return verbosity.label();
+    return model.default_verbosity;
 }
 
 fn appendParsedJsonValue(
@@ -1573,7 +1586,7 @@ test "builds output schema text format" {
     const cfg = config.Config{
         .codex_home = ".",
         .active_profile = null,
-        .model = "demo-model",
+        .model = "gpt-5.5",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
         .oss_provider = null,
@@ -1582,6 +1595,7 @@ test "builds output schema text format" {
         .sandbox_mode = .workspace_write,
         .web_search_mode = null,
         .model_reasoning_effort = null,
+        .model_verbosity = .high,
         .service_tier = "priority",
         .syntax_theme = null,
         .personality = null,
@@ -1608,10 +1622,92 @@ test "builds output schema text format" {
     const format = parsed.value.object.get("text").?.object.get("format").?.object;
 
     try std.testing.expectEqualStrings("json_schema", format.get("type").?.string);
+    try std.testing.expectEqualStrings("high", parsed.value.object.get("text").?.object.get("verbosity").?.string);
     try std.testing.expectEqualStrings("priority", parsed.value.object.get("service_tier").?.string);
     try std.testing.expectEqualStrings("codex_output_schema", format.get("name").?.string);
     try std.testing.expect(format.get("strict").?.bool);
     try std.testing.expectEqualStrings("object", format.get("schema").?.object.get("type").?.string);
+}
+
+test "builds default verbosity for supported bundled model" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "gpt-5.4-mini",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("medium", parsed.value.object.get("text").?.object.get("verbosity").?.string);
+}
+
+test "omits unsupported model verbosity while preserving output schema" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .model_verbosity = .high,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "return json",
+        },
+    };
+
+    var schema = try std.json.parseFromSlice(std.json.Value, allocator, "{\"type\":\"object\"}", .{});
+    defer schema.deinit();
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .output_schema = schema.value });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const text = parsed.value.object.get("text").?.object;
+    try std.testing.expect(text.get("verbosity") == null);
+    try std.testing.expectEqualStrings("json_schema", text.get("format").?.object.get("type").?.string);
 }
 
 test "personality config adds personality instructions" {

@@ -36,6 +36,8 @@ pub const Entry = struct {
     availability_nux: ?AvailabilityNux = null,
     upgrade: ?Upgrade = null,
     supports_personality: bool = false,
+    support_verbosity: bool = false,
+    default_verbosity: ?[]const u8 = null,
     additional_speed_tiers: []const []const u8 = &.{},
     service_tiers: []const ServiceTier = &.{},
 
@@ -81,6 +83,8 @@ pub const bundled_models = [_]Entry{
         .input_modalities = text_image_modalities[0..],
         .priority = 0,
         .availability_nux = .{ .message = gpt_5_5_nux },
+        .support_verbosity = true,
+        .default_verbosity = "low",
         .additional_speed_tiers = fast_speed_tiers[0..],
     },
     .{
@@ -91,6 +95,8 @@ pub const bundled_models = [_]Entry{
         .supported_reasoning_levels = standard_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 2,
+        .support_verbosity = true,
+        .default_verbosity = "low",
         .additional_speed_tiers = fast_speed_tiers[0..],
     },
     .{
@@ -101,6 +107,8 @@ pub const bundled_models = [_]Entry{
         .supported_reasoning_levels = standard_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 4,
+        .support_verbosity = true,
+        .default_verbosity = "medium",
     },
     .{
         .slug = "gpt-5.3-codex",
@@ -110,6 +118,8 @@ pub const bundled_models = [_]Entry{
         .supported_reasoning_levels = standard_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 6,
+        .support_verbosity = true,
+        .default_verbosity = "low",
         .upgrade = .{ .model = "gpt-5.4", .migration_markdown = gpt_5_4_migration },
     },
     .{
@@ -120,6 +130,8 @@ pub const bundled_models = [_]Entry{
         .supported_reasoning_levels = gpt_5_2_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 10,
+        .support_verbosity = true,
+        .default_verbosity = "low",
         .upgrade = .{ .model = "gpt-5.4", .migration_markdown = gpt_5_4_migration },
     },
     .{
@@ -131,6 +143,8 @@ pub const bundled_models = [_]Entry{
         .input_modalities = text_image_modalities[0..],
         .visibility = "hide",
         .priority = 29,
+        .support_verbosity = true,
+        .default_verbosity = "low",
     },
 };
 
@@ -139,6 +153,13 @@ pub fn defaultModel() Entry {
         if (!model.hidden()) return model;
     }
     return bundled_models[0];
+}
+
+pub fn bundledModel(slug: []const u8) ?Entry {
+    for (bundled_models) |model| {
+        if (std.mem.eql(u8, model.slug, slug)) return model;
+    }
+    return null;
 }
 
 pub fn configuredModel(slug: []const u8, description: []const u8) Entry {
