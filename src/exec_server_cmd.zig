@@ -403,6 +403,10 @@ const HttpBodyStreamTask = struct {
     thread: std.Thread,
     done: std.atomic.Value(bool) = .init(false),
     cancel_requested: std.atomic.Value(bool) = .init(false),
+    timed_out: std.atomic.Value(bool) = .init(false),
+    response_started: std.atomic.Value(bool) = .init(false),
+    terminal_body_delta_sent: std.atomic.Value(bool) = .init(false),
+    next_body_delta_seq: std.atomic.Value(u64) = .init(1),
     connection_mutex: std.Io.Mutex = .init,
     active_stream: ?std.Io.net.Stream = null,
     allocator: std.mem.Allocator,
@@ -416,16 +420,74 @@ const HttpBodyStreamTask = struct {
     }
 };
 
+const HttpBodyStreamTimeoutContext = struct {
+    io: std.Io,
+    task: *HttpBodyStreamTask,
+    done: std.Io.Event = .unset,
+    err: ?anyerror = null,
+};
+
 fn runHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
     defer task.done.store(true, .release);
-    performExecServerHttpRequestStream(task) catch |err| {
-        if (err == error.ExecServerHttpBodyStreamCanceled or httpBodyStreamTaskCanceled(task)) return;
-        const message = std.fmt.allocPrint(task.allocator, "http/request failed: {s}", .{@errorName(err)}) catch return;
-        defer task.allocator.free(message);
-        const response = renderJsonRpcErrorFromIdJson(task.allocator, task.id_json, -32603, message) catch return;
-        defer task.allocator.free(response);
-        writeJsonRpcOutputLine(task.output, task.allocator, response) catch {};
+    if (task.params.timeout_ms) |timeout_ms| {
+        runHttpBodyStreamTaskWithTimeout(task, timeout_ms) catch |err| handleHttpBodyStreamTaskError(task, err);
+        return;
+    }
+
+    var io_instance: std.Io.Threaded = .init(task.allocator, .{});
+    defer io_instance.deinit();
+    performExecServerHttpRequestStream(task, io_instance.io()) catch |err| handleHttpBodyStreamTaskError(task, err);
+}
+
+fn runHttpBodyStreamTaskWithTimeout(task: *HttpBodyStreamTask, timeout_ms: u64) !void {
+    var io_instance: std.Io.Threaded = .init(task.allocator, .{ .async_limit = execServerHttpTimeoutAsyncLimit() });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var context = HttpBodyStreamTimeoutContext{
+        .io = io,
+        .task = task,
     };
+    var future = try io.concurrent(performExecServerHttpRequestStreamTimeoutWorker, .{&context});
+    const deadline = httpRequestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                timeoutHttpBodyStreamTask(task);
+                _ = future.cancel(io);
+                _ = future.await(io);
+                try writeHttpBodyStreamTimeout(task);
+                return;
+            },
+            else => |e| {
+                cancelHttpBodyStreamTask(task);
+                _ = future.cancel(io);
+                _ = future.await(io);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.err) |err| return err;
+}
+
+fn performExecServerHttpRequestStreamTimeoutWorker(context: *HttpBodyStreamTimeoutContext) void {
+    defer context.done.set(context.io);
+    performExecServerHttpRequestStream(context.task, context.io) catch |err| {
+        context.err = err;
+    };
+}
+
+fn handleHttpBodyStreamTaskError(task: *HttpBodyStreamTask, err: anyerror) void {
+    if (err == error.ExecServerHttpBodyStreamCanceled or httpBodyStreamTaskCanceled(task) or httpBodyStreamTaskTimedOut(task)) return;
+    const message = std.fmt.allocPrint(task.allocator, "http/request failed: {s}", .{@errorName(err)}) catch return;
+    defer task.allocator.free(message);
+    const response = renderJsonRpcErrorFromIdJson(task.allocator, task.id_json, -32603, message) catch return;
+    defer task.allocator.free(response);
+    writeJsonRpcOutputLine(task.output, task.allocator, response) catch {};
 }
 
 fn cancelHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
@@ -436,8 +498,54 @@ fn cancelHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
     task.connection_mutex.unlock(io);
 }
 
+fn timeoutHttpBodyStreamTask(task: *HttpBodyStreamTask) void {
+    task.timed_out.store(true, .release);
+    cancelHttpBodyStreamTask(task);
+}
+
 fn httpBodyStreamTaskCanceled(task: *HttpBodyStreamTask) bool {
     return task.cancel_requested.load(.acquire);
+}
+
+fn httpBodyStreamTaskTimedOut(task: *HttpBodyStreamTask) bool {
+    return task.timed_out.load(.acquire);
+}
+
+fn httpBodyStreamResponseStarted(task: *HttpBodyStreamTask) bool {
+    return task.response_started.load(.acquire);
+}
+
+fn markHttpBodyStreamResponseStarted(task: *HttpBodyStreamTask) void {
+    task.response_started.store(true, .release);
+}
+
+fn claimHttpBodyStreamDeltaSeq(task: *HttpBodyStreamTask) u64 {
+    return task.next_body_delta_seq.fetchAdd(1, .acq_rel);
+}
+
+fn claimHttpBodyStreamTerminalDelta(task: *HttpBodyStreamTask) bool {
+    return task.terminal_body_delta_sent.cmpxchgStrong(false, true, .acq_rel, .acquire) == null;
+}
+
+fn writeHttpBodyStreamTerminalDelta(
+    allocator: std.mem.Allocator,
+    task: *HttpBodyStreamTask,
+    request_id: []const u8,
+    err: ?[]const u8,
+) !void {
+    if (!claimHttpBodyStreamTerminalDelta(task)) return;
+    const seq = claimHttpBodyStreamDeltaSeq(task);
+    try writeExecServerHttpBodyDelta(allocator, task.output, request_id, seq, &.{}, true, err);
+}
+
+fn writeHttpBodyStreamTimeout(task: *HttpBodyStreamTask) !void {
+    if (httpBodyStreamResponseStarted(task)) {
+        try writeHttpBodyStreamTerminalDelta(task.allocator, task, task.params.request_id, "Timeout");
+        return;
+    }
+    const response = try renderJsonRpcErrorFromIdJson(task.allocator, task.id_json, -32603, "http/request failed: Timeout");
+    defer task.allocator.free(response);
+    try writeJsonRpcOutputLine(task.output, task.allocator, response);
 }
 
 fn trackHttpBodyStreamConnection(task: *HttpBodyStreamTask, request: *std.http.Client.Request) !void {
@@ -854,10 +962,6 @@ const StdioServer = struct {
             defer self.allocator.free(message);
             return try renderJsonRpcError(self.allocator, id_value, -32602, message);
         }
-        if (params.timeout_ms != null) {
-            return try renderJsonRpcError(self.allocator, id_value, -32601, "http/request streamResponse timeoutMs is not implemented yet");
-        }
-
         const owned_params = try cloneHttpRequestParams(self.allocator, params);
         errdefer owned_params.deinit(self.allocator);
         const id_json = try std.json.Stringify.valueAlloc(self.allocator, id_value, .{});
@@ -867,6 +971,10 @@ const StdioServer = struct {
         task.* = undefined;
         task.done = .init(false);
         task.cancel_requested = .init(false);
+        task.timed_out = .init(false);
+        task.response_started = .init(false);
+        task.terminal_body_delta_sent = .init(false);
+        task.next_body_delta_seq = .init(1);
         task.connection_mutex = .init;
         task.active_stream = null;
         task.allocator = self.allocator;
@@ -2501,7 +2609,7 @@ fn performExecServerHttpRequest(allocator: std.mem.Allocator, io: std.Io, params
     }
 }
 
-fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
+fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask, io: std.Io) !void {
     const allocator = task.allocator;
     const id_json = task.id_json;
     const params = task.params.borrowed();
@@ -2523,9 +2631,6 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
         }
     }
 
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
@@ -2631,12 +2736,13 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
         const response_line = try renderJsonRpcResultFromIdJson(allocator, id_json, response_json);
         defer allocator.free(response_line);
         try writeJsonRpcOutputLine(task.output, allocator, response_line);
+        markHttpBodyStreamResponseStarted(task);
 
         if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
         if (!response_has_body) {
             request.response_content_length = 0;
             request.response_transfer_encoding = .none;
-            try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, 1, &.{}, true, null);
+            try writeHttpBodyStreamTerminalDelta(allocator, task, params.request_id, null);
             return;
         }
 
@@ -2652,29 +2758,28 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask) !void {
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         var read_buffer: [8192]u8 = undefined;
-        var seq: u64 = 1;
         while (true) {
             var read_slices = [_][]u8{&read_buffer};
             const read_len = reader.readVec(&read_slices) catch |err| switch (err) {
                 error.EndOfStream => {
                     if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
                     if (execServerHttpBodyStreamEndedCleanly(&response)) break;
-                    try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, "EndOfStream");
+                    try writeHttpBodyStreamTerminalDelta(allocator, task, params.request_id, "EndOfStream");
                     return;
                 },
                 error.ReadFailed => {
                     if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
                     const message = if (response.bodyErr()) |body_err| @errorName(body_err) else @errorName(err);
-                    try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, message);
+                    try writeHttpBodyStreamTerminalDelta(allocator, task, params.request_id, message);
                     return;
                 },
             };
             if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
             if (read_len == 0) continue;
+            const seq = claimHttpBodyStreamDeltaSeq(task);
             try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, read_buffer[0..read_len], false, null);
-            seq += 1;
         }
-        try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, &.{}, true, null);
+        try writeHttpBodyStreamTerminalDelta(allocator, task, params.request_id, null);
         return;
     }
 }
