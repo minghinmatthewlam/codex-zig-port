@@ -3938,14 +3938,8 @@ def prepare_apply_preflight_repo(
     return repo, readme
 
 
-def run_apply_command_smoke(
-    binary: Path,
-    env: dict[str, str],
-    workspace: Path,
-    port: int,
-    server: MockResponsesServer,
-) -> None:
-    repo = workspace / "apply-repo"
+def prepare_apply_success_repo(workspace: Path, repo_name: str) -> Path:
+    repo = workspace / repo_name
     repo.mkdir()
     git(repo, "init")
     git(repo, "config", "user.email", "test@example.com")
@@ -3953,13 +3947,25 @@ def run_apply_command_smoke(
     (repo / "README.md").write_text("# Apply Smoke\n")
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "Initial commit")
+    return repo
 
+
+def run_apply_success_command(
+    binary: Path,
+    env: dict[str, str],
+    port: int,
+    server: MockResponsesServer,
+    repo: Path,
+    command_name: str,
+) -> None:
+    path_index = len(server.get_paths)
+    header_index = len(server.get_headers)
     result = subprocess.run(
         [
             str(binary),
             "-c",
             f"chatgpt_base_url=http://127.0.0.1:{port}",
-            "apply",
+            command_name,
             "task-apply",
         ],
         cwd=repo,
@@ -3970,24 +3976,46 @@ def run_apply_command_smoke(
     )
     combined = result.stdout + result.stderr
     if "Successfully applied diff (1 file)" not in combined:
-        raise AssertionError(f"expected apply success output:\n{combined}")
+        raise AssertionError(f"expected {command_name} success output:\n{combined}")
 
     created = repo / "scripts" / "fibonacci.js"
     if not created.exists():
-        raise AssertionError(f"expected apply command to create {created}")
+        raise AssertionError(f"expected {command_name} command to create {created}")
     contents = created.read_text()
     if "function fibonacci(n)" not in contents or not contents.startswith(
         "#!/usr/bin/env node"
     ):
-        raise AssertionError(f"unexpected applied file contents:\n{contents}")
+        raise AssertionError(f"unexpected {command_name} file contents:\n{contents}")
 
-    if "/wham/tasks/task-apply" not in server.get_paths:
-        raise AssertionError(f"expected task fetch, saw {server.get_paths!r}")
-    headers = server.get_headers[-1] if server.get_headers else {}
+    new_paths = server.get_paths[path_index:]
+    if "/wham/tasks/task-apply" not in new_paths:
+        raise AssertionError(
+            f"expected {command_name} task fetch, saw {new_paths!r}"
+        )
+    new_headers = server.get_headers[header_index:]
+    headers = new_headers[-1] if new_headers else {}
     if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
-        raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
+        raise AssertionError(
+            f"expected {command_name} ChatGPT account header, saw {headers!r}"
+        )
     if headers.get("Authorization") != "Bearer tui-e2e-token":
-        raise AssertionError(f"expected bearer auth header, saw {headers!r}")
+        raise AssertionError(
+            f"expected {command_name} bearer auth header, saw {headers!r}"
+        )
+
+
+def run_apply_command_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    repo = prepare_apply_success_repo(workspace, "apply-repo")
+    run_apply_success_command(binary, env, port, server, repo, "apply")
+
+    alias_repo = prepare_apply_success_repo(workspace, "apply-alias-repo")
+    run_apply_success_command(binary, env, port, server, alias_repo, "a")
 
     preflight_repo, preflight_readme = prepare_apply_preflight_repo(
         workspace, "apply-preflight-repo", server
