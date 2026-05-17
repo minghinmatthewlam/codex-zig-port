@@ -756,6 +756,17 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "compact")) {
+        const trimmed = std.mem.trim(u8, parts.args, " \t\r\n");
+        if (trimmed.len != 0) {
+            std.debug.print("usage: /compact\n", .{});
+            return .handled;
+        }
+        try compactRemoteThread(allocator, transport, thread_id.*, state);
+        std.debug.print("compacted remote thread: {s}\n", .{thread_id.*});
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
         try handleRemoteModel(allocator, state, parts.args);
         return .handled;
@@ -821,6 +832,7 @@ fn printRemoteSlashHelp() void {
         \\commands:
         \\  /help
         \\  /status
+        \\  /compact
         \\  /model [MODEL]
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
@@ -1001,6 +1013,19 @@ fn startRemoteThread(
     return try allocator.dupe(u8, thread_id_raw);
 }
 
+fn compactRemoteThread(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    thread_id: []const u8,
+    state: *const RemoteTuiState,
+) !void {
+    const request = try renderRemoteThreadRuntimeRequest(allocator, "thread-compact", "thread/compact/start", thread_id, state.overrides, state.service_tier_cleared);
+    defer allocator.free(request);
+    try transport.writeJson(request);
+    var response = try readRemoteResponse(transport, "thread-compact");
+    response.deinit();
+}
+
 fn promptRemoteSessionPicker(
     allocator: std.mem.Allocator,
     transport: *RemoteTransport,
@@ -1126,6 +1151,29 @@ fn printRemoteHeader(remote: []const u8, cwd: []const u8) void {
         \\Type /help for commands or /quit to exit.
         \\
     , .{ remote, cwd });
+}
+
+fn renderRemoteThreadRuntimeRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    method: []const u8,
+    thread_id: []const u8,
+    overrides: config.RuntimeOverrides,
+    service_tier_cleared: bool,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":");
+    try appendJsonString(allocator, &out, method);
+    try out.appendSlice(allocator, ",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
 }
 
 fn renderRemoteThreadStartRequest(
@@ -3686,6 +3734,22 @@ test "remote TUI serializes supported runtime overrides" {
     defer parsed_cleared_thread.deinit();
     const cleared_thread_params = parsed_cleared_thread.value.object.get("params").?.object;
     try std.testing.expect(cleared_thread_params.get("serviceTier").? == .null);
+
+    const thread_compact = try renderRemoteThreadRuntimeRequest(allocator, "thread-compact", "thread/compact/start", "11111111-1111-4111-8111-111111111111", .{
+        .model = "gpt-compact",
+        .service_tier = "priority",
+        .personality = .friendly,
+    }, false);
+    defer allocator.free(thread_compact);
+
+    var parsed_compact = try std.json.parseFromSlice(std.json.Value, allocator, thread_compact, .{});
+    defer parsed_compact.deinit();
+    try std.testing.expectEqualStrings("thread/compact/start", parsed_compact.value.object.get("method").?.string);
+    const compact_params = parsed_compact.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", compact_params.get("threadId").?.string);
+    try std.testing.expectEqualStrings("gpt-compact", compact_params.get("model").?.string);
+    try std.testing.expectEqualStrings("priority", compact_params.get("serviceTier").?.string);
+    try std.testing.expectEqualStrings("friendly", compact_params.get("personality").?.string);
 
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
