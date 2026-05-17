@@ -297,8 +297,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   control as unimplemented
 - parse the experimental `cloud` / `cloud-tasks` command family, including
   `exec`, `status`, `list`, `apply`, and `diff` options; `list`, `status`, and
-  `diff` perform authenticated Cloud Tasks backend reads, while task creation,
-  local apply, the picker UI, and multi-attempt runtime selection remain planned
+  `diff` perform authenticated Cloud Tasks backend reads, and `apply` applies
+  first-attempt Cloud diffs locally with `git apply --3way`, while task
+  creation, the picker UI, and multi-attempt runtime selection remain planned
 - print general or command-specific help with `help [COMMAND]`
 - generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
