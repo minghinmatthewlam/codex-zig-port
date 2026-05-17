@@ -632,6 +632,15 @@ fn stageExistingDiffPaths(
     }
     if (existing.items.len == 0) return;
 
+    var remove_argv = std.ArrayList([]const u8).empty;
+    defer remove_argv.deinit(allocator);
+    try remove_argv.append(allocator, "git");
+    try remove_argv.append(allocator, "update-index");
+    try remove_argv.append(allocator, "--force-remove");
+    try remove_argv.append(allocator, "--");
+    try remove_argv.appendSlice(allocator, existing.items);
+    try runGitStageCommand(allocator, git_root, remove_argv.items, env_map);
+
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, "git");
@@ -640,12 +649,20 @@ fn stageExistingDiffPaths(
     try argv.append(allocator, "-f");
     try argv.append(allocator, "--");
     try argv.appendSlice(allocator, existing.items);
+    try runGitStageCommand(allocator, git_root, argv.items, env_map);
+}
 
+fn runGitStageCommand(
+    allocator: std.mem.Allocator,
+    git_root: []const u8,
+    argv: []const []const u8,
+    env_map: ?*const std.process.Environ.Map,
+) !void {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
     const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = argv.items,
+        .argv = argv,
         .cwd = .{ .path = git_root },
         .environ_map = env_map,
         .stdout_limit = .limited(128 * 1024),
