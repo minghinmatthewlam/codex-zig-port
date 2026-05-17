@@ -611,9 +611,9 @@ overrides into Cloud runtime commands, and run authenticated backend reads for
 `list`, `status`, and first-attempt `diff` against the Cloud Tasks task-list and
 task-detail endpoints. `apply` fetches the same first-attempt diff and applies
 it to the current git repository with `git apply --3way`. `exec` creates Cloud
-tasks from explicit environment ids, argument/stdin prompts, branch overrides or
-current-branch fallback, best-of-N metadata, and `CODEX_STARTING_DIFF`
-pre-apply items. The interactive Cloud picker UI, environment label resolution,
+tasks from environment ids or case-insensitive environment labels, argument/stdin
+prompts, branch overrides or current-branch fallback, best-of-N metadata, and
+`CODEX_STARTING_DIFF` pre-apply items. The interactive Cloud picker UI,
 sibling-attempt fetching, and full apply preflight/parity diagnostics remain
 planned.
 
