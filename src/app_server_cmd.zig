@@ -6732,8 +6732,15 @@ const THREAD_UNARCHIVE_RESPONSE_TS =
 
 const THREAD_COMPACT_START_PARAMS_TS =
     GENERATED_TS_HEADER ++
+    \\import type { Personality } from "../Personality";
+    \\
     \\export interface ThreadCompactStartParams {
     \\  threadId: string;
+    \\  model?: string | null;
+    \\  serviceTier?: string | null;
+    \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
+    \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
+    \\  personality?: Personality | null;
     \\}
     \\
     ;
@@ -17904,7 +17911,12 @@ const THREAD_COMPACT_START_PARAMS_JSON_SCHEMA =
     \\  "type": "object",
     \\  "required": ["threadId"],
     \\  "properties": {
-    \\    "threadId": { "type": "string" }
+    \\    "threadId": { "type": "string" },
+    \\    "model": { "type": ["string", "null"] },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -22827,7 +22839,12 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "required": ["threadId"],
     \\      "properties": {
-    \\        "threadId": { "type": "string" }
+    \\        "threadId": { "type": "string" },
+    \\        "model": { "type": ["string", "null"] },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -26870,36 +26887,6 @@ fn replaceLoadedThreadSandboxProfile(
     thread.runtime_overrides.sandbox_mode = true;
 }
 
-fn applyLoadedThreadRuntimeConfig(
-    allocator: std.mem.Allocator,
-    cfg: *config.Config,
-    thread: *const LoadedThread,
-) !void {
-    try replaceOwnedString(allocator, &cfg.model, thread.model);
-    cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidThreadRuntimeConfig;
-    cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidThreadRuntimeConfig;
-    if (cfg.service_tier) |existing| allocator.free(existing);
-    cfg.service_tier = null;
-    if (thread.service_tier) |value| cfg.service_tier = try allocator.dupe(u8, value);
-    cfg.model_reasoning_effort = if (thread.reasoning_effort) |value|
-        config.ReasoningEffort.parse(value) catch return error.InvalidThreadRuntimeConfig
-    else
-        null;
-    cfg.model_reasoning_summary = if (thread.reasoning_summary) |value|
-        config.ReasoningSummary.parse(value) catch return error.InvalidThreadRuntimeConfig
-    else
-        null;
-    cfg.personality = if (thread.personality) |value|
-        config.Personality.parse(value) catch return error.InvalidThreadRuntimeConfig
-    else
-        null;
-    if (cfg.developer_instructions) |existing| allocator.free(existing);
-    cfg.developer_instructions = if (thread.collaboration_developer_instructions) |value|
-        try allocator.dupe(u8, value)
-    else
-        null;
-}
-
 fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThread, prompt: []const u8) !void {
     if (thread.preview.len == 0) try replaceOwnedString(allocator, &thread.preview, prompt);
     const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
@@ -27177,6 +27164,7 @@ fn handleLoadedThreadCompactStart(
     state: *AppServerState,
     id_value: std.json.Value,
     thread_index: usize,
+    params: std.json.ObjectMap,
 ) ![]const u8 {
     var cfg = config.load(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load config", err);
@@ -27184,8 +27172,8 @@ fn handleLoadedThreadCompactStart(
     defer cfg.deinit(allocator);
 
     const thread = &state.loaded_threads.items[thread_index];
-    applyLoadedThreadRuntimeConfig(allocator, &cfg, thread) catch |err| switch (err) {
-        error.InvalidThreadRuntimeConfig => return renderJsonRpcError(allocator, id_value, -32600, "thread has invalid runtime config"),
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, params) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid compact context override"),
         else => return err,
     };
 
@@ -28656,10 +28644,13 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
+        if (validateThreadCompactRuntimeParams(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
         const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
             return renderThreadNotFound(allocator, id_value, thread_id);
         };
-        return handleLoadedThreadCompactStart(allocator, state, id_value, thread_index);
+        return handleLoadedThreadCompactStart(allocator, state, id_value, thread_index, object);
     }
     if (std.mem.eql(u8, method, "thread/shellCommand")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -33539,6 +33530,50 @@ fn validateThreadForkParams(params_value: ?std.json.Value) ?[]const u8 {
     if (object.get("threadSource")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "user", "subagent", "memory_consolidation" })) {
             return "threadSource must be user, subagent, memory_consolidation, or null";
+        }
+    }
+    return null;
+}
+
+fn validateThreadCompactRuntimeParams(object: std.json.ObjectMap) ?[]const u8 {
+    inline for (&.{ "model", "modelProvider", "serviceTier", "cwd" }) |name| {
+        if (object.get(name)) |value| {
+            if (value != .null and value != .string) return name ++ " must be a string or null";
+        }
+    }
+    if (object.get("approvalPolicy")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "untrusted", "on-failure", "on-request", "never" })) {
+            return "approvalPolicy must be a supported approval policy or null";
+        }
+    }
+    if (object.get("approvalsReviewer")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "user", "auto_review", "guardian_subagent" })) {
+            return "approvalsReviewer must be user, auto_review, guardian_subagent, or null";
+        }
+    }
+    if (object.get("sandbox")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "read-only", "workspace-write", "danger-full-access" })) {
+            return "sandbox must be read-only, workspace-write, danger-full-access, or null";
+        }
+    }
+    if (object.get("personality")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
+            return "personality must be none, friendly, pragmatic, or null";
+        }
+    }
+    if (object.get("effort")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "low", "medium", "high", "xhigh" })) {
+            return "effort must be low, medium, high, xhigh, or null";
+        }
+    }
+    if (object.get("summary")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "auto", "concise", "detailed", "none" })) {
+            return "summary must be auto, concise, detailed, none, or null";
+        }
+    }
+    inline for (&.{ "collaborationMode", "permissions", "sandboxPolicy" }) |name| {
+        if (object.get(name)) |value| {
+            if (value != .null and value != .object) return name ++ " must be an object or null";
         }
     }
     return null;
