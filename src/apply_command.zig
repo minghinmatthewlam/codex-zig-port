@@ -160,19 +160,31 @@ fn extractPrDiff(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
 }
 
 fn applyGitDiff(allocator: std.mem.Allocator, task_id: []const u8, diff: []const u8) !void {
+    const summary = git_apply.diffSummary(diff);
+
     var preflight = try git_apply.checkUnifiedDiff(allocator, diff);
     defer preflight.deinit(allocator);
+
+    var preflight_paths = try git_apply.parseApplyOutputPaths(allocator, preflight.stdout, preflight.stderr);
+    defer preflight_paths.deinit(allocator);
 
     if (git_apply.checkResultFailed(preflight.exit_code, preflight.stdout, preflight.stderr)) {
         try cli_utils.writeStdout(preflight.stdout);
         try cli_utils.writeStderr(preflight.stderr);
         const message = try std.fmt.allocPrint(
             allocator,
-            "Preflight failed for task {s}; no files were changed\n",
-            .{task_id},
+            "Preflight failed for task {s}; no files were changed ({d} file{s}, conflicts={d}, skipped={d})\n",
+            .{
+                task_id,
+                summary.files_changed,
+                if (summary.files_changed == 1) "" else "s",
+                preflight_paths.conflicted_paths.items.len,
+                preflight_paths.skipped_paths.items.len,
+            },
         );
         defer allocator.free(message);
         try cli_utils.writeStdout(message);
+        try writeApplyPathSummaries(allocator, preflight_paths);
         return error.GitApplyPreflightFailed;
     }
 
@@ -182,12 +194,45 @@ fn applyGitDiff(allocator: std.mem.Allocator, task_id: []const u8, diff: []const
     try cli_utils.writeStdout(result.stdout);
     try cli_utils.writeStderr(result.stderr);
 
+    var result_paths = try git_apply.parseApplyOutputPaths(allocator, result.stdout, result.stderr);
+    defer result_paths.deinit(allocator);
+
     if (result.exit_code == 0) {
-        try cli_utils.writeStdout("Successfully applied diff\n");
+        const applied_count = if (result_paths.applied_paths.items.len > 0) result_paths.applied_paths.items.len else summary.files_changed;
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "Successfully applied diff ({d} file{s})\n",
+            .{ applied_count, if (applied_count == 1) "" else "s" },
+        );
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
         return;
     }
-    std.debug.print("Git apply failed (exit {d})\n", .{result.exit_code});
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Git apply failed (exit {d}, applied={d}, skipped={d}, conflicts={d})\n",
+        .{
+            result.exit_code,
+            result_paths.applied_paths.items.len,
+            result_paths.skipped_paths.items.len,
+            result_paths.conflicted_paths.items.len,
+        },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+    try writeApplyPathSummaries(allocator, result_paths);
     return error.GitApplyFailed;
+}
+
+fn writeApplyPathSummaries(allocator: std.mem.Allocator, paths: git_apply.ApplyOutputPaths) !void {
+    if (try git_apply.formatPathSummary(allocator, "Conflicts", paths.conflicted_paths.items)) |message| {
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+    }
+    if (try git_apply.formatPathSummary(allocator, "Skipped", paths.skipped_paths.items)) |message| {
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+    }
 }
 
 fn isHelpFlag(arg: []const u8) bool {

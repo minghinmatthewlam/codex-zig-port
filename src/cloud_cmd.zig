@@ -140,12 +140,6 @@ const TaskStatus = enum {
     }
 };
 
-const DiffSummary = struct {
-    files_changed: usize = 0,
-    lines_added: usize = 0,
-    lines_removed: usize = 0,
-};
-
 const TaskSummary = struct {
     id: []const u8,
     title: []const u8,
@@ -153,7 +147,7 @@ const TaskSummary = struct {
     updated_at: f64,
     environment_id: ?[]const u8 = null,
     environment_label: ?[]const u8 = null,
-    summary: DiffSummary = .{},
+    summary: git_apply.DiffSummary = .{},
     is_review: bool = false,
     attempt_total: ?usize = null,
 
@@ -669,17 +663,26 @@ fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
     var preflight = try git_apply.checkUnifiedDiff(allocator, diff);
     defer preflight.deinit(allocator);
 
-    const summary = diffSummaryFromDiff(diff);
+    const summary = git_apply.diffSummary(diff);
+    var preflight_paths = try git_apply.parseApplyOutputPaths(allocator, preflight.stdout, preflight.stderr);
+    defer preflight_paths.deinit(allocator);
     if (git_apply.checkResultFailed(preflight.exit_code, preflight.stdout, preflight.stderr)) {
         try cli_utils.writeStdout(preflight.stdout);
         try cli_utils.writeStderr(preflight.stderr);
         const message = try std.fmt.allocPrint(
             allocator,
-            "Preflight failed for task {s}; no files were changed ({d} file{s})\n",
-            .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+            "Preflight failed for task {s}; no files were changed ({d} file{s}, conflicts={d}, skipped={d})\n",
+            .{
+                task_id,
+                summary.files_changed,
+                if (summary.files_changed == 1) "" else "s",
+                preflight_paths.conflicted_paths.items.len,
+                preflight_paths.skipped_paths.items.len,
+            },
         );
         defer allocator.free(message);
         try cli_utils.writeStdout(message);
+        try writeApplyPathSummaries(allocator, preflight_paths);
         return error.CloudTaskApplyPreflightFailed;
     }
 
@@ -689,11 +692,15 @@ fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
     try cli_utils.writeStdout(result.stdout);
     try cli_utils.writeStderr(result.stderr);
 
+    var result_paths = try git_apply.parseApplyOutputPaths(allocator, result.stdout, result.stderr);
+    defer result_paths.deinit(allocator);
+
     if (result.exit_code == 0) {
+        const applied_count = if (result_paths.applied_paths.items.len > 0) result_paths.applied_paths.items.len else summary.files_changed;
         const message = try std.fmt.allocPrint(
             allocator,
             "Applied task {s} locally ({d} file{s})\n",
-            .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+            .{ task_id, applied_count, if (applied_count == 1) "" else "s" },
         );
         defer allocator.free(message);
         try cli_utils.writeStdout(message);
@@ -702,11 +709,17 @@ fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
 
     const message = try std.fmt.allocPrint(
         allocator,
-        "Apply failed for task {s} ({d} file{s})\n",
-        .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+        "Apply failed for task {s} (applied={d}, skipped={d}, conflicts={d})\n",
+        .{
+            task_id,
+            result_paths.applied_paths.items.len,
+            result_paths.skipped_paths.items.len,
+            result_paths.conflicted_paths.items.len,
+        },
     );
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
+    try writeApplyPathSummaries(allocator, result_paths);
     return error.CloudTaskApplyFailed;
 }
 
@@ -1474,7 +1487,7 @@ fn parseTaskDetailsSummary(allocator: std.mem.Allocator, task_id: []const u8, bo
     if (task.summary.files_changed == 0 and task.summary.lines_added == 0 and task.summary.lines_removed == 0) {
         if (extractUnifiedDiff(allocator, body)) |diff| {
             defer allocator.free(diff);
-            task.summary = diffSummaryFromDiff(diff);
+            task.summary = git_apply.diffSummary(diff);
         } else |_| {}
     }
     return task;
@@ -1845,7 +1858,7 @@ fn appendOptionalStringJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8
     }
 }
 
-fn renderSummaryLine(allocator: std.mem.Allocator, summary: DiffSummary) ![]const u8 {
+fn renderSummaryLine(allocator: std.mem.Allocator, summary: git_apply.DiffSummary) ![]const u8 {
     if (summary.files_changed == 0 and summary.lines_added == 0 and summary.lines_removed == 0) {
         return allocator.dupe(u8, "no diff");
     }
@@ -1859,6 +1872,17 @@ fn renderSummaryLine(allocator: std.mem.Allocator, summary: DiffSummary) ![]cons
             if (summary.files_changed == 1) "" else "s",
         },
     );
+}
+
+fn writeApplyPathSummaries(allocator: std.mem.Allocator, paths: git_apply.ApplyOutputPaths) !void {
+    if (try git_apply.formatPathSummary(allocator, "Conflicts", paths.conflicted_paths.items)) |message| {
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+    }
+    if (try git_apply.formatPathSummary(allocator, "Skipped", paths.skipped_paths.items)) |message| {
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+    }
 }
 
 fn taskUrl(allocator: std.mem.Allocator, base_url: []const u8, task_id: []const u8) ![]const u8 {
@@ -1935,7 +1959,7 @@ fn taskStatusFromDisplay(display: ?std.json.Value) TaskStatus {
     return .pending;
 }
 
-fn diffSummaryFromDisplay(display: ?std.json.Value) DiffSummary {
+fn diffSummaryFromDisplay(display: ?std.json.Value) git_apply.DiffSummary {
     const latest = if (display) |value| objectField(value, "latest_turn_status_display") else null;
     const diff_stats = if (latest) |value| objectField(value, "diff_stats") else null;
     const stats = diff_stats orelse return .{};
@@ -1944,25 +1968,6 @@ fn diffSummaryFromDisplay(display: ?std.json.Value) DiffSummary {
         .lines_added = positiveUsize(objectField(stats, "lines_added")),
         .lines_removed = positiveUsize(objectField(stats, "lines_removed")),
     };
-}
-
-fn diffSummaryFromDiff(diff: []const u8) DiffSummary {
-    var summary = DiffSummary{};
-    var lines = std.mem.splitScalar(u8, diff, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "diff --git ")) {
-            summary.files_changed += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, line, "+++") or std.mem.startsWith(u8, line, "---") or std.mem.startsWith(u8, line, "@@")) {
-            continue;
-        }
-        if (line.len == 0) continue;
-        if (line[0] == '+') summary.lines_added += 1;
-        if (line[0] == '-') summary.lines_removed += 1;
-    }
-    if (summary.files_changed == 0 and std.mem.trim(u8, diff, " \t\r\n").len > 0) summary.files_changed = 1;
-    return summary;
 }
 
 fn positiveUsize(value: ?std.json.Value) usize {

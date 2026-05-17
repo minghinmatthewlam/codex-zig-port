@@ -3969,7 +3969,7 @@ def run_apply_command_smoke(
         check=True,
     )
     combined = result.stdout + result.stderr
-    if "Successfully applied diff" not in combined:
+    if "Successfully applied diff (1 file)" not in combined:
         raise AssertionError(f"expected apply success output:\n{combined}")
 
     created = repo / "scripts" / "fibonacci.js"
@@ -4010,8 +4010,10 @@ def run_apply_command_smoke(
     preflight_combined = preflight.stdout + preflight.stderr
     if preflight.returncode == 0:
         raise AssertionError("apply preflight conflict unexpectedly succeeded")
-    if "Preflight failed for task task-conflict; no files were changed" not in preflight_combined:
+    if "Preflight failed for task task-conflict; no files were changed (1 file, conflicts=1, skipped=0)" not in preflight_combined:
         raise AssertionError(f"expected apply preflight diagnostic:\n{preflight_combined}")
+    if "Conflicts (1):\n  README.md" not in preflight_combined:
+        raise AssertionError(f"expected apply conflict path summary:\n{preflight_combined}")
     if " with conflicts." not in preflight_combined:
         raise AssertionError(f"expected git conflict preflight output:\n{preflight_combined}")
     if preflight_readme.read_text() != APPLY_TASK_CONFLICT_LOCAL:
@@ -4128,8 +4130,10 @@ def run_cloud_apply_command_smoke(
     preflight_combined = preflight.stdout + preflight.stderr
     if preflight.returncode == 0:
         raise AssertionError("cloud apply preflight conflict unexpectedly succeeded")
-    if "Preflight failed for task task-conflict; no files were changed (1 file)" not in preflight_combined:
+    if "Preflight failed for task task-conflict; no files were changed (1 file, conflicts=1, skipped=0)" not in preflight_combined:
         raise AssertionError(f"expected cloud preflight diagnostic:\n{preflight_combined}")
+    if "Conflicts (1):\n  README.md" not in preflight_combined:
+        raise AssertionError(f"expected cloud conflict path summary:\n{preflight_combined}")
     if " with conflicts." not in preflight_combined:
         raise AssertionError(f"expected git conflict preflight output:\n{preflight_combined}")
     if preflight_readme.read_text() != APPLY_TASK_CONFLICT_LOCAL:
