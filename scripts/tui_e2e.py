@@ -489,20 +489,21 @@ def generate_localhost_self_signed_cert(root: Path) -> tuple[Path, Path]:
     return cert_path, key_path
 
 
-def remote_control_link(output: bytearray, marker: str) -> str:
-    rendered = output.decode(errors="replace")
+def remote_control_link(output: bytearray, marker: str, start: int = 0) -> str:
+    rendered = output[start:].decode(errors="replace")
     for line in rendered.splitlines():
         if marker in line:
             return line.split(marker, 1)[1].strip()
-    raise AssertionError(f"remote-control link {marker!r} not found:\n\n{rendered}")
+    full_output = output.decode(errors="replace")
+    raise AssertionError(f"remote-control link {marker!r} not found:\n\n{full_output}")
 
 
-def remote_control_url(output: bytearray) -> str:
-    return remote_control_link(output, "Controller link:")
+def remote_control_url(output: bytearray, start: int = 0) -> str:
+    return remote_control_link(output, "Controller link:", start)
 
 
-def remote_control_share_url(output: bytearray) -> str:
-    return remote_control_link(output, "Share link:")
+def remote_control_share_url(output: bytearray, start: int = 0) -> str:
+    return remote_control_link(output, "Share link:", start)
 
 
 def remote_control_request(control_url: str, method: str, path: str, body: bytes = b"") -> str:
@@ -2272,6 +2273,110 @@ def run_local_remote_control_smoke(
             os.close(master_fd)
 
 
+def run_local_remote_control_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    output = bytearray()
+    proc = None
+    master_fd = -1
+    body_start = len(server.request_bodies)
+    typed_prompt = "side question before slash remote control"
+    remote_prompt = "side question from slash controller"
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        wait_for(master_fd, output, b"\xe2\x80\xba", 5)
+
+        mark = len(output)
+        send_line(master_fd, typed_prompt)
+        wait_for(master_fd, output, b"side answer", 8, mark)
+
+        start_mark = len(output)
+        send_line(master_fd, "/remote-control")
+        wait_for(master_fd, output, b"Remote control active", 5, start_mark)
+        control_url = remote_control_url(output, start_mark)
+        share_url = remote_control_share_url(output, start_mark)
+        wait_for_remote_control_messages(control_url, typed_prompt, "side answer", 2)
+
+        viewer_body = json.dumps({"message": "viewer should not send"}, separators=(",", ":")).encode()
+        viewer_response = remote_control_request(share_url, "POST", "/api/message", viewer_body)
+        if not viewer_response.startswith("HTTP/1.1 403 Forbidden"):
+            raise AssertionError(f"expected slash-started viewer POST to be read-only:\n{viewer_response}")
+
+        reshow_mark = len(output)
+        send_line(master_fd, "/remote-control start")
+        wait_for(master_fd, output, b"Remote control active", 5, reshow_mark)
+        reshown_control_url = remote_control_url(output, reshow_mark)
+        if reshown_control_url != control_url:
+            raise AssertionError(
+                f"/remote-control start created a second server:\n{control_url}\n{reshown_control_url}"
+            )
+
+        usage_mark = len(output)
+        send_line(master_fd, "/remote-control nonsense")
+        wait_for(master_fd, output, b"Usage: /remote-control [start|stop]", 5, usage_mark)
+        remote_control_state(control_url)
+
+        remote_mark = len(output)
+        post_remote_control_message(control_url, remote_prompt)
+        wait_for(master_fd, output, f"remote \u203a {remote_prompt}".encode(), 5, remote_mark)
+        wait_for(master_fd, output, b"side answer", 8, remote_mark)
+        wait_for_remote_control_messages(control_url, remote_prompt, "side answer", 5)
+
+        stop_mark = len(output)
+        send_line(master_fd, "/remote-control stop")
+        wait_for(master_fd, output, b"Remote control stopped.", 5, stop_mark)
+        wait_for_remote_control_stop(control_url, 3)
+
+        quit_mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, quit_mark)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"local remote-control slash TUI exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        local_prompts = [
+            latest_user_text(body.get("input", []))
+            for body in server.request_bodies[body_start:]
+        ]
+        for prompt in [typed_prompt, remote_prompt]:
+            if prompt not in local_prompts:
+                rendered = json.dumps(local_prompts, indent=2)
+                raise AssertionError(f"slash remote-control prompt was not preserved:\n\n{rendered}")
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
+
+
 def run_remote_unix_tui_smoke(
     binary: Path,
     env: dict[str, str],
@@ -3142,6 +3247,7 @@ def run_e2e(binary: Path) -> str:
             run_help_command_smoke(binary, env, workspace)
             run_remote_flag_smoke(binary, env, workspace)
             run_local_remote_control_smoke(binary, env, workspace, port, server)
+            run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
