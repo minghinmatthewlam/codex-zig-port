@@ -140,6 +140,116 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         self.server.request_count += 1
         self.server.get_paths.append(self.path)
         self.server.get_headers.append(dict(self.headers.items()))
+        parsed = urlparse(self.path)
+
+        if parsed.path in {"/wham/tasks/list", "/api/codex/tasks/list"}:
+            query = parse_qs(parsed.query)
+            if query.get("task_filter") != ["current"]:
+                self.send_response(400)
+                payload = b'{"error":"missing task filter"}'
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            payload = json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "task-ready",
+                            "title": "Write cloud runtime",
+                            "updated_at": 1760000000.0,
+                            "task_status_display": {
+                                "environment_label": "Demo env",
+                                "latest_turn_status_display": {
+                                    "turn_status": "completed",
+                                    "diff_stats": {
+                                        "files_modified": 1,
+                                        "lines_added": 3,
+                                        "lines_removed": 1,
+                                    },
+                                    "sibling_turn_ids": ["turn-b"],
+                                },
+                            },
+                            "pull_requests": [{"number": 1}],
+                        }
+                    ],
+                    "cursor": "cursor-next",
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path in {"/wham/tasks/task-ready", "/api/codex/tasks/task-ready"}:
+            payload = json.dumps(
+                {
+                    "task": {
+                        "id": "task-ready",
+                        "title": "Write cloud runtime",
+                        "updated_at": 1760000000.0,
+                        "environment_id": "env-demo",
+                    },
+                    "task_status_display": {
+                        "environment_label": "Demo env",
+                        "latest_turn_status_display": {
+                            "turn_status": "completed",
+                            "diff_stats": {
+                                "files_modified": 1,
+                                "lines_added": 3,
+                                "lines_removed": 1,
+                            },
+                        },
+                    },
+                    "current_diff_task_turn": {
+                        "output_items": [
+                            {
+                                "type": "pr",
+                                "output_diff": {"diff": APPLY_TASK_DIFF},
+                            }
+                        ]
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path in {"/wham/tasks/task-second-attempt", "/api/codex/tasks/task-second-attempt"}:
+            payload = json.dumps(
+                {
+                    "task": {
+                        "id": "task-second-attempt",
+                        "title": "Second attempt current",
+                        "updated_at": 1760000000.0,
+                    },
+                    "current_diff_task_turn": {
+                        "attempt_placement": 2,
+                        "sibling_turn_ids": ["turn-first"],
+                        "output_items": [
+                            {
+                                "type": "pr",
+                                "output_diff": {"diff": APPLY_TASK_DIFF},
+                            }
+                        ],
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
 
         if self.path == "/wham/tasks/task-apply":
             payload = json.dumps(
@@ -828,7 +938,7 @@ def run_initial_image_smoke(
 ) -> None:
     image_path = workspace / "tiny.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-image-smoke\n")
-    start_requests = server.request_count
+    start_requests = len(server.request_bodies)
 
     image_output = bytearray()
     master_fd, slave_fd = pty.openpty()
@@ -1027,6 +1137,8 @@ def run_unimplemented_command_smoke(
     binary: Path,
     env: dict[str, str],
     workspace: Path,
+    port: int,
+    server: MockResponsesServer,
 ) -> None:
     remote_help = subprocess.run(
         [str(binary), "remote-control", "--help"],
@@ -1272,6 +1384,116 @@ def run_unimplemented_command_smoke(
         raise AssertionError(
             f"expected cloud attempt validation error:\n{cloud_bad_attempts.stderr}"
         )
+
+    cloud_base_arg = f"chatgpt_base_url=http://127.0.0.1:{port}"
+    cloud_list_json = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "list", "--limit", "2", "--json"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_list_json.returncode != 0:
+        raise AssertionError(
+            "cloud list JSON failed:\n"
+            f"stdout:\n{cloud_list_json.stdout}\n"
+            f"stderr:\n{cloud_list_json.stderr}"
+        )
+    parsed_list = json.loads(cloud_list_json.stdout)
+    if parsed_list["tasks"][0]["id"] != "task-ready":
+        raise AssertionError(f"expected cloud list task JSON:\n{cloud_list_json.stdout}")
+    if parsed_list["tasks"][0]["url"] != f"http://127.0.0.1:{port}/codex/tasks/task-ready":
+        raise AssertionError(f"expected cloud list browser URL:\n{cloud_list_json.stdout}")
+    if parsed_list["tasks"][0]["summary"]["lines_added"] != 3:
+        raise AssertionError(f"expected cloud list summary JSON:\n{cloud_list_json.stdout}")
+    if parsed_list["cursor"] != "cursor-next":
+        raise AssertionError(f"expected cloud list cursor JSON:\n{cloud_list_json.stdout}")
+
+    cloud_status = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "status", "task-ready"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "[READY] Write cloud runtime" not in cloud_status.stdout:
+        raise AssertionError(f"expected cloud status output:\n{cloud_status.stdout}")
+    if "+3/-1 - 1 file" not in cloud_status.stdout:
+        raise AssertionError(f"expected cloud status diff summary:\n{cloud_status.stdout}")
+
+    cloud_status_url = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "status",
+            f"http://127.0.0.1:{port}/wham/tasks/task-ready?ignored=1#frag",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "[READY] Write cloud runtime" not in cloud_status_url.stdout:
+        raise AssertionError(f"expected cloud status URL normalization:\n{cloud_status_url.stdout}")
+
+    cloud_diff = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "diff", "task-ready"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "diff --git a/scripts/fibonacci.js b/scripts/fibonacci.js" not in cloud_diff.stdout:
+        raise AssertionError(f"expected cloud diff output:\n{cloud_diff.stdout}")
+
+    cloud_diff_wrong_attempt = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "diff", "task-second-attempt"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_diff_wrong_attempt.returncode == 0:
+        raise AssertionError("cloud diff second current attempt unexpectedly succeeded")
+    if "CloudAttemptRuntimeUnsupported" not in cloud_diff_wrong_attempt.stderr:
+        raise AssertionError(
+            "expected cloud second-attempt runtime gap message:\n"
+            f"{cloud_diff_wrong_attempt.stderr}"
+        )
+
+    cloud_diff_attempt = subprocess.run(
+        [str(binary), "-c", cloud_base_arg, "cloud", "diff", "--attempt", "2", "task-ready"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_diff_attempt.returncode == 0:
+        raise AssertionError("cloud diff attempt 2 unexpectedly succeeded")
+    if "CloudAttemptRuntimeUnsupported" not in cloud_diff_attempt.stderr:
+        raise AssertionError(
+            f"expected cloud attempt runtime gap message:\n{cloud_diff_attempt.stderr}"
+        )
+
+    if not any(path.startswith("/api/codex/tasks/list?") for path in server.get_paths):
+        raise AssertionError(f"expected cloud list backend request, saw {server.get_paths!r}")
+    if "/api/codex/tasks/task-ready" not in server.get_paths:
+        raise AssertionError(f"expected cloud task detail request, saw {server.get_paths!r}")
+    if "/api/codex/tasks/task-second-attempt" not in server.get_paths:
+        raise AssertionError(f"expected cloud second-attempt detail request, saw {server.get_paths!r}")
+    headers = server.get_headers[-1] if server.get_headers else {}
+    if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
+        raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
+    if headers.get("Authorization") != "Bearer tui-e2e-token":
+        raise AssertionError(f"expected bearer auth header, saw {headers!r}")
 
 
 def run_remote_fork_smoke(
@@ -2622,7 +2844,7 @@ def run_remote_unix_tui_smoke(
     socket_path = socket_dir / "app-server.sock"
     image_path = workspace / "remote-large.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"remote-image-smoke" * 5000))
-    start_requests = server.request_count
+    start_requests = len(server.request_bodies)
 
     app_env = os.environ.copy()
     app_env["CODEX_HOME"] = str(remote_home)
@@ -3554,6 +3776,7 @@ def run_e2e(binary: Path) -> str:
             env.setdefault("TERM", "xterm-256color")
             env.pop("ZELLIJ", None)
             env.pop("ZELLIJ_SESSION_NAME", None)
+            env.pop("CODEX_CLOUD_TASKS_BASE_URL", None)
 
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
@@ -3565,7 +3788,7 @@ def run_e2e(binary: Path) -> str:
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
             run_remote_initial_prompt_error_smoke(binary, env, workspace)
             run_session_command_option_smoke(binary, env, workspace)
-            run_unimplemented_command_smoke(binary, env, workspace)
+            run_unimplemented_command_smoke(binary, env, workspace, port, server)
             run_plugin_marketplace_smoke(binary, env, workspace)
             run_debug_clear_memories_smoke(binary, env, workspace)
             run_debug_stub_smoke(binary, env, workspace, port)
