@@ -1077,24 +1077,201 @@ def run_unimplemented_command_smoke(
             f"expected remote-control positional-arg rejection:\n{remote_positional_result.stderr}"
         )
 
-    for command in [
-        "cloud",
-        "cloud-tasks",
-    ]:
-        result = subprocess.run(
-            [str(binary), command],
-            cwd=workspace,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
+    cloud_help = subprocess.run(
+        [str(binary), "cloud", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Browse tasks from Codex Cloud" not in cloud_help.stderr:
+        raise AssertionError(f"expected cloud help output:\n{cloud_help.stderr}")
+    if "exec    Submit a new Codex Cloud task" not in cloud_help.stderr:
+        raise AssertionError(f"expected cloud exec subcommand in help:\n{cloud_help.stderr}")
+    if "diff    Show the unified diff" not in cloud_help.stderr:
+        raise AssertionError(f"expected cloud subcommands in help:\n{cloud_help.stderr}")
+
+    cloud_alias_help = subprocess.run(
+        [str(binary), "cloud-tasks", "help", "list"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Usage:" not in cloud_alias_help.stderr or "cloud list" not in cloud_alias_help.stderr:
+        raise AssertionError(f"expected cloud alias list help:\n{cloud_alias_help.stderr}")
+
+    cloud_global_help = subprocess.run(
+        [str(binary), "cloud", "--enable", "goals", "help", "list"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Usage:" not in cloud_global_help.stderr or "cloud list" not in cloud_global_help.stderr:
+        raise AssertionError(
+            f"expected cloud help after global options:\n{cloud_global_help.stderr}"
         )
-        if result.returncode == 0:
-            raise AssertionError(f"{command} unexpectedly succeeded")
-        if "parsed but not implemented yet" not in result.stderr:
-            raise AssertionError(
-                f"expected not-implemented message for {command}:\n{result.stderr}"
-            )
+
+    cloud_exec = subprocess.run(
+        [
+            str(binary),
+            "cloud",
+            "exec",
+            "--env",
+            "env-id",
+            "--attempts",
+            "4",
+            "--branch=feature",
+            "--enable=goals",
+            "write tests",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_exec.returncode == 0:
+        raise AssertionError("cloud exec unexpectedly succeeded")
+    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_exec.stderr:
+        raise AssertionError(f"expected cloud exec parse message:\n{cloud_exec.stderr}")
+
+    cloud_plus_attempt = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "env-id", "--attempts", "+1", "write tests"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_plus_attempt.returncode == 0:
+        raise AssertionError("cloud exec with plus-prefixed attempt unexpectedly succeeded")
+    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_plus_attempt.stderr:
+        raise AssertionError(
+            f"expected cloud exec plus-prefixed attempt to parse:\n{cloud_plus_attempt.stderr}"
+        )
+
+    cloud_stdin_query = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "env-id", "-"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_stdin_query.returncode == 0:
+        raise AssertionError("cloud exec with stdin query marker unexpectedly succeeded")
+    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_stdin_query.stderr:
+        raise AssertionError(
+            f"expected cloud exec stdin query marker to parse:\n{cloud_stdin_query.stderr}"
+        )
+
+    cloud_dash_query = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "env-id", "--", "--fix"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_dash_query.returncode == 0:
+        raise AssertionError("cloud exec with dash-prefixed query unexpectedly succeeded")
+    if "codex-zig cloud exec parsed Rust-compatible options" not in cloud_dash_query.stderr:
+        raise AssertionError(
+            f"expected cloud exec dash-prefixed query to parse:\n{cloud_dash_query.stderr}"
+        )
+
+    cloud_missing_env = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "--attempts", "2"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_missing_env.returncode == 0:
+        raise AssertionError("cloud exec with missing env value unexpectedly succeeded")
+    if "MissingCloudEnvironment" not in cloud_missing_env.stderr:
+        raise AssertionError(
+            f"expected cloud missing env validation error:\n{cloud_missing_env.stderr}"
+        )
+
+    cloud_exec_help = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "list", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "cloud exec" not in cloud_exec_help.stderr or "cloud list" in cloud_exec_help.stderr:
+        raise AssertionError(
+            f"expected cloud exec help despite option value named list:\n{cloud_exec_help.stderr}"
+        )
+
+    cloud_invalid_attempt_help = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "env-id", "--attempts", "5", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_invalid_attempt_help.returncode == 0:
+        raise AssertionError("cloud exec invalid attempt before help unexpectedly succeeded")
+    if "InvalidCloudAttempts" not in cloud_invalid_attempt_help.stderr:
+        raise AssertionError(
+            f"expected cloud invalid attempt before help to stay invalid:\n{cloud_invalid_attempt_help.stderr}"
+        )
+
+    cloud_unknown_option_help = subprocess.run(
+        [str(binary), "cloud", "exec", "--env", "env-id", "--bogus", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_unknown_option_help.returncode == 0:
+        raise AssertionError("cloud exec unknown option before help unexpectedly succeeded")
+    if "UnknownCloudOption" not in cloud_unknown_option_help.stderr:
+        raise AssertionError(
+            f"expected cloud unknown option before help to stay invalid:\n{cloud_unknown_option_help.stderr}"
+        )
+
+    cloud_duplicate_limit = subprocess.run(
+        [str(binary), "cloud", "list", "--limit", "2", "--limit", "3"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_duplicate_limit.returncode == 0:
+        raise AssertionError("cloud list with duplicate limit unexpectedly succeeded")
+    if "DuplicateCloudLimit" not in cloud_duplicate_limit.stderr:
+        raise AssertionError(
+            f"expected cloud duplicate limit validation error:\n{cloud_duplicate_limit.stderr}"
+        )
+
+    cloud_bad_attempts = subprocess.run(
+        [str(binary), "cloud", "diff", "--attempt=5", "task-id"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cloud_bad_attempts.returncode == 0:
+        raise AssertionError("cloud diff with bad attempt unexpectedly succeeded")
+    if "InvalidCloudAttempts" not in cloud_bad_attempts.stderr:
+        raise AssertionError(
+            f"expected cloud attempt validation error:\n{cloud_bad_attempts.stderr}"
+        )
 
 
 def run_remote_fork_smoke(

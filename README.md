@@ -294,8 +294,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `skills/config/write` enablement toggles
 - parse the planned Rust top-level `remote-control` command's config and
   feature options, while still reporting headless app-server remote
-  control as unimplemented, and recognize planned `cloud` / `cloud-tasks`
-  commands without treating them as prompt text
+  control as unimplemented
+- parse the experimental `cloud` / `cloud-tasks` command family, including
+  `exec`, `status`, `list`, `apply`, and `diff` options, while still reporting
+  Codex Cloud task runtime execution as unimplemented
 - print general or command-specific help with `help [COMMAND]`
 - generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
@@ -358,8 +360,9 @@ powershell, and zsh, verifies
 interactive remote app-server flag parsing/rejection plus real
 `--remote unix://PATH` and loopback `--remote ws://HOST:PORT` TUI turns through
 a running app-server, verifies planned-but-unimplemented Rust top-level command
-stubs plus the `remote-control` command's Rust-shaped option parsing and
-positional-argument rejection, verifies local remote-control flag parsing/rejection, runtime
+stubs plus the `remote-control` and `cloud` command families' Rust-shaped
+option parsing and positional-argument rejection, verifies local remote-control
+flag parsing/rejection, runtime
 `/remote-control [start|stop]`, and a PTY-driven local `/api/message`
 submission into the running TUI while a live `/api/events` stream observes the
 updated transcript, verifies session-local
