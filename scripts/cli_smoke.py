@@ -312,6 +312,7 @@ class RemoteExecutorRendezvous:
         if self.cert_path is not None:
             assert self.key_path is not None
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(str(self.cert_path), str(self.key_path))
             sock = context.wrap_socket(sock, server_side=True)
         self.sock = sock
@@ -482,7 +483,7 @@ class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/absolute-redirect":
             self.send_response(302)
-            self.send_header("Location", f"http://{self.headers['Host']}/relative-hop-one")
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/relative-hop-one")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return

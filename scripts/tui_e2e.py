@@ -1797,6 +1797,7 @@ class WssRemoteTuiServer:
 
     def _serve(self) -> None:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(self.cert_path), str(self.key_path))
         try:
             self.ready.set()
