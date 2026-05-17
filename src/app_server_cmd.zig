@@ -26533,7 +26533,8 @@ test "turn-start parses external sandbox policy" {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"type\":\"externalSandbox\",\"networkAccess\":\"enabled\"}", .{});
     defer parsed.deinit();
 
-    const policy = try parseTurnStartSandboxPolicy(parsed.value);
+    var policy = try parseTurnStartSandboxPolicy(allocator, parsed.value);
+    defer policy.deinit(allocator);
     try std.testing.expectEqual(config.SandboxMode.danger_full_access, policy.mode);
     try std.testing.expect(policy.network_enabled);
 }
@@ -26668,15 +26669,22 @@ fn applyTurnStartRuntimeOverrides(
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
-            const sandbox_selection = parseTurnStartSandboxPolicy(sandbox_policy) catch return error.InvalidTurnContextOverride;
+            var sandbox_selection = parseTurnStartSandboxPolicy(allocator, sandbox_policy) catch return error.InvalidTurnContextOverride;
+            defer sandbox_selection.deinit(allocator);
             cfg.sandbox_mode = sandbox_selection.mode;
-            try resetLoadedThreadSandboxProfile(
+            var writable_roots = sandbox_selection.takeWritableRoots();
+            var writable_roots_moved = false;
+            errdefer if (!writable_roots_moved) writable_roots.deinit(allocator);
+            try replaceLoadedThreadSandboxProfile(
                 allocator,
                 thread,
                 sandbox_selection.mode,
+                writable_roots,
+                true,
                 sandbox_selection.network_enabled,
                 sandbox_selection.external,
             );
+            writable_roots_moved = true;
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
@@ -26783,32 +26791,61 @@ const TurnStartSandboxPolicy = struct {
     mode: config.SandboxMode,
     network_enabled: bool,
     external: bool = false,
+    writable_roots: config.StringList,
+    roots_moved: bool = false,
+
+    fn deinit(self: *TurnStartSandboxPolicy, allocator: std.mem.Allocator) void {
+        if (!self.roots_moved) self.writable_roots.deinit(allocator);
+    }
+
+    fn takeWritableRoots(self: *TurnStartSandboxPolicy) config.StringList {
+        self.roots_moved = true;
+        return self.writable_roots;
+    }
 };
 
-fn parseTurnStartSandboxPolicy(value: std.json.Value) !TurnStartSandboxPolicy {
+fn parseTurnStartSandboxPolicy(allocator: std.mem.Allocator, value: std.json.Value) !TurnStartSandboxPolicy {
     if (value != .object) return error.InvalidTurnContextOverride;
     const type_value = value.object.get("type") orelse return error.InvalidTurnContextOverride;
     if (type_value != .string) return error.InvalidTurnContextOverride;
-    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .{ .mode = .danger_full_access, .network_enabled = true };
+    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .{
+        .mode = .danger_full_access,
+        .network_enabled = true,
+        .writable_roots = try emptyStringList(allocator),
+    };
     if (std.mem.eql(u8, type_value.string, "readOnly")) {
         try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
-        return .{ .mode = .read_only, .network_enabled = false };
+        return .{
+            .mode = .read_only,
+            .network_enabled = false,
+            .writable_roots = try emptyStringList(allocator),
+        };
     }
     if (std.mem.eql(u8, type_value.string, "externalSandbox")) {
         return .{
             .mode = .danger_full_access,
             .network_enabled = parseCommandExecExternalSandboxPolicyNetworkAccess(value.object) catch return error.InvalidTurnContextOverride,
             .external = true,
+            .writable_roots = try emptyStringList(allocator),
         };
     }
     if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
         try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
-        try expectTurnStartSandboxPolicyEmptyWritableRoots(value.object);
         try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeTmpdirEnvVar");
         try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeSlashTmp");
-        return .{ .mode = .workspace_write, .network_enabled = false };
+        return .{
+            .mode = .workspace_write,
+            .network_enabled = false,
+            .writable_roots = try parseTurnStartSandboxPolicyWritableRoots(allocator, value.object),
+        };
     }
     return error.InvalidTurnContextOverride;
+}
+
+fn parseTurnStartSandboxPolicyWritableRoots(allocator: std.mem.Allocator, object: std.json.ObjectMap) !config.StringList {
+    const roots = parseCommandExecWritableRoots(allocator, object) catch return error.InvalidTurnContextOverride;
+    defer allocator.free(roots);
+    return (config.StringList{ .items = roots }).clone(allocator);
 }
 
 fn parseTurnStartPermissionSelection(
@@ -26890,12 +26927,6 @@ fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void
     const value = object.get("networkAccess") orelse return;
     if (value == .null) return;
     if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
-}
-
-fn expectTurnStartSandboxPolicyEmptyWritableRoots(object: std.json.ObjectMap) !void {
-    const value = object.get("writableRoots") orelse return;
-    if (value == .null) return;
-    if (value != .array or value.array.items.len != 0) return error.InvalidTurnContextOverride;
 }
 
 fn expectTurnStartSandboxPolicyBoolDefaultFalse(object: std.json.ObjectMap, field: []const u8) !void {

@@ -6315,6 +6315,107 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     fork_after_external_sandbox["result"]["thread"],
                 )
 
+                extra_sandbox_root = codex_home / "turn-sandbox-extra"
+                extra_sandbox_root.mkdir()
+                request_count_before_roots = len(server.request_paths)
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-relative-sandbox-root",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "workspaceWrite",
+                                "writableRoots": ["relative-root"],
+                                "networkAccess": False,
+                                "excludeTmpdirEnvVar": False,
+                                "excludeSlashTmp": False,
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "invalid relative sandbox root",
+                                },
+                            ],
+                        },
+                    },
+                )
+                relative_sandbox_root = read_json_line(proc, 5)
+                assert relative_sandbox_root["id"] == "turn-start-relative-sandbox-root"
+                assert relative_sandbox_root["error"]["code"] == -32602
+                assert (
+                    relative_sandbox_root["error"]["message"]
+                    == "invalid turn context override"
+                )
+                assert len(server.request_paths) == request_count_before_roots
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-workspace-sandbox-roots",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandboxPolicy": {
+                                "type": "workspaceWrite",
+                                "writableRoots": [str(extra_sandbox_root)],
+                                "networkAccess": False,
+                                "excludeTmpdirEnvVar": False,
+                                "excludeSlashTmp": False,
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use workspace sandbox roots",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-workspace-sandbox-roots"
+                )
+                assert len(server.request_paths) == request_count_before_roots + 1
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-workspace-sandbox-roots",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_workspace_roots = read_json_line(proc, 5)
+                assert fork_after_workspace_roots["id"] == (
+                    "thread-fork-after-workspace-sandbox-roots"
+                )
+                assert fork_after_workspace_roots["result"]["sandbox"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [str(extra_sandbox_root)],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": False,
+                    "excludeSlashTmp": False,
+                }
+                permission_entries = fork_after_workspace_roots["result"][
+                    "permissionProfile"
+                ]["fileSystem"]["entries"]
+                assert {
+                    "path": {"type": "path", "path": str(extra_sandbox_root)},
+                    "access": "write",
+                } in permission_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_workspace_roots["result"]["thread"],
+                )
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
