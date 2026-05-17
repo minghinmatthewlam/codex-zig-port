@@ -176,6 +176,18 @@ const TaskListPage = struct {
     }
 };
 
+const AttemptDiff = struct {
+    turn_id: ?[]const u8 = null,
+    placement: ?i64 = null,
+    created_at: ?f64 = null,
+    diff: []const u8,
+
+    fn deinit(self: AttemptDiff, allocator: std.mem.Allocator) void {
+        if (self.turn_id) |turn_id| allocator.free(turn_id);
+        allocator.free(self.diff);
+    }
+};
+
 const CloudRuntime = struct {
     cfg: config.Config,
     credentials: auth.Credentials,
@@ -299,9 +311,6 @@ fn runStatus(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
 
 fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const raw_task_id = parsed.task_attempt.task_id orelse return error.MissingCloudTaskId;
-    if (parsed.task_attempt.attempt) |attempt| {
-        if (attempt != 1) return error.CloudAttemptRuntimeUnsupported;
-    }
     const task_id = try normalizeTaskId(allocator, raw_task_id);
     defer allocator.free(task_id);
 
@@ -313,16 +322,15 @@ fn runDiff(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const body = try fetchCloudTasks(allocator, runtime, url);
     defer allocator.free(body);
 
-    const diff = try extractUnifiedDiffForAttempt(allocator, body, 1);
-    defer allocator.free(diff);
-    try cli_utils.writeStdout(diff);
+    var attempts = try collectAttemptDiffs(allocator, runtime, task_id, body);
+    defer deinitAttemptDiffs(allocator, &attempts);
+
+    const selected = try selectAttemptDiff(attempts.items, parsed.task_attempt.attempt orelse 1);
+    try cli_utils.writeStdout(selected.diff);
 }
 
 fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const raw_task_id = parsed.task_attempt.task_id orelse return error.MissingCloudTaskId;
-    if (parsed.task_attempt.attempt) |attempt| {
-        if (attempt != 1) return error.CloudAttemptRuntimeUnsupported;
-    }
     const task_id = try normalizeTaskId(allocator, raw_task_id);
     defer allocator.free(task_id);
 
@@ -334,8 +342,11 @@ fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const body = try fetchCloudTasks(allocator, runtime, url);
     defer allocator.free(body);
 
-    const diff = try extractUnifiedDiffForAttempt(allocator, body, 1);
-    defer allocator.free(diff);
+    var attempts = try collectAttemptDiffs(allocator, runtime, task_id, body);
+    defer deinitAttemptDiffs(allocator, &attempts);
+
+    const selected = try selectAttemptDiff(attempts.items, parsed.task_attempt.attempt orelse 1);
+    const diff = selected.diff;
     if (!git_apply.isUnifiedDiff(diff)) return error.InvalidCloudTaskDiff;
 
     var result = try git_apply.applyUnifiedDiff(allocator, diff);
@@ -1008,6 +1019,20 @@ fn buildTaskUrl(allocator: std.mem.Allocator, base_url: []const u8, task_id: []c
     return out.toOwnedSlice(allocator);
 }
 
+fn buildSiblingTurnsUrl(allocator: std.mem.Allocator, base_url: []const u8, task_id: []const u8, turn_id: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const path_base = try cloudTasksPathBase(allocator, base_url);
+    defer allocator.free(path_base);
+    try out.appendSlice(allocator, path_base);
+    try out.append(allocator, '/');
+    try percentEncode(allocator, &out, task_id);
+    try out.appendSlice(allocator, "/turns/");
+    try percentEncode(allocator, &out, turn_id);
+    try out.appendSlice(allocator, "/sibling_turns");
+    return out.toOwnedSlice(allocator);
+}
+
 fn cloudTasksPathBase(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
     const normalized = try normalizeCloudBackendBaseUrl(allocator, base_url);
     defer allocator.free(normalized);
@@ -1128,35 +1153,163 @@ fn extractUnifiedDiff(allocator: std.mem.Allocator, body: []const u8) ![]const u
     return error.NoCloudTaskDiff;
 }
 
-fn extractUnifiedDiffForAttempt(allocator: std.mem.Allocator, body: []const u8, attempt: usize) ![]const u8 {
+fn collectAttemptDiffs(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    task_id: []const u8,
+    body: []const u8,
+) !std.ArrayList(AttemptDiff) {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidCloudTaskResponse;
 
-    var saw_other_attempt = false;
-    if (objectField(parsed.value, "current_diff_task_turn")) |turn| {
-        if (try turnMatchesAttempt(turn, attempt)) {
-            if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
-        } else {
-            saw_other_attempt = true;
+    var attempts = std.ArrayList(AttemptDiff).empty;
+    errdefer deinitAttemptDiffs(allocator, &attempts);
+
+    if (try currentAttemptDiff(allocator, parsed.value)) |attempt| {
+        try attempts.append(allocator, attempt);
+    }
+
+    const sibling_turn_id = try currentAssistantTurnId(allocator, parsed.value);
+    defer if (sibling_turn_id) |turn_id| allocator.free(turn_id);
+    if (sibling_turn_id) |turn_id| {
+        const sibling_url = try buildSiblingTurnsUrl(allocator, runtime.base_url, task_id, turn_id);
+        defer allocator.free(sibling_url);
+        const siblings_body = try fetchCloudTasks(allocator, runtime, sibling_url);
+        defer allocator.free(siblings_body);
+        try appendSiblingAttemptDiffs(allocator, &attempts, siblings_body);
+    }
+
+    std.mem.sort(AttemptDiff, attempts.items, {}, attemptDiffLessThan);
+    if (attempts.items.len == 0) return error.NoCloudTaskDiff;
+    return attempts;
+}
+
+fn deinitAttemptDiffs(allocator: std.mem.Allocator, attempts: *std.ArrayList(AttemptDiff)) void {
+    for (attempts.items) |attempt| attempt.deinit(allocator);
+    attempts.deinit(allocator);
+}
+
+fn currentAttemptDiff(allocator: std.mem.Allocator, details: std.json.Value) !?AttemptDiff {
+    const assistant_turn = objectField(details, "current_assistant_turn");
+    if (objectField(details, "current_diff_task_turn")) |turn| {
+        if (try extractDiffFromTurn(allocator, turn)) |diff| {
+            errdefer allocator.free(diff);
+            return try attemptDiffWithMetadata(allocator, diff, assistant_turn orelse turn, turn);
         }
     }
-    if (objectField(parsed.value, "current_assistant_turn")) |turn| {
-        if (try turnMatchesAttempt(turn, attempt)) {
-            if (try extractDiffFromTurn(allocator, turn)) |diff| return diff;
-        } else {
-            saw_other_attempt = true;
+    if (assistant_turn) |turn| {
+        if (try attemptDiffFromTurn(allocator, turn)) |attempt| return attempt;
+    }
+    return null;
+}
+
+fn currentAssistantTurnId(allocator: std.mem.Allocator, details: std.json.Value) !?[]const u8 {
+    if (objectField(details, "current_assistant_turn")) |turn| {
+        if (try turnId(allocator, turn)) |id| return id;
+    }
+    if (objectField(details, "current_diff_task_turn")) |turn| {
+        if (try turnId(allocator, turn)) |id| return id;
+    }
+    return null;
+}
+
+fn appendSiblingAttemptDiffs(allocator: std.mem.Allocator, attempts: *std.ArrayList(AttemptDiff), body: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+    const siblings = objectField(parsed.value, "sibling_turns") orelse return;
+    if (siblings == .null) return;
+    if (siblings != .array) return error.InvalidCloudTaskResponse;
+    for (siblings.array.items) |turn| {
+        if (try attemptDiffFromTurn(allocator, turn)) |attempt| {
+            try attempts.append(allocator, attempt);
         }
     }
-    if (saw_other_attempt) return error.CloudAttemptRuntimeUnsupported;
-    return error.NoCloudTaskDiff;
+}
+
+fn attemptDiffFromTurn(allocator: std.mem.Allocator, turn: std.json.Value) !?AttemptDiff {
+    if (turn == .null) return null;
+    if (turn != .object) return error.InvalidCloudTaskResponse;
+    const diff = (try extractDiffFromTurn(allocator, turn)) orelse return null;
+    errdefer allocator.free(diff);
+    return try attemptDiffWithMetadata(allocator, diff, turn, turn);
+}
+
+fn attemptDiffWithMetadata(
+    allocator: std.mem.Allocator,
+    diff: []const u8,
+    metadata_turn: std.json.Value,
+    fallback_turn: std.json.Value,
+) !AttemptDiff {
+    var id = try turnId(allocator, metadata_turn);
+    if (id == null) id = try turnId(allocator, fallback_turn);
+    errdefer if (id) |value| allocator.free(value);
+    const placement = turnAttemptPlacement(objectField(metadata_turn, "attempt_placement")) orelse
+        turnAttemptPlacement(objectField(fallback_turn, "attempt_placement"));
+    const created_at = valueNumber(objectField(metadata_turn, "created_at")) orelse
+        valueNumber(objectField(fallback_turn, "created_at"));
+    return .{
+        .turn_id = id,
+        .placement = placement,
+        .created_at = created_at,
+        .diff = diff,
+    };
+}
+
+fn turnId(allocator: std.mem.Allocator, turn: std.json.Value) !?[]const u8 {
+    if (turn == .null) return null;
+    if (turn != .object) return error.InvalidCloudTaskResponse;
+    const id = valueString(objectField(turn, "id")) orelse return null;
+    if (id.len == 0) return null;
+    const copy = try allocator.dupe(u8, id);
+    return copy;
+}
+
+fn selectAttemptDiff(attempts: []const AttemptDiff, attempt: usize) !*const AttemptDiff {
+    if (attempt == 0) return error.InvalidCloudAttempts;
+    const index = attempt - 1;
+    if (index >= attempts.len) return error.CloudAttemptNotAvailable;
+    return &attempts[index];
+}
+
+fn attemptDiffLessThan(_: void, lhs: AttemptDiff, rhs: AttemptDiff) bool {
+    if (compareOptionalI64(lhs.placement, rhs.placement)) |result| return result < 0;
+    if (compareOptionalF64(lhs.created_at, rhs.created_at)) |result| return result < 0;
+    return std.mem.lessThan(u8, lhs.turn_id orelse "", rhs.turn_id orelse "");
+}
+
+fn compareOptionalI64(lhs: ?i64, rhs: ?i64) ?i8 {
+    if (lhs) |left| {
+        if (rhs) |right| {
+            if (left < right) return -1;
+            if (left > right) return 1;
+            return 0;
+        }
+        return -1;
+    }
+    if (rhs != null) return 1;
+    return null;
+}
+
+fn compareOptionalF64(lhs: ?f64, rhs: ?f64) ?i8 {
+    if (lhs) |left| {
+        if (rhs) |right| {
+            if (left < right) return -1;
+            if (left > right) return 1;
+            return 0;
+        }
+        return -1;
+    }
+    if (rhs != null) return 1;
+    return null;
 }
 
 fn extractDiffFromTurn(allocator: std.mem.Allocator, turn: std.json.Value) !?[]const u8 {
     if (turn == .null) return null;
     if (turn != .object) return error.InvalidCloudTaskResponse;
     const items = objectField(turn, "output_items") orelse return null;
-    if (items != .array) return error.InvalidCloudTaskResponse;
+    if (items != .array) return null;
     for (items.array.items) |item| {
         if (item != .object) continue;
         const kind = valueString(objectField(item, "type")) orelse continue;
@@ -1175,17 +1328,7 @@ fn extractDiffFromTurn(allocator: std.mem.Allocator, turn: std.json.Value) !?[]c
     return null;
 }
 
-fn turnMatchesAttempt(turn: std.json.Value, attempt: usize) !bool {
-    if (turn == .null) return false;
-    if (turn != .object) return error.InvalidCloudTaskResponse;
-    if (turnAttemptPlacement(objectField(turn, "attempt_placement"))) |placement| {
-        return placement == attempt;
-    }
-    if (turnHasSiblingAttempts(turn)) return false;
-    return attempt == 1;
-}
-
-fn turnAttemptPlacement(value: ?std.json.Value) ?usize {
+fn turnAttemptPlacement(value: ?std.json.Value) ?i64 {
     const actual = value orelse return null;
     const number: i64 = switch (actual) {
         .integer => |raw| raw,
@@ -1193,13 +1336,8 @@ fn turnAttemptPlacement(value: ?std.json.Value) ?usize {
         .number_string => |bytes| std.fmt.parseInt(i64, bytes, 10) catch return null,
         else => return null,
     };
-    if (number <= 0) return null;
-    return @intCast(number);
-}
-
-fn turnHasSiblingAttempts(turn: std.json.Value) bool {
-    const siblings = objectField(turn, "sibling_turn_ids") orelse return false;
-    return siblings == .array and siblings.array.items.len > 0;
+    if (number < 0) return null;
+    return number;
 }
 
 fn renderTaskList(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage) ![]const u8 {
@@ -2322,20 +2460,49 @@ test "cloud exec remote symbolic head preserves branch path" {
     try std.testing.expectEqualStrings("main", fallback);
 }
 
-test "cloud diff refuses non-first current attempt" {
+test "cloud attempt diffs include sorted sibling turns" {
     const allocator = std.testing.allocator;
 
-    const first_attempt_body =
-        \\{"current_diff_task_turn":{"attempt_placement":1,"output_items":[{"type":"output_diff","diff":"diff --git a/a b/a\n"}]}}
-    ;
-    const first_attempt_diff = try extractUnifiedDiffForAttempt(allocator, first_attempt_body, 1);
-    defer allocator.free(first_attempt_diff);
-    try std.testing.expectEqualStrings("diff --git a/a b/a\n", first_attempt_diff);
+    var attempts = std.ArrayList(AttemptDiff).empty;
+    defer deinitAttemptDiffs(allocator, &attempts);
 
-    const second_attempt_body =
-        \\{"current_diff_task_turn":{"attempt_placement":2,"sibling_turn_ids":["turn-1"],"output_items":[{"type":"output_diff","diff":"diff --git a/b b/b\n"}]}}
-    ;
-    try std.testing.expectError(error.CloudAttemptRuntimeUnsupported, extractUnifiedDiffForAttempt(allocator, second_attempt_body, 1));
+    var details = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"current_assistant_turn":{"id":"turn-current","attempt_placement":0},"current_diff_task_turn":{"output_items":[{"type":"output_diff","diff":"diff --git a/a b/a\n"}]}}
+    ,
+        .{},
+    );
+    defer details.deinit();
+    try attempts.append(allocator, (try currentAttemptDiff(allocator, details.value)).?);
+
+    try appendSiblingAttemptDiffs(allocator, &attempts,
+        \\{"sibling_turns":[{"id":"turn-sibling","attempt_placement":1,"created_at":1760000001.0,"output_items":[{"type":"output_diff","diff":"diff --git a/b b/b\n"}]}]}
+    );
+    try appendSiblingAttemptDiffs(allocator, &attempts, "{}");
+    try appendSiblingAttemptDiffs(allocator, &attempts,
+        \\{"sibling_turns":[{"id":"turn-pending","attempt_placement":2,"output_items":null}]}
+    );
+    std.mem.sort(AttemptDiff, attempts.items, {}, attemptDiffLessThan);
+
+    try std.testing.expectEqual(@as(usize, 2), attempts.items.len);
+    try std.testing.expectEqual(@as(i64, 0), attempts.items[0].placement.?);
+    try std.testing.expectEqual(@as(i64, 1), attempts.items[1].placement.?);
+    try std.testing.expectEqualStrings("diff --git a/a b/a\n", (try selectAttemptDiff(attempts.items, 1)).diff);
+    try std.testing.expectEqualStrings("diff --git a/b b/b\n", (try selectAttemptDiff(attempts.items, 2)).diff);
+    try std.testing.expectError(error.CloudAttemptNotAvailable, selectAttemptDiff(attempts.items, 3));
+}
+
+test "cloud sibling turns URL follows task backend path style" {
+    const allocator = std.testing.allocator;
+
+    const default_url = try buildSiblingTurnsUrl(allocator, "http://127.0.0.1:1", "task id", "turn/id");
+    defer allocator.free(default_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1/api/codex/tasks/task%20id/turns/turn%2Fid/sibling_turns", default_url);
+
+    const backend_url = try buildSiblingTurnsUrl(allocator, "https://chatgpt.com/backend-api", "task", "turn");
+    defer allocator.free(backend_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/tasks/task/turns/turn/sibling_turns", backend_url);
 }
 
 test "cloud command rejects duplicate singleton options" {
