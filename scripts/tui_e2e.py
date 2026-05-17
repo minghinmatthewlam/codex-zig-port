@@ -489,13 +489,20 @@ def generate_localhost_self_signed_cert(root: Path) -> tuple[Path, Path]:
     return cert_path, key_path
 
 
-def remote_control_url(output: bytearray) -> str:
+def remote_control_link(output: bytearray, marker: str) -> str:
     rendered = output.decode(errors="replace")
     for line in rendered.splitlines():
-        marker = "Controller link:"
         if marker in line:
             return line.split(marker, 1)[1].strip()
-    raise AssertionError(f"remote-control controller link not found:\n\n{rendered}")
+    raise AssertionError(f"remote-control link {marker!r} not found:\n\n{rendered}")
+
+
+def remote_control_url(output: bytearray) -> str:
+    return remote_control_link(output, "Controller link:")
+
+
+def remote_control_share_url(output: bytearray) -> str:
+    return remote_control_link(output, "Share link:")
 
 
 def remote_control_request(control_url: str, method: str, path: str, body: bytes = b"") -> str:
@@ -532,11 +539,98 @@ def remote_control_state(control_url: str) -> dict[str, object]:
     return json.loads(body)
 
 
+def remote_control_event_stream(control_url: str) -> tuple[socket.socket, bytes]:
+    parsed = urlparse(control_url)
+    token = parse_qs(parsed.query).get("token", [None])[0]
+    if not parsed.port or not token:
+        raise AssertionError(f"invalid remote-control URL: {control_url}")
+    target = f"/api/events?token={token}"
+    request = (
+        "\r\n".join(
+            [
+                f"GET {target} HTTP/1.1",
+                "Host: 127.0.0.1",
+                "Accept: text/event-stream",
+                "Connection: close",
+            ]
+        )
+        + "\r\n\r\n"
+    ).encode()
+    sock = socket.create_connection(("127.0.0.1", parsed.port), timeout=2)
+    sock.settimeout(2)
+    sock.sendall(request)
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            sock.close()
+            raise AssertionError("remote-control event stream closed before headers")
+        data += chunk
+    head, _, body = data.partition(b"\r\n\r\n")
+    head_text = head.decode(errors="replace")
+    if not head_text.startswith("HTTP/1.1 200 OK"):
+        sock.close()
+        raise AssertionError(f"unexpected remote-control event stream headers:\n{head_text}")
+    if "Content-Type: text/event-stream" not in head_text:
+        sock.close()
+        raise AssertionError(f"remote-control event stream missing content-type:\n{head_text}")
+    return sock, body
+
+
+def read_remote_control_state_event(
+    sock: socket.socket,
+    buffer: bytes,
+    timeout: float,
+) -> tuple[dict[str, object], bytes]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if b"\n\n" in buffer:
+            block, _, buffer = buffer.partition(b"\n\n")
+            event_name = "message"
+            data_lines: list[str] = []
+            for line in block.decode(errors="replace").splitlines():
+                if line.startswith("event:"):
+                    event_name = line.split(":", 1)[1].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.split(":", 1)[1].lstrip())
+            if event_name != "state":
+                continue
+            return json.loads("\n".join(data_lines)), buffer
+        remaining = max(0.05, deadline - time.monotonic())
+        sock.settimeout(remaining)
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not chunk:
+            raise AssertionError("remote-control event stream closed unexpectedly")
+        buffer += chunk
+    raise AssertionError("timed out waiting for remote-control state event")
+
+
 def post_remote_control_message(control_url: str, message: str) -> None:
     body = json.dumps({"message": message}, separators=(",", ":")).encode()
     response = remote_control_request(control_url, "POST", "/api/message", body)
     if not response.startswith("HTTP/1.1 202 Accepted"):
         raise AssertionError(f"unexpected remote-control message response:\n{response}")
+
+
+def post_remote_control_messages_concurrently(control_url: str, messages: list[str]) -> None:
+    errors: list[str] = []
+
+    def worker(message: str) -> None:
+        try:
+            post_remote_control_message(control_url, message)
+        except BaseException as exc:
+            errors.append(f"{message}: {exc}")
+
+    threads = [threading.Thread(target=worker, args=(message,)) for message in messages]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise AssertionError("concurrent remote-control POST failed:\n" + "\n".join(errors))
 
 
 def wait_for_remote_control_stop(control_url: str, timeout: float) -> None:
@@ -582,6 +676,37 @@ def wait_for_remote_control_messages(
                 return last_state
         time.sleep(0.05)
     raise AssertionError(f"remote-control state did not include completed turn: {last_state!r}")
+
+
+def wait_for_remote_control_event_messages(
+    sock: socket.socket,
+    buffer: bytes,
+    user_text: str,
+    assistant_text: str,
+    timeout: float,
+) -> tuple[dict[str, object], bytes]:
+    deadline = time.monotonic() + timeout
+    last_state: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        state, buffer = read_remote_control_state_event(sock, buffer, max(0.05, deadline - time.monotonic()))
+        last_state = state
+        messages = state.get("messages")
+        if isinstance(messages, list):
+            has_user = any(
+                isinstance(message, dict)
+                and message.get("role") == "user"
+                and message.get("text") == user_text
+                for message in messages
+            )
+            has_assistant = any(
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and message.get("text") == assistant_text
+                for message in messages
+            )
+            if has_user and has_assistant:
+                return state, buffer
+    raise AssertionError(f"remote-control event stream did not include completed turn: {last_state!r}")
 
 
 def run_alt_screen_smoke(
@@ -2012,6 +2137,8 @@ def run_local_remote_control_smoke(
     proc = None
     master_fd = -1
     stalled_sock = None
+    event_sock: socket.socket | None = None
+    event_buffer = b""
     body_start = len(server.request_bodies)
     try:
         master_fd, slave_fd = pty.openpty()
@@ -2037,24 +2164,64 @@ def run_local_remote_control_smoke(
         os.close(slave_fd)
         wait_for(master_fd, output, b"Remote control active", 5)
         control_url = remote_control_url(output)
+        share_url = remote_control_share_url(output)
 
         state = remote_control_state(control_url)
         if state.get("status") != "Connected to Codex":
             raise AssertionError(f"unexpected remote-control state: {state!r}")
 
+        viewer_body = json.dumps({"message": "viewer should not send"}, separators=(",", ":")).encode()
+        viewer_response = remote_control_request(share_url, "POST", "/api/message", viewer_body)
+        if not viewer_response.startswith("HTTP/1.1 403 Forbidden"):
+            raise AssertionError(f"expected viewer POST to be read-only:\n{viewer_response}")
+
+        event_sock, event_buffer = remote_control_event_stream(control_url)
+        initial_event, event_buffer = read_remote_control_state_event(event_sock, event_buffer, 2)
+        if initial_event.get("status") != "Connected to Codex":
+            raise AssertionError(f"unexpected initial remote-control event: {initial_event!r}")
+        event_sock.close()
+        event_sock = None
+        time.sleep(1)
+        state_after_idle_event_close = remote_control_state(control_url)
+        if state_after_idle_event_close.get("status") != "Connected to Codex":
+            raise AssertionError(
+                f"remote-control state failed after idle event close: {state_after_idle_event_close!r}"
+            )
+
+        event_sock, event_buffer = remote_control_event_stream(control_url)
+        initial_event, event_buffer = read_remote_control_state_event(event_sock, event_buffer, 2)
+        if initial_event.get("status") != "Connected to Codex":
+            raise AssertionError(f"unexpected reopened remote-control event: {initial_event!r}")
+
         post_remote_control_message(control_url, "describe attached image")
         wait_for(master_fd, output, b"remote \xe2\x80\xba describe attached image", 5)
         wait_for(master_fd, output, b"image received", 8)
 
-        state_after = wait_for_remote_control_messages(
-            control_url,
+        state_after, event_buffer = wait_for_remote_control_event_messages(
+            event_sock,
+            event_buffer,
             "describe attached image",
             "image received",
             5,
         )
+        polled_state_after = wait_for_remote_control_messages(
+            control_url,
+            "describe attached image",
+            "image received",
+            2,
+        )
         messages = state_after.get("messages")
         if not isinstance(messages, list):
             raise AssertionError(f"remote-control state did not include messages: {state_after!r}")
+        if polled_state_after.get("messages") != messages:
+            raise AssertionError("remote-control event state diverged from /api/state")
+
+        concurrent_prompts = ["side question one", "side question two"]
+        concurrent_mark = len(output)
+        post_remote_control_messages_concurrently(control_url, concurrent_prompts)
+        for prompt in concurrent_prompts:
+            wait_for(master_fd, output, f"remote \u203a {prompt}".encode(), 8, concurrent_mark)
+            wait_for_remote_control_messages(control_url, prompt, "side answer", 8)
 
         parsed = urlparse(control_url)
         if not parsed.port:
@@ -2081,10 +2248,17 @@ def run_local_remote_control_smoke(
         if not matching:
             rendered = json.dumps(local_bodies, indent=2, sort_keys=True)
             raise AssertionError(f"local remote-control prompt did not reach Responses mock:\n\n{rendered}")
+        local_prompts = [latest_user_text(body.get("input", [])) for body in local_bodies]
+        for prompt in concurrent_prompts:
+            if prompt not in local_prompts:
+                rendered = json.dumps(local_prompts, indent=2)
+                raise AssertionError(f"concurrent remote-control prompt was not preserved:\n\n{rendered}")
         images = latest_user_images(matching[-1].get("input", []))
         if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
             raise AssertionError(f"expected remote-control prompt to consume one PNG image, saw {images!r}")
     finally:
+        if event_sock is not None:
+            event_sock.close()
         if stalled_sock is not None:
             stalled_sock.close()
         if proc is not None and proc.poll() is None:
