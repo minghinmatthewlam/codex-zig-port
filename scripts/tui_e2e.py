@@ -251,7 +251,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
-        if self.path == "/wham/tasks/task-apply":
+        if parsed.path in {"/wham/tasks/task-apply", "/api/codex/tasks/task-apply"}:
             payload = json.dumps(
                 {
                     "current_diff_task_turn": {
@@ -3708,6 +3708,94 @@ def run_apply_command_smoke(
         raise AssertionError(f"expected bearer auth header, saw {headers!r}")
 
 
+def run_cloud_apply_command_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    repo = workspace / "cloud-apply-repo"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("# Cloud Apply Smoke\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "Initial commit")
+
+    cloud_base_arg = f"chatgpt_base_url=http://127.0.0.1:{port}"
+    result = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "apply",
+            "task-apply",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    combined = result.stdout + result.stderr
+    if "Applied task task-apply locally (1 file)" not in combined:
+        raise AssertionError(f"expected cloud apply success output:\n{combined}")
+
+    created = repo / "scripts" / "fibonacci.js"
+    if not created.exists():
+        raise AssertionError(f"expected cloud apply command to create {created}")
+    contents = created.read_text()
+    if "function fibonacci(n)" not in contents or not contents.startswith(
+        "#!/usr/bin/env node"
+    ):
+        raise AssertionError(f"unexpected cloud-applied file contents:\n{contents}")
+
+    blocked_repo = workspace / "cloud-apply-blocked-repo"
+    blocked_repo.mkdir()
+    git(blocked_repo, "init")
+    git(blocked_repo, "config", "user.email", "test@example.com")
+    git(blocked_repo, "config", "user.name", "Test User")
+    (blocked_repo / "README.md").write_text("# Blocked Cloud Apply Smoke\n")
+    git(blocked_repo, "add", "README.md")
+    git(blocked_repo, "commit", "-m", "Initial commit")
+
+    blocked = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "apply",
+            "task-second-attempt",
+        ],
+        cwd=blocked_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if blocked.returncode == 0:
+        raise AssertionError("cloud apply second current attempt unexpectedly succeeded")
+    if "CloudAttemptRuntimeUnsupported" not in blocked.stderr:
+        raise AssertionError(
+            "expected cloud apply second-attempt runtime gap message:\n"
+            f"{blocked.stderr}"
+        )
+    if (blocked_repo / "scripts" / "fibonacci.js").exists():
+        raise AssertionError("cloud apply unsupported attempt mutated the working tree")
+
+    if "/api/codex/tasks/task-apply" not in server.get_paths:
+        raise AssertionError(f"expected cloud apply task fetch, saw {server.get_paths!r}")
+    headers = server.get_headers[-1] if server.get_headers else {}
+    if headers.get("ChatGPT-Account-ID") != "acct_tui_e2e":
+        raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
+    if headers.get("Authorization") != "Bearer tui-e2e-token":
+        raise AssertionError(f"expected bearer auth header, saw {headers!r}")
+
+
 def run_e2e(binary: Path) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
@@ -3794,6 +3882,7 @@ def run_e2e(binary: Path) -> str:
             run_debug_stub_smoke(binary, env, workspace, port)
             run_initial_image_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
+            run_cloud_apply_command_smoke(binary, env, workspace, port, server)
             run_remote_fork_smoke(binary, env, workspace, port, server)
 
             master_fd, slave_fd = pty.openpty()
