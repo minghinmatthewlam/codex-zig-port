@@ -2660,6 +2660,12 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, fork_picker_output, b"\xe2\x80\xba", 5)
         send_line(master_fd, "side question from remote fork picker")
         wait_for(master_fd, fork_picker_output, b"side answer", 8)
+        send_line(master_fd, "/new unexpected")
+        wait_for(master_fd, fork_picker_output, b"usage: /new", 5)
+        send_line(master_fd, "/new")
+        wait_for(master_fd, fork_picker_output, b"started remote thread:", 5)
+        send_line(master_fd, "side question from remote slash new")
+        wait_for(master_fd, fork_picker_output, b"side answer", 8)
         mark = len(fork_picker_output)
         send_line(master_fd, "/quit")
         wait_for(master_fd, fork_picker_output, b"bye", 5, mark)
@@ -2833,6 +2839,18 @@ def run_remote_unix_tui_smoke(
     ]
     if not slash_picker_resume_matching:
         raise AssertionError("remote TUI slash picker resume did not send prompt through app-server")
+    slash_new_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash new" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_new_matching:
+        raise AssertionError("remote TUI slash new did not send prompt through app-server")
+    slash_new_body = json.dumps(slash_new_matching[-1])
+    if "describe attached image from remote tui" in slash_new_body:
+        raise AssertionError("remote TUI slash new carried transcript history from the previous thread")
+    if "side question from remote fork picker" in slash_new_body:
+        raise AssertionError("remote TUI slash new carried immediate pre-new transcript history")
     image_matching = [
         body
         for body in bodies
