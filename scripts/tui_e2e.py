@@ -1491,8 +1491,20 @@ def run_unimplemented_command_smoke(
             f"expected cloud attempt validation error:\n{cloud_bad_attempts.stderr}"
         )
 
+    cloud_list_get_start = len(server.get_paths)
     cloud_list_json = subprocess.run(
-        [str(binary), "-c", cloud_base_arg, "cloud", "list", "--limit", "2", "--json"],
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "list",
+            "--env",
+            "e2e environment",
+            "--limit",
+            "2",
+            "--json",
+        ],
         cwd=workspace,
         env=env,
         text=True,
@@ -1514,6 +1526,15 @@ def run_unimplemented_command_smoke(
         raise AssertionError(f"expected cloud list summary JSON:\n{cloud_list_json.stdout}")
     if parsed_list["cursor"] != "cursor-next":
         raise AssertionError(f"expected cloud list cursor JSON:\n{cloud_list_json.stdout}")
+    cloud_list_gets = server.get_paths[cloud_list_get_start:]
+    if "/api/codex/environments" not in cloud_list_gets:
+        raise AssertionError(f"expected cloud list environment lookup, saw {cloud_list_gets!r}")
+    cloud_list_paths = [path for path in cloud_list_gets if path.startswith("/api/codex/tasks/list?")]
+    if not cloud_list_paths:
+        raise AssertionError(f"expected cloud list backend request, saw {cloud_list_gets!r}")
+    cloud_list_query = parse_qs(urlparse(cloud_list_paths[-1]).query)
+    if cloud_list_query.get("environment_id") != ["env-id"]:
+        raise AssertionError(f"expected cloud list label to resolve to env id, saw {cloud_list_paths[-1]!r}")
 
     cloud_status = subprocess.run(
         [str(binary), "-c", cloud_base_arg, "cloud", "status", "task-ready"],
