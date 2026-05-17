@@ -66,6 +66,26 @@ index 0000000..347f22a
 +}
 """
 
+APPLY_TASK_CONFLICT_BASE = "# Expected Cloud Preflight Base\n"
+APPLY_TASK_CONFLICT_LOCAL = "# Actual Cloud Preflight Base\n"
+APPLY_TASK_CONFLICT_CLOUD = "# Changed by Cloud\n"
+
+
+def git_blob_hash(contents: str) -> str:
+    data = contents.encode()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
+def readme_change_diff(before: str, after: str) -> str:
+    return f"""diff --git a/README.md b/README.md
+index {git_blob_hash(before)}..{git_blob_hash(after)} 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-{before.rstrip()}
++{after.rstrip()}
+"""
+
 
 def seed_memory_state_db(codex_home: Path) -> Path:
     db_path = codex_home / "state_5.sqlite"
@@ -352,6 +372,27 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
+        if parsed.path in {"/wham/tasks/task-conflict", "/api/codex/tasks/task-conflict"}:
+            payload = json.dumps(
+                {
+                    "current_diff_task_turn": {
+                        "output_items": [
+                            {
+                                "type": "pr",
+                                "output_diff": {"diff": self.server.task_conflict_diff},
+                            },
+                        ],
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if parsed.path in {
             "/wham/tasks/task-apply/turns/turn-apply/sibling_turns",
             "/api/codex/tasks/task-apply/turns/turn-apply/sibling_turns",
@@ -606,6 +647,7 @@ class MockResponsesServer(ThreadingHTTPServer):
     post_paths: list[str]
     post_headers: list[dict[str, str]]
     remote_fork_bundle: bytes
+    task_conflict_diff: str
 
 
 def start_mock_server(port: int) -> MockResponsesServer:
@@ -617,6 +659,9 @@ def start_mock_server(port: int) -> MockResponsesServer:
     server.post_paths = []
     server.post_headers = []
     server.remote_fork_bundle = b""
+    server.task_conflict_diff = readme_change_diff(
+        APPLY_TASK_CONFLICT_BASE, APPLY_TASK_CONFLICT_CLOUD
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -3959,6 +4004,8 @@ def run_cloud_apply_command_smoke(
     combined = result.stdout + result.stderr
     if "Applied task task-apply locally (1 file)" not in combined:
         raise AssertionError(f"expected cloud apply success output:\n{combined}")
+    if " with conflicts." in combined:
+        raise AssertionError(f"unexpected cloud conflict output on success:\n{combined}")
 
     created = repo / "scripts" / "fibonacci.js"
     if not created.exists():
@@ -3998,6 +4045,8 @@ def run_cloud_apply_command_smoke(
     second_combined = second.stdout + second.stderr
     if "Applied task task-apply locally (1 file)" not in second_combined:
         raise AssertionError(f"expected cloud second-attempt apply success output:\n{second_combined}")
+    if " with conflicts." in second_combined:
+        raise AssertionError(f"unexpected cloud second-attempt conflict output on success:\n{second_combined}")
 
     second_created = second_repo / "scripts" / "lucas.js"
     if not second_created.exists():
@@ -4007,6 +4056,47 @@ def run_cloud_apply_command_smoke(
         "#!/usr/bin/env node"
     ):
         raise AssertionError(f"unexpected cloud-applied second-attempt file contents:\n{second_contents}")
+
+    preflight_repo = workspace / "cloud-apply-preflight-repo"
+    preflight_repo.mkdir()
+    git(preflight_repo, "init")
+    git(preflight_repo, "config", "user.email", "test@example.com")
+    git(preflight_repo, "config", "user.name", "Test User")
+    preflight_readme = preflight_repo / "README.md"
+    preflight_readme.write_text(APPLY_TASK_CONFLICT_BASE)
+    git(preflight_repo, "add", "README.md")
+    git(preflight_repo, "commit", "-m", "Initial commit")
+    server.task_conflict_diff = readme_change_diff(
+        APPLY_TASK_CONFLICT_BASE, APPLY_TASK_CONFLICT_CLOUD
+    )
+    preflight_readme.write_text(APPLY_TASK_CONFLICT_LOCAL)
+    git(preflight_repo, "add", "README.md")
+    git(preflight_repo, "commit", "-m", "Local README change")
+
+    preflight = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+            "apply",
+            "task-conflict",
+        ],
+        cwd=preflight_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    preflight_combined = preflight.stdout + preflight.stderr
+    if preflight.returncode == 0:
+        raise AssertionError("cloud apply preflight conflict unexpectedly succeeded")
+    if "Preflight failed for task task-conflict; no files were changed (1 file)" not in preflight_combined:
+        raise AssertionError(f"expected cloud preflight diagnostic:\n{preflight_combined}")
+    if " with conflicts." not in preflight_combined:
+        raise AssertionError(f"expected git conflict preflight output:\n{preflight_combined}")
+    if preflight_readme.read_text() != APPLY_TASK_CONFLICT_LOCAL:
+        raise AssertionError("cloud preflight failure modified README.md")
 
     picker_repo = workspace / "cloud-picker-repo"
     picker_repo.mkdir()

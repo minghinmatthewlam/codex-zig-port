@@ -666,13 +666,29 @@ fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
     const diff = selected.diff;
     if (!git_apply.isUnifiedDiff(diff)) return error.InvalidCloudTaskDiff;
 
+    var preflight = try git_apply.checkUnifiedDiff(allocator, diff);
+    defer preflight.deinit(allocator);
+
+    const summary = diffSummaryFromDiff(diff);
+    if (gitApplyCheckFailed(preflight.exit_code, preflight.stdout, preflight.stderr)) {
+        try cli_utils.writeStdout(preflight.stdout);
+        try cli_utils.writeStderr(preflight.stderr);
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "Preflight failed for task {s}; no files were changed ({d} file{s})\n",
+            .{ task_id, summary.files_changed, if (summary.files_changed == 1) "" else "s" },
+        );
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+        return error.CloudTaskApplyPreflightFailed;
+    }
+
     var result = try git_apply.applyUnifiedDiff(allocator, diff);
     defer result.deinit(allocator);
 
     try cli_utils.writeStdout(result.stdout);
     try cli_utils.writeStderr(result.stderr);
 
-    const summary = diffSummaryFromDiff(diff);
     if (result.exit_code == 0) {
         const message = try std.fmt.allocPrint(
             allocator,
@@ -692,6 +708,19 @@ fn applyTaskDiff(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
     return error.CloudTaskApplyFailed;
+}
+
+fn gitApplyCheckFailed(exit_code: u8, stdout: []const u8, stderr: []const u8) bool {
+    return exit_code != 0 or gitApplyCheckOutputHasConflicts(stdout) or gitApplyCheckOutputHasConflicts(stderr);
+}
+
+fn gitApplyCheckOutputHasConflicts(output: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, "\r");
+        if (std.mem.endsWith(u8, trimmed, " with conflicts.")) return true;
+    }
+    return false;
 }
 
 fn fetchTaskBody(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8) ![]const u8 {
@@ -2971,4 +3000,15 @@ test "cloud help scan skips only real option values" {
 
     const extra_arg_before_help = [_][]const u8{ "status", "task-id", "extra", "--help" };
     try std.testing.expect(!try maybePrintHelpOrVersion(allocator, extra_arg_before_help[0..]));
+}
+
+test "cloud apply preflight treats conflict output as failure" {
+    try std.testing.expect(gitApplyCheckFailed(0, "", "Applied patch to 'README.md' with conflicts.\n"));
+    try std.testing.expect(gitApplyCheckFailed(1, "", "error: patch failed\n"));
+    try std.testing.expect(!gitApplyCheckFailed(0, "", "Applied patch to 'with conflicts.txt' cleanly.\n"));
+    try std.testing.expect(!gitApplyCheckFailed(
+        0,
+        "",
+        "error: repository lacks the necessary blob to perform 3-way merge.\nFalling back to direct application...\n",
+    ));
 }
