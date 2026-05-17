@@ -226,19 +226,7 @@ fn runExec(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const environment = try resolveEnvironmentId(allocator, runtime, raw_environment);
     defer allocator.free(environment);
 
-    const starting_diff = try env.getOwned(allocator, "CODEX_STARTING_DIFF");
-    defer if (starting_diff) |value| allocator.free(value);
-    const body = try buildCreateTaskBody(allocator, environment, prompt, git_ref, parsed.exec.attempts, starting_diff);
-    defer allocator.free(body);
-
-    const url = try buildTasksCollectionUrl(allocator, runtime.base_url);
-    defer allocator.free(url);
-    const response = try postCloudTasks(allocator, runtime, url, body);
-    defer allocator.free(response);
-
-    const task_id = try parseCreatedTaskId(allocator, response);
-    defer allocator.free(task_id);
-    const browser_url = try taskUrl(allocator, runtime.base_url, task_id);
+    const browser_url = try createCloudTask(allocator, runtime, environment, prompt, git_ref, parsed.exec.attempts);
     defer allocator.free(browser_url);
 
     const rendered = try std.fmt.allocPrint(allocator, "{s}\n", .{browser_url});
@@ -415,6 +403,33 @@ fn handlePickerLine(
         try writePickerPage(allocator, runtime.base_url, page.*, environment.*);
         return .keep_running;
     }
+    if (std.ascii.eqlIgnoreCase(command, "new") or std.ascii.eqlIgnoreCase(command, "create")) {
+        const request = try parsePickerNewCommand(line[command.len..], environment.*);
+        const resolved_environment = if (request.environment) |raw_environment|
+            try resolveEnvironmentId(allocator, runtime, raw_environment)
+        else
+            try allocator.dupe(u8, environment.* orelse return error.MissingCloudEnvironment);
+        defer allocator.free(resolved_environment);
+
+        const git_ref = try resolveExecGitRef(allocator, request.branch);
+        defer allocator.free(git_ref);
+
+        const browser_url = try createCloudTask(allocator, runtime, resolved_environment, request.prompt, git_ref, request.attempts);
+        defer allocator.free(browser_url);
+        const created = try std.fmt.allocPrint(allocator, "Created task: {s}\n", .{browser_url});
+        defer allocator.free(created);
+        try cli_utils.writeStdout(created);
+
+        if (request.environment != null) {
+            if (environment.*) |old| allocator.free(old);
+            environment.* = try allocator.dupe(u8, resolved_environment);
+        }
+        if (cursor.*) |old| allocator.free(old);
+        cursor.* = null;
+        try reloadPickerPage(allocator, runtime, page, environment.*, null);
+        try writePickerPage(allocator, runtime.base_url, page.*, environment.*);
+        return .keep_running;
+    }
     if (std.ascii.eqlIgnoreCase(command, "s") or std.ascii.eqlIgnoreCase(command, "status")) {
         const target = tokens.next() orelse return error.MissingCloudTaskId;
         if (tokens.next() != null) return error.UnexpectedCloudArgument;
@@ -514,6 +529,8 @@ fn writePickerPage(allocator: std.mem.Allocator, base_url: []const u8, page: Tas
 fn writePickerHelp() !void {
     try cli_utils.writeStdout(
         \\Commands:
+        \\  new [--env ENV_ID] [--attempts N] [--branch BRANCH] <PROMPT>
+        \\                                 Create a task in the selected environment
         \\  status <N|TASK_ID>             Show task status
         \\  diff [--attempt N] <N|TASK_ID> Show a task diff
         \\  apply [--attempt N] <N|TASK_ID> Apply a task diff locally
@@ -524,6 +541,93 @@ fn writePickerHelp() !void {
         \\  quit                           Exit
         \\
     );
+}
+
+const PickerNewCommand = struct {
+    environment: ?[]const u8 = null,
+    prompt: []const u8,
+    branch: ?[]const u8 = null,
+    attempts: usize = 1,
+};
+
+fn parsePickerNewCommand(raw_rest: []const u8, current_environment: ?[]const u8) !PickerNewCommand {
+    const rest = std.mem.trim(u8, raw_rest, " \t\r\n");
+    if (rest.len == 0) return error.MissingCloudQuery;
+
+    var request = PickerNewCommand{
+        .environment = null,
+        .prompt = "",
+        .branch = null,
+        .attempts = 1,
+    };
+    var index: usize = 0;
+    while (index < rest.len) {
+        skipPickerSpaces(rest, &index);
+        if (index >= rest.len) break;
+
+        if (std.mem.eql(u8, rest[index..], "--")) return error.MissingCloudQuery;
+        if (std.mem.startsWith(u8, rest[index..], "-- ")) {
+            request.prompt = std.mem.trim(u8, rest[index + "--".len ..], " \t\r\n");
+            if (request.prompt.len == 0) return error.MissingCloudQuery;
+            if (request.environment == null and current_environment == null) return error.MissingCloudEnvironment;
+            return request;
+        }
+
+        const token_start = index;
+        const token = nextPickerToken(rest, &index);
+        if (std.mem.eql(u8, token, "--attempts")) {
+            request.attempts = try parseAttempts(try takePickerOptionValue(rest, &index, error.MissingCloudAttempts));
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "--attempts=")) {
+            request.attempts = try parseAttempts(token["--attempts=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--branch")) {
+            request.branch = try takePickerOptionValue(rest, &index, error.MissingCloudBranch);
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "--branch=")) {
+            request.branch = token["--branch=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--env")) {
+            request.environment = try takePickerOptionValue(rest, &index, error.MissingCloudEnvironment);
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "--env=")) {
+            request.environment = token["--env=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "-")) return error.UnknownCloudOption;
+
+        request.prompt = std.mem.trim(u8, rest[token_start..], " \t\r\n");
+        if (request.prompt.len == 0) return error.MissingCloudQuery;
+        if (request.environment == null and current_environment == null) return error.MissingCloudEnvironment;
+        return request;
+    }
+
+    if (request.prompt.len == 0) return error.MissingCloudQuery;
+    if (request.environment == null and current_environment == null) return error.MissingCloudEnvironment;
+    return request;
+}
+
+fn skipPickerSpaces(rest: []const u8, index: *usize) void {
+    while (index.* < rest.len and std.ascii.isWhitespace(rest[index.*])) : (index.* += 1) {}
+}
+
+fn nextPickerToken(rest: []const u8, index: *usize) []const u8 {
+    const start = index.*;
+    while (index.* < rest.len and !std.ascii.isWhitespace(rest[index.*])) : (index.* += 1) {}
+    return rest[start..index.*];
+}
+
+fn takePickerOptionValue(rest: []const u8, index: *usize, err: anyerror) ![]const u8 {
+    skipPickerSpaces(rest, index);
+    if (index.* >= rest.len) return err;
+    const token = nextPickerToken(rest, index);
+    if (std.mem.startsWith(u8, token, "-") and !std.mem.eql(u8, token, "-")) return err;
+    return token;
 }
 
 fn writeTaskStatus(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: []const u8, require_ready: bool) !void {
@@ -594,6 +698,32 @@ fn fetchTaskBody(allocator: std.mem.Allocator, runtime: CloudRuntime, task_id: [
     const url = try buildTaskUrl(allocator, runtime.base_url, task_id);
     defer allocator.free(url);
     return fetchCloudTasks(allocator, runtime, url);
+}
+
+fn createCloudTask(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    environment: []const u8,
+    prompt: []const u8,
+    git_ref: []const u8,
+    attempts: usize,
+) ![]const u8 {
+    if (std.mem.trim(u8, environment, " \t\r\n").len == 0) return error.MissingCloudEnvironment;
+    if (std.mem.trim(u8, prompt, " \t\r\n").len == 0) return error.MissingCloudQuery;
+
+    const starting_diff = try env.getOwned(allocator, "CODEX_STARTING_DIFF");
+    defer if (starting_diff) |value| allocator.free(value);
+    const body = try buildCreateTaskBody(allocator, environment, prompt, git_ref, attempts, starting_diff);
+    defer allocator.free(body);
+
+    const url = try buildTasksCollectionUrl(allocator, runtime.base_url);
+    defer allocator.free(url);
+    const response = try postCloudTasks(allocator, runtime, url, body);
+    defer allocator.free(response);
+
+    const task_id = try parseCreatedTaskId(allocator, response);
+    defer allocator.free(task_id);
+    return taskUrl(allocator, runtime.base_url, task_id);
 }
 
 fn resolveEnvironmentId(allocator: std.mem.Allocator, runtime: CloudRuntime, requested: []const u8) ![]const u8 {
@@ -2770,6 +2900,21 @@ test "cloud picker resolves indexed and raw task targets" {
     try std.testing.expectEqualStrings("task-two", raw);
 
     try std.testing.expectError(error.CloudPickerSelectionOutOfRange, pickerTaskId(allocator, page, "2"));
+}
+
+test "cloud picker parses new task commands" {
+    const request = try parsePickerNewCommand(" --attempts 2 --branch feature/cloud write picker composer", "env-current");
+    try std.testing.expect(request.environment == null);
+    try std.testing.expectEqual(@as(usize, 2), request.attempts);
+    try std.testing.expectEqualStrings("feature/cloud", request.branch.?);
+    try std.testing.expectEqualStrings("write picker composer", request.prompt);
+
+    const explicit_env = try parsePickerNewCommand(" --env env-id -- --fix cloud task", null);
+    try std.testing.expectEqualStrings("env-id", explicit_env.environment.?);
+    try std.testing.expectEqualStrings("--fix cloud task", explicit_env.prompt);
+
+    try std.testing.expectError(error.MissingCloudEnvironment, parsePickerNewCommand("write task without env", null));
+    try std.testing.expectError(error.MissingCloudQuery, parsePickerNewCommand("--attempts 2", "env-current"));
 }
 
 test "cloud picker page renders indexed task rows" {

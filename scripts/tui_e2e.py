@@ -4017,6 +4017,8 @@ def run_cloud_apply_command_smoke(
     git(picker_repo, "add", "README.md")
     git(picker_repo, "commit", "-m", "Initial commit")
 
+    picker_post_start = len(server.post_paths)
+    picker_body_start = len(server.request_bodies)
     picker = subprocess.run(
         [
             str(binary),
@@ -4026,7 +4028,14 @@ def run_cloud_apply_command_smoke(
         ],
         cwd=picker_repo,
         env=env,
-        input="env e2e environment\nstatus 1\ndiff --attempt 2 1\napply --attempt 2 task-apply\nquit\n",
+        input=(
+            "env e2e environment\n"
+            "new --attempts 2 --branch picker-branch write picker composer\n"
+            "status 1\n"
+            "diff --attempt 2 1\n"
+            "apply --attempt 2 task-apply\n"
+            "quit\n"
+        ),
         text=True,
         capture_output=True,
         check=True,
@@ -4038,6 +4047,8 @@ def run_cloud_apply_command_smoke(
         raise AssertionError(f"expected cloud picker indexed row:\n{picker_combined}")
     if "Cloud Tasks - env env-id" not in picker_combined:
         raise AssertionError(f"expected cloud picker environment filter:\n{picker_combined}")
+    if f"Created task: http://127.0.0.1:{port}/codex/tasks/task-created-" not in picker_combined:
+        raise AssertionError(f"expected cloud picker new task output:\n{picker_combined}")
     if "[READY] Write cloud runtime" not in picker_combined:
         raise AssertionError(f"expected cloud picker status command output:\n{picker_combined}")
     if "diff --git a/scripts/lucas.js b/scripts/lucas.js" not in picker_combined:
@@ -4049,6 +4060,20 @@ def run_cloud_apply_command_smoke(
     picker_created = picker_repo / "scripts" / "lucas.js"
     if not picker_created.exists():
         raise AssertionError(f"expected cloud picker apply to create {picker_created}")
+    if server.post_paths[picker_post_start:] != ["/api/codex/tasks"]:
+        raise AssertionError(f"expected cloud picker task create path, saw {server.post_paths!r}")
+    picker_body = server.request_bodies[picker_body_start]
+    picker_new_task = picker_body.get("new_task", {})
+    if picker_new_task.get("environment_id") != "env-id":
+        raise AssertionError(f"unexpected cloud picker new environment: {picker_body!r}")
+    if picker_new_task.get("branch") != "picker-branch":
+        raise AssertionError(f"unexpected cloud picker new branch: {picker_body!r}")
+    picker_metadata = picker_body.get("metadata", {})
+    if picker_metadata.get("best_of_n") != 2:
+        raise AssertionError(f"unexpected cloud picker new metadata: {picker_body!r}")
+    picker_items = picker_body.get("input_items", [])
+    if picker_items[0]["content"][0]["text"] != "write picker composer":
+        raise AssertionError(f"unexpected cloud picker new prompt body: {picker_body!r}")
 
     if "/api/codex/tasks/task-apply" not in server.get_paths:
         raise AssertionError(f"expected cloud apply task fetch, saw {server.get_paths!r}")
