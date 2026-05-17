@@ -302,7 +302,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   resolves environment id or label filters, `status` and `diff` perform
   authenticated Cloud Tasks backend reads, and `diff` / `apply` resolve
   sibling attempts for `--attempt` selection before displaying or applying
-  Cloud diffs locally with `git apply --3way`; top-level `cloud` opens a
+  Cloud diffs locally with `git apply --check --3way` preflight followed by
+  `git apply --3way`; top-level `cloud` opens a
   line-oriented task picker for list/status/diff/apply workflows and task
   creation in the selected environment, while the
   richer full-screen picker UI remains planned
