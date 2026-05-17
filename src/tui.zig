@@ -321,14 +321,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         errdefer if (snapshot_json) |value| allocator.free(value);
         local_remote_server = try local_remote_control.start(allocator, options.remote_control_bind, snapshot_json.?);
         snapshot_json = null;
-        if (local_remote_server) |*server| {
-            std.debug.print(
-                \\Remote control active
-                \\Controller link: {s}
-                \\Share link: {s}
-                \\
-            , .{ server.url, server.share_url });
-        }
+        if (local_remote_server) |*server| printLocalRemoteControlLinks(server);
     }
 
     var pending_input_images: []const []const u8 = options.initial_input_images;
@@ -391,7 +384,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             const read_len = try std.posix.read(std.posix.STDIN_FILENO, &stdin_read_buffer);
             if (read_len == 0) {
                 if (stdin_line.items.len > 0) {
-                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images);
+                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     if (should_quit) break;
                 }
@@ -401,7 +394,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             for (stdin_read_buffer[0..read_len]) |byte| {
                 if (byte == '\n') {
                     prompt_visible = false;
-                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images);
+                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     stdin_line.clearRetainingCapacity();
                     if (should_quit) break;
@@ -428,6 +421,8 @@ fn handleInteractivePromptLine(
     state: *TuiState,
     additional_writable_roots: []const []const u8,
     pending_input_images: *[]const []const u8,
+    local_remote_server: *?local_remote_control.Server,
+    remote_control_bind: ?[]const u8,
 ) !bool {
     const prompt = std.mem.trim(u8, line, " \t\r\n");
     if (prompt.len == 0) return false;
@@ -438,7 +433,7 @@ fn handleInteractivePromptLine(
         };
         return false;
     }
-    const slash_action = handleSlashCommand(allocator, cfg, credentials, transcript, session_path, cwd, prompt, state, additional_writable_roots) catch |err| {
+    const slash_action = handleSlashCommand(allocator, cfg, credentials, transcript, session_path, cwd, prompt, state, additional_writable_roots, local_remote_server, remote_control_bind) catch |err| {
         std.debug.print("error: {s}\n", .{@errorName(err)});
         return false;
     };
@@ -455,6 +450,15 @@ fn handleInteractivePromptLine(
         std.debug.print("\nerror: {s}\n", .{@errorName(err)});
     };
     return false;
+}
+
+fn printLocalRemoteControlLinks(server: *const local_remote_control.Server) void {
+    std.debug.print(
+        \\Remote control active
+        \\Controller link: {s}
+        \\Share link: {s}
+        \\
+    , .{ server.url, server.share_url });
 }
 
 fn refreshLocalRemoteControlSnapshot(
@@ -1988,6 +1992,8 @@ fn handleSlashCommand(
     prompt: []const u8,
     state: *TuiState,
     additional_writable_roots: []const []const u8,
+    local_remote_server: *?local_remote_control.Server,
+    remote_control_bind: ?[]const u8,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
 
@@ -2019,6 +2025,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
         try printStatus(allocator, cfg.*, credentials.*, transcript, session_path.*, cwd, state.*);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "remote-control")) {
+        try handleLocalRemoteControlSlash(allocator, local_remote_server, remote_control_bind, cwd, transcript, parts.args);
         return .handled;
     }
 
@@ -2250,6 +2261,40 @@ fn handleSlashCommand(
     return .handled;
 }
 
+fn handleLocalRemoteControlSlash(
+    allocator: std.mem.Allocator,
+    server_opt: *?local_remote_control.Server,
+    bind_arg: ?[]const u8,
+    cwd: []const u8,
+    transcript: *const session.Transcript,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "start")) {
+        if (server_opt.*) |*server| {
+            printLocalRemoteControlLinks(server);
+            return;
+        }
+
+        const snapshot_json = try renderLocalRemoteControlSnapshotJson(allocator, cwd, transcript);
+        errdefer allocator.free(snapshot_json);
+        server_opt.* = try local_remote_control.start(allocator, bind_arg, snapshot_json);
+        if (server_opt.*) |*server| printLocalRemoteControlLinks(server);
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "stop")) {
+        if (server_opt.*) |*server| {
+            server.deinit(allocator);
+            server_opt.* = null;
+        }
+        std.debug.print("Remote control stopped.\n", .{});
+        return;
+    }
+
+    std.debug.print("Usage: /remote-control [start|stop]\n", .{});
+}
+
 fn parseSlash(prompt: []const u8) ?SlashParts {
     if (prompt.len < 2 or prompt[0] != '/') return null;
     const body = std.mem.trim(u8, prompt[1..], " \t");
@@ -2267,6 +2312,8 @@ fn printSlashHelp() void {
         \\  /init             create an AGENTS.md contributor guide
         \\  /compact          summarize and replace this session's history
         \\  /status           show current session settings
+        \\  /remote-control [start|stop]
+        \\                    manage local browser remote control
         \\  /debug-config     show effective configuration values
         \\  /keymap [debug]   show current key bindings
         \\  /plan [on|off|status]
@@ -3320,6 +3367,10 @@ test "parse slash command names and args" {
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
     try std.testing.expectEqualStrings("", status.args);
+
+    const remote_control = parseSlash("/remote-control stop").?;
+    try std.testing.expectEqualStrings("remote-control", remote_control.name);
+    try std.testing.expectEqualStrings("stop", remote_control.args);
 
     const debug_config = parseSlash("/debug-config").?;
     try std.testing.expectEqualStrings("debug-config", debug_config.name);
