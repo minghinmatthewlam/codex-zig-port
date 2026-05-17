@@ -200,6 +200,7 @@ const LoadedThread = struct {
     goal: ?LoadedThreadGoal,
     transcript: session_mod.Transcript,
     turns_json: []const u8,
+    next_turn_index: usize,
     created_at: i64,
     updated_at: i64,
     status: ThreadRuntimeStatus = .idle,
@@ -25857,7 +25858,7 @@ fn handleTurnStart(
     defer credentials.deinit(allocator);
 
     const thread = &state.loaded_threads.items[thread_index];
-    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
 
     applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
@@ -25873,11 +25874,24 @@ fn handleTurnStart(
     defer skill_injections.deinit(allocator);
     const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks);
     defer allocator.free(prompt_for_turn);
+    const started_at_ms = currentUnixMilliseconds();
+    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+    try materializeHookTranscriptForThread(allocator, thread);
+    var user_prompt_hooks = try runUserPromptSubmitHooks(
+        allocator,
+        cfg.codex_home,
+        thread.id,
+        turn_id,
+        thread.path,
+        thread.cwd,
+        cfg.model,
+        hookPermissionMode(cfg.approval_policy),
+        input.prompt,
+    );
+    defer user_prompt_hooks.deinit(allocator);
 
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
-    const started_at_ms = currentUnixMilliseconds();
-    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
     const user_item_index = thread.transcript.history.items.len;
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
     var started_notification_moved = false;
@@ -25961,6 +25975,31 @@ fn handleTurnStart(
         .notifications = &turn_update_notifications,
     };
 
+    if (user_prompt_hooks.should_stop) {
+        const completed_at_ms = currentUnixMilliseconds();
+        const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+        const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+        var completed_notification_moved = false;
+        errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+        try persistHookContextsForNextTurn(allocator, thread, user_prompt_hooks.contexts.items);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+
+        thread.status = .active;
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+        try queueTurnNotification(allocator, state, "turn/started", started_notification);
+        started_notification_moved = true;
+        try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+        try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+        completed_notification_moved = true;
+        thread.status = .idle;
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+        return renderJsonRpcResult(allocator, id_value, response);
+    }
+
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = false,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
@@ -25968,6 +26007,7 @@ fn handleTurnStart(
         .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
         .input_images = request_input_images,
+        .developer_messages_after_user = user_prompt_hooks.contexts.items,
         .plan_mode = std.mem.eql(u8, thread.collaboration_mode, "plan"),
         .plan_update_callback = .{
             .ctx = &plan_update_context,
@@ -26018,6 +26058,13 @@ fn handleTurnStart(
     }) catch |err| {
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
+        if (user_prompt_hooks.notifications.items.len > 0) {
+            thread.status = .active;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+            try queueTurnNotification(allocator, state, "turn/started", started_notification);
+            started_notification_moved = true;
+            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+        }
         thread.status = .system_error;
         try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
         if (thread.path) |path| {
@@ -26044,6 +26091,7 @@ fn handleTurnStart(
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
     try queueTurnNotification(allocator, state, "turn/started", started_notification);
     started_notification_moved = true;
+    try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
     if (user_item_index < thread.transcript.history.items.len) {
         const user_item = thread.transcript.history.items[user_item_index];
         if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
@@ -26452,12 +26500,643 @@ fn turnPromptWithContextBlocks(
     return out.toOwnedSlice(allocator);
 }
 
-fn nextTurnIdForTranscript(allocator: std.mem.Allocator, transcript: *const session_mod.Transcript) ![]const u8 {
+fn materializeHookTranscriptForThread(allocator: std.mem.Allocator, thread: *const LoadedThread) !void {
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
+fn persistHookContextsForNextTurn(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    contexts: []const []const u8,
+) !void {
+    if (contexts.len == 0) return;
+    for (contexts) |context| {
+        try thread.transcript.appendDeveloperMessage(allocator, context);
+    }
+
+    const turns_json = try renderTranscriptTurnsJson(allocator, &thread.transcript, true);
+    errdefer allocator.free(turns_json);
+    allocator.free(thread.turns_json);
+    thread.turns_json = turns_json;
+    syncLoadedThreadNextTurnIndex(thread);
+    thread.updated_at = currentUnixSeconds();
+}
+
+fn hookPermissionMode(approval_policy: config.ApprovalPolicy) []const u8 {
+    return switch (approval_policy) {
+        .never => "bypassPermissions",
+        .untrusted, .on_failure, .on_request => "default",
+    };
+}
+
+const HookRuntimeNotification = struct {
+    method: []const u8,
+    payload: []const u8,
+
+    fn deinit(self: HookRuntimeNotification, allocator: std.mem.Allocator) void {
+        allocator.free(self.payload);
+    }
+};
+
+const HookRuntimeResult = struct {
+    notifications: std.ArrayList(HookRuntimeNotification) = .empty,
+    contexts: std.ArrayList([]const u8) = .empty,
+    should_stop: bool = false,
+
+    fn deinit(self: *HookRuntimeResult, allocator: std.mem.Allocator) void {
+        for (self.notifications.items) |notification| notification.deinit(allocator);
+        self.notifications.deinit(allocator);
+        for (self.contexts.items) |context| allocator.free(context);
+        self.contexts.deinit(allocator);
+        self.* = .{};
+    }
+};
+
+const HookOutputEntry = struct {
+    kind: []const u8,
+    text: []const u8,
+
+    fn deinit(self: HookOutputEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
+const UserPromptSubmitHookRun = struct {
+    hook: hooks_list.Hook,
+    hook_run_id: []const u8,
+    started_at_ms: i64,
+    started_at: i64,
+    worker: UserPromptSubmitHookWorker,
+    thread: ?std.Thread = null,
+
+    fn deinit(self: *UserPromptSubmitHookRun, allocator: std.mem.Allocator) void {
+        allocator.free(self.hook_run_id);
+        if (self.worker.result) |*result| result.deinit(std.heap.page_allocator);
+    }
+};
+
+const UserPromptSubmitHookWorker = struct {
+    codex_home: []const u8,
+    hook: hooks_list.Hook,
+    cwd: []const u8,
+    input_json: []const u8,
+    result: ?CommandExecRunResult = null,
+    error_name: ?[]const u8 = null,
+    completed_at_ms: ?i64 = null,
+};
+
+fn runUserPromptSubmitHooks(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    transcript_path: ?[]const u8,
+    cwd: []const u8,
+    model: []const u8,
+    permission_mode: []const u8,
+    prompt: []const u8,
+) !HookRuntimeResult {
+    var runtime = HookRuntimeResult{};
+    errdefer runtime.deinit(allocator);
+
+    var listed = try hooks_list.list(allocator, codex_home, &.{cwd});
+    defer listed.deinit(allocator);
+    if (listed.entries.len == 0) return runtime;
+
+    const input_json = try renderUserPromptSubmitHookInput(allocator, thread_id, turn_id, transcript_path, cwd, model, permission_mode, prompt);
+    defer allocator.free(input_json);
+
+    var runs = std.ArrayList(UserPromptSubmitHookRun).empty;
+    defer deinitUserPromptSubmitHookRuns(allocator, &runs);
+    defer joinPendingUserPromptSubmitHookRuns(&runs);
+
+    for (listed.entries[0].hooks) |hook| {
+        if (hook.event_name != .user_prompt_submit or !hook.shouldRun()) continue;
+        const hook_run_id = try renderHookRunId(allocator, hook);
+        var hook_run_id_moved = false;
+        errdefer if (!hook_run_id_moved) allocator.free(hook_run_id);
+
+        const started_at_ms = currentUnixMilliseconds();
+        const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+        const started = try renderHookNotification(allocator, "hook/started", thread_id, turn_id, hook, hook_run_id, "running", started_at, null, null, &.{});
+        errdefer allocator.free(started);
+        try runtime.notifications.append(allocator, .{ .method = "hook/started", .payload = started });
+
+        try runs.append(allocator, .{
+            .hook = hook,
+            .hook_run_id = hook_run_id,
+            .started_at_ms = started_at_ms,
+            .started_at = started_at,
+            .worker = .{
+                .codex_home = codex_home,
+                .hook = hook,
+                .cwd = cwd,
+                .input_json = input_json,
+            },
+        });
+        hook_run_id_moved = true;
+    }
+
+    for (runs.items) |*hook_run| {
+        hook_run.thread = try std.Thread.spawn(.{}, runUserPromptSubmitHookCommandWorker, .{&hook_run.worker});
+    }
+
+    joinPendingUserPromptSubmitHookRuns(&runs);
+
+    for (runs.items) |*hook_run| {
+        var entries = std.ArrayList(HookOutputEntry).empty;
+        defer deinitHookOutputEntries(allocator, &entries);
+
+        const status = if (hook_run.worker.error_name) |error_name| blk: {
+            const message = try std.fmt.allocPrint(allocator, "hook failed to run: {s}", .{error_name});
+            defer allocator.free(message);
+            try appendHookOutputEntry(allocator, &entries, "error", message);
+            break :blk "failed";
+        } else blk: {
+            const result = hook_run.worker.result orelse return error.HookCommandMissingResult;
+            break :blk try collectUserPromptSubmitHookEntries(allocator, &result, &entries, &runtime.contexts);
+        };
+
+        if (std.mem.eql(u8, status, "blocked") or std.mem.eql(u8, status, "stopped")) runtime.should_stop = true;
+        const completed_at_ms = hook_run.worker.completed_at_ms orelse currentUnixMilliseconds();
+        const completed = try renderHookNotification(
+            allocator,
+            "hook/completed",
+            thread_id,
+            turn_id,
+            hook_run.hook,
+            hook_run.hook_run_id,
+            status,
+            hook_run.started_at,
+            @divTrunc(completed_at_ms, std.time.ms_per_s),
+            @max(completed_at_ms - hook_run.started_at_ms, 0),
+            entries.items,
+        );
+        errdefer allocator.free(completed);
+        try runtime.notifications.append(allocator, .{ .method = "hook/completed", .payload = completed });
+    }
+
+    return runtime;
+}
+
+fn deinitUserPromptSubmitHookRuns(allocator: std.mem.Allocator, runs: *std.ArrayList(UserPromptSubmitHookRun)) void {
+    for (runs.items) |*hook_run| hook_run.deinit(allocator);
+    runs.deinit(allocator);
+}
+
+fn joinPendingUserPromptSubmitHookRuns(runs: *std.ArrayList(UserPromptSubmitHookRun)) void {
+    for (runs.items) |*hook_run| {
+        if (hook_run.thread) |thread| {
+            thread.join();
+            hook_run.thread = null;
+        }
+    }
+}
+
+fn runUserPromptSubmitHookCommandWorker(worker: *UserPromptSubmitHookWorker) void {
+    worker.result = runTrustedUserPromptSubmitHookCommand(
+        std.heap.page_allocator,
+        worker.codex_home,
+        worker.hook,
+        worker.cwd,
+        worker.input_json,
+    ) catch |err| {
+        worker.completed_at_ms = currentUnixMilliseconds();
+        worker.error_name = @errorName(err);
+        return;
+    };
+    worker.completed_at_ms = currentUnixMilliseconds();
+}
+
+fn runTrustedUserPromptSubmitHookCommand(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    hook: hooks_list.Hook,
+    cwd: []const u8,
+    input_json: []const u8,
+) !CommandExecRunResult {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const shell = currentHookShell();
+    const command = try userPromptSubmitHookCommand(allocator, codex_home, hook);
+    defer allocator.free(command);
+    const argv = [_][]const u8{ shell, "-lc", command };
+    const timeout_sec = @min(hook.timeout_sec, @as(u64, @intCast(std.math.maxInt(i64) / 1000)));
+    const timeout_ms: i64 = @intCast(timeout_sec * 1000);
+    var child_env = try userPromptSubmitHookEnvironment(allocator, codex_home, hook);
+    defer if (child_env) |*hook_env| hook_env.deinit();
+    const env_map = if (child_env) |*hook_env| hook_env else null;
+    return runCommandExecProcess(
+        allocator,
+        &io_instance,
+        &argv,
+        .{ .path = cwd },
+        env_map,
+        input_json,
+        timeout_ms,
+        COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP,
+    );
+}
+
+fn userPromptSubmitHookCommand(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    hook: hooks_list.Hook,
+) ![]const u8 {
+    var command = try allocator.dupe(u8, hook.command);
+    errdefer allocator.free(command);
+    if (hook.source != .plugin) return command;
+
+    const plugin_id = hook.plugin_id orelse return command;
+    const plugin_root = (try plugin_config.localPluginRoot(allocator, codex_home, plugin_id)) orelse return command;
+    defer allocator.free(plugin_root);
+    const plugin_data_root = (try plugin_config.localPluginDataRoot(allocator, codex_home, plugin_id)) orelse return command;
+    defer allocator.free(plugin_data_root);
+
+    try replaceHookCommandPlaceholder(allocator, &command, "${PLUGIN_ROOT}", plugin_root);
+    try replaceHookCommandPlaceholder(allocator, &command, "${CLAUDE_PLUGIN_ROOT}", plugin_root);
+    try replaceHookCommandPlaceholder(allocator, &command, "${PLUGIN_DATA}", plugin_data_root);
+    try replaceHookCommandPlaceholder(allocator, &command, "${CLAUDE_PLUGIN_DATA}", plugin_data_root);
+    return command;
+}
+
+fn replaceHookCommandPlaceholder(
+    allocator: std.mem.Allocator,
+    command: *[]u8,
+    placeholder: []const u8,
+    replacement: []const u8,
+) !void {
+    if (std.mem.indexOf(u8, command.*, placeholder) == null) return;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, command.*, start, placeholder)) |index| {
+        try out.appendSlice(allocator, command.*[start..index]);
+        try out.appendSlice(allocator, replacement);
+        start = index + placeholder.len;
+    }
+    try out.appendSlice(allocator, command.*[start..]);
+
+    const next = try out.toOwnedSlice(allocator);
+    allocator.free(command.*);
+    command.* = next;
+}
+
+fn userPromptSubmitHookEnvironment(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    hook: hooks_list.Hook,
+) !?std.process.Environ.Map {
+    if (hook.source != .plugin) return null;
+    const plugin_id = hook.plugin_id orelse return null;
+    const plugin_root = (try plugin_config.localPluginRoot(allocator, codex_home, plugin_id)) orelse return null;
+    defer allocator.free(plugin_root);
+    const plugin_data_root = (try plugin_config.localPluginDataRoot(allocator, codex_home, plugin_id)) orelse return null;
+    defer allocator.free(plugin_data_root);
+
+    var hook_env = try commandExecCurrentEnvironment(allocator);
+    errdefer hook_env.deinit();
+    try hook_env.put("PLUGIN_ROOT", plugin_root);
+    try hook_env.put("CLAUDE_PLUGIN_ROOT", plugin_root);
+    try hook_env.put("PLUGIN_DATA", plugin_data_root);
+    try hook_env.put("CLAUDE_PLUGIN_DATA", plugin_data_root);
+    return hook_env;
+}
+
+fn renderUserPromptSubmitHookInput(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    transcript_path: ?[]const u8,
+    cwd: []const u8,
+    model: []const u8,
+    permission_mode: []const u8,
+    prompt: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"session_id\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turn_id\":");
+    try appendJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"transcript_path\":");
+    try appendOptionalJsonString(allocator, &out, transcript_path);
+    try out.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, &out, cwd);
+    try out.appendSlice(allocator, ",\"hook_event_name\":\"UserPromptSubmit\",\"model\":");
+    try appendJsonString(allocator, &out, model);
+    try out.appendSlice(allocator, ",\"permission_mode\":");
+    try appendJsonString(allocator, &out, permission_mode);
+    try out.appendSlice(allocator, ",\"prompt\":");
+    try appendJsonString(allocator, &out, prompt);
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderHookRunId(
+    allocator: std.mem.Allocator,
+    hook: hooks_list.Hook,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}:{d}:{s}", .{ hook.event_name.runIdLabel(), hook.display_order, hook.source_path });
+}
+
+fn collectUserPromptSubmitHookEntries(
+    allocator: std.mem.Allocator,
+    result: *const CommandExecRunResult,
+    entries: *std.ArrayList(HookOutputEntry),
+    contexts: *std.ArrayList([]const u8),
+) ![]const u8 {
+    if (result.exit_code == 0) {
+        const trimmed_stdout = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (trimmed_stdout.len == 0) return "completed";
+        if (try collectJsonUserPromptSubmitHookOutput(allocator, trimmed_stdout, entries, contexts)) |status| return status;
+        if (looksLikeJson(trimmed_stdout)) {
+            try appendHookOutputEntry(allocator, entries, "error", "hook returned invalid user prompt submit JSON output");
+            return "failed";
+        }
+        try appendHookContextEntry(allocator, entries, contexts, trimmed_stdout);
+        return "completed";
+    }
+    if (result.exit_code == 2) {
+        const reason = std.mem.trim(u8, result.stderr, " \t\r\n");
+        if (reason.len > 0) {
+            try appendHookOutputEntry(allocator, entries, "feedback", reason);
+            return "blocked";
+        }
+        try appendHookOutputEntry(allocator, entries, "error", "UserPromptSubmit hook exited with code 2 but did not write a blocking reason to stderr");
+        return "failed";
+    }
+    const message = try std.fmt.allocPrint(allocator, "hook exited with code {d}", .{result.exit_code});
+    defer allocator.free(message);
+    try appendHookOutputEntry(allocator, entries, "error", message);
+    return "failed";
+}
+
+fn collectJsonUserPromptSubmitHookOutput(
+    allocator: std.mem.Allocator,
+    stdout: []const u8,
+    entries: *std.ArrayList(HookOutputEntry),
+    contexts: *std.ArrayList([]const u8),
+) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, stdout, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isValidUserPromptSubmitOutputObject(object)) return try appendInvalidUserPromptSubmitJsonOutput(allocator, entries);
+
+    var additional_context: ?[]const u8 = null;
+    if (object.get("hookSpecificOutput")) |specific| {
+        if (specific == .null) {
+            // Explicit null matches the Rust optional hookSpecificOutput field.
+        } else if (specific == .object) {
+            const event_name = optionalHookStringField(specific.object, "hookEventName") orelse return try appendInvalidUserPromptSubmitJsonOutput(allocator, entries);
+            if (!isHookEventWireName(event_name)) return try appendInvalidUserPromptSubmitJsonOutput(allocator, entries);
+            additional_context = optionalHookStringField(specific.object, "additionalContext");
+        } else {
+            return try appendInvalidUserPromptSubmitJsonOutput(allocator, entries);
+        }
+    }
+
+    var should_block = false;
+    var invalid_block_reason = false;
+    var block_reason: ?[]const u8 = null;
+    if (object.get("decision")) |decision_value| {
+        if (decision_value == .null) {
+            // Explicit null matches the Rust optional decision field.
+        } else if (decision_value == .string and std.mem.eql(u8, decision_value.string, "block")) {
+            should_block = true;
+            block_reason = optionalHookStringField(object, "reason");
+            invalid_block_reason = block_reason == null or std.mem.trim(u8, block_reason.?, " \t\r\n").len == 0;
+        } else {
+            return try appendInvalidUserPromptSubmitJsonOutput(allocator, entries);
+        }
+    }
+
+    if (optionalHookStringField(object, "systemMessage")) |message| {
+        try appendHookOutputEntry(allocator, entries, "warning", message);
+    }
+
+    if (!invalid_block_reason) {
+        if (additional_context) |context| {
+            try appendHookContextEntry(allocator, entries, contexts, context);
+        }
+    }
+
+    if (optionalBoolField(object, "continue")) |continue_processing| {
+        if (!continue_processing) {
+            if (optionalHookStringField(object, "stopReason")) |reason| {
+                if (std.mem.trim(u8, reason, " \t\r\n").len > 0) {
+                    try appendHookOutputEntry(allocator, entries, "stop", reason);
+                }
+            }
+            return "stopped";
+        }
+    }
+    if (invalid_block_reason) {
+        try appendHookOutputEntry(allocator, entries, "error", "UserPromptSubmit hook returned decision:block without a non-empty reason");
+        return "failed";
+    }
+    if (should_block) {
+        try appendHookOutputEntry(allocator, entries, "feedback", block_reason.?);
+        return "blocked";
+    }
+    return "completed";
+}
+
+fn appendInvalidUserPromptSubmitJsonOutput(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(HookOutputEntry),
+) ![]const u8 {
+    try appendHookOutputEntry(allocator, entries, "error", "hook returned invalid user prompt submit JSON output");
+    return "failed";
+}
+
+fn optionalHookStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn isValidUserPromptSubmitOutputObject(object: std.json.ObjectMap) bool {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "continue") or std.mem.eql(u8, key, "suppressOutput")) {
+            if (value != .bool) return false;
+        } else if (std.mem.eql(u8, key, "systemMessage") or std.mem.eql(u8, key, "stopReason") or std.mem.eql(u8, key, "reason")) {
+            if (!isNullOrString(value)) return false;
+        } else if (std.mem.eql(u8, key, "decision")) {
+            if (value == .null) {
+                continue;
+            }
+            if (value != .string or !std.mem.eql(u8, value.string, "block")) return false;
+        } else if (std.mem.eql(u8, key, "hookSpecificOutput")) {
+            if (!isValidUserPromptSubmitHookSpecificOutput(value)) return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isValidUserPromptSubmitHookSpecificOutput(value: std.json.Value) bool {
+    if (value == .null) return true;
+    if (value != .object) return false;
+    const object = value.object;
+    const event_name = object.get("hookEventName") orelse return false;
+    if (event_name != .string or !isHookEventWireName(event_name.string)) return false;
+
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const field_value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "hookEventName")) {
+            if (field_value != .string or !isHookEventWireName(field_value.string)) return false;
+        } else if (std.mem.eql(u8, key, "additionalContext")) {
+            if (!isNullOrString(field_value)) return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isNullOrString(value: std.json.Value) bool {
+    return value == .null or value == .string;
+}
+
+fn isHookEventWireName(value: []const u8) bool {
+    inline for (&.{
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "PreCompact",
+        "PostCompact",
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+    }) |name| {
+        if (std.mem.eql(u8, value, name)) return true;
+    }
+    return false;
+}
+
+fn appendHookContextEntry(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(HookOutputEntry),
+    contexts: *std.ArrayList([]const u8),
+    context: []const u8,
+) !void {
+    try appendHookOutputEntry(allocator, entries, "context", context);
+    const owned_context = try allocator.dupe(u8, context);
+    errdefer allocator.free(owned_context);
+    try contexts.append(allocator, owned_context);
+}
+
+fn appendHookOutputEntry(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(HookOutputEntry),
+    kind: []const u8,
+    text: []const u8,
+) !void {
+    const owned_text = try allocator.dupe(u8, text);
+    errdefer allocator.free(owned_text);
+    try entries.append(allocator, .{ .kind = kind, .text = owned_text });
+}
+
+fn deinitHookOutputEntries(allocator: std.mem.Allocator, entries: *std.ArrayList(HookOutputEntry)) void {
+    for (entries.items) |entry| entry.deinit(allocator);
+    entries.deinit(allocator);
+}
+
+fn looksLikeJson(value: []const u8) bool {
+    return value.len > 0 and (value[0] == '{' or value[0] == '[');
+}
+
+fn optionalBoolField(object: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = object.get(name) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
+}
+
+fn renderHookNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    hook: hooks_list.Hook,
+    hook_run_id: []const u8,
+    status: []const u8,
+    started_at: i64,
+    completed_at: ?i64,
+    duration_ms: ?i64,
+    entries: []const HookOutputEntry,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"run\":{");
+    try notification.appendSlice(allocator, "\"id\":");
+    try appendJsonString(allocator, &notification, hook_run_id);
+    try notification.appendSlice(allocator, ",\"eventName\":");
+    try appendJsonString(allocator, &notification, hook.event_name.jsonLabel());
+    try notification.appendSlice(allocator, ",\"handlerType\":\"command\",\"executionMode\":\"sync\",\"scope\":\"turn\",\"sourcePath\":");
+    try appendJsonString(allocator, &notification, hook.source_path);
+    try notification.appendSlice(allocator, ",\"source\":");
+    try appendJsonString(allocator, &notification, hook.source.label());
+    try notification.appendSlice(allocator, ",\"displayOrder\":");
+    try appendInt(allocator, &notification, hook.display_order);
+    try notification.appendSlice(allocator, ",\"status\":");
+    try appendJsonString(allocator, &notification, status);
+    try notification.appendSlice(allocator, ",\"statusMessage\":");
+    try appendOptionalJsonString(allocator, &notification, hook.status_message);
+    try notification.appendSlice(allocator, ",\"startedAt\":");
+    try appendInt(allocator, &notification, started_at);
+    try notification.appendSlice(allocator, ",\"completedAt\":");
+    try appendOptionalInt(allocator, &notification, completed_at);
+    try notification.appendSlice(allocator, ",\"durationMs\":");
+    try appendOptionalInt(allocator, &notification, duration_ms);
+    try notification.appendSlice(allocator, ",\"entries\":[");
+    for (entries, 0..) |entry, index| {
+        if (index > 0) try notification.append(allocator, ',');
+        try notification.appendSlice(allocator, "{\"kind\":");
+        try appendJsonString(allocator, &notification, entry.kind);
+        try notification.appendSlice(allocator, ",\"text\":");
+        try appendJsonString(allocator, &notification, entry.text);
+        try notification.append(allocator, '}');
+    }
+    try notification.appendSlice(allocator, "]}}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn allocateNextTurnIdForThread(allocator: std.mem.Allocator, thread: *LoadedThread) ![]const u8 {
+    syncLoadedThreadNextTurnIndex(thread);
+    const index = thread.next_turn_index;
+    const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{index});
+    thread.next_turn_index = index + 1;
+    return turn_id;
+}
+
+fn syncLoadedThreadNextTurnIndex(thread: *LoadedThread) void {
+    thread.next_turn_index = turnCountForTranscript(&thread.transcript);
+}
+
+fn turnCountForTranscript(transcript: *const session_mod.Transcript) usize {
     var count: usize = 0;
     for (transcript.history.items) |item| {
-        if (item.kind == .message) count += 1;
+        if (historyItemVisibleInTurns(item)) count += 1;
     }
-    return std.fmt.allocPrint(allocator, "turn-{d}", .{count});
+    return count;
 }
 
 const defaultCollaborationDeveloperInstructions =
@@ -26991,6 +27670,7 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
     errdefer allocator.free(turns_json);
     allocator.free(thread.turns_json);
     thread.turns_json = turns_json;
+    syncLoadedThreadNextTurnIndex(thread);
     thread.updated_at = currentUnixSeconds();
 }
 
@@ -27038,6 +27718,7 @@ fn refreshLoadedThreadAfterRollback(allocator: std.mem.Allocator, thread: *Loade
     if (thread.token_usage_turn_id) |turn_id| allocator.free(turn_id);
     thread.token_usage_turn_id = null;
     thread.token_usage_turn_id = try transcriptTokenUsageTurnId(allocator, &thread.transcript);
+    syncLoadedThreadNextTurnIndex(thread);
     thread.updated_at = currentUnixSeconds();
 }
 
@@ -27253,6 +27934,7 @@ fn injectLoadedThreadItems(
     errdefer allocator.free(turns_json);
     allocator.free(thread.turns_json);
     thread.turns_json = turns_json;
+    syncLoadedThreadNextTurnIndex(thread);
     thread.updated_at = currentUnixSeconds();
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
 }
@@ -27280,7 +27962,7 @@ fn handleLoadedThreadCompactStart(
     };
     defer credentials.deinit(allocator);
 
-    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
     const item_id = try std.fmt.allocPrint(allocator, "item-{d}", .{thread.transcript.history.items.len});
     defer allocator.free(item_id);
@@ -27367,7 +28049,7 @@ fn handleLoadedThreadShellCommand(
 ) ![]const u8 {
     const command = std.mem.trim(u8, command_raw, " \t\r\n");
     const thread = &state.loaded_threads.items[thread_index];
-    const turn_id = try nextTurnIdForTranscript(allocator, &thread.transcript);
+    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
 
     const started_at_ms = currentUnixMilliseconds();
@@ -27391,6 +28073,7 @@ fn handleLoadedThreadShellCommand(
         &io_instance,
         &argv,
         .{ .path = thread.cwd },
+        null,
         null,
         60 * 60 * 1000,
         COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP,
@@ -27475,6 +28158,13 @@ fn currentUserShell() []const u8 {
     const raw = std.c.getenv("SHELL") orelse return "/bin/zsh";
     const shell = std.mem.span(raw);
     if (shell.len == 0 or !std.fs.path.isAbsolute(shell)) return "/bin/zsh";
+    return shell;
+}
+
+fn currentHookShell() []const u8 {
+    const raw = std.c.getenv("SHELL") orelse return "/bin/sh";
+    const shell = std.mem.span(raw);
+    if (shell.len == 0 or !std.fs.path.isAbsolute(shell)) return "/bin/sh";
     return shell;
 }
 
@@ -27940,6 +28630,17 @@ fn movePendingTurnUpdateNotifications(
         const notification = notifications.orderedRemove(0);
         errdefer allocator.free(notification);
         try state.pending_notifications.append(allocator, notification);
+    }
+}
+
+fn movePendingHookRuntimeNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    notifications: *std.ArrayList(HookRuntimeNotification),
+) !void {
+    while (notifications.items.len > 0) {
+        const notification = notifications.orderedRemove(0);
+        try queuePendingServerNotification(allocator, state, notification.method, notification.payload);
     }
 }
 
@@ -30154,6 +30855,7 @@ fn createLoadedThreadFromStartParams(
         .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
+        .next_turn_index = turnCountForTranscript(&transcript),
         .created_at = now,
         .updated_at = now,
     };
@@ -30289,6 +30991,7 @@ fn createLoadedThreadFromHistoryParams(
         .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
+        .next_turn_index = turnCountForTranscript(&transcript),
         .created_at = now,
         .updated_at = now,
     };
@@ -30437,6 +31140,7 @@ fn createLoadedThreadFromResumeParams(
         .goal = null,
         .transcript = transcript_copy,
         .turns_json = turns_json,
+        .next_turn_index = turnCountForTranscript(&transcript_copy),
         .created_at = now,
         .updated_at = now,
     };
@@ -30634,6 +31338,7 @@ fn createLoadedThreadFromForkParams(
         .goal = null,
         .transcript = transcript,
         .turns_json = turns_json,
+        .next_turn_index = turnCountForTranscript(&transcript),
         .created_at = now,
         .updated_at = now,
     };
@@ -30705,7 +31410,7 @@ fn resumePreview(allocator: std.mem.Allocator, transcript: *const session_mod.Tr
         }
     }
     for (transcript.history.items) |item| {
-        if (item.kind == .message and item.text != null) return allocator.dupe(u8, item.text.?);
+        if (historyItemVisibleInTurns(item) and item.text != null) return allocator.dupe(u8, item.text.?);
     }
     return allocator.dupe(u8, "");
 }
@@ -30714,9 +31419,9 @@ fn transcriptTokenUsageTurnId(allocator: std.mem.Allocator, transcript: *const s
     if (transcript.token_usage == null) return null;
     const turn_index = transcript.token_usage_turn_index orelse return null;
     const rendered_turn_index = if (transcriptHasExternalAgentImportedMarker(transcript))
-        groupedTurnIndexForMessageTurnIndex(transcript, turn_index) orelse turn_index
+        groupedTurnIndexForMessageTurnIndex(transcript, turn_index) orelse return null
     else
-        turn_index;
+        visibleTurnIndexForMessageTurnIndex(transcript, turn_index) orelse return null;
     const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{rendered_turn_index});
     return turn_id;
 }
@@ -30734,7 +31439,7 @@ fn renderTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *const se
     try out.append(allocator, '[');
     var turn_index: usize = 0;
     for (transcript.history.items, 0..) |item, item_index| {
-        if (item.kind != .message) continue;
+        if (!historyItemVisibleInTurns(item)) continue;
         if (turn_index > 0) try out.append(allocator, ',');
         try out.appendSlice(allocator, "{\"id\":\"turn-");
         try appendUsize(allocator, &out, turn_index);
@@ -30756,7 +31461,7 @@ fn renderGroupedTranscriptTurnsJson(allocator: std.mem.Allocator, transcript: *c
     var turn_open = false;
     var turn_item_count: usize = 0;
     for (transcript.history.items, 0..) |item, item_index| {
-        if (item.kind != .message) continue;
+        if (!historyItemVisibleInTurns(item)) continue;
         if (turn_open and turn_item_count > 0 and historyItemIsUserMessage(item)) {
             try out.appendSlice(allocator, "],\"itemsView\":\"full\",\"status\":\"completed\",\"error\":null,\"startedAt\":null,\"completedAt\":null,\"durationMs\":null}");
             turn_open = false;
@@ -30800,17 +31505,46 @@ fn historyItemIsUserMessage(item: api.HistoryItem) bool {
     return false;
 }
 
+fn historyItemIsDeveloperMessage(item: api.HistoryItem) bool {
+    if (item.role) |role| return std.mem.eql(u8, role, "developer");
+    return false;
+}
+
+fn historyItemVisibleInTurns(item: api.HistoryItem) bool {
+    return item.kind == .message and !historyItemIsDeveloperMessage(item);
+}
+
+fn visibleTurnIndexForMessageTurnIndex(transcript: *const session_mod.Transcript, target_message_turn_index: usize) ?usize {
+    var message_turn_index: usize = 0;
+    var visible_turn_index: usize = 0;
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        const visible = historyItemVisibleInTurns(item);
+        if (message_turn_index == target_message_turn_index) {
+            if (!visible) return null;
+            return visible_turn_index;
+        }
+        if (visible) visible_turn_index += 1;
+        message_turn_index += 1;
+    }
+    return null;
+}
+
 fn groupedTurnIndexForMessageTurnIndex(transcript: *const session_mod.Transcript, target_message_turn_index: usize) ?usize {
     var message_turn_index: usize = 0;
     var grouped_turn_index: usize = 0;
     var turn_has_items = false;
     for (transcript.history.items) |item| {
         if (item.kind != .message) continue;
-        if (turn_has_items and historyItemIsUserMessage(item)) {
+        const visible = historyItemVisibleInTurns(item);
+        if (visible and turn_has_items and historyItemIsUserMessage(item)) {
             grouped_turn_index += 1;
         }
-        if (message_turn_index == target_message_turn_index) return grouped_turn_index;
-        turn_has_items = true;
+        if (message_turn_index == target_message_turn_index) {
+            if (!visible) return null;
+            return grouped_turn_index;
+        }
+        if (visible) turn_has_items = true;
         message_turn_index += 1;
     }
     return null;
@@ -31746,7 +32480,9 @@ fn renderThreadReadResponse(allocator: std.mem.Allocator, thread: *const LoadedT
 }
 
 fn loadedThreadHasMaterializedTurns(allocator: std.mem.Allocator, thread: *const LoadedThread) !bool {
-    if (thread.transcript.history.items.len > 0) return true;
+    for (thread.transcript.history.items) |item| {
+        if (historyItemVisibleInTurns(item)) return true;
+    }
     var parsed_turns = try std.json.parseFromSlice(std.json.Value, allocator, thread.turns_json, .{});
     defer parsed_turns.deinit();
     if (parsed_turns.value != .array) return true;
@@ -36630,7 +37366,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
         );
     }
 
-    var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, if (disable_timeout) null else timeout_ms_i64, effective_output_cap) catch |err| switch (err) {
+    var result = runCommandExecProcess(allocator, &io_instance, effective_argv, run_cwd, env_map, null, if (disable_timeout) null else timeout_ms_i64, effective_output_cap) catch |err| switch (err) {
         else => return try renderJsonRpcErrorForFailure(allocator, id_value, "command/exec failed", err),
     };
     defer result.deinit(allocator);
@@ -36756,6 +37492,7 @@ fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_v
         command,
         .{ .path = cwd },
         env_map,
+        null,
         effective_timeout_ms,
         effective_output_cap,
     ) catch |err| switch (err) {
@@ -37484,6 +38221,7 @@ fn runCommandExecProcess(
     argv: []const []const u8,
     cwd: std.process.Child.Cwd,
     environ_map: ?*std.process.Environ.Map,
+    stdin_payload: ?[]const u8,
     timeout_ms: ?i64,
     output_bytes_cap: ?usize,
 ) !CommandExecRunResult {
@@ -37491,12 +38229,20 @@ fn runCommandExecProcess(
         .argv = argv,
         .cwd = cwd,
         .environ_map = environ_map,
-        .stdin = .ignore,
+        .stdin = if (stdin_payload != null) .pipe else .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
     });
     var child_alive = true;
     errdefer if (child_alive) child.kill(io_instance.io());
+
+    var stdin_file: ?std.Io.File = null;
+    var stdin_written: usize = 0;
+    if (stdin_payload != null) {
+        stdin_file = child.stdin;
+        child.stdin = null;
+    }
+    defer if (stdin_file) |file| file.close(io_instance.io());
 
     var stdout = std.ArrayList(u8).empty;
     errdefer stdout.deinit(allocator);
@@ -37513,6 +38259,9 @@ fn runCommandExecProcess(
             return finishCommandExecRunResult(allocator, commandExecExitCode(term), &stdout, &stderr, stdout_observed_len, stderr_observed_len);
         }
 
+        if (stdin_payload) |payload| {
+            _ = try writeCommandExecStdinChunk(io_instance, &stdin_file, payload, &stdin_written, 2);
+        }
         _ = try readCommandExecPipeChunk(io_instance, allocator, child.stdout, &stdout, &stdout_observed_len, output_bytes_cap, 2);
         _ = try readCommandExecPipeChunk(io_instance, allocator, child.stderr, &stderr, &stderr_observed_len, output_bytes_cap, 2);
 
@@ -37524,6 +38273,54 @@ fn runCommandExecProcess(
             }
         }
     }
+}
+
+fn writeCommandExecStdinChunk(
+    io_instance: *std.Io.Threaded,
+    stdin_file: *?std.Io.File,
+    payload: []const u8,
+    written: *usize,
+    timeout_ms: u64,
+) !bool {
+    const file = stdin_file.* orelse return false;
+    if (written.* >= payload.len) {
+        closeCommandExecStdin(io_instance, stdin_file);
+        return false;
+    }
+
+    const remaining = payload[written.*..];
+    const chunk = remaining[0..@min(remaining.len, 16 * 1024)];
+    const result = io_instance.io().operateTimeout(.{ .file_write_streaming = .{
+        .file = file,
+        .data = &.{chunk},
+    } }, .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } }) catch |err| switch (err) {
+        error.Timeout => return false,
+        else => return err,
+    };
+    const count = result.file_write_streaming catch |err| switch (err) {
+        error.WouldBlock => return false,
+        error.BrokenPipe => {
+            closeCommandExecStdin(io_instance, stdin_file);
+            return false;
+        },
+        else => return err,
+    };
+    if (count == 0) return false;
+
+    written.* += count;
+    if (written.* >= payload.len) {
+        closeCommandExecStdin(io_instance, stdin_file);
+    }
+    return true;
+}
+
+fn closeCommandExecStdin(io_instance: *std.Io.Threaded, stdin_file: *?std.Io.File) void {
+    const file = stdin_file.* orelse return;
+    file.close(io_instance.io());
+    stdin_file.* = null;
 }
 
 fn finishCommandExecRunResult(
@@ -50385,6 +51182,47 @@ test "external agent import runtime refresh matches Rust item set" {
     try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "AGENTS_MD", .cwd = null }}));
     try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "SUBAGENTS", .cwd = null }}));
     try std.testing.expect(!externalAgentImportNeedsRuntimeRefresh(&.{.{ .item_type = "SESSIONS", .cwd = null }}));
+}
+
+test "app-server token usage turn id skips hidden developer context" {
+    const allocator = std.testing.allocator;
+    var transcript = session_mod.Transcript{};
+    defer transcript.deinit(allocator);
+
+    try transcript.appendUserMessage(allocator, "visible prompt");
+    try transcript.appendDeveloperMessage(allocator, "hidden hook context");
+    try transcript.appendAssistantMessage(allocator, "visible answer");
+    transcript.token_usage = .{
+        .total = .{ .total_tokens = 3 },
+        .last = .{ .total_tokens = 3 },
+    };
+    transcript.token_usage_turn_index = 2;
+
+    const turn_id = (try transcriptTokenUsageTurnId(allocator, &transcript)).?;
+    defer allocator.free(turn_id);
+    try std.testing.expectEqualStrings("turn-1", turn_id);
+}
+
+test "app-server token usage turn id maps imported prompt starts to new grouped turns" {
+    const allocator = std.testing.allocator;
+    var transcript = session_mod.Transcript{};
+    defer transcript.deinit(allocator);
+
+    try transcript.appendUserMessage(allocator, session_store.external_agent_session_imported_marker);
+    try transcript.appendUserMessage(allocator, "external prompt one");
+    try transcript.appendAssistantMessage(allocator, "external answer one");
+    try transcript.appendDeveloperMessage(allocator, "hidden hook context");
+    try transcript.appendUserMessage(allocator, "external prompt two");
+    try transcript.appendAssistantMessage(allocator, "external answer two");
+    transcript.token_usage = .{
+        .total = .{ .total_tokens = 7 },
+        .last = .{ .total_tokens = 4 },
+    };
+    transcript.token_usage_turn_index = 4;
+
+    const turn_id = (try transcriptTokenUsageTurnId(allocator, &transcript)).?;
+    defer allocator.free(turn_id);
+    try std.testing.expectEqualStrings("turn-2", turn_id);
 }
 
 test "app-server fuzzy file search sessions emit update and complete notifications" {
