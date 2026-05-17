@@ -605,6 +605,8 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
 
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
     defer allocator.free(cwd);
+    const remote_additional_writable_roots = try resolveRemoteAdditionalWritableRoots(allocator, io, cwd, options.additional_writable_roots);
+    defer freeRemoteAdditionalWritableRoots(allocator, remote_additional_writable_roots);
 
     const alt_screen_mode = options.runtime_overrides.tui_alternate_screen orelse .auto;
     const use_alt_screen = shouldUseAlternateScreen(options.no_alt_screen, alt_screen_mode);
@@ -619,7 +621,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var initialize_response = try readRemoteResponse(&transport, "initialize");
     initialize_response.deinit();
 
-    var remote_state = RemoteTuiState.init(options.runtime_overrides);
+    var remote_state = RemoteTuiState.init(options.runtime_overrides, remote_additional_writable_roots);
     defer remote_state.deinit(allocator);
 
     var thread_id = (try openRemoteThread(allocator, &transport, cwd, options, &remote_state)) orelse return;
@@ -629,7 +631,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, remote_state.overrides, remote_state.service_tier_cleared) catch |err| {
+            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, remote_state.overrides, remote_state.service_tier_cleared, remote_state.additional_writable_roots, remote_state.effective_sandbox_mode, remote_state.effectiveWorkspaceSandbox()) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             pending_input_image_paths = &.{};
@@ -655,7 +657,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         }
         const input_image_paths = pending_input_image_paths;
         pending_input_image_paths = &.{};
-        runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, remote_state.overrides, remote_state.service_tier_cleared) catch |err| {
+        runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, remote_state.overrides, remote_state.service_tier_cleared, remote_state.additional_writable_roots, remote_state.effective_sandbox_mode, remote_state.effectiveWorkspaceSandbox()) catch |err| {
             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -671,19 +673,24 @@ const RemoteSlashAction = enum {
 
 const RemoteTuiState = struct {
     overrides: config.RuntimeOverrides,
+    additional_writable_roots: []const []const u8 = &.{},
+    effective_sandbox_mode: ?config.SandboxMode = null,
+    effective_workspace_sandbox: ?RemoteEffectiveWorkspaceSandbox = null,
     owned_model: ?[]const u8 = null,
     effective_service_tier: ?[]const u8 = null,
     owned_effective_service_tier: ?[]const u8 = null,
     service_tier_cleared: bool = false,
 
-    fn init(overrides: config.RuntimeOverrides) RemoteTuiState {
+    fn init(overrides: config.RuntimeOverrides, additional_writable_roots: []const []const u8) RemoteTuiState {
         return .{
             .overrides = overrides,
+            .additional_writable_roots = additional_writable_roots,
             .effective_service_tier = overrides.service_tier,
         };
     }
 
     fn deinit(self: *RemoteTuiState, allocator: std.mem.Allocator) void {
+        if (self.effective_workspace_sandbox) |*sandbox| sandbox.deinit(allocator);
         if (self.owned_model) |model| allocator.free(model);
         if (self.owned_effective_service_tier) |service_tier| allocator.free(service_tier);
     }
@@ -710,12 +717,34 @@ const RemoteTuiState = struct {
         if (value != .object) return error.InvalidRemoteAppServerResponse;
         const result = value.object.get("result") orelse return error.InvalidRemoteAppServerResponse;
         if (result != .object) return error.InvalidRemoteAppServerResponse;
-        const service_tier = result.object.get("serviceTier") orelse return;
-        switch (service_tier) {
-            .null => try self.setEffectiveServiceTier(allocator, null),
-            .string => |label| try self.setEffectiveServiceTier(allocator, label),
-            else => return error.InvalidRemoteAppServerResponse,
+        if (result.object.get("serviceTier")) |service_tier| {
+            switch (service_tier) {
+                .null => try self.setEffectiveServiceTier(allocator, null),
+                .string => |label| try self.setEffectiveServiceTier(allocator, label),
+                else => return error.InvalidRemoteAppServerResponse,
+            }
         }
+        if (result.object.get("sandbox")) |sandbox| {
+            try self.setEffectiveSandbox(allocator, sandbox);
+        }
+    }
+
+    fn setEffectiveSandbox(self: *RemoteTuiState, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        var parsed = try parseRemoteSandboxState(allocator, value);
+        errdefer parsed.deinit(allocator);
+
+        if (self.effective_workspace_sandbox) |*sandbox| sandbox.deinit(allocator);
+        self.effective_workspace_sandbox = null;
+        self.effective_sandbox_mode = parsed.mode;
+        if (parsed.workspace_sandbox) |workspace_sandbox| {
+            self.effective_workspace_sandbox = workspace_sandbox;
+            parsed.workspace_sandbox = null;
+        }
+    }
+
+    fn effectiveWorkspaceSandbox(self: *const RemoteTuiState) ?*const RemoteEffectiveWorkspaceSandbox {
+        if (self.effective_workspace_sandbox) |*sandbox| return sandbox;
+        return null;
     }
 
     fn setFastMode(self: *RemoteTuiState, allocator: std.mem.Allocator, enabled: bool) void {
@@ -724,6 +753,30 @@ const RemoteTuiState = struct {
         self.overrides.service_tier = if (enabled) "priority" else null;
         self.effective_service_tier = self.overrides.service_tier;
         self.service_tier_cleared = !enabled;
+    }
+};
+
+const RemoteEffectiveWorkspaceSandbox = struct {
+    writable_roots: config.StringList,
+    network_enabled: bool = false,
+    exclude_tmpdir_env_var: bool = false,
+    exclude_slash_tmp: bool = false,
+
+    fn deinit(self: *RemoteEffectiveWorkspaceSandbox, allocator: std.mem.Allocator) void {
+        self.writable_roots.deinit(allocator);
+    }
+
+    fn canExtendWithWritableRoots(self: RemoteEffectiveWorkspaceSandbox) bool {
+        return !self.network_enabled and !self.exclude_tmpdir_env_var and !self.exclude_slash_tmp;
+    }
+};
+
+const RemoteParsedSandboxState = struct {
+    mode: config.SandboxMode,
+    workspace_sandbox: ?RemoteEffectiveWorkspaceSandbox = null,
+
+    fn deinit(self: *RemoteParsedSandboxState, allocator: std.mem.Allocator) void {
+        if (self.workspace_sandbox) |*sandbox| sandbox.deinit(allocator);
     }
 };
 
@@ -907,6 +960,62 @@ fn remoteFastMode(service_tier: ?[]const u8) bool {
 
 fn printRemoteFastMode(state: *const RemoteTuiState) void {
     std.debug.print("Fast mode is {s}.\n", .{if (remoteFastMode(state.effective_service_tier)) "on" else "off"});
+}
+
+fn parseRemoteSandboxState(allocator: std.mem.Allocator, value: std.json.Value) !RemoteParsedSandboxState {
+    if (value == .string) {
+        return .{
+            .mode = config.SandboxMode.parse(value.string) catch return error.InvalidRemoteAppServerResponse,
+        };
+    }
+    if (value != .object) return error.InvalidRemoteAppServerResponse;
+    const type_value = value.object.get("type") orelse return error.InvalidRemoteAppServerResponse;
+    if (type_value != .string) return error.InvalidRemoteAppServerResponse;
+    if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
+        return .{
+            .mode = .workspace_write,
+            .workspace_sandbox = try parseRemoteWorkspaceSandbox(allocator, value.object),
+        };
+    }
+    if (std.mem.eql(u8, type_value.string, "readOnly")) return .{ .mode = .read_only };
+    if (std.mem.eql(u8, type_value.string, "dangerFullAccess")) return .{ .mode = .danger_full_access };
+    if (std.mem.eql(u8, type_value.string, "externalSandbox")) return .{ .mode = .danger_full_access };
+    return error.InvalidRemoteAppServerResponse;
+}
+
+fn parseRemoteWorkspaceSandbox(allocator: std.mem.Allocator, object: std.json.ObjectMap) !RemoteEffectiveWorkspaceSandbox {
+    return .{
+        .writable_roots = try parseRemoteWorkspaceWritableRoots(allocator, object),
+        .network_enabled = try parseRemoteWorkspaceSandboxBool(object, "networkAccess"),
+        .exclude_tmpdir_env_var = try parseRemoteWorkspaceSandboxBool(object, "excludeTmpdirEnvVar"),
+        .exclude_slash_tmp = try parseRemoteWorkspaceSandboxBool(object, "excludeSlashTmp"),
+    };
+}
+
+fn parseRemoteWorkspaceWritableRoots(allocator: std.mem.Allocator, object: std.json.ObjectMap) !config.StringList {
+    const value = object.get("writableRoots") orelse return .{ .items = try allocator.alloc([]const u8, 0) };
+    if (value == .null) return .{ .items = try allocator.alloc([]const u8, 0) };
+    if (value != .array) return error.InvalidRemoteAppServerResponse;
+
+    const items = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(items);
+    var copied: usize = 0;
+    errdefer {
+        for (items[0..copied]) |item| allocator.free(item);
+    }
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string or !std.fs.path.isAbsolute(item.string)) return error.InvalidRemoteAppServerResponse;
+        items[index] = try allocator.dupe(u8, item.string);
+        copied += 1;
+    }
+    return .{ .items = items };
+}
+
+fn parseRemoteWorkspaceSandboxBool(object: std.json.ObjectMap, field: []const u8) !bool {
+    const value = object.get(field) orelse return false;
+    if (value == .null) return false;
+    if (value != .bool) return error.InvalidRemoteAppServerResponse;
+    return value.bool;
 }
 
 fn handleRemotePersonality(overrides: *config.RuntimeOverrides, args: []const u8) void {
@@ -1099,7 +1208,7 @@ fn compactRemoteThread(
     thread_id: []const u8,
     state: *const RemoteTuiState,
 ) !void {
-    const request = try renderRemoteThreadRuntimeRequest(allocator, "thread-compact", "thread/compact/start", thread_id, state.overrides, state.service_tier_cleared);
+    const request = try renderRemoteThreadRuntimeRequest(allocator, "thread-compact", "thread/compact/start", thread_id, state.overrides, state.service_tier_cleared, state.additional_writable_roots, state.effective_sandbox_mode, state.effectiveWorkspaceSandbox());
     defer allocator.free(request);
     try transport.writeJson(request);
     var response = try readRemoteResponse(transport, "thread-compact");
@@ -1206,7 +1315,6 @@ fn validateRemoteTuiSupportedOptions(options: Options) !void {
     if (options.profile != null) return rejectUnsupportedRemoteTuiOption("--profile");
     if (options.oss) return rejectUnsupportedRemoteTuiOption("--oss");
     if (options.oss_provider != null) return rejectUnsupportedRemoteTuiOption("--local-provider");
-    if (options.additional_writable_roots.len > 0) return rejectUnsupportedRemoteTuiOption("--add-dir");
 
     const overrides = options.runtime_overrides;
     if (overrides.openai_base_url != null) return rejectUnsupportedRemoteTuiOption("-c openai_base_url");
@@ -1240,6 +1348,9 @@ fn renderRemoteThreadRuntimeRequest(
     thread_id: []const u8,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    additional_writable_roots: []const []const u8,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1251,7 +1362,7 @@ fn renderRemoteThreadRuntimeRequest(
     try out.appendSlice(allocator, ",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared, additional_writable_roots, effective_sandbox_mode, effective_workspace_sandbox);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -1268,7 +1379,7 @@ fn renderRemoteThreadStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared, &.{}, null, null);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -1297,7 +1408,7 @@ fn renderRemoteThreadLifecycleRequest(
     if (target_path) |path| try appendJsonStringField(allocator, &out, &first, "path", path);
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
     try appendJsonBoolField(allocator, &out, &first, "excludeTurns", true);
-    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared);
+    try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared, &.{}, null, null);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -1308,10 +1419,17 @@ fn appendRemoteThreadRuntimeOverrides(
     first: *bool,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    additional_writable_roots: []const []const u8,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
 ) !void {
     if (overrides.model) |model| try appendJsonStringField(allocator, out, first, "model", model);
     if (overrides.approval_policy) |policy| try appendJsonStringField(allocator, out, first, "approvalPolicy", policy.label());
-    if (overrides.sandbox_mode) |sandbox| try appendJsonStringField(allocator, out, first, "sandbox", sandbox.label());
+    if (shouldSendRemoteSandboxPolicy(additional_writable_roots, overrides, effective_sandbox_mode, effective_workspace_sandbox)) {
+        try appendRemoteSandboxPolicyField(allocator, out, first, additional_writable_roots, effective_workspace_sandbox);
+    } else if (overrides.sandbox_mode) |sandbox| {
+        try appendJsonStringField(allocator, out, first, "sandbox", sandbox.label());
+    }
     if (overrides.service_tier) |service_tier| {
         try appendJsonStringField(allocator, out, first, "serviceTier", service_tier);
     } else if (service_tier_cleared) {
@@ -1341,8 +1459,11 @@ fn runRemotePrompt(
     input_image_paths: []const []const u8,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    additional_writable_roots: []const []const u8,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
 ) !void {
-    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths, overrides, service_tier_cleared);
+    const request = try renderRemoteTurnStartRequest(allocator, thread_id, prompt, input_image_paths, overrides, service_tier_cleared, additional_writable_roots, effective_sandbox_mode, effective_workspace_sandbox);
     defer allocator.free(request);
 
     std.debug.print("\nassistant:\n", .{});
@@ -1364,6 +1485,9 @@ fn renderRemoteTurnStartRequest(
     input_image_paths: []const []const u8,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    additional_writable_roots: []const []const u8,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1379,7 +1503,7 @@ fn renderRemoteTurnStartRequest(
         try out.appendSlice(allocator, "}");
     }
     try out.append(allocator, ']');
-    try appendRemoteTurnRuntimeOverrides(allocator, &out, overrides, service_tier_cleared);
+    try appendRemoteTurnRuntimeOverrides(allocator, &out, overrides, service_tier_cleared, additional_writable_roots, effective_sandbox_mode, effective_workspace_sandbox);
     try out.append(allocator, '}');
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
@@ -1390,10 +1514,17 @@ fn appendRemoteTurnRuntimeOverrides(
     out: *std.ArrayList(u8),
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    additional_writable_roots: []const []const u8,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
 ) !void {
     if (overrides.model) |model| try appendJsonStringFieldAfterExisting(allocator, out, "model", model);
     if (overrides.approval_policy) |policy| try appendJsonStringFieldAfterExisting(allocator, out, "approvalPolicy", policy.label());
-    if (overrides.sandbox_mode) |sandbox| try appendJsonStringFieldAfterExisting(allocator, out, "sandbox", sandbox.label());
+    if (shouldSendRemoteSandboxPolicy(additional_writable_roots, overrides, effective_sandbox_mode, effective_workspace_sandbox)) {
+        try appendRemoteSandboxPolicyFieldAfterExisting(allocator, out, additional_writable_roots, effective_workspace_sandbox);
+    } else if (overrides.sandbox_mode) |sandbox| {
+        try appendJsonStringFieldAfterExisting(allocator, out, "sandbox", sandbox.label());
+    }
     if (overrides.service_tier) |service_tier| {
         try appendJsonStringFieldAfterExisting(allocator, out, "serviceTier", service_tier);
     } else if (service_tier_cleared) {
@@ -1403,6 +1534,103 @@ fn appendRemoteTurnRuntimeOverrides(
         try appendJsonStringFieldAfterExisting(allocator, out, "summary", summary.label());
     }
     if (overrides.personality) |personality| try appendJsonStringFieldAfterExisting(allocator, out, "personality", personality.label());
+}
+
+fn shouldSendRemoteSandboxPolicy(
+    additional_writable_roots: []const []const u8,
+    overrides: config.RuntimeOverrides,
+    effective_sandbox_mode: ?config.SandboxMode,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
+) bool {
+    if (additional_writable_roots.len == 0) return false;
+    if (overrides.sandbox_mode) |sandbox| return sandbox == .workspace_write;
+    if (effective_sandbox_mode == null or effective_sandbox_mode.? != .workspace_write) return false;
+    return remoteWorkspaceSandboxCanExtend(effective_workspace_sandbox);
+}
+
+fn remoteWorkspaceSandboxCanExtend(effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox) bool {
+    if (effective_workspace_sandbox) |sandbox| return sandbox.canExtendWithWritableRoots();
+    return true;
+}
+
+fn resolveRemoteAdditionalWritableRoots(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cwd: []const u8,
+    roots: []const []const u8,
+) ![]const []const u8 {
+    var resolved = try allocator.alloc([]const u8, roots.len);
+    errdefer allocator.free(resolved);
+
+    var count: usize = 0;
+    errdefer {
+        for (resolved[0..count]) |root| allocator.free(root);
+    }
+
+    for (roots) |root| {
+        var owned_candidate: ?[]const u8 = null;
+        defer if (owned_candidate) |candidate| allocator.free(candidate);
+
+        const candidate = if (std.fs.path.isAbsolute(root))
+            root
+        else blk: {
+            const joined = try std.fs.path.join(allocator, &.{ cwd, root });
+            owned_candidate = joined;
+            break :blk joined;
+        };
+        const real_path = try std.Io.Dir.cwd().realPathFileAlloc(io, candidate, allocator);
+        defer allocator.free(real_path);
+        resolved[count] = try allocator.dupe(u8, real_path);
+        count += 1;
+    }
+
+    return resolved;
+}
+
+fn freeRemoteAdditionalWritableRoots(allocator: std.mem.Allocator, roots: []const []const u8) void {
+    for (roots) |root| allocator.free(root);
+    allocator.free(roots);
+}
+
+fn appendRemoteSandboxPolicyFieldAfterExisting(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    additional_writable_roots: []const []const u8,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
+) !void {
+    var first = false;
+    try appendRemoteSandboxPolicyField(allocator, out, &first, additional_writable_roots, effective_workspace_sandbox);
+}
+
+fn appendRemoteSandboxPolicyField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    additional_writable_roots: []const []const u8,
+    effective_workspace_sandbox: ?*const RemoteEffectiveWorkspaceSandbox,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.appendSlice(allocator, "\"sandboxPolicy\":{\"type\":\"workspaceWrite\",\"writableRoots\":[");
+    var root_index: usize = 0;
+    if (effective_workspace_sandbox) |sandbox| {
+        if (sandbox.canExtendWithWritableRoots()) {
+            for (sandbox.writable_roots.items) |root| {
+                if (root_index > 0) try out.append(allocator, ',');
+                try appendJsonString(allocator, out, root);
+                root_index += 1;
+            }
+        }
+    }
+    for (additional_writable_roots) |root| {
+        if (root_index > 0) try out.append(allocator, ',');
+        try appendJsonString(allocator, out, root);
+        root_index += 1;
+    }
+    try out.appendSlice(allocator, "],\"networkAccess\":false,\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
 }
 
 fn writeRemoteLine(writer: *std.Io.Writer, payload: []const u8) !void {
@@ -3789,6 +4017,26 @@ test "remote TUI rejects unsupported local-only options" {
     }));
 }
 
+test "remote TUI resolves relative writable roots against cwd" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDir(io, "extra", .default_dir);
+
+    const cwd = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+    const expected = try dir.dir.realPathFileAlloc(io, "extra", allocator);
+    defer allocator.free(expected);
+
+    const roots = [_][]const u8{"extra"};
+    const resolved = try resolveRemoteAdditionalWritableRoots(allocator, io, cwd, &roots);
+    defer freeRemoteAdditionalWritableRoots(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 1), resolved.len);
+    try std.testing.expectEqualStrings(expected, resolved[0]);
+}
+
 test "remote TUI serializes supported runtime overrides" {
     const allocator = std.testing.allocator;
     const thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{
@@ -3821,7 +4069,7 @@ test "remote TUI serializes supported runtime overrides" {
         .model = "gpt-compact",
         .service_tier = "priority",
         .personality = .friendly,
-    }, false);
+    }, false, &.{}, null, null);
     defer allocator.free(thread_compact);
 
     var parsed_compact = try std.json.parseFromSlice(std.json.Value, allocator, thread_compact, .{});
@@ -3870,6 +4118,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expect(fork_params.get("excludeTurns").?.bool);
 
     const images = [_][]const u8{"/tmp/image.png"};
+    const extra_roots = [_][]const u8{"/tmp/extra-writable"};
     const turn_start = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &images, .{
         .model = "gpt-turn",
         .approval_policy = .on_request,
@@ -3877,7 +4126,7 @@ test "remote TUI serializes supported runtime overrides" {
         .service_tier = "priority",
         .model_reasoning_summary = .concise,
         .personality = .pragmatic,
-    }, false);
+    }, false, &extra_roots, null, null);
     defer allocator.free(turn_start);
 
     var parsed_turn = try std.json.parseFromSlice(std.json.Value, allocator, turn_start, .{});
@@ -3885,7 +4134,13 @@ test "remote TUI serializes supported runtime overrides" {
     const turn_params = parsed_turn.value.object.get("params").?.object;
     try std.testing.expectEqualStrings("gpt-turn", turn_params.get("model").?.string);
     try std.testing.expectEqualStrings("on-request", turn_params.get("approvalPolicy").?.string);
-    try std.testing.expectEqualStrings("workspace-write", turn_params.get("sandbox").?.string);
+    const sandbox_policy = turn_params.get("sandboxPolicy").?.object;
+    try std.testing.expectEqualStrings("workspaceWrite", sandbox_policy.get("type").?.string);
+    try std.testing.expectEqualStrings("/tmp/extra-writable", sandbox_policy.get("writableRoots").?.array.items[0].string);
+    try std.testing.expect(!sandbox_policy.get("networkAccess").?.bool);
+    try std.testing.expect(!sandbox_policy.get("excludeTmpdirEnvVar").?.bool);
+    try std.testing.expect(!sandbox_policy.get("excludeSlashTmp").?.bool);
+    try std.testing.expect(turn_params.get("sandbox") == null);
     try std.testing.expectEqualStrings("priority", turn_params.get("serviceTier").?.string);
     try std.testing.expectEqualStrings("concise", turn_params.get("summary").?.string);
     try std.testing.expectEqualStrings("pragmatic", turn_params.get("personality").?.string);
@@ -3893,7 +4148,69 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqual(@as(usize, 2), input_items.len);
     try std.testing.expectEqualStrings("/tmp/image.png", input_items[1].object.get("path").?.string);
 
-    const turn_clear_service_tier = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, true);
+    const effective_workspace_turn = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, false, &extra_roots, .workspace_write, null);
+    defer allocator.free(effective_workspace_turn);
+
+    var parsed_effective_workspace = try std.json.parseFromSlice(std.json.Value, allocator, effective_workspace_turn, .{});
+    defer parsed_effective_workspace.deinit();
+    const effective_workspace_params = parsed_effective_workspace.value.object.get("params").?.object;
+    try std.testing.expect(effective_workspace_params.get("sandboxPolicy") != null);
+    try std.testing.expect(effective_workspace_params.get("sandbox") == null);
+
+    const existing_root_items = try allocator.alloc([]const u8, 1);
+    existing_root_items[0] = try allocator.dupe(u8, "/tmp/existing-writable");
+    var existing_workspace_sandbox = RemoteEffectiveWorkspaceSandbox{
+        .writable_roots = .{ .items = existing_root_items },
+    };
+    defer existing_workspace_sandbox.deinit(allocator);
+    const merged_workspace_turn = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, false, &extra_roots, .workspace_write, &existing_workspace_sandbox);
+    defer allocator.free(merged_workspace_turn);
+
+    var parsed_merged_workspace = try std.json.parseFromSlice(std.json.Value, allocator, merged_workspace_turn, .{});
+    defer parsed_merged_workspace.deinit();
+    const merged_workspace_params = parsed_merged_workspace.value.object.get("params").?.object;
+    const merged_roots = merged_workspace_params.get("sandboxPolicy").?.object.get("writableRoots").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), merged_roots.len);
+    try std.testing.expectEqualStrings("/tmp/existing-writable", merged_roots[0].string);
+    try std.testing.expectEqualStrings("/tmp/extra-writable", merged_roots[1].string);
+
+    const network_root_items = try allocator.alloc([]const u8, 1);
+    network_root_items[0] = try allocator.dupe(u8, "/tmp/network-writable");
+    var network_workspace_sandbox = RemoteEffectiveWorkspaceSandbox{
+        .writable_roots = .{ .items = network_root_items },
+        .network_enabled = true,
+    };
+    defer network_workspace_sandbox.deinit(allocator);
+    const unsupported_workspace_turn = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, false, &extra_roots, .workspace_write, &network_workspace_sandbox);
+    defer allocator.free(unsupported_workspace_turn);
+
+    var parsed_unsupported_workspace = try std.json.parseFromSlice(std.json.Value, allocator, unsupported_workspace_turn, .{});
+    defer parsed_unsupported_workspace.deinit();
+    const unsupported_workspace_params = parsed_unsupported_workspace.value.object.get("params").?.object;
+    try std.testing.expect(unsupported_workspace_params.get("sandboxPolicy") == null);
+    try std.testing.expect(unsupported_workspace_params.get("sandbox") == null);
+
+    const effective_read_only_turn = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, false, &extra_roots, .read_only, null);
+    defer allocator.free(effective_read_only_turn);
+
+    var parsed_effective_read_only = try std.json.parseFromSlice(std.json.Value, allocator, effective_read_only_turn, .{});
+    defer parsed_effective_read_only.deinit();
+    const effective_read_only_params = parsed_effective_read_only.value.object.get("params").?.object;
+    try std.testing.expect(effective_read_only_params.get("sandboxPolicy") == null);
+    try std.testing.expect(effective_read_only_params.get("sandbox") == null);
+
+    const explicit_read_only_turn = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{
+        .sandbox_mode = .read_only,
+    }, false, &extra_roots, .workspace_write, null);
+    defer allocator.free(explicit_read_only_turn);
+
+    var parsed_explicit_read_only = try std.json.parseFromSlice(std.json.Value, allocator, explicit_read_only_turn, .{});
+    defer parsed_explicit_read_only.deinit();
+    const explicit_read_only_params = parsed_explicit_read_only.value.object.get("params").?.object;
+    try std.testing.expect(explicit_read_only_params.get("sandboxPolicy") == null);
+    try std.testing.expectEqualStrings("read-only", explicit_read_only_params.get("sandbox").?.string);
+
+    const turn_clear_service_tier = try renderRemoteTurnStartRequest(allocator, "thread-1", "hello", &.{}, .{}, true, &.{}, null, null);
     defer allocator.free(turn_clear_service_tier);
 
     var parsed_turn_clear = try std.json.parseFromSlice(std.json.Value, allocator, turn_clear_service_tier, .{});

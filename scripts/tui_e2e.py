@@ -2561,7 +2561,16 @@ class WssRemoteTuiServer:
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {"thread": {"id": "thread-wss-smoke"}},
+                    "result": {
+                        "thread": {"id": "thread-wss-smoke"},
+                        "sandbox": {
+                            "type": "workspaceWrite",
+                            "writableRoots": [],
+                            "networkAccess": False,
+                            "excludeTmpdirEnvVar": False,
+                            "excludeSlashTmp": False,
+                        },
+                    },
                 },
             )
             return
@@ -2788,6 +2797,8 @@ def run_remote_wss_tui_smoke(
 ) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-remote-wss-tui-", dir="/tmp"))
     cert_path, key_path = generate_localhost_self_signed_cert(temp_root)
+    extra_root = workspace / "remote-wss-extra-writable"
+    extra_root.mkdir()
     wss_server = WssRemoteTuiServer(cert_path, key_path)
     client = None
     master_fd = -1
@@ -2805,6 +2816,8 @@ def run_remote_wss_tui_smoke(
                 "--remote-auth-token-env",
                 "CODEX_REMOTE_AUTH_TOKEN",
                 "--no-alt-screen",
+                "--add-dir",
+                extra_root.name,
                 "side question from remote wss",
             ],
             cwd=workspace,
@@ -2827,8 +2840,22 @@ def run_remote_wss_tui_smoke(
         os.close(master_fd)
         master_fd = -1
 
-        if not any(request.get("method") == "turn/start" for request in wss_server.requests):
+        turn_requests = [
+            request for request in wss_server.requests if request.get("method") == "turn/start"
+        ]
+        if not turn_requests:
             raise AssertionError(f"remote wss TUI did not send turn/start: {wss_server.requests!r}")
+        sandbox_policy = turn_requests[-1]["params"].get("sandboxPolicy")
+        if sandbox_policy != {
+            "type": "workspaceWrite",
+            "writableRoots": [str(extra_root.resolve())],
+            "networkAccess": False,
+            "excludeTmpdirEnvVar": False,
+            "excludeSlashTmp": False,
+        }:
+            raise AssertionError(
+                f"remote wss TUI did not forward --add-dir roots: {sandbox_policy!r}"
+            )
     finally:
         if client is not None and client.poll() is None:
             client.terminate()
