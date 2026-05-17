@@ -142,6 +142,21 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         self.server.get_headers.append(dict(self.headers.items()))
         parsed = urlparse(self.path)
 
+        if parsed.path in {"/wham/environments", "/api/codex/environments"}:
+            payload = json.dumps(
+                [
+                    {"id": "env-id", "label": "E2E Environment"},
+                    {"id": "env-other", "label": "Other Environment"},
+                ],
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if parsed.path in {"/wham/tasks/list", "/api/codex/tasks/list"}:
             query = parse_qs(parsed.query)
             if query.get("task_filter") != ["current"]:
@@ -1250,6 +1265,7 @@ def run_unimplemented_command_smoke(
         )
 
     cloud_base_arg = f"chatgpt_base_url=http://127.0.0.1:{port}"
+    cloud_get_start = len(server.get_paths)
     cloud_post_start = len(server.post_paths)
     cloud_body_start = len(server.request_bodies)
     cloud_exec = subprocess.run(
@@ -1275,6 +1291,8 @@ def run_unimplemented_command_smoke(
     )
     if cloud_exec.stdout.strip() != f"http://127.0.0.1:{port}/codex/tasks/task-created-1":
         raise AssertionError(f"expected cloud exec task URL:\n{cloud_exec.stdout}")
+    if "/api/codex/environments" not in server.get_paths[cloud_get_start:]:
+        raise AssertionError(f"expected cloud environment lookup, saw {server.get_paths!r}")
     if server.post_paths[cloud_post_start:] != ["/api/codex/tasks"]:
         raise AssertionError(f"expected cloud task create path, saw {server.post_paths!r}")
     created_body = server.request_bodies[cloud_body_start]
@@ -1303,7 +1321,7 @@ def run_unimplemented_command_smoke(
             "cloud",
             "exec",
             "--env",
-            "env-id",
+            "e2e environment",
             "--attempts",
             "+1",
             "write tests",
@@ -1318,6 +1336,9 @@ def run_unimplemented_command_smoke(
         raise AssertionError(
             f"expected cloud exec plus-prefixed attempt to create task:\n{cloud_plus_attempt.stdout}\n{cloud_plus_attempt.stderr}"
         )
+    plus_body = server.request_bodies[-1]
+    if plus_body["new_task"]["environment_id"] != "env-id":
+        raise AssertionError(f"expected cloud exec label to resolve to env id: {plus_body!r}")
 
     cloud_stdin_query = subprocess.run(
         [str(binary), "-c", cloud_base_arg, "cloud", "exec", "--env", "env-id", "-"],
