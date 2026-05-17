@@ -4190,9 +4190,9 @@ def run_cloud_apply_command_smoke(
         input=(
             "env e2e environment\n"
             "new --attempts 2 --branch picker-branch write picker composer\n"
-            "status 1\n"
-            "diff --attempt 2 1\n"
-            "apply --attempt 2 task-apply\n"
+            "s 1\n"
+            "d --attempt 2 1\n"
+            "a --attempt 2 task-apply\n"
             "quit\n"
         ),
         text=True,

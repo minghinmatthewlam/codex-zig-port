@@ -620,11 +620,12 @@ argument/stdin prompts, branch overrides or current-branch
 fallback, best-of-N metadata, and `CODEX_STARTING_DIFF` pre-apply items.
 Top-level `codex-zig cloud` now opens a
 line-oriented picker that lists tasks, refreshes or pages results, switches
-environment filters by id or label, shows status, displays selected attempt
-diffs, creates new tasks in the selected environment with branch and best-of-N
-options, and applies selected attempt diffs by list index or task id. The richer
-full-screen Rust picker UI, multi-step new-task composer, and full apply
-parity diagnostics remain planned.
+environment filters by id or label, shows status with `status` / `s`, displays
+selected attempt diffs with `diff` / `d`, creates new tasks in the selected
+environment with branch and best-of-N options, and applies selected attempt
+diffs by list index or task id with `apply` / `a`. The richer full-screen Rust
+picker UI, multi-step new-task composer, and full apply parity diagnostics
+remain planned.
 
 Additional app-server websocket transport coverage: `app-server --listen
 ws://127.0.0.1:0` now binds a plain websocket listener, reports the actual
