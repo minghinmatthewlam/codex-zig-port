@@ -518,6 +518,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     + "\nlong remote answer tail\n",
                 },
             )
+        elif "Review according to these instructions:" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "review complete\n",
+                },
+            )
         elif "Summarize this conversation" in latest_prompt:
             payload = sse(
                 {
@@ -4277,6 +4284,9 @@ def run_e2e(binary: Path) -> str:
             config_path.write_text(
                 "\n".join(
                     [
+                        'model = "gpt-tui-session"',
+                        'review_model = "gpt-tui-review"',
+                        "",
                         "[mcp_servers.docs]",
                         'command = "docs-server"',
                         'args = ["--stdio"]',
@@ -4683,6 +4693,11 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"background terminals: none", 5, mark)
 
             mark = len(output)
+            send_line(master_fd, "/review focus review_model path")
+            wait_for(master_fd, output, b"review complete", 8, mark)
+            read_available(master_fd, output, 0.2)
+
+            mark = len(output)
             send_line(master_fd, "/plan on")
             wait_for(master_fd, output, b"plan mode: on", 5, mark)
 
@@ -4780,6 +4795,17 @@ def run_e2e(binary: Path) -> str:
         ]
         if not any(body.get("tools") == [] for body in plan_bodies):
             raise AssertionError("expected plan-mode request to omit tools")
+        review_bodies = [
+            body
+            for body in server.request_bodies
+            if "focus review_model path" in latest_user_text(body.get("input", []))
+        ]
+        if not review_bodies:
+            raise AssertionError("expected TUI /review to send a review request")
+        if review_bodies[-1].get("model") != "gpt-tui-review":
+            raise AssertionError(
+                f"expected TUI /review to use review_model, saw {review_bodies[-1].get('model')!r}"
+            )
         instructions = [
             body.get("instructions", "")
             for body in server.request_bodies

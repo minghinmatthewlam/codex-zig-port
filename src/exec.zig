@@ -527,6 +527,7 @@ fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config
 
 fn mergeRuntimeOverrides(target: *config.RuntimeOverrides, source: config.RuntimeOverrides) void {
     if (source.model) |value| target.model = value;
+    if (source.review_model) |value| target.review_model = value;
     if (source.openai_base_url) |value| target.openai_base_url = value;
     if (source.chatgpt_base_url) |value| target.chatgpt_base_url = value;
     if (source.oss_provider) |value| target.oss_provider = value;
@@ -666,7 +667,7 @@ pub fn printHelp() void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -677,6 +678,7 @@ test "exec args parse prompt and options" {
     try std.testing.expect(parsed.ignore_rules);
     try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.sandbox_mode.?);
     try std.testing.expectEqual(config.WebSearchMode.live, parsed.config_overrides.web_search_mode.?);
+    try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expect(parsed.oss);

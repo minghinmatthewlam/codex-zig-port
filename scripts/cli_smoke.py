@@ -6168,7 +6168,16 @@ def run_exec_review_smoke(binary: Path) -> None:
         (repo / "review.txt").write_text("new review target\n", encoding="utf-8")
 
         reviewed = subprocess.run(
-            [str(binary.resolve()), "exec", "--cd", str(repo), "review", "--uncommitted"],
+            [
+                str(binary.resolve()),
+                "exec",
+                "--cd",
+                str(repo),
+                "-c",
+                "review_model=gpt-exec-review",
+                "review",
+                "--uncommitted",
+            ],
             cwd=temp_root,
             env=env,
             text=True,
@@ -6179,6 +6188,7 @@ def run_exec_review_smoke(binary: Path) -> None:
         )
         assert reviewed.stdout == "stored reply\n"
         assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["model"] == "gpt-exec-review"
         prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
         assert "Review the uncommitted changes below." in prompt
         assert "diff --git a/review.txt b/review.txt" in prompt
@@ -6194,6 +6204,13 @@ def run_review_stdin_smoke(binary: Path) -> None:
     server, base_url = start_exec_responses_server()
     try:
         env = make_exec_mock_env(temp_root, base_url)
+        config_path = Path(env["CODEX_HOME"]) / "config.toml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + 'model = "gpt-session-review"\n'
+            + 'review_model = "gpt-review-specialist"\n',
+            encoding="utf-8",
+        )
 
         rejected = subprocess.run(
             [str(binary.resolve()), "review", "-"],
@@ -6228,6 +6245,7 @@ def run_review_stdin_smoke(binary: Path) -> None:
         assert reviewed.stdout == "stored reply\n"
         assert reviewed.stderr == "Reading review prompt from stdin...\n"
         assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["model"] == "gpt-review-specialist"
         prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
         assert "Review according to these instructions:" in prompt
         assert "focus on public API regressions" in prompt

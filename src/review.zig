@@ -62,6 +62,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     if (options.oss) {
         try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
     }
+    try applyReviewModel(allocator, &cfg);
 
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
@@ -222,6 +223,17 @@ fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
     return buildCustomPrompt(allocator, prompt);
 }
 
+fn applyReviewModel(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    const review_model = cfg.review_model orelse return;
+    const next_model = try allocator.dupe(u8, review_model);
+    allocator.free(cfg.model);
+    cfg.model = next_model;
+}
+
+pub fn selectedModelForReview(session_model: []const u8, review_model: ?[]const u8) []const u8 {
+    return review_model orelse session_model;
+}
+
 pub fn buildUncommittedPrompt(allocator: std.mem.Allocator) ![]const u8 {
     const diff = try git_diff.render(allocator);
     defer allocator.free(diff);
@@ -370,4 +382,9 @@ test "review args reject empty title values" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{"--title="};
     try std.testing.expectError(error.MissingReviewOptionValue, parseArgs(allocator, argv[0..]));
+}
+
+test "review model selection prefers configured review model" {
+    try std.testing.expectEqualStrings("gpt-review", selectedModelForReview("gpt-session", "gpt-review"));
+    try std.testing.expectEqualStrings("gpt-session", selectedModelForReview("gpt-session", null));
 }

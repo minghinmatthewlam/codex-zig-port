@@ -1195,6 +1195,7 @@ fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []cons
 fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: config.RuntimeOverrides) config.RuntimeOverrides {
     var merged = base;
     if (session_overrides.model) |value| merged.model = value;
+    if (session_overrides.review_model) |value| merged.review_model = value;
     if (session_overrides.openai_base_url) |value| merged.openai_base_url = value;
     if (session_overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (session_overrides.oss_provider) |value| merged.oss_provider = value;
@@ -1698,6 +1699,8 @@ test "session command flags merge interactive overrides" {
         "/tmp/extra",
         "-i",
         "/tmp/a.png,/tmp/b.png",
+        "-c",
+        "review_model=gpt-session-review",
         "--no-alt-screen",
     };
     var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
@@ -1710,6 +1713,7 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.runtime_overrides.sandbox_mode.?);
     try std.testing.expectEqual(config.ApprovalPolicy.on_request, parsed.runtime_overrides.approval_policy.?);
     try std.testing.expectEqualStrings("gpt-5.1-test", parsed.runtime_overrides.model.?);
+    try std.testing.expectEqualStrings("gpt-session-review", parsed.runtime_overrides.review_model.?);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("/tmp/workspace", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);

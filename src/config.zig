@@ -10,6 +10,7 @@ pub const Config = struct {
     codex_home: []const u8,
     active_profile: ?[]const u8,
     model: []const u8,
+    review_model: ?[]const u8 = null,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
     model_provider_wire_api: ModelProviderWireApi = .responses,
@@ -41,6 +42,7 @@ pub const Config = struct {
         allocator.free(self.codex_home);
         if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.model);
+        if (self.review_model) |value| allocator.free(value);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
         if (self.model_provider_env_key) |value| allocator.free(value);
@@ -162,6 +164,7 @@ pub const LoadOptions = struct {
 
 pub const RuntimeOverrides = struct {
     model: ?[]const u8 = null,
+    review_model: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
     oss_provider: ?[]const u8 = null,
@@ -248,6 +251,11 @@ pub fn applyRuntimeOverrides(
         allocator.free(cfg.model);
         cfg.model = next_model;
     }
+    if (overrides.review_model) |review_model| {
+        const next_review_model = try allocator.dupe(u8, review_model);
+        if (cfg.review_model) |existing| allocator.free(existing);
+        cfg.review_model = next_review_model;
+    }
     if (overrides.openai_base_url) |openai_base_url| {
         const next_openai_base_url = try allocator.dupe(u8, openai_base_url);
         allocator.free(cfg.openai_base_url);
@@ -307,6 +315,8 @@ pub fn applyRawConfigOverride(
         profile_override.* = value;
     } else if (std.mem.eql(u8, key, "model")) {
         runtime_overrides.model = value;
+    } else if (std.mem.eql(u8, key, "review_model")) {
+        runtime_overrides.review_model = value;
     } else if (std.mem.eql(u8, key, "openai_base_url")) {
         runtime_overrides.openai_base_url = value;
     } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
@@ -673,6 +683,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     const model = try resolveModel(allocator, config_view, active_profile);
     errdefer allocator.free(model);
+    const review_model = try resolveReviewModel(allocator, config_view);
+    errdefer if (review_model) |value| allocator.free(value);
 
     const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
@@ -717,6 +729,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .codex_home = codex_home,
         .active_profile = active_profile,
         .model = model,
+        .review_model = review_model,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
         .model_provider_wire_api = model_provider_wire_api,
@@ -776,6 +789,10 @@ fn resolveModel(allocator: std.mem.Allocator, config_view: ConfigView, active_pr
     }
 
     return allocator.dupe(u8, model_catalog.defaultModel().slug);
+}
+
+fn resolveReviewModel(allocator: std.mem.Allocator, config_view: ConfigView) !?[]const u8 {
+    return config_view.getTopLevelString(allocator, "review_model");
 }
 
 fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !BaseUrls {
@@ -2648,6 +2665,21 @@ test "profile values override top-level config values" {
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
 }
 
+test "review model resolves from top-level config" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model = "base-model"
+        \\review_model = "review-model"
+        \\
+        ,
+    };
+
+    const review_model = try resolveReviewModel(allocator, view);
+    defer allocator.free(review_model.?);
+    try std.testing.expectEqualStrings("review-model", review_model.?);
+}
+
 test "tui theme table overrides legacy syntax theme key" {
     const allocator = std.testing.allocator;
     const view = ConfigView{
@@ -3161,6 +3193,7 @@ test "raw cli config overrides map supported fields" {
 
     try applyRawConfigOverride(&runtime, &profile, "profile=\"work\"");
     try applyRawConfigOverride(&runtime, &profile, "model=gpt-test");
+    try applyRawConfigOverride(&runtime, &profile, "review_model=gpt-review");
     try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
     try applyRawConfigOverride(&runtime, &profile, "oss_provider=ollama");
@@ -3176,6 +3209,7 @@ test "raw cli config overrides map supported fields" {
 
     try std.testing.expectEqualStrings("work", profile.?);
     try std.testing.expectEqualStrings("gpt-test", runtime.model.?);
+    try std.testing.expectEqualStrings("gpt-review", runtime.review_model.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("ollama", runtime.oss_provider.?);

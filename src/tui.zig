@@ -2224,7 +2224,9 @@ fn handleSlashCommand(
         else
             try review.buildCustomPrompt(allocator, parts.args);
         defer allocator.free(review_prompt);
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{});
+        var review_cfg = cfg.*;
+        review_cfg.model = review.selectedModelForReview(cfg.model, cfg.review_model);
+        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{});
         return .handled;
     }
 
