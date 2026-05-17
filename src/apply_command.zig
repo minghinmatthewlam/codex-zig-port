@@ -49,7 +49,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const diff = try extractPrDiff(allocator, response_body);
     defer allocator.free(diff);
 
-    try applyGitDiff(allocator, diff);
+    try applyGitDiff(allocator, task_id, diff);
 }
 
 fn parseArgs(args: []const []const u8) !ApplyArgs {
@@ -159,7 +159,23 @@ fn extractPrDiff(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
     return error.NoPrOutputItemFound;
 }
 
-fn applyGitDiff(allocator: std.mem.Allocator, diff: []const u8) !void {
+fn applyGitDiff(allocator: std.mem.Allocator, task_id: []const u8, diff: []const u8) !void {
+    var preflight = try git_apply.checkUnifiedDiff(allocator, diff);
+    defer preflight.deinit(allocator);
+
+    if (git_apply.checkResultFailed(preflight.exit_code, preflight.stdout, preflight.stderr)) {
+        try cli_utils.writeStdout(preflight.stdout);
+        try cli_utils.writeStderr(preflight.stderr);
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "Preflight failed for task {s}; no files were changed\n",
+            .{task_id},
+        );
+        defer allocator.free(message);
+        try cli_utils.writeStdout(message);
+        return error.GitApplyPreflightFailed;
+    }
+
     var result = try git_apply.applyUnifiedDiff(allocator, diff);
     defer result.deinit(allocator);
 
@@ -185,7 +201,8 @@ pub fn printHelp() void {
         \\  codex-zig a TASK_ID [OPTIONS]
         \\
         \\Applies the latest PR diff from a Codex agent task to the current git
-        \\repository with `git apply --3way`.
+        \\repository with `git apply --check --3way` preflight followed by
+        \\`git apply --3way`.
         \\
         \\Options:
         \\  -c, --config key=value  Override a supported config value

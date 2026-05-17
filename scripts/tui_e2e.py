@@ -3917,6 +3917,27 @@ def git_output(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def prepare_apply_preflight_repo(
+    workspace: Path, repo_name: str, server: MockResponsesServer
+) -> tuple[Path, Path]:
+    repo = workspace / repo_name
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    readme = repo / "README.md"
+    readme.write_text(APPLY_TASK_CONFLICT_BASE)
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "Initial commit")
+    server.task_conflict_diff = readme_change_diff(
+        APPLY_TASK_CONFLICT_BASE, APPLY_TASK_CONFLICT_CLOUD
+    )
+    readme.write_text(APPLY_TASK_CONFLICT_LOCAL)
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "Local README change")
+    return repo, readme
+
+
 def run_apply_command_smoke(
     binary: Path,
     env: dict[str, str],
@@ -3967,6 +3988,34 @@ def run_apply_command_smoke(
         raise AssertionError(f"expected ChatGPT account header, saw {headers!r}")
     if headers.get("Authorization") != "Bearer tui-e2e-token":
         raise AssertionError(f"expected bearer auth header, saw {headers!r}")
+
+    preflight_repo, preflight_readme = prepare_apply_preflight_repo(
+        workspace, "apply-preflight-repo", server
+    )
+
+    preflight = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+            "apply",
+            "task-conflict",
+        ],
+        cwd=preflight_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    preflight_combined = preflight.stdout + preflight.stderr
+    if preflight.returncode == 0:
+        raise AssertionError("apply preflight conflict unexpectedly succeeded")
+    if "Preflight failed for task task-conflict; no files were changed" not in preflight_combined:
+        raise AssertionError(f"expected apply preflight diagnostic:\n{preflight_combined}")
+    if " with conflicts." not in preflight_combined:
+        raise AssertionError(f"expected git conflict preflight output:\n{preflight_combined}")
+    if preflight_readme.read_text() != APPLY_TASK_CONFLICT_LOCAL:
+        raise AssertionError("apply preflight failure modified README.md")
 
 
 def run_cloud_apply_command_smoke(
@@ -4057,21 +4106,9 @@ def run_cloud_apply_command_smoke(
     ):
         raise AssertionError(f"unexpected cloud-applied second-attempt file contents:\n{second_contents}")
 
-    preflight_repo = workspace / "cloud-apply-preflight-repo"
-    preflight_repo.mkdir()
-    git(preflight_repo, "init")
-    git(preflight_repo, "config", "user.email", "test@example.com")
-    git(preflight_repo, "config", "user.name", "Test User")
-    preflight_readme = preflight_repo / "README.md"
-    preflight_readme.write_text(APPLY_TASK_CONFLICT_BASE)
-    git(preflight_repo, "add", "README.md")
-    git(preflight_repo, "commit", "-m", "Initial commit")
-    server.task_conflict_diff = readme_change_diff(
-        APPLY_TASK_CONFLICT_BASE, APPLY_TASK_CONFLICT_CLOUD
+    preflight_repo, preflight_readme = prepare_apply_preflight_repo(
+        workspace, "cloud-apply-preflight-repo", server
     )
-    preflight_readme.write_text(APPLY_TASK_CONFLICT_LOCAL)
-    git(preflight_repo, "add", "README.md")
-    git(preflight_repo, "commit", "-m", "Local README change")
 
     preflight = subprocess.run(
         [

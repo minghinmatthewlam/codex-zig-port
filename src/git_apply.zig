@@ -22,6 +22,19 @@ pub fn checkUnifiedDiff(allocator: std.mem.Allocator, diff: []const u8) !Result 
     return runGitApply(allocator, diff, true);
 }
 
+pub fn checkResultFailed(exit_code: u8, stdout: []const u8, stderr: []const u8) bool {
+    return exit_code != 0 or checkOutputHasConflicts(stdout) or checkOutputHasConflicts(stderr);
+}
+
+fn checkOutputHasConflicts(output: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, "\r");
+        if (std.mem.endsWith(u8, trimmed, " with conflicts.")) return true;
+    }
+    return false;
+}
+
 fn runGitApply(allocator: std.mem.Allocator, diff: []const u8, check_only: bool) !Result {
     const git_root = try resolveGitRoot(allocator);
     defer allocator.free(git_root);
@@ -122,4 +135,15 @@ test "detects unified git diffs" {
     try std.testing.expect(isUnifiedDiff("diff --git a/a.txt b/a.txt\n"));
     try std.testing.expect(isUnifiedDiff("--- a/a.txt\n+++ b/a.txt\n"));
     try std.testing.expect(!isUnifiedDiff("not a patch"));
+}
+
+test "detects failed git apply check output" {
+    try std.testing.expect(checkResultFailed(0, "", "Applied patch to 'README.md' with conflicts.\n"));
+    try std.testing.expect(checkResultFailed(1, "", "error: patch failed\n"));
+    try std.testing.expect(!checkResultFailed(0, "", "Applied patch to 'with conflicts.txt' cleanly.\n"));
+    try std.testing.expect(!checkResultFailed(
+        0,
+        "",
+        "error: repository lacks the necessary blob to perform 3-way merge.\nFalling back to direct application...\n",
+    ));
 }
