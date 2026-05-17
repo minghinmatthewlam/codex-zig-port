@@ -296,10 +296,12 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   feature options, while still reporting headless app-server remote
   control as unimplemented
 - parse the experimental `cloud` / `cloud-tasks` command family, including
-  `exec`, `status`, `list`, `apply`, and `diff` options; `list`, `status`, and
-  `diff` perform authenticated Cloud Tasks backend reads, and `apply` applies
-  first-attempt Cloud diffs locally with `git apply --3way`, while task
-  creation, the picker UI, and multi-attempt runtime selection remain planned
+  `exec`, `status`, `list`, `apply`, and `diff` options; `exec` creates Cloud
+  tasks with explicit environment ids, prompt/stdin input, git branch
+  selection, best-of-N metadata, and starting-diff payloads; `list`, `status`,
+  and `diff` perform authenticated Cloud Tasks backend reads, and `apply`
+  applies first-attempt Cloud diffs locally with `git apply --3way`, while the
+  picker UI and multi-attempt runtime selection remain planned
 - print general or command-specific help with `help [COMMAND]`
 - generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
