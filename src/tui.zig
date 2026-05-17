@@ -782,6 +782,21 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "approval")) {
+        try handleRemoteApproval(&state.overrides, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "sandbox")) {
+        try handleRemoteSandbox(&state.overrides, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "permissions")) {
+        try handleRemotePermissions(&state.overrides, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
         const limit = try parseSessionListLimit(parts.args);
         try printRemoteSessions(allocator, transport, limit);
@@ -836,6 +851,9 @@ fn printRemoteSlashHelp() void {
         \\  /model [MODEL]
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
+        \\  /permissions [approval=<mode>] [sandbox=<mode>]
+        \\  /approval [mode]
+        \\  /sandbox [mode]
         \\  /sessions [N]
         \\  /clear
         \\  /new
@@ -908,6 +926,68 @@ fn handleRemotePersonality(overrides: *config.RuntimeOverrides, args: []const u8
     };
     overrides.personality = personality;
     printPersonalityStatus(overrides.personality);
+}
+
+fn handleRemoteApproval(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    try updateRemoteApprovalOverride(overrides, args);
+    printRemoteApproval(overrides.approval_policy);
+}
+
+fn handleRemoteSandbox(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    try updateRemoteSandboxOverride(overrides, args);
+    printRemoteSandbox(overrides.sandbox_mode);
+}
+
+fn handleRemotePermissions(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    try updateRemotePermissionsOverrides(overrides, args);
+    printRemotePermissions(overrides.*);
+}
+
+fn updateRemoteApprovalOverride(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) return;
+    overrides.approval_policy = try config.ApprovalPolicy.parse(trimmed);
+}
+
+fn updateRemoteSandboxOverride(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status")) return;
+    overrides.sandbox_mode = try config.SandboxMode.parse(trimmed);
+}
+
+fn updateRemotePermissionsOverrides(overrides: *config.RuntimeOverrides, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) return;
+
+    var tokens = std.mem.tokenizeAny(u8, trimmed, " \t");
+    while (tokens.next()) |token| {
+        const update = try parsePermissionUpdate(token);
+        switch (update) {
+            .approval => |approval_policy| overrides.approval_policy = approval_policy,
+            .sandbox => |sandbox_mode| overrides.sandbox_mode = sandbox_mode,
+        }
+    }
+}
+
+fn printRemoteApproval(approval_policy: ?config.ApprovalPolicy) void {
+    std.debug.print("approval: {s}\n", .{if (approval_policy) |policy| policy.label() else "remote default"});
+}
+
+fn printRemoteSandbox(sandbox_mode: ?config.SandboxMode) void {
+    std.debug.print("sandbox: {s}\n", .{if (sandbox_mode) |mode| mode.label() else "remote default"});
+}
+
+fn printRemotePermissions(overrides: config.RuntimeOverrides) void {
+    std.debug.print(
+        \\permissions:
+        \\  approval: {s}
+        \\  sandbox:  {s}
+        \\usage: /permissions [approval=<mode>] [sandbox=<mode>]
+        \\
+    , .{
+        if (overrides.approval_policy) |policy| policy.label() else "remote default",
+        if (overrides.sandbox_mode) |mode| mode.label() else "remote default",
+    });
 }
 
 fn printRemoteSessions(
@@ -3828,6 +3908,24 @@ test "remote TUI serializes supported runtime overrides" {
     defer parsed_resume_clear.deinit();
     const resume_clear_params = parsed_resume_clear.value.object.get("params").?.object;
     try std.testing.expect(resume_clear_params.get("serviceTier").? == .null);
+}
+
+test "remote TUI slash permissions update runtime overrides" {
+    var overrides = config.RuntimeOverrides{};
+
+    try updateRemoteApprovalOverride(&overrides, "on-request");
+    try std.testing.expectEqual(config.ApprovalPolicy.on_request, overrides.approval_policy.?);
+
+    try updateRemoteSandboxOverride(&overrides, "workspace-write");
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, overrides.sandbox_mode.?);
+
+    try updateRemotePermissionsOverrides(&overrides, "approval=never sandbox=read-only");
+    try std.testing.expectEqual(config.ApprovalPolicy.never, overrides.approval_policy.?);
+    try std.testing.expectEqual(config.SandboxMode.read_only, overrides.sandbox_mode.?);
+
+    try std.testing.expectError(error.InvalidApprovalPolicy, updateRemoteApprovalOverride(&overrides, "bogus"));
+    try std.testing.expectError(error.InvalidSandboxMode, updateRemoteSandboxOverride(&overrides, "bogus"));
+    try std.testing.expectError(error.InvalidPermissionsArgument, updateRemotePermissionsOverrides(&overrides, "mode=bogus"));
 }
 
 test "remote TUI waits past many ignored notifications" {

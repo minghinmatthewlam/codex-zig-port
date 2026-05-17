@@ -3196,6 +3196,17 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, output, b"personality: pragmatic", 5)
         send_line(master_fd, "side question from remote slash personality")
         wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/approval never")
+        wait_for(master_fd, output, b"approval: never", 5)
+        send_line(master_fd, "/sandbox read-only")
+        wait_for(master_fd, output, b"sandbox: read-only", 5)
+        send_line(master_fd, "side question from remote slash approval sandbox")
+        wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/permissions approval=on-request sandbox=workspace-write")
+        wait_for(master_fd, output, b"approval: on-request", 5)
+        wait_for(master_fd, output, b"sandbox:  workspace-write", 5)
+        send_line(master_fd, "side question from remote slash permissions")
+        wait_for(master_fd, output, b"side answer", 8)
         os.write(master_fd, b"/fork\n1\n")
         wait_for(master_fd, output, b"forked remote thread:", 5)
         send_line(master_fd, "side question from remote slash picker fork")
@@ -3550,6 +3561,22 @@ def run_remote_unix_tui_smoke(
     personality_instructions = slash_personality_matching[-1].get("instructions", "")
     if "deeply pragmatic" not in personality_instructions:
         raise AssertionError("remote TUI slash personality did not update instructions")
+    slash_approval_sandbox_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash approval sandbox"
+        in latest_user_text(body.get("input", []))
+    ]
+    if not slash_approval_sandbox_matching:
+        raise AssertionError("remote TUI slash approval/sandbox did not send prompt through app-server")
+    slash_permissions_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash permissions"
+        in latest_user_text(body.get("input", []))
+    ]
+    if not slash_permissions_matching:
+        raise AssertionError("remote TUI slash permissions did not send prompt through app-server")
     slash_fork_matching = [
         body
         for body in bodies

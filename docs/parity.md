@@ -577,14 +577,15 @@ attachment collection remain planned.
 
 Additional remote TUI slash-command coverage: remote app-server TUI sessions now
 support `/status`, `/compact`, `/model [MODEL]`, `/fast [on|off|status]`,
-`/personality`, `/sessions [N]`, `/clear`, `/new`, `/resume [TARGET|last]`, and
+`/personality`, `/permissions`, `/approval [MODE]`, `/sandbox [MODE]`,
+`/sessions [N]`, `/clear`, `/new`, `/resume [TARGET|last]`, and
 `/fork [TARGET|last]` against the remote app-server thread APIs. The PTY TUI E2E
 covers status printing, remote runtime override updates for model, service tier,
-and personality, remote session listing, in-session fresh-thread start without
-carrying prior transcript history, remote header redraw for `/clear`, in-session
-remote compaction through `thread/compact/start`, in-session remote fork, and
-in-session remote resume while preserving the remote transcript history. A
-focused PTY smoke also covers
+personality, approval policy, and sandbox mode, remote session listing,
+in-session fresh-thread start without carrying prior transcript history, remote
+header redraw for `/clear`, in-session remote compaction through
+`thread/compact/start`, in-session remote fork, and in-session remote resume
+while preserving the remote transcript history. A focused PTY smoke also covers
 `--remote wss://HOST:PORT` with websocket bearer-token auth over a loopback
 self-signed TLS server.
 
