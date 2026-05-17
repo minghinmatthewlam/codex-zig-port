@@ -2745,6 +2745,8 @@ def run_local_remote_control_smoke(
         )
         os.close(slave_fd)
         wait_for(master_fd, output, b"Remote control active", 5)
+        wait_for(master_fd, output, b"Controller link:", 5)
+        wait_for(master_fd, output, b"Share link:", 5)
         control_url = remote_control_url(output)
         share_url = remote_control_share_url(output)
 
@@ -2894,6 +2896,8 @@ def run_local_remote_control_slash_smoke(
         start_mark = len(output)
         send_line(master_fd, "/remote-control")
         wait_for(master_fd, output, b"Remote control active", 5, start_mark)
+        wait_for(master_fd, output, b"Controller link:", 5, start_mark)
+        wait_for(master_fd, output, b"Share link:", 5, start_mark)
         control_url = remote_control_url(output, start_mark)
         share_url = remote_control_share_url(output, start_mark)
         wait_for_remote_control_messages(control_url, typed_prompt, "side answer", 2)
