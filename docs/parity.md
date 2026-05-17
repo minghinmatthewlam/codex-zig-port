@@ -584,9 +584,12 @@ Additional local remote-control coverage: `--remote-control` now serves a
 usable controller/viewer browser page, exposes `/api/events` as a
 server-sent-event stream of transcript state snapshots, keeps controller
 `/api/message` submissions working while an event stream is open, and preserves
-read-only viewer links. The PTY smoke keeps the event stream open while sending
-a controller prompt into the running TUI and compares the event snapshot with
-`/api/state`.
+read-only viewer links. Runtime `/remote-control [start|stop]` starts the same
+local server from an existing TUI, re-shows active links without opening a
+second listener, serves existing transcript history through `/api/state`,
+rejects unsupported arguments with Rust-compatible usage text, and stops the
+listener. The PTY smoke keeps the event stream open while sending a controller
+prompt into the running TUI and compares the event snapshot with `/api/state`.
 
 Additional app-server websocket transport coverage: `app-server --listen
 ws://127.0.0.1:0` now binds a plain websocket listener, reports the actual

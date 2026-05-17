@@ -274,10 +274,11 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `resume TARGET`, explicit
   `fork ID|PATH`, `fork --last`, text/local-image turns, and websocket
   capability-token auth via `--remote-auth-token-env`
-- start a minimal local remote-control server with `--remote-control` and
-  `--remote-control-bind`, exposing controller/viewer browser links, `/api/state`,
-  live `/api/events` server-sent state snapshots, and controller-only
-  `/api/message` prompt submission into the running TUI
+- start a minimal local remote-control server with `--remote-control`,
+  `--remote-control-bind`, or runtime `/remote-control [start|stop]`, exposing
+  controller/viewer browser links, `/api/state`, live `/api/events`
+  server-sent state snapshots, and controller-only `/api/message` prompt
+  submission into the running TUI
 - accept interactive override flags after `resume` and `fork`, including model,
   profile, cwd, image, approval, sandbox, OSS, remote, and no-alt-screen
   settings
@@ -355,9 +356,10 @@ powershell, and zsh, verifies
 interactive remote app-server flag parsing/rejection plus real
 `--remote unix://PATH` and loopback `--remote ws://HOST:PORT` TUI turns through
 a running app-server, verifies planned-but-unimplemented Rust top-level command
-stubs, verifies local remote-control flag parsing/rejection and a PTY-driven
-local `/api/message` submission into the running TUI while a live `/api/events`
-stream observes the updated transcript, verifies session-local
+stubs, verifies local remote-control flag parsing/rejection, runtime
+`/remote-control [start|stop]`, and a PTY-driven local `/api/message`
+submission into the running TUI while a live `/api/events` stream observes the
+updated transcript, verifies session-local
 `resume` / `fork` override parsing,
 verifies local and git-backed `plugin marketplace`
 add/repeat/upgrade/remove config mutation,
