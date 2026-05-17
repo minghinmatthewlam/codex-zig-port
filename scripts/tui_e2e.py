@@ -4008,6 +4008,48 @@ def run_cloud_apply_command_smoke(
     ):
         raise AssertionError(f"unexpected cloud-applied second-attempt file contents:\n{second_contents}")
 
+    picker_repo = workspace / "cloud-picker-repo"
+    picker_repo.mkdir()
+    git(picker_repo, "init")
+    git(picker_repo, "config", "user.email", "test@example.com")
+    git(picker_repo, "config", "user.name", "Test User")
+    (picker_repo / "README.md").write_text("# Cloud Picker Smoke\n")
+    git(picker_repo, "add", "README.md")
+    git(picker_repo, "commit", "-m", "Initial commit")
+
+    picker = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            cloud_base_arg,
+            "cloud",
+        ],
+        cwd=picker_repo,
+        env=env,
+        input="env e2e environment\nstatus 1\ndiff --attempt 2 1\napply --attempt 2 task-apply\nquit\n",
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    picker_combined = picker.stdout + picker.stderr
+    if "Cloud Tasks - all environments" not in picker_combined:
+        raise AssertionError(f"expected cloud picker task list:\n{picker_combined}")
+    if "1. [READY] Write cloud runtime" not in picker_combined:
+        raise AssertionError(f"expected cloud picker indexed row:\n{picker_combined}")
+    if "Cloud Tasks - env env-id" not in picker_combined:
+        raise AssertionError(f"expected cloud picker environment filter:\n{picker_combined}")
+    if "[READY] Write cloud runtime" not in picker_combined:
+        raise AssertionError(f"expected cloud picker status command output:\n{picker_combined}")
+    if "diff --git a/scripts/lucas.js b/scripts/lucas.js" not in picker_combined:
+        raise AssertionError(f"expected cloud picker second-attempt diff output:\n{picker_combined}")
+    if "Applied task task-apply locally (1 file)" not in picker_combined:
+        raise AssertionError(f"expected cloud picker apply output:\n{picker_combined}")
+    if "bye" not in picker_combined:
+        raise AssertionError(f"expected cloud picker quit output:\n{picker_combined}")
+    picker_created = picker_repo / "scripts" / "lucas.js"
+    if not picker_created.exists():
+        raise AssertionError(f"expected cloud picker apply to create {picker_created}")
+
     if "/api/codex/tasks/task-apply" not in server.get_paths:
         raise AssertionError(f"expected cloud apply task fetch, saw {server.get_paths!r}")
     if "/api/codex/tasks/task-apply/turns/turn-apply/sibling_turns" not in server.get_paths:
