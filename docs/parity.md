@@ -587,7 +587,9 @@ header redraw for `/clear`, in-session remote compaction through
 `thread/compact/start`, in-session remote fork, and in-session remote resume
 while preserving the remote transcript history. A focused PTY smoke also covers
 `--remote wss://HOST:PORT` with websocket bearer-token auth over a loopback
-self-signed TLS server.
+self-signed TLS server and verifies remote `--add-dir` forwarding as
+absolute `turn/start.sandboxPolicy.workspaceWrite.writableRoots`, including
+relative roots resolved against the TUI cwd.
 
 Additional exec-server remote rendezvous coverage: registry-backed
 `exec-server --remote ... --executor-id ...` now connects to both plain
@@ -855,15 +857,17 @@ include `TurnStartParams.summary`.
 Additional app-server turn-start sandbox-policy override coverage:
 `turn/start` now accepts Rust-compatible `sandboxPolicy` objects that map
 cleanly to the current loaded-thread sandbox modes, including
+`workspaceWrite.writableRoots` preservation for absolute roots and
 `externalSandbox` network-access hints lowered to the current
 danger-full-access runtime mode. It rejects conflicts with the legacy
-`sandbox` field before issuing a provider request, rejects rich root/network
-variants the current runtime cannot preserve yet, stores the selected mode on
-the loaded-thread runtime state, and preserves it across subsequent thread
-lifecycle responses. The generated TypeScript and JSON schemas include
-`TurnStartParams.sandboxPolicy`. Full preservation and enforcement of custom
-writable roots and network-enabled non-external sandbox policies remain
-planned.
+`sandbox` field before issuing a provider request, rejects invalid relative
+writable roots and network-enabled non-external policies, stores the selected
+mode and custom roots on the loaded-thread runtime state, feeds those roots
+into model-requested shell tool sandboxing, and preserves them across
+subsequent thread lifecycle responses. The generated TypeScript and JSON
+schemas include `TurnStartParams.sandboxPolicy`. Full support for additional
+workspace-write root policy flags beyond the current false/default values
+remains planned.
 
 Additional app-server turn-start permissions override coverage:
 `turn/start` now accepts Rust-compatible `permissions` profile selections for
