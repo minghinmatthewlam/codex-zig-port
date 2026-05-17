@@ -230,6 +230,8 @@ fn appendDebugAppServerChildOptions(
     const overrides = options.runtime_overrides;
     if (overrides.model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model", value);
     if (overrides.review_model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "review_model", value);
+    if (overrides.model_context_window) |value| try appendConfigOverrideIntArg(allocator, argv, owned_args, "model_context_window", value);
+    if (overrides.model_auto_compact_token_limit) |value| try appendConfigOverrideIntArg(allocator, argv, owned_args, "model_auto_compact_token_limit", value);
     if (overrides.openai_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "openai_base_url", value);
     if (overrides.chatgpt_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "chatgpt_base_url", value);
     if (overrides.oss_provider) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "oss_provider", value);
@@ -237,6 +239,8 @@ fn appendDebugAppServerChildOptions(
     if (overrides.sandbox_mode) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "sandbox_mode", value.label());
     if (overrides.web_search_mode) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "web_search", value.label());
     if (overrides.service_tier) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "service_tier", value);
+    if (overrides.model_reasoning_summary) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model_reasoning_summary", value.label());
+    if (overrides.model_verbosity) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model_verbosity", value.label());
     if (overrides.syntax_theme) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "syntax_theme", value);
     if (overrides.personality) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "personality", value.label());
     if (overrides.tui_alternate_screen) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "tui.alternate_screen", value.label());
@@ -261,6 +265,18 @@ fn appendConfigOverrideArg(
     try owned_args.append(allocator, arg);
     try argv.append(allocator, "-c");
     try argv.append(allocator, arg);
+}
+
+fn appendConfigOverrideIntArg(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    owned_args: *std.ArrayList([]const u8),
+    key: []const u8,
+    value: i64,
+) !void {
+    const rendered = try std.fmt.allocPrint(allocator, "{d}", .{value});
+    defer allocator.free(rendered);
+    try appendConfigOverrideArg(allocator, argv, owned_args, key, rendered);
 }
 
 fn writeAppServerRequest(io_instance: *std.Io.Threaded, stdin_file: std.Io.File, request: []const u8) !void {
@@ -656,4 +672,42 @@ test "debug models bundled ignores configured model" {
     const model = parsed.value.object.get("models").?.array.items[0].object;
     try std.testing.expectEqualStrings("gpt-5.5", model.get("slug").?.string);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"slug\": \"gpt-test\"") == null);
+}
+
+test "debug app-server forwards model config overrides" {
+    const allocator = std.testing.allocator;
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    var owned_args = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_args.items) |value| allocator.free(value);
+        owned_args.deinit(allocator);
+    }
+
+    try appendDebugAppServerChildOptions(allocator, &argv, &owned_args, .{
+        .profile = "work",
+        .runtime_overrides = .{
+            .model_context_window = 128000,
+            .model_auto_compact_token_limit = 96000,
+            .model_reasoning_summary = .detailed,
+            .model_verbosity = .high,
+        },
+    });
+
+    const expected = [_][]const u8{
+        "-p",
+        "work",
+        "-c",
+        "model_context_window=128000",
+        "-c",
+        "model_auto_compact_token_limit=96000",
+        "-c",
+        "model_reasoning_summary=detailed",
+        "-c",
+        "model_verbosity=high",
+    };
+    try std.testing.expectEqual(expected.len, argv.items.len);
+    for (expected, argv.items) |expected_arg, actual_arg| {
+        try std.testing.expectEqualStrings(expected_arg, actual_arg);
+    }
 }

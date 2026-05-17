@@ -528,6 +528,8 @@ fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config
 fn mergeRuntimeOverrides(target: *config.RuntimeOverrides, source: config.RuntimeOverrides) void {
     if (source.model) |value| target.model = value;
     if (source.review_model) |value| target.review_model = value;
+    if (source.model_context_window) |value| target.model_context_window = value;
+    if (source.model_auto_compact_token_limit) |value| target.model_auto_compact_token_limit = value;
     if (source.openai_base_url) |value| target.openai_base_url = value;
     if (source.chatgpt_base_url) |value| target.chatgpt_base_url = value;
     if (source.oss_provider) |value| target.oss_provider = value;
@@ -537,6 +539,8 @@ fn mergeRuntimeOverrides(target: *config.RuntimeOverrides, source: config.Runtim
     if (source.service_tier) |value| target.service_tier = value;
     if (source.syntax_theme) |value| target.syntax_theme = value;
     if (source.personality) |value| target.personality = value;
+    if (source.model_reasoning_summary) |value| target.model_reasoning_summary = value;
+    if (source.model_verbosity) |value| target.model_verbosity = value;
     if (source.tui_alternate_screen) |value| target.tui_alternate_screen = value;
 }
 
@@ -811,4 +815,19 @@ test "exec args parse stdin sentinel with context prompt" {
 
     try std.testing.expect(parsed.read_stdin);
     try std.testing.expectEqualStrings("summarize this", parsed.prompt.?);
+}
+
+test "exec runtime override merge preserves model controls" {
+    var target = config.RuntimeOverrides{};
+    mergeRuntimeOverrides(&target, .{
+        .model_context_window = 128000,
+        .model_auto_compact_token_limit = 96000,
+        .model_reasoning_summary = .detailed,
+        .model_verbosity = .high,
+    });
+
+    try std.testing.expectEqual(@as(i64, 128000), target.model_context_window.?);
+    try std.testing.expectEqual(@as(i64, 96000), target.model_auto_compact_token_limit.?);
+    try std.testing.expectEqual(config.ReasoningSummary.detailed, target.model_reasoning_summary.?);
+    try std.testing.expectEqual(config.Verbosity.high, target.model_verbosity.?);
 }

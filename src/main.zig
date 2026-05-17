@@ -1196,6 +1196,8 @@ fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: confi
     var merged = base;
     if (session_overrides.model) |value| merged.model = value;
     if (session_overrides.review_model) |value| merged.review_model = value;
+    if (session_overrides.model_context_window) |value| merged.model_context_window = value;
+    if (session_overrides.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
     if (session_overrides.openai_base_url) |value| merged.openai_base_url = value;
     if (session_overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (session_overrides.oss_provider) |value| merged.oss_provider = value;
@@ -1203,6 +1205,8 @@ fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: confi
     if (session_overrides.sandbox_mode) |value| merged.sandbox_mode = value;
     if (session_overrides.web_search_mode) |value| merged.web_search_mode = value;
     if (session_overrides.service_tier) |value| merged.service_tier = value;
+    if (session_overrides.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
+    if (session_overrides.model_verbosity) |value| merged.model_verbosity = value;
     if (session_overrides.syntax_theme) |value| merged.syntax_theme = value;
     if (session_overrides.personality) |value| merged.personality = value;
     if (session_overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
@@ -1786,4 +1790,18 @@ test "removed top-level Rust commands are rejected" {
     try std.testing.expect(isRemovedTopLevelCommand("marketplace"));
     try std.testing.expect(!isRemovedTopLevelCommand("plugin"));
     try std.testing.expect(!isRemovedTopLevelCommand("write this prompt"));
+}
+
+test "session runtime override merge preserves model controls" {
+    const merged = mergeRuntimeOverrides(.{}, .{
+        .model_context_window = 128000,
+        .model_auto_compact_token_limit = 96000,
+        .model_reasoning_summary = .detailed,
+        .model_verbosity = .high,
+    });
+
+    try std.testing.expectEqual(@as(i64, 128000), merged.model_context_window.?);
+    try std.testing.expectEqual(@as(i64, 96000), merged.model_auto_compact_token_limit.?);
+    try std.testing.expectEqual(config.ReasoningSummary.detailed, merged.model_reasoning_summary.?);
+    try std.testing.expectEqual(config.Verbosity.high, merged.model_verbosity.?);
 }

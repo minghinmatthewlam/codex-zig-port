@@ -102,6 +102,8 @@ fn mergeRuntimeOverrides(base: config.RuntimeOverrides, command: config.RuntimeO
     var merged = base;
     if (command.model) |value| merged.model = value;
     if (command.review_model) |value| merged.review_model = value;
+    if (command.model_context_window) |value| merged.model_context_window = value;
+    if (command.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
     if (command.openai_base_url) |value| merged.openai_base_url = value;
     if (command.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (command.oss_provider) |value| merged.oss_provider = value;
@@ -110,6 +112,7 @@ fn mergeRuntimeOverrides(base: config.RuntimeOverrides, command: config.RuntimeO
     if (command.web_search_mode) |value| merged.web_search_mode = value;
     if (command.service_tier) |value| merged.service_tier = value;
     if (command.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
+    if (command.model_verbosity) |value| merged.model_verbosity = value;
     if (command.syntax_theme) |value| merged.syntax_theme = value;
     if (command.personality) |value| merged.personality = value;
     if (command.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
