@@ -244,6 +244,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     + "\nlong remote answer tail\n",
                 },
             )
+        elif "Summarize this conversation" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "compact summary\n",
+                },
+            )
         elif "track this checklist" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-plan"
         ):
@@ -2674,6 +2681,18 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, fork_picker_output, b"started remote thread:", 5, clear_mark)
         send_line(master_fd, "side question from remote slash clear")
         wait_for(master_fd, fork_picker_output, b"side answer", 8)
+        send_line(master_fd, "/model gpt-remote-compact")
+        wait_for(master_fd, fork_picker_output, b"model: gpt-remote-compact", 5)
+        send_line(master_fd, "/fast on")
+        wait_for(master_fd, fork_picker_output, b"Fast mode is on.", 5)
+        send_line(master_fd, "/personality friendly")
+        wait_for(master_fd, fork_picker_output, b"personality: friendly", 5)
+        send_line(master_fd, "/compact unexpected")
+        wait_for(master_fd, fork_picker_output, b"usage: /compact", 5)
+        send_line(master_fd, "/compact")
+        wait_for(master_fd, fork_picker_output, b"compacted remote thread:", 8)
+        send_line(master_fd, "side question from remote slash compact")
+        wait_for(master_fd, fork_picker_output, b"side answer", 8)
         mark = len(fork_picker_output)
         send_line(master_fd, "/quit")
         wait_for(master_fd, fork_picker_output, b"bye", 5, mark)
@@ -2871,6 +2890,35 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI slash clear carried transcript history from the previous thread")
     if "side question from remote slash new" in slash_clear_body:
         raise AssertionError("remote TUI slash clear carried immediate pre-clear transcript history")
+    compact_runtime_matching = [
+        body
+        for body in bodies
+        if latest_user_text(body.get("input", [])).startswith("Summarize this conversation")
+    ]
+    if not compact_runtime_matching:
+        raise AssertionError("remote TUI did not send compact prompt through app-server")
+    compact_runtime_body = compact_runtime_matching[-1]
+    if compact_runtime_body.get("model") != "gpt-remote-compact":
+        raise AssertionError("remote TUI slash compact did not use slash-updated model")
+    if compact_runtime_body.get("service_tier") != "priority":
+        raise AssertionError("remote TUI slash compact did not use slash-updated fast mode")
+    compact_instructions = compact_runtime_body.get("instructions", "")
+    if "supportive teammate" not in compact_instructions:
+        raise AssertionError("remote TUI slash compact did not use slash-updated personality")
+    slash_compact_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash compact" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_compact_matching:
+        raise AssertionError("remote TUI slash compact did not send prompt through app-server")
+    slash_compact_body = json.dumps(slash_compact_matching[-1])
+    if "Compacted conversation summary" not in slash_compact_body:
+        raise AssertionError("remote TUI slash compact did not preserve the compacted summary")
+    if "compact summary" not in slash_compact_body:
+        raise AssertionError("remote TUI slash compact did not include the provider summary text")
+    if "side question from remote slash clear" in slash_compact_body:
+        raise AssertionError("remote TUI slash compact carried pre-compaction transcript history")
     image_matching = [
         body
         for body in bodies
