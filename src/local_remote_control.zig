@@ -7,6 +7,8 @@ const max_request_body_bytes = 64 * 1024;
 const max_request_head_bytes = 64 * 1024;
 const max_prompt_bytes = 64 * 1024;
 const client_read_timeout_ms = 1000;
+const event_poll_interval_ns = 100 * std.time.ns_per_ms;
+const event_heartbeat_ticks = 5;
 const pipe_read_events = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL;
 
 const BindAddress = struct {
@@ -21,9 +23,17 @@ const Access = enum {
 
 const Runtime = struct {
     mutex: std.Io.Mutex = .init,
+    prompt_mutex: std.Io.Mutex = .init,
     snapshot_json: []const u8,
+    snapshot_seq: u64,
     shutdown: std.atomic.Value(bool) = .init(false),
+    active_connections: std.atomic.Value(usize) = .init(0),
     prompt_write_fd: std.posix.fd_t,
+};
+
+const Snapshot = struct {
+    json: []const u8,
+    seq: u64,
 };
 
 const HttpRequest = struct {
@@ -54,6 +64,13 @@ pub const Server = struct {
             thread.join();
             self.thread = null;
         }
+        while (self.runtime.active_connections.load(.acquire) != 0) {
+            std.Io.sleep(
+                std.Io.Threaded.global_single_threaded.io(),
+                .{ .nanoseconds = 10 * std.time.ns_per_ms },
+                .awake,
+            ) catch {};
+        }
 
         std.Io.Threaded.closeFd(self.runtime.prompt_write_fd);
         allocator.free(self.runtime.snapshot_json);
@@ -69,6 +86,7 @@ pub const Server = struct {
         self.runtime.mutex.lockUncancelable(io);
         const old = self.runtime.snapshot_json;
         self.runtime.snapshot_json = snapshot_json;
+        self.runtime.snapshot_seq += 1;
         self.runtime.mutex.unlock(io);
         allocator.free(old);
     }
@@ -126,6 +144,7 @@ pub fn start(
     errdefer allocator.destroy(runtime);
     runtime.* = .{
         .snapshot_json = initial_snapshot_json,
+        .snapshot_seq = 1,
         .prompt_write_fd = pipe_fds[1],
     };
 
@@ -220,11 +239,41 @@ fn serve(
     defer listener.deinit(io);
 
     while (!runtime.shutdown.load(.acquire)) {
-        var stream = listener.accept(io) catch continue;
-        defer stream.close(io);
-        if (runtime.shutdown.load(.acquire)) break;
-        handleConnection(io, &stream, runtime, controller_token, viewer_token) catch {};
+        const stream = listener.accept(io) catch continue;
+        if (runtime.shutdown.load(.acquire)) {
+            var close_stream = stream;
+            close_stream.close(io);
+            break;
+        }
+        _ = runtime.active_connections.fetchAdd(1, .acq_rel);
+        const thread = std.Thread.spawn(.{}, handleConnectionThread, .{
+            stream,
+            runtime,
+            controller_token,
+            viewer_token,
+        }) catch {
+            _ = runtime.active_connections.fetchSub(1, .acq_rel);
+            var close_stream = stream;
+            close_stream.close(io);
+            continue;
+        };
+        thread.detach();
     }
+}
+
+fn handleConnectionThread(
+    stream_arg: net.Stream,
+    runtime: *Runtime,
+    controller_token: []const u8,
+    viewer_token: []const u8,
+) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stream = stream_arg;
+    defer {
+        stream.close(io);
+        _ = runtime.active_connections.fetchSub(1, .acq_rel);
+    }
+    handleConnection(io, &stream, runtime, controller_token, viewer_token) catch {};
 }
 
 fn handleConnection(
@@ -255,6 +304,10 @@ fn handleConnection(
         try respondSnapshot(io, stream, runtime);
         return;
     }
+    if (request.head.method == .GET and std.mem.eql(u8, path, "/api/events")) {
+        try respondEvents(io, stream, runtime);
+        return;
+    }
     if (request.head.method == .POST and std.mem.eql(u8, path, "/api/message")) {
         if (access != .controller) {
             try respond(io, stream, .forbidden, "text/plain; charset=utf-8", "Shared viewers are read-only.\n");
@@ -268,26 +321,190 @@ fn handleConnection(
 }
 
 fn respondHtml(io: std.Io, stream: *net.Stream, access: Access) !void {
-    const body = switch (access) {
-        .controller =>
-        \\<!doctype html><html><head><meta charset="utf-8"><title>Codex Zig Remote Control</title></head><body><h1>Codex Zig Remote Control</h1><p>Controller mode</p><p>Use <code>/api/state</code> and <code>/api/message</code>.</p></body></html>
-        ,
-        .viewer =>
-        \\<!doctype html><html><head><meta charset="utf-8"><title>Codex Zig Remote Control</title></head><body><h1>Codex Zig Remote Control</h1><p>Viewer mode</p><p>This link is read-only.</p></body></html>
-        ,
+    const allocator = std.heap.page_allocator;
+    const access_label = switch (access) {
+        .controller => "controller",
+        .viewer => "viewer",
     };
-    try respond(io, stream, .ok, "text/html; charset=utf-8", body);
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
+    try body.appendSlice(allocator,
+        \\<!doctype html>
+        \\<html lang="en">
+        \\<head>
+        \\<meta charset="utf-8">
+        \\<meta name="viewport" content="width=device-width, initial-scale=1">
+        \\<title>Codex Zig Remote</title>
+        \\<style>
+        \\:root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7f4;color:#171914}
+        \\body{margin:0;min-height:100vh;background:#f6f7f4;color:#171914}
+        \\main{min-height:100vh;display:grid;grid-template-rows:auto 1fr auto}
+        \\header{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:16px 18px;border-bottom:1px solid #d7dccf;background:#ffffff}
+        \\h1{font-size:18px;line-height:1.2;margin:0;font-weight:650;letter-spacing:0}
+        \\#status{font-size:13px;color:#4d5648;text-align:right;overflow-wrap:anywhere}
+        \\#messages{padding:16px 18px;display:flex;flex-direction:column;gap:10px;overflow:auto}
+        \\.empty{color:#697363;font-size:14px}
+        \\.message{max-width:920px;border:1px solid #d7dccf;background:#ffffff;border-radius:8px;padding:10px 12px}
+        \\.role{font-size:12px;text-transform:uppercase;color:#65705f;margin-bottom:6px;font-weight:700}
+        \\.text{font-size:15px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+        \\form{display:flex;gap:10px;padding:12px 18px;border-top:1px solid #d7dccf;background:#ffffff}
+        \\textarea{flex:1;min-height:44px;max-height:160px;resize:vertical;border:1px solid #bfc8b7;border-radius:8px;padding:10px 12px;font:inherit;background:#fff;color:#171914}
+        \\button{width:84px;border:1px solid #171914;border-radius:8px;background:#171914;color:#fff;font:inherit;font-weight:650}
+        \\button:disabled,textarea:disabled{opacity:.55}
+        \\@media (max-width:640px){header{align-items:flex-start;flex-direction:column}form{padding:10px;gap:8px}button{width:72px}.message{max-width:100%}}
+        \\@media (prefers-color-scheme:dark){:root,body{background:#11130f;color:#eef2e9}header,form,.message{background:#191d16;border-color:#30382b}#status,.role,.empty{color:#aab5a1}textarea{background:#11130f;color:#eef2e9;border-color:#4b5645}button{background:#eef2e9;color:#11130f;border-color:#eef2e9}}
+        \\</style>
+        \\</head>
+        \\<body data-access="
+    );
+    try body.appendSlice(allocator, access_label);
+    try body.appendSlice(allocator,
+        \\">
+        \\<main>
+        \\<header><h1>Codex Zig Remote</h1><div id="status">Connecting</div></header>
+        \\<section id="messages" aria-live="polite"></section>
+        \\<form id="composer">
+        \\<textarea id="message" name="message" autocomplete="off" placeholder="Message Codex"></textarea>
+        \\<button id="send" type="submit">Send</button>
+        \\</form>
+        \\</main>
+        \\<script>
+        \\const params = new URLSearchParams(location.search);
+        \\const token = params.get('token') || '';
+        \\const access = document.body.dataset.access;
+        \\const statusEl = document.getElementById('status');
+        \\const messagesEl = document.getElementById('messages');
+        \\const form = document.getElementById('composer');
+        \\const input = document.getElementById('message');
+        \\const send = document.getElementById('send');
+        \\if (access !== 'controller') {
+        \\  input.disabled = true;
+        \\  send.disabled = true;
+        \\  input.placeholder = 'View only';
+        \\}
+        \\function render(state) {
+        \\  statusEl.textContent = state.status ? `${state.status} - ${state.cwd || ''}` : state.cwd || 'Connected';
+        \\  messagesEl.textContent = '';
+        \\  const messages = Array.isArray(state.messages) ? state.messages : [];
+        \\  if (messages.length === 0) {
+        \\    const empty = document.createElement('div');
+        \\    empty.className = 'empty';
+        \\    empty.textContent = 'No messages yet';
+        \\    messagesEl.appendChild(empty);
+        \\    return;
+        \\  }
+        \\  for (const message of messages) {
+        \\    const row = document.createElement('article');
+        \\    row.className = 'message';
+        \\    const role = document.createElement('div');
+        \\    role.className = 'role';
+        \\    role.textContent = message.role || 'status';
+        \\    const text = document.createElement('div');
+        \\    text.className = 'text';
+        \\    text.textContent = message.text || '';
+        \\    row.append(role, text);
+        \\    messagesEl.appendChild(row);
+        \\  }
+        \\  messagesEl.scrollTop = messagesEl.scrollHeight;
+        \\}
+        \\async function refresh() {
+        \\  const response = await fetch(`/api/state?token=${encodeURIComponent(token)}`);
+        \\  if (response.ok) render(await response.json());
+        \\}
+        \\refresh().catch(() => { statusEl.textContent = 'Disconnected'; });
+        \\const events = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+        \\events.addEventListener('state', event => {
+        \\  try { render(JSON.parse(event.data)); } catch (_) {}
+        \\});
+        \\events.onerror = () => { statusEl.textContent = 'Disconnected'; };
+        \\form.addEventListener('submit', async event => {
+        \\  event.preventDefault();
+        \\  const message = input.value.trim();
+        \\  if (!message || access !== 'controller') return;
+        \\  input.value = '';
+        \\  send.disabled = true;
+        \\  try {
+        \\    const response = await fetch(`/api/message?token=${encodeURIComponent(token)}`, {
+        \\      method: 'POST',
+        \\      headers: {'content-type': 'application/json'},
+        \\      body: JSON.stringify({message})
+        \\    });
+        \\    if (!response.ok) input.value = message;
+        \\  } finally {
+        \\    send.disabled = access !== 'controller';
+        \\    input.focus();
+        \\  }
+        \\});
+        \\</script>
+        \\</body>
+        \\</html>
+    );
+    try respond(io, stream, .ok, "text/html; charset=utf-8", body.items);
 }
 
 fn respondSnapshot(io: std.Io, stream: *net.Stream, runtime: *Runtime) !void {
+    const snapshot = try cloneSnapshot(std.heap.page_allocator, runtime);
+    defer std.heap.page_allocator.free(snapshot.json);
+    try respond(io, stream, .ok, "application/json", snapshot.json);
+}
+
+fn respondEvents(io: std.Io, stream: *net.Stream, runtime: *Runtime) !void {
+    var output_buffer: [4096]u8 = undefined;
+    var writer = stream.writer(io, &output_buffer);
+    try writer.interface.writeAll(
+        "HTTP/1.1 200 OK\r\n" ++
+            "Content-Type: text/event-stream\r\n" ++
+            "Cache-Control: no-cache\r\n" ++
+            "Connection: close\r\n" ++
+            "\r\n",
+    );
+    try writer.interface.flush();
+
+    var last_seq: u64 = 0;
+    var ticks_since_send: usize = 0;
+    while (!runtime.shutdown.load(.acquire)) {
+        const snapshot = try cloneSnapshot(std.heap.page_allocator, runtime);
+        defer std.heap.page_allocator.free(snapshot.json);
+        if (snapshot.seq != last_seq) {
+            try writeStateEvent(&writer.interface, snapshot);
+            try writer.interface.flush();
+            last_seq = snapshot.seq;
+            ticks_since_send = 0;
+        } else {
+            ticks_since_send += 1;
+            if (ticks_since_send >= event_heartbeat_ticks) {
+                try writeHeartbeat(&writer.interface);
+                try writer.interface.flush();
+                ticks_since_send = 0;
+            }
+        }
+        std.Io.sleep(io, .{ .nanoseconds = event_poll_interval_ns }, .awake) catch {};
+    }
+}
+
+fn cloneSnapshot(allocator: std.mem.Allocator, runtime: *Runtime) !Snapshot {
+    const io = std.Io.Threaded.global_single_threaded.io();
     runtime.mutex.lockUncancelable(io);
-    const snapshot_json = std.heap.page_allocator.dupe(u8, runtime.snapshot_json) catch |err| {
+    const seq = runtime.snapshot_seq;
+    const snapshot_json = allocator.dupe(u8, runtime.snapshot_json) catch |err| {
         runtime.mutex.unlock(io);
         return err;
     };
     runtime.mutex.unlock(io);
-    defer std.heap.page_allocator.free(snapshot_json);
-    try respond(io, stream, .ok, "application/json", snapshot_json);
+    return .{ .json = snapshot_json, .seq = seq };
+}
+
+fn writeStateEvent(writer: *std.Io.Writer, snapshot: Snapshot) !void {
+    try writer.print("event: state\nid: {d}\n", .{snapshot.seq});
+    var lines = std.mem.splitScalar(u8, snapshot.json, '\n');
+    while (lines.next()) |line| {
+        try writer.print("data: {s}\n", .{line});
+    }
+    try writer.writeAll("\n");
+}
+
+fn writeHeartbeat(writer: *std.Io.Writer) !void {
+    try writer.writeAll(": keepalive\n\n");
 }
 
 fn handleMessagePost(io: std.Io, stream: *net.Stream, body: []const u8, runtime: *Runtime) !void {
@@ -315,6 +532,8 @@ fn handleMessagePost(io: std.Io, stream: *net.Stream, body: []const u8, runtime:
         try respond(io, stream, .bad_request, "text/plain; charset=utf-8", "Message is empty\n");
         return;
     }
+    runtime.prompt_mutex.lockUncancelable(io);
+    defer runtime.prompt_mutex.unlock(io);
     try writePromptFrame(runtime.prompt_write_fd, message);
     try respond(io, stream, .accepted, "application/json", "{\"ok\":true}");
 }
@@ -514,5 +733,6 @@ test "local remote-control URL host brackets IPv6 literals" {
 test "local remote-control request target token parsing" {
     try std.testing.expectEqualStrings("token=abc", requestQuery("/api/state?token=abc").?);
     try std.testing.expectEqualStrings("/api/state", requestPath("/api/state?token=abc"));
+    try std.testing.expectEqualStrings("/api/events", requestPath("/api/events?token=abc"));
     try std.testing.expectEqualStrings("/", requestPath("/"));
 }
