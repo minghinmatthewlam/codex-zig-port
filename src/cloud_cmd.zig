@@ -525,14 +525,17 @@ fn writePickerHelp() !void {
         \\Commands:
         \\  new [--env ENV_ID] [--attempts N] [--branch BRANCH] <PROMPT>
         \\                                 Create a task in the selected environment
-        \\  status <N|TASK_ID>             Show task status
-        \\  diff [--attempt N] <N|TASK_ID> Show a task diff
-        \\  apply [--attempt N] <N|TASK_ID> Apply a task diff locally
-        \\  refresh                        Reload the current page
-        \\  next                           Fetch the next page when available
+        \\  status|s <N|TASK_ID>           Show task status
+        \\  diff|d [--attempt N] <N|TASK_ID>
+        \\                                 Show a task diff
+        \\  apply|a [--attempt N] <N|TASK_ID>
+        \\                                 Apply a task diff locally
+        \\  refresh|r                      Reload the current page
+        \\  next|n                         Fetch the next page when available
         \\  env <ENV_ID_OR_LABEL>          Filter by environment
         \\  all                            Clear the environment filter
-        \\  quit                           Exit
+        \\  help|h                         Show this help
+        \\  quit|q                         Exit
         \\
     );
 }

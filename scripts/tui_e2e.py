@@ -4188,6 +4188,7 @@ def run_cloud_apply_command_smoke(
         cwd=picker_repo,
         env=env,
         input=(
+            "help\n"
             "env e2e environment\n"
             "new --attempts 2 --branch picker-branch write picker composer\n"
             "s 1\n"
@@ -4202,6 +4203,10 @@ def run_cloud_apply_command_smoke(
     picker_combined = picker.stdout + picker.stderr
     if "Cloud Tasks - all environments" not in picker_combined:
         raise AssertionError(f"expected cloud picker task list:\n{picker_combined}")
+    if "status|s <N|TASK_ID>" not in picker_combined:
+        raise AssertionError(f"expected cloud picker alias help:\n{picker_combined}")
+    if "apply|a [--attempt N] <N|TASK_ID>" not in picker_combined:
+        raise AssertionError(f"expected cloud picker apply alias help:\n{picker_combined}")
     if "1. [READY] Write cloud runtime" not in picker_combined:
         raise AssertionError(f"expected cloud picker indexed row:\n{picker_combined}")
     if "Cloud Tasks - env env-id" not in picker_combined:
