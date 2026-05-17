@@ -302,8 +302,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   resolves environment id or label filters, `status` and `diff` perform
   authenticated Cloud Tasks backend reads, and `diff` / `apply` resolve
   sibling attempts for `--attempt` selection before displaying or applying
-  Cloud diffs locally with `git apply --3way`, while the picker UI remains
-  planned
+  Cloud diffs locally with `git apply --3way`; top-level `cloud` opens a
+  line-oriented task picker for list/status/diff/apply workflows, while the
+  richer full-screen picker UI remains planned
 - print general or command-specific help with `help [COMMAND]`
 - generate shell completion scripts for bash, elvish, fish, powershell, and zsh
 
