@@ -13,8 +13,15 @@ default command timeouts, source metadata, user `hooks.state` enable/trust
 metadata from inline and table TOML shapes, malformed `hooks.json` warnings, and
 mixed `hooks.json` / TOML representation warnings, plus `[features].hooks`
 gating. Enabled local plugin-cache command hooks are listed when `[features]`
-enables `plugins` and `plugin_hooks`. Managed hooks and full config-layer parity
-remain planned.
+enables `plugins` and `plugin_hooks`. App-server `turn/start` now executes
+trusted `UserPromptSubmit` command hooks, sends Rust-shaped stdin payloads, emits
+`hook/started` / `hook/completed` lifecycle notifications, records additional
+context as developer messages for accepted turns, persists blocked-turn
+additional context as developer messages for the next accepted turn, and keeps
+untrusted or disabled hooks inert.
+Managed hooks, full config-layer parity, broader hook event execution, complete
+hook outcome parity, and broader developer-message context plumbing remain
+planned.
 
 Current app-server `config/read` coverage includes user `tools` config for
 `[tools.web_search]` `context_size`, `allowed_domains`, inline `location`, and
@@ -191,7 +198,8 @@ TypeScript and JSON Schema artifacts now include `HookExecutionMode`,
 `HookRunSummary`, `HookStartedNotification`, and `HookCompletedNotification`.
 They are exported through `v2/index.ts` and included in the top-level
 `ServerNotification` `"hook/started"` and `"hook/completed"` union variants.
-Runtime emission for hook lifecycle notifications remains planned.
+Runtime emission now covers trusted `UserPromptSubmit` command hooks during
+`turn/start`; other hook events and full hook outcome semantics remain planned.
 
 Additional app-server turn-update notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `TurnDiffUpdatedNotification`,
