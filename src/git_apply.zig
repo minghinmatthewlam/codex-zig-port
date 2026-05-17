@@ -15,6 +15,14 @@ pub const Result = struct {
 };
 
 pub fn applyUnifiedDiff(allocator: std.mem.Allocator, diff: []const u8) !Result {
+    return runGitApply(allocator, diff, false);
+}
+
+pub fn checkUnifiedDiff(allocator: std.mem.Allocator, diff: []const u8) !Result {
+    return runGitApply(allocator, diff, true);
+}
+
+fn runGitApply(allocator: std.mem.Allocator, diff: []const u8, check_only: bool) !Result {
     const git_root = try resolveGitRoot(allocator);
     defer allocator.free(git_root);
 
@@ -27,9 +35,16 @@ pub fn applyUnifiedDiff(allocator: std.mem.Allocator, diff: []const u8) !Result 
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
-    const argv = [_][]const u8{ "git", "apply", "--3way", patch_path };
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "git");
+    try argv.append(allocator, "apply");
+    if (check_only) try argv.append(allocator, "--check");
+    try argv.append(allocator, "--3way");
+    try argv.append(allocator, patch_path);
+
     const process_result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = &argv,
+        .argv = argv.items,
         .cwd = .{ .path = git_root },
         .stdout_limit = .limited(10 * 1024 * 1024),
         .stderr_limit = .limited(10 * 1024 * 1024),
