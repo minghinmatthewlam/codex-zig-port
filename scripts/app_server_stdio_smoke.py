@@ -6330,6 +6330,108 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-controls-", dir="/tmp"))
+    workspace = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-workspace-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-5.5"\nmodel_verbosity = "low"\n',
+            encoding="utf-8",
+        )
+        project_config_dir = workspace / ".codex"
+        project_config_dir.mkdir()
+        project_config_dir.joinpath("config.toml").write_text(
+            'model_verbosity = "high"\n',
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-project-model-controls",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            initialized = read_json_line(proc, 5)
+            assert initialized["id"] == "initialize-project-model-controls"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-project-model-controls",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(workspace),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                        "ephemeral": True,
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "thread-start-project-model-controls"
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-project-model-controls",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "project controls"}],
+                    },
+                },
+            )
+            assert_turn_start_rpc_completed(
+                proc, thread_id, "turn-start-project-model-controls"
+            )
+
+            assert server.request_paths == ["/responses"]
+            request = server.request_bodies[0]
+            assert request["model"] == "gpt-5.5"
+            assert request["text"]["verbosity"] == "high", request
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-plan-", dir="/tmp"))
@@ -18964,6 +19066,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             [
                 'model = "gpt-config"',
                 'review_model = "gpt-user-review"',
+                "model_context_window = 128000",
+                "model_auto_compact_token_limit = 96000",
+                'model_verbosity = "low"',
                 'profile = "work"',
                 'approval_policy = "never"',
                 'sandbox_mode = "danger-full-access"',
@@ -19003,6 +19108,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "",
                 "[features]",
                 "apps = false",
+                "",
+                "[profiles.work]",
+                'model_verbosity = "high"',
                 "",
                 "[profiles.work.features]",
                 "goals = true",
@@ -19095,6 +19203,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         config_body = config_read["result"]["config"]
         assert config_body["model"] == "gpt-config"
         assert config_body["review_model"] == "gpt-user-review"
+        assert config_body["model_context_window"] == 128000
+        assert config_body["model_auto_compact_token_limit"] == 96000
         assert config_body["approval_policy"] == "never"
         assert config_body["sandbox_mode"] == "danger-full-access"
         assert config_body["sandbox_workspace_write"] == {
@@ -19105,6 +19215,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         assert config_body["web_search"] == "live"
         assert config_body["model_reasoning_effort"] == "medium"
+        assert config_body["model_verbosity"] == "high"
         assert config_body["service_tier"] == "flex"
         assert config_body["forced_chatgpt_workspace_id"] == "acct-user"
         assert config_body["forced_login_method"] == "chatgpt"
@@ -19167,6 +19278,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         for key in [
             "model",
             "review_model",
+            "model_context_window",
+            "model_auto_compact_token_limit",
+            "model_verbosity",
             "profile",
             "approval_policy",
             "sandbox_mode",
@@ -19218,6 +19332,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert layers[0]["config"] == {
             "model": "gpt-config",
             "review_model": "gpt-user-review",
+            "model_context_window": 128000,
+            "model_auto_compact_token_limit": 96000,
+            "model_verbosity": "high",
             "profile": "work",
             "approval_policy": "never",
             "sandbox_mode": "danger-full-access",
@@ -20641,6 +20758,9 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
             [
                 'model = "gpt-managed"',
                 'review_model = "gpt-managed-review"',
+                "model_context_window = 256000",
+                "model_auto_compact_token_limit = 192000",
+                'model_verbosity = "high"',
                 'approval_policy = "never"',
                 "",
             ]
@@ -20698,6 +20818,32 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         }
         assert review_metadata["effectiveValue"] == "gpt-managed-review"
 
+        write_context_overridden = rpc(
+            "config-write-managed-context-overridden",
+            "config/value/write",
+            {
+                "keyPath": "model_context_window",
+                "value": 128000,
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_context_overridden["id"] == "config-write-managed-context-overridden"
+        assert write_context_overridden["result"]["status"] == "okOverridden"
+        assert write_context_overridden["result"]["overriddenMetadata"]["effectiveValue"] == 256000
+
+        write_verbosity_overridden = rpc(
+            "config-write-managed-verbosity-overridden",
+            "config/value/write",
+            {
+                "keyPath": "model_verbosity",
+                "value": "low",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_verbosity_overridden["id"] == "config-write-managed-verbosity-overridden"
+        assert write_verbosity_overridden["result"]["status"] == "okOverridden"
+        assert write_verbosity_overridden["result"]["overriddenMetadata"]["effectiveValue"] == "high"
+
         write_overridden = rpc(
             "config-write-managed-overridden",
             "config/value/write",
@@ -20723,6 +20869,9 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         after_write = rpc("config-read-after-overridden-write", "config/read", {})
         assert after_write["id"] == "config-read-after-overridden-write"
         assert after_write["result"]["config"]["review_model"] == "gpt-managed-review"
+        assert after_write["result"]["config"]["model_context_window"] == 256000
+        assert after_write["result"]["config"]["model_auto_compact_token_limit"] == 192000
+        assert after_write["result"]["config"]["model_verbosity"] == "high"
         assert after_write["result"]["config"]["approval_policy"] == "never"
 
         batch = rpc(
@@ -34700,6 +34849,8 @@ def main() -> None:
     print("app-server-unmaterialized-thread-history-e2e: ok")
     run_turn_start_rpc_smoke(binary)
     print("app-server-turn-start-rpc-e2e: ok")
+    run_turn_project_model_controls_rpc_smoke(binary)
+    print("app-server-turn-project-model-controls-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
     print("app-server-turn-plan-updated-notification-e2e: ok")
     run_turn_reasoning_notification_smoke(binary)

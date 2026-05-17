@@ -164,6 +164,9 @@ const LoadedThread = struct {
     forked_from_id: ?[]const u8,
     preview: []const u8,
     model: []const u8,
+    model_context_window: ?i64,
+    model_auto_compact_token_limit: ?i64,
+    model_verbosity: ?[]const u8,
     model_provider: []const u8,
     service_tier: ?[]const u8,
     cwd: []const u8,
@@ -207,6 +210,7 @@ const LoadedThread = struct {
         if (self.forked_from_id) |value| allocator.free(value);
         allocator.free(self.preview);
         allocator.free(self.model);
+        if (self.model_verbosity) |value| allocator.free(value);
         allocator.free(self.model_provider);
         if (self.service_tier) |value| allocator.free(value);
         allocator.free(self.cwd);
@@ -238,6 +242,9 @@ const LoadedThread = struct {
 
 const LoadedThreadRuntimeOverrides = struct {
     model: bool = false,
+    model_context_window: bool = false,
+    model_auto_compact_token_limit: bool = false,
+    model_verbosity: bool = false,
     model_provider: bool = false,
     service_tier: bool = false,
     approval_policy: bool = false,
@@ -26531,6 +26538,58 @@ test "turn-start parses external sandbox policy" {
     try std.testing.expect(policy.network_enabled);
 }
 
+test "turn-start preserves loaded thread model controls" {
+    const allocator = std.testing.allocator;
+    var start_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer start_cfg.deinit(allocator);
+    start_cfg.model_context_window = 1234;
+    start_cfg.model_auto_compact_token_limit = 567;
+    start_cfg.model_verbosity = .high;
+
+    var start_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true}", .{});
+    defer start_params.deinit();
+
+    var thread = try createLoadedThreadFromStartParams(allocator, start_cfg, start_params.value.object);
+    defer thread.deinit(allocator);
+
+    var turn_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer turn_cfg.deinit(allocator);
+    turn_cfg.model_context_window = 1;
+    turn_cfg.model_auto_compact_token_limit = 2;
+    turn_cfg.model_verbosity = .low;
+
+    var turn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer turn_params.deinit();
+
+    try applyTurnStartRuntimeOverrides(allocator, &turn_cfg, &thread, turn_params.value.object);
+    try std.testing.expectEqual(@as(?i64, 1234), turn_cfg.model_context_window);
+    try std.testing.expectEqual(@as(?i64, 567), turn_cfg.model_auto_compact_token_limit);
+    try std.testing.expectEqual(config.Verbosity.high, turn_cfg.model_verbosity.?);
+    try std.testing.expectEqualStrings("high", thread.model_verbosity.?);
+}
+
+fn testAppServerConfig(allocator: std.mem.Allocator, model: []const u8) !config.Config {
+    return .{
+        .codex_home = try allocator.dupe(u8, "/tmp/codex-zig-app-server-test"),
+        .active_profile = null,
+        .model = try allocator.dupe(u8, model),
+        .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .oss_provider = null,
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .never,
+        .sandbox_mode = .read_only,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+}
+
 fn applyTurnStartRuntimeOverrides(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -26553,6 +26612,14 @@ fn applyTurnStartRuntimeOverrides(
     } else if (optionalStringParam(params, "model")) |model| {
         try replaceOwnedString(allocator, &thread.model, model);
         thread.runtime_overrides.model = true;
+    }
+
+    cfg.model_context_window = thread.model_context_window;
+    cfg.model_auto_compact_token_limit = thread.model_auto_compact_token_limit;
+    if (thread.model_verbosity) |value| {
+        cfg.model_verbosity = config.Verbosity.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_verbosity = null;
     }
 
     if (optionalStringParam(params, "cwd")) |cwd_raw| {
@@ -29649,10 +29716,13 @@ fn applyThreadStartProjectLayersToConfig(
     project_layers: ConfigReadProjectLayers,
 ) !void {
     if (project_layers.model()) |value| try replaceConfigOwnedString(allocator, &cfg.model, value);
+    if (project_layers.modelContextWindow()) |value| cfg.model_context_window = value;
+    if (project_layers.modelAutoCompactTokenLimit()) |value| cfg.model_auto_compact_token_limit = value;
     if (project_layers.approvalPolicy()) |value| cfg.approval_policy = value;
     if (project_layers.sandboxMode()) |value| cfg.sandbox_mode = value;
     if (project_layers.webSearchMode()) |value| cfg.web_search_mode = value;
     if (project_layers.modelReasoningEffort()) |value| cfg.model_reasoning_effort = value;
+    if (project_layers.modelVerbosity()) |value| cfg.model_verbosity = value;
     if (project_layers.serviceTier()) |value| try replaceConfigOptionalString(allocator, &cfg.service_tier, value);
     if (project_layers.forcedLoginMethod()) |value| cfg.forced_login_method = value;
     if (project_layers.forcedChatGptWorkspaceId()) |value| {
@@ -29935,6 +30005,9 @@ fn createLoadedThreadFromStartParams(
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
 
+    const model_verbosity = try threadModelVerbosity(allocator, cfg);
+    errdefer if (model_verbosity) |value| allocator.free(value);
+
     const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
     defer if (configured_model_provider) |value| allocator.free(value);
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
@@ -30002,6 +30075,9 @@ fn createLoadedThreadFromStartParams(
         .forked_from_id = null,
         .preview = preview,
         .model = model,
+        .model_context_window = cfg.model_context_window,
+        .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
+        .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
         .cwd = cwd,
@@ -30019,6 +30095,9 @@ fn createLoadedThreadFromStartParams(
         .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
+            .model_context_window = false,
+            .model_auto_compact_token_limit = false,
+            .model_verbosity = false,
             .model_provider = paramPresent(params, "modelProvider"),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
@@ -30074,6 +30153,9 @@ fn createLoadedThreadFromHistoryParams(
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
 
+    const model_verbosity = try threadModelVerbosity(allocator, cfg);
+    errdefer if (model_verbosity) |value| allocator.free(value);
+
     const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
     defer if (configured_model_provider) |value| allocator.free(value);
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
@@ -30128,6 +30210,9 @@ fn createLoadedThreadFromHistoryParams(
         .forked_from_id = null,
         .preview = preview,
         .model = model,
+        .model_context_window = cfg.model_context_window,
+        .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
+        .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
         .cwd = cwd,
@@ -30145,6 +30230,9 @@ fn createLoadedThreadFromHistoryParams(
         .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
+            .model_context_window = false,
+            .model_auto_compact_token_limit = false,
+            .model_verbosity = false,
             .model_provider = paramPresent(params, "modelProvider"),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
@@ -30222,6 +30310,9 @@ fn createLoadedThreadFromResumeParams(
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
 
+    const model_verbosity = try threadModelVerbosity(allocator, cfg);
+    errdefer if (model_verbosity) |value| allocator.free(value);
+
     const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
     defer if (configured_model_provider) |value| allocator.free(value);
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse transcript.model_provider orelse configured_model_provider orelse "openai");
@@ -30267,6 +30358,9 @@ fn createLoadedThreadFromResumeParams(
         .forked_from_id = forked_from_id,
         .preview = preview,
         .model = model,
+        .model_context_window = cfg.model_context_window,
+        .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
+        .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
         .cwd = cwd,
@@ -30284,6 +30378,9 @@ fn createLoadedThreadFromResumeParams(
         .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model"),
+            .model_context_window = false,
+            .model_auto_compact_token_limit = false,
+            .model_verbosity = false,
             .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
@@ -30362,6 +30459,12 @@ fn createLoadedThreadFromForkParams(
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse source.model);
     errdefer allocator.free(model);
+
+    const model_verbosity = if (source.model_verbosity) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (model_verbosity) |value| allocator.free(value);
 
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse source.model_provider);
     errdefer allocator.free(model_provider);
@@ -30450,6 +30553,9 @@ fn createLoadedThreadFromForkParams(
         .forked_from_id = forked_from_id,
         .preview = preview,
         .model = model,
+        .model_context_window = source.model_context_window,
+        .model_auto_compact_token_limit = source.model_auto_compact_token_limit,
+        .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
         .cwd = cwd,
@@ -30467,6 +30573,9 @@ fn createLoadedThreadFromForkParams(
         .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
             .model = paramPresent(params, "model") or source.runtime_overrides.model,
+            .model_context_window = source.runtime_overrides.model_context_window,
+            .model_auto_compact_token_limit = source.runtime_overrides.model_auto_compact_token_limit,
+            .model_verbosity = source.runtime_overrides.model_verbosity,
             .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
             .service_tier = paramPresent(params, "serviceTier") or source.runtime_overrides.service_tier,
             .approval_policy = paramPresent(params, "approvalPolicy") or source.runtime_overrides.approval_policy,
@@ -30524,6 +30633,14 @@ fn lifecycleServiceTier(
         return try allocator.dupe(u8, value.string);
     }
     if (default_value) |value| return try allocator.dupe(u8, value);
+    return null;
+}
+
+fn threadModelVerbosity(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+) !?[]const u8 {
+    if (cfg.model_verbosity) |verbosity| return try allocator.dupe(u8, verbosity.label());
     return null;
 }
 
@@ -43967,6 +44084,23 @@ fn appendJsonU64Field(
     try result.appendSlice(allocator, value_json);
 }
 
+fn appendJsonMaybeI64Field(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?i64,
+) !void {
+    try appendJsonFieldName(allocator, result, first, name);
+    if (value) |number| {
+        const value_json = try std.fmt.allocPrint(allocator, "{d}", .{number});
+        defer allocator.free(value_json);
+        try result.appendSlice(allocator, value_json);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
 const ConfigRawEdit = struct {
     key_path: []const u8,
     value: std.json.Value,
@@ -44048,6 +44182,19 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
     for (state.loaded_threads.items) |*thread| {
         if (!thread.runtime_overrides.model) {
             try replaceOwnedString(allocator, &thread.model, cfg.model);
+        }
+        if (!thread.runtime_overrides.model_context_window) {
+            thread.model_context_window = cfg.model_context_window;
+        }
+        if (!thread.runtime_overrides.model_auto_compact_token_limit) {
+            thread.model_auto_compact_token_limit = cfg.model_auto_compact_token_limit;
+        }
+        if (!thread.runtime_overrides.model_verbosity) {
+            if (cfg.model_verbosity) |verbosity| {
+                try replaceOptionalOwnedString(allocator, &thread.model_verbosity, verbosity.label());
+            } else {
+                clearOptionalOwnedString(allocator, &thread.model_verbosity);
+            }
         }
         if (!thread.runtime_overrides.model_provider) {
             try replaceOwnedString(allocator, &thread.model_provider, model_provider);
@@ -44180,8 +44327,10 @@ fn handleConfigWriteEdits(
             error.InvalidSandboxMode,
             error.InvalidWebSearchMode,
             error.InvalidReasoningEffort,
+            error.InvalidVerbosity,
             error.InvalidForcedLoginMethod,
             error.InvalidConfigWriteScalarType,
+            error.InvalidTomlInteger,
             => {
                 const message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{@errorName(err)});
                 defer allocator.free(message);
@@ -44585,6 +44734,10 @@ fn renderManagedConfigWriteOverrideValueJson(
         if (layer.model) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "review_model")) {
         if (layer.review_model) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "model_context_window")) {
+        if (layer.model_context_window) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "model_auto_compact_token_limit")) {
+        if (layer.model_auto_compact_token_limit) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (layer.approval_policy) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "sandbox_mode")) {
@@ -44593,6 +44746,8 @@ fn renderManagedConfigWriteOverrideValueJson(
         if (layer.web_search_mode) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "model_reasoning_effort")) {
         if (layer.model_reasoning_effort) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "model_verbosity")) {
+        if (layer.model_verbosity) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "service_tier")) {
         if (layer.service_tier) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "forced_chatgpt_workspace_id")) {
@@ -44614,6 +44769,16 @@ fn renderStringOverrideValue(
     return value_json;
 }
 
+fn renderI64OverrideValue(
+    allocator: std.mem.Allocator,
+    effective_value: i64,
+    key_path: []const u8,
+    user_config_bytes: []const u8,
+) !?[]const u8 {
+    if (try configWriteUserI64Equals(user_config_bytes, key_path, effective_value)) return null;
+    return @as(?[]const u8, try std.fmt.allocPrint(allocator, "{d}", .{effective_value}));
+}
+
 fn configWriteUserScalarEquals(
     allocator: std.mem.Allocator,
     user_config_bytes: []const u8,
@@ -44623,6 +44788,15 @@ fn configWriteUserScalarEquals(
     const user_value = try configWriteUserScalarValue(allocator, user_config_bytes, key_path) orelse return false;
     defer allocator.free(user_value);
     return std.mem.eql(u8, user_value, expected);
+}
+
+fn configWriteUserI64Equals(
+    user_config_bytes: []const u8,
+    key_path: []const u8,
+    expected: i64,
+) !bool {
+    const user_value = try configWriteUserI64Value(user_config_bytes, key_path) orelse return false;
+    return user_value == expected;
 }
 
 fn configWriteUserScalarValue(
@@ -44635,6 +44809,14 @@ fn configWriteUserScalarValue(
     }
     if (std.mem.eql(u8, key_path, "review_model")) {
         return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "review_model");
+    }
+    if (std.mem.eql(u8, key_path, "model_verbosity")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model_verbosity")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.Verbosity.parse(value)).label());
+            return normalized;
+        }
+        return null;
     }
     if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "approval_policy")) |value| {
@@ -44696,6 +44878,16 @@ fn configWriteUserScalarValue(
     return null;
 }
 
+fn configWriteUserI64Value(user_config_bytes: []const u8, key_path: []const u8) !?i64 {
+    if (std.mem.eql(u8, key_path, "model_context_window")) {
+        return configWriteRequiredTopLevelI64Value(user_config_bytes, "model_context_window");
+    }
+    if (std.mem.eql(u8, key_path, "model_auto_compact_token_limit")) {
+        return configWriteRequiredTopLevelI64Value(user_config_bytes, "model_auto_compact_token_limit");
+    }
+    return null;
+}
+
 fn configWriteRequiredTopLevelStringValue(
     allocator: std.mem.Allocator,
     user_config_bytes: []const u8,
@@ -44703,6 +44895,11 @@ fn configWriteRequiredTopLevelStringValue(
 ) !?[]const u8 {
     _ = configReadTopLevelRawValue(user_config_bytes, key) orelse return null;
     return (try config.topLevelStringValue(allocator, user_config_bytes, key)) orelse error.InvalidConfigWriteScalarType;
+}
+
+fn configWriteRequiredTopLevelI64Value(user_config_bytes: []const u8, key: []const u8) !?i64 {
+    _ = configReadTopLevelRawValue(user_config_bytes, key) orelse return null;
+    return (try config.topLevelI64Value(user_config_bytes, key)) orelse error.InvalidConfigWriteScalarType;
 }
 
 fn renderManagedConfigWriteOverrideMetadata(
@@ -44779,6 +44976,14 @@ fn renderConfigReadResponse(
     const managed_review_model = if (managed_layer) |layer| layer.review_model else null;
     const review_model = managed_review_model orelse project_layers.reviewModel() orelse configReadUserOrSystemMaybeString(cfg.review_model, user_layer, "review_model", system_review_model);
     try appendJsonMaybeStringField(allocator, &result, &first, "review_model", review_model);
+    const system_model_context_window = if (system_layer) |layer| layer.model_context_window else null;
+    const managed_model_context_window = if (managed_layer) |layer| layer.model_context_window else null;
+    const model_context_window = managed_model_context_window orelse project_layers.modelContextWindow() orelse configReadUserOrSystemMaybeI64(cfg.model_context_window, user_layer, "model_context_window", system_model_context_window);
+    try appendJsonMaybeI64Field(allocator, &result, &first, "model_context_window", model_context_window);
+    const system_model_auto_compact_token_limit = if (system_layer) |layer| layer.model_auto_compact_token_limit else null;
+    const managed_model_auto_compact_token_limit = if (managed_layer) |layer| layer.model_auto_compact_token_limit else null;
+    const model_auto_compact_token_limit = managed_model_auto_compact_token_limit orelse project_layers.modelAutoCompactTokenLimit() orelse configReadUserOrSystemMaybeI64(cfg.model_auto_compact_token_limit, user_layer, "model_auto_compact_token_limit", system_model_auto_compact_token_limit);
+    try appendJsonMaybeI64Field(allocator, &result, &first, "model_auto_compact_token_limit", model_auto_compact_token_limit);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
     const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
     const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
@@ -44807,6 +45012,10 @@ fn renderConfigReadResponse(
     const managed_model_reasoning_effort = if (managed_layer) |layer| layer.model_reasoning_effort else null;
     const model_reasoning_effort = managed_model_reasoning_effort orelse project_layers.modelReasoningEffort() orelse configReadUserOrSystemReasoningEffort(cfg.model_reasoning_effort, user_layer, system_model_reasoning_effort);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_reasoning_effort", if (model_reasoning_effort) |effort| effort.label() else null);
+    const system_model_verbosity = if (system_layer) |layer| layer.model_verbosity else null;
+    const managed_model_verbosity = if (managed_layer) |layer| layer.model_verbosity else null;
+    const model_verbosity = managed_model_verbosity orelse project_layers.modelVerbosity() orelse configReadUserOrSystemVerbosity(cfg.model_verbosity, user_layer, system_model_verbosity);
+    try appendJsonMaybeStringField(allocator, &result, &first, "model_verbosity", if (model_verbosity) |verbosity| verbosity.label() else null);
     const system_service_tier = if (system_layer) |layer| layer.service_tier else null;
     const managed_service_tier = if (managed_layer) |layer| layer.service_tier else null;
     const service_tier = managed_service_tier orelse project_layers.serviceTier() orelse configReadUserOrSystemMaybeString(cfg.service_tier, user_layer, "service_tier", system_service_tier);
@@ -44830,10 +45039,13 @@ const ConfigReadManagedLayer = struct {
     origin_keys: []const []const u8,
     model: ?[]const u8 = null,
     review_model: ?[]const u8 = null,
+    model_context_window: ?i64 = null,
+    model_auto_compact_token_limit: ?i64 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     web_search_mode: ?config.WebSearchMode = null,
     model_reasoning_effort: ?config.ReasoningEffort = null,
+    model_verbosity: ?config.Verbosity = null,
     service_tier: ?[]const u8 = null,
     forced_chatgpt_workspace_id: ?[]const u8 = null,
     forced_login_method: ?config.ForcedLoginMethod = null,
@@ -44877,10 +45089,13 @@ const ConfigReadProjectLayer = struct {
     origin_keys: []const []const u8,
     model: ?[]const u8,
     review_model: ?[]const u8,
+    model_context_window: ?i64,
+    model_auto_compact_token_limit: ?i64,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
+    model_verbosity: ?config.Verbosity,
     service_tier: ?[]const u8,
     forced_chatgpt_workspace_id: ?[]const u8,
     forced_login_method: ?config.ForcedLoginMethod,
@@ -44909,10 +45124,13 @@ const ConfigReadSystemLayer = struct {
     origin_keys: []const []const u8,
     model: ?[]const u8,
     review_model: ?[]const u8,
+    model_context_window: ?i64,
+    model_auto_compact_token_limit: ?i64,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
+    model_verbosity: ?config.Verbosity,
     service_tier: ?[]const u8,
     forced_chatgpt_workspace_id: ?[]const u8,
     forced_login_method: ?config.ForcedLoginMethod,
@@ -44955,6 +45173,16 @@ fn configReadUserOrSystemMaybeString(
     return system_value orelse user_value;
 }
 
+fn configReadUserOrSystemMaybeI64(
+    user_value: ?i64,
+    user_layer: ?ConfigReadUserLayer,
+    key: []const u8,
+    system_value: ?i64,
+) ?i64 {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, key) else false) return user_value;
+    return system_value orelse user_value;
+}
+
 fn configReadUserOrSystemApprovalPolicy(
     user_value: config.ApprovalPolicy,
     user_layer: ?ConfigReadUserLayer,
@@ -44988,6 +45216,15 @@ fn configReadUserOrSystemReasoningEffort(
     system_value: ?config.ReasoningEffort,
 ) ?config.ReasoningEffort {
     if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "model_reasoning_effort") else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemVerbosity(
+    user_value: ?config.Verbosity,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.Verbosity,
+) ?config.Verbosity {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "model_verbosity") else false) return user_value;
     return system_value orelse user_value;
 }
 
@@ -45026,6 +45263,20 @@ const ConfigReadProjectLayers = struct {
         return null;
     }
 
+    fn modelContextWindow(self: ConfigReadProjectLayers) ?i64 {
+        for (self.items) |layer| {
+            if (layer.model_context_window) |value| return value;
+        }
+        return null;
+    }
+
+    fn modelAutoCompactTokenLimit(self: ConfigReadProjectLayers) ?i64 {
+        for (self.items) |layer| {
+            if (layer.model_auto_compact_token_limit) |value| return value;
+        }
+        return null;
+    }
+
     fn approvalPolicy(self: ConfigReadProjectLayers) ?config.ApprovalPolicy {
         for (self.items) |layer| {
             if (layer.approval_policy) |policy| return policy;
@@ -45050,6 +45301,13 @@ const ConfigReadProjectLayers = struct {
     fn modelReasoningEffort(self: ConfigReadProjectLayers) ?config.ReasoningEffort {
         for (self.items) |layer| {
             if (layer.model_reasoning_effort) |effort| return effort;
+        }
+        return null;
+    }
+
+    fn modelVerbosity(self: ConfigReadProjectLayers) ?config.Verbosity {
+        for (self.items) |layer| {
+            if (layer.model_verbosity) |verbosity| return verbosity;
         }
         return null;
     }
@@ -45922,10 +46180,13 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     errdefer if (model) |value| allocator.free(value);
     var review_model: ?[]const u8 = null;
     errdefer if (review_model) |value| allocator.free(value);
+    var model_context_window: ?i64 = null;
+    var model_auto_compact_token_limit: ?i64 = null;
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var model_verbosity: ?config.Verbosity = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
     var forced_chatgpt_workspace_id: ?[]const u8 = null;
@@ -45943,6 +46204,14 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     if (try config.topLevelStringValue(allocator, payload, "review_model")) |value| {
         review_model = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
+    }
+    if (try config.topLevelI64Value(payload, "model_context_window")) |value| {
+        model_context_window = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_context_window");
+    }
+    if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
+        model_auto_compact_token_limit = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -45963,6 +46232,11 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         defer allocator.free(value);
         model_reasoning_effort = try config.ReasoningEffort.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_verbosity")) |value| {
+        defer allocator.free(value);
+        model_verbosity = try config.Verbosity.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_verbosity");
     }
     if (try config.topLevelStringValue(allocator, payload, "service_tier")) |value| {
         defer allocator.free(value);
@@ -45996,10 +46270,13 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .origin_keys = owned_origin_keys,
         .model = model,
         .review_model = review_model,
+        .model_context_window = model_context_window,
+        .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
+        .model_verbosity = model_verbosity,
         .service_tier = service_tier,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
@@ -46026,10 +46303,13 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     errdefer if (model) |value| allocator.free(value);
     var review_model: ?[]const u8 = null;
     errdefer if (review_model) |value| allocator.free(value);
+    var model_context_window: ?i64 = null;
+    var model_auto_compact_token_limit: ?i64 = null;
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var model_verbosity: ?config.Verbosity = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
     var forced_chatgpt_workspace_id: ?[]const u8 = null;
@@ -46047,6 +46327,14 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     if (try config.topLevelStringValue(allocator, payload, "review_model")) |value| {
         review_model = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
+    }
+    if (try config.topLevelI64Value(payload, "model_context_window")) |value| {
+        model_context_window = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_context_window");
+    }
+    if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
+        model_auto_compact_token_limit = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -46067,6 +46355,11 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         defer allocator.free(value);
         model_reasoning_effort = try config.ReasoningEffort.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_verbosity")) |value| {
+        defer allocator.free(value);
+        model_verbosity = try config.Verbosity.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_verbosity");
     }
     if (try config.topLevelStringValue(allocator, payload, "service_tier")) |value| {
         defer allocator.free(value);
@@ -46100,10 +46393,13 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .origin_keys = owned_origin_keys,
         .model = model,
         .review_model = review_model,
+        .model_context_window = model_context_window,
+        .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
+        .model_verbosity = model_verbosity,
         .service_tier = service_tier,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
@@ -46347,10 +46643,13 @@ fn loadConfigReadProjectLayer(
     errdefer if (model) |value| allocator.free(value);
     var review_model: ?[]const u8 = null;
     errdefer if (review_model) |value| allocator.free(value);
+    var model_context_window: ?i64 = null;
+    var model_auto_compact_token_limit: ?i64 = null;
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
+    var model_verbosity: ?config.Verbosity = null;
     var service_tier: ?[]const u8 = null;
     errdefer if (service_tier) |value| allocator.free(value);
     var forced_chatgpt_workspace_id: ?[]const u8 = null;
@@ -46371,6 +46670,14 @@ fn loadConfigReadProjectLayer(
             review_model = value;
             try appendUniqueOriginKey(allocator, &origin_keys, "review_model");
         }
+        if (try config.topLevelI64Value(config_bytes, "model_context_window")) |value| {
+            model_context_window = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "model_context_window");
+        }
+        if (try config.topLevelI64Value(config_bytes, "model_auto_compact_token_limit")) |value| {
+            model_auto_compact_token_limit = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+        }
         if (try config.topLevelStringValue(allocator, config_bytes, "approval_policy")) |value| {
             defer allocator.free(value);
             approval_policy = try config.ApprovalPolicy.parse(value);
@@ -46390,6 +46697,11 @@ fn loadConfigReadProjectLayer(
             defer allocator.free(value);
             model_reasoning_effort = try config.ReasoningEffort.parse(value);
             try appendUniqueOriginKey(allocator, &origin_keys, "model_reasoning_effort");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "model_verbosity")) |value| {
+            defer allocator.free(value);
+            model_verbosity = try config.Verbosity.parse(value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "model_verbosity");
         }
         if (try config.topLevelStringValue(allocator, config_bytes, "service_tier")) |value| {
             defer allocator.free(value);
@@ -46421,10 +46733,13 @@ fn loadConfigReadProjectLayer(
         .origin_keys = owned_origin_keys,
         .model = model,
         .review_model = review_model,
+        .model_context_window = model_context_window,
+        .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
+        .model_verbosity = model_verbosity,
         .service_tier = service_tier,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
@@ -46464,6 +46779,8 @@ fn profileSectionNameMatches(raw_name: []const u8, profile: []const u8) bool {
 fn isConfigReadOriginField(key: []const u8) bool {
     return std.mem.eql(u8, key, "model") or
         std.mem.eql(u8, key, "review_model") or
+        std.mem.eql(u8, key, "model_context_window") or
+        std.mem.eql(u8, key, "model_auto_compact_token_limit") or
         std.mem.eql(u8, key, "profile") or
         std.mem.eql(u8, key, "approval_policy") or
         std.mem.eql(u8, key, "sandbox_mode") or
@@ -46471,6 +46788,7 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "forced_login_method") or
         std.mem.eql(u8, key, "web_search") or
         std.mem.eql(u8, key, "model_reasoning_effort") or
+        std.mem.eql(u8, key, "model_verbosity") or
         std.mem.eql(u8, key, "service_tier") or
         std.mem.eql(u8, key, "oss_provider") or
         std.mem.eql(u8, key, "openai_base_url") or
@@ -47374,6 +47692,10 @@ fn appendConfigReadProjectLayerConfig(
             if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
         } else if (std.mem.eql(u8, key, "review_model")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.review_model);
+        } else if (std.mem.eql(u8, key, "model_context_window")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
+        } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -47386,6 +47708,8 @@ fn appendConfigReadProjectLayerConfig(
             if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_reasoning_effort) |effort| effort.label() else null);
+        } else if (std.mem.eql(u8, key, "model_verbosity")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_verbosity) |verbosity| verbosity.label() else null);
         } else if (std.mem.eql(u8, key, "service_tier")) {
             if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, key, value);
         }
@@ -47414,12 +47738,15 @@ fn appendConfigReadManagedLayerConfig(
     var first = true;
     if (layer.model) |value| try appendJsonStringField(allocator, result, &first, "model", value);
     if (layer.review_model) |value| try appendJsonStringField(allocator, result, &first, "review_model", value);
+    if (layer.model_context_window) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_context_window", value);
+    if (layer.model_auto_compact_token_limit) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_auto_compact_token_limit", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
     if (layer.forced_chatgpt_workspace_id) |value| try appendJsonStringField(allocator, result, &first, "forced_chatgpt_workspace_id", value);
     if (layer.forced_login_method) |method| try appendJsonStringField(allocator, result, &first, "forced_login_method", method.label());
     if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, "web_search", mode.label());
     if (layer.model_reasoning_effort) |effort| try appendJsonStringField(allocator, result, &first, "model_reasoning_effort", effort.label());
+    if (layer.model_verbosity) |verbosity| try appendJsonStringField(allocator, result, &first, "model_verbosity", verbosity.label());
     if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, "service_tier", value);
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
@@ -47448,6 +47775,10 @@ fn appendConfigReadSystemLayerConfig(
             if (layer.model) |value| try appendJsonStringField(allocator, result, &first, key, value);
         } else if (std.mem.eql(u8, key, "review_model")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.review_model);
+        } else if (std.mem.eql(u8, key, "model_context_window")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
+        } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -47460,6 +47791,8 @@ fn appendConfigReadSystemLayerConfig(
             if (layer.web_search_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_reasoning_effort) |effort| effort.label() else null);
+        } else if (std.mem.eql(u8, key, "model_verbosity")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (layer.model_verbosity) |verbosity| verbosity.label() else null);
         } else if (std.mem.eql(u8, key, "service_tier")) {
             if (layer.service_tier) |value| try appendJsonStringField(allocator, result, &first, key, value);
         }
@@ -47492,6 +47825,10 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonStringField(allocator, result, &first, key, cfg.model);
         } else if (std.mem.eql(u8, key, "review_model")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.review_model);
+        } else if (std.mem.eql(u8, key, "model_context_window")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, cfg.model_context_window);
+        } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
+            try appendJsonMaybeI64Field(allocator, result, &first, key, cfg.model_auto_compact_token_limit);
         } else if (std.mem.eql(u8, key, "profile")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.active_profile);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
@@ -47506,6 +47843,8 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.web_search_mode) |mode| mode.label() else null);
         } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.model_reasoning_effort) |effort| effort.label() else null);
+        } else if (std.mem.eql(u8, key, "model_verbosity")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, if (cfg.model_verbosity) |verbosity| verbosity.label() else null);
         } else if (std.mem.eql(u8, key, "service_tier")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.service_tier);
         } else if (std.mem.eql(u8, key, "oss_provider")) {
