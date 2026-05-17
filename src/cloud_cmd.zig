@@ -246,7 +246,15 @@ fn runList(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     var runtime = try initRuntime(allocator, parsed);
     defer runtime.deinit(allocator);
 
-    const url = try buildListUrl(allocator, runtime.base_url, parsed.list);
+    var list_options = parsed.list;
+    const environment = if (parsed.list.environment) |requested|
+        try resolveEnvironmentId(allocator, runtime, requested)
+    else
+        null;
+    defer if (environment) |value| allocator.free(value);
+    list_options.environment = environment;
+
+    const url = try buildListUrl(allocator, runtime.base_url, list_options);
     defer allocator.free(url);
     const body = try fetchCloudTasks(allocator, runtime, url);
     defer allocator.free(body);
