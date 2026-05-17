@@ -23,6 +23,7 @@ const modules = .{
     @import("feedback_state.zig"),
     @import("feedback_upload.zig"),
     @import("fuzzy_file_search.zig"),
+    @import("git_apply.zig"),
     @import("git_diff.zig"),
     @import("git_remote_diff.zig"),
     @import("hooks_list.zig"),

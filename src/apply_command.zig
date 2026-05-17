@@ -3,7 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
-const env = @import("env.zig");
+const git_apply = @import("git_apply.zig");
 
 const ApplyArgs = struct {
     help: bool = false,
@@ -160,89 +160,18 @@ fn extractPrDiff(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
 }
 
 fn applyGitDiff(allocator: std.mem.Allocator, diff: []const u8) !void {
-    const git_root = try resolveGitRoot(allocator);
-    defer allocator.free(git_root);
-
-    const patch_path = try writeTemporaryPatch(allocator, diff);
-    defer {
-        std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), patch_path) catch {};
-        allocator.free(patch_path);
-    }
-
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    const argv = [_][]const u8{ "git", "apply", "--3way", patch_path };
-    const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = &argv,
-        .cwd = .{ .path = git_root },
-        .stdout_limit = .limited(10 * 1024 * 1024),
-        .stderr_limit = .limited(10 * 1024 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    var result = try git_apply.applyUnifiedDiff(allocator, diff);
+    defer result.deinit(allocator);
 
     try cli_utils.writeStdout(result.stdout);
     try cli_utils.writeStderr(result.stderr);
 
-    switch (result.term) {
-        .exited => |code| {
-            if (code == 0) {
-                try cli_utils.writeStdout("Successfully applied diff\n");
-                return;
-            }
-            std.debug.print("Git apply failed (exit {d})\n", .{code});
-            return error.GitApplyFailed;
-        },
-        else => return error.GitApplyTerminated,
+    if (result.exit_code == 0) {
+        try cli_utils.writeStdout("Successfully applied diff\n");
+        return;
     }
-}
-
-fn resolveGitRoot(allocator: std.mem.Allocator) ![]const u8 {
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    const argv = [_][]const u8{ "git", "rev-parse", "--show-toplevel" };
-    const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = &argv,
-        .stdout_limit = .limited(128 * 1024),
-        .stderr_limit = .limited(128 * 1024),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    switch (result.term) {
-        .exited => |code| if (code != 0) {
-            try cli_utils.writeStderr(result.stderr);
-            return error.NotGitRepository;
-        },
-        else => return error.GitRevParseTerminated,
-    }
-
-    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
-    if (trimmed.len == 0) return error.EmptyGitRoot;
-    return allocator.dupe(u8, trimmed);
-}
-
-fn writeTemporaryPatch(allocator: std.mem.Allocator, diff: []const u8) ![]const u8 {
-    const tmpdir = try env.getOwned(allocator, "TMPDIR");
-    defer if (tmpdir) |value| allocator.free(value);
-    const dir = tmpdir orelse "/tmp";
-
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const timestamp = std.Io.Timestamp.now(io, .real).nanoseconds;
-    var random_bytes: [8]u8 = undefined;
-    io.random(&random_bytes);
-    const random_id = std.mem.readInt(u64, &random_bytes, .little);
-
-    const filename = try std.fmt.allocPrint(allocator, "codex-zig-apply-{d}-{x}.diff", .{ timestamp, random_id });
-    defer allocator.free(filename);
-
-    const path = try std.fs.path.join(allocator, &.{ dir, filename });
-    errdefer allocator.free(path);
-
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = diff });
-    return path;
+    std.debug.print("Git apply failed (exit {d})\n", .{result.exit_code});
+    return error.GitApplyFailed;
 }
 
 fn isHelpFlag(arg: []const u8) bool {
