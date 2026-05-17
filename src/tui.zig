@@ -10,6 +10,7 @@ const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const remote_ws_client = @import("remote_ws_client.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -181,9 +182,7 @@ fn validateRemoteUrl(value: []const u8) !RemoteUrlParts {
 fn remoteUrlSupportsAuthToken(parts: RemoteUrlParts) bool {
     if (parts.scheme == .wss) return true;
     if (parts.scheme != .ws) return false;
-    return std.ascii.eqlIgnoreCase(parts.host, "localhost") or
-        std.mem.startsWith(u8, parts.host, "127.") or
-        std.mem.eql(u8, parts.host, "[::1]");
+    return remote_ws_client.isLoopbackHost(parts.host);
 }
 
 fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) !?[]const u8 {
@@ -546,40 +545,58 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     }
 
     const parts = try validateRemoteUrl(remote);
-    if (parts.scheme == .wss) {
-        std.debug.print("remote app-server TUI does not support `wss://` transport yet: {s}\n", .{remote});
-        return error.RemoteAppServerTuiNotImplemented;
-    }
     try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    var stream = switch (parts.scheme) {
-        .unix => blk: {
-            var address = try net.UnixAddress.init(parts.path);
-            break :blk try address.connect(io);
-        },
-        .ws => try connectRemoteWebSocket(io, parts),
-        .wss => unreachable,
-    };
-    defer stream.close(io);
+    var remote_ws_connection: remote_ws_client.Connection = undefined;
+    var remote_ws_connection_initialized = false;
+    defer if (remote_ws_connection_initialized) remote_ws_connection.deinit();
+
+    var unix_stream: net.Stream = undefined;
+    var unix_stream_initialized = false;
+    defer if (unix_stream_initialized) unix_stream.close(io);
 
     var input_buffer: [64 * 1024]u8 = undefined;
     var output_buffer: [64 * 1024]u8 = undefined;
-    var reader = stream.reader(io, &input_buffer);
-    var writer = stream.writer(io, &output_buffer);
+    var unix_reader: net.Stream.Reader = undefined;
+    var unix_writer: net.Stream.Writer = undefined;
+    var transport_reader: *std.Io.Reader = undefined;
+    var transport_writer: *std.Io.Writer = undefined;
+
     const transport_kind: RemoteTransportKind = switch (parts.scheme) {
-        .unix => .jsonl,
+        .unix => blk: {
+            var address = try net.UnixAddress.init(parts.path);
+            unix_stream = try address.connect(io);
+            unix_stream_initialized = true;
+            unix_reader = unix_stream.reader(io, &input_buffer);
+            unix_writer = unix_stream.writer(io, &output_buffer);
+            transport_reader = &unix_reader.interface;
+            transport_writer = &unix_writer.interface;
+            break :blk .jsonl;
+        },
         .ws => blk: {
-            try performRemoteWebSocketHandshake(allocator, &reader.interface, &writer.interface, parts, options.remote_auth_token_env);
+            const stream = try connectRemoteWebSocket(io, parts);
+            remote_ws_connection.initPlain(allocator, io, stream);
+            remote_ws_connection_initialized = true;
+            transport_reader = remote_ws_connection.reader();
+            transport_writer = remote_ws_connection.writer();
+            try performRemoteWebSocketHandshake(allocator, transport_reader, transport_writer, parts, options.remote_auth_token_env);
             break :blk .websocket;
         },
-        .wss => unreachable,
+        .wss => blk: {
+            try remote_ws_connection.initTls(allocator, io, parts.host, parts.port);
+            remote_ws_connection_initialized = true;
+            transport_reader = remote_ws_connection.reader();
+            transport_writer = remote_ws_connection.writer();
+            try performRemoteWebSocketHandshake(allocator, transport_reader, transport_writer, parts, options.remote_auth_token_env);
+            break :blk .websocket;
+        },
     };
     var transport = RemoteTransport{
         .allocator = allocator,
         .kind = transport_kind,
-        .reader = &reader.interface,
-        .writer = &writer.interface,
+        .reader = transport_reader,
+        .writer = transport_writer,
     };
 
     const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
@@ -3550,6 +3567,8 @@ test "remote auth token transport is limited to secure or loopback URLs" {
     try std.testing.expect(remoteUrlSupportsAuthToken(try validateRemoteUrl("wss://example.com:443")));
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("unix:///tmp/codex.sock")));
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://example.com:4500")));
+    try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.attacker.example:4500")));
+    try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.0.0.1.example:4500")));
 }
 
 test "remote TUI rejects unsupported local-only options" {

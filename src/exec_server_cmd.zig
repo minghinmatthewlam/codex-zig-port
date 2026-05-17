@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const net = std.Io.net;
 
 const cli_utils = @import("cli_utils.zig");
+const remote_ws_client = @import("remote_ws_client.zig");
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -94,7 +95,13 @@ const RemoteRegistryResponse = struct {
     }
 };
 
+const RemoteWebSocketScheme = enum {
+    ws,
+    wss,
+};
+
 const RemoteWebSocketUrl = struct {
+    scheme: RemoteWebSocketScheme,
     host: []const u8,
     port: u16,
     target: []const u8,
@@ -1265,9 +1272,6 @@ fn runRemoteExecutor(allocator: std.mem.Allocator, parsed: ParsedOptions) !void 
 
         var websocket_connected = true;
         runRemoteExecutorWebSocket(allocator, response.url, &detached_sessions) catch |err| {
-            if (err == error.RemoteExecutorWssNotImplemented) {
-                return fail(allocator, "codex-zig exec-server remote rendezvous wss:// URLs are not implemented yet\n", .{});
-            }
             if (err == error.InvalidRemoteExecutorWebSocketUrl) {
                 return fail(allocator, "executor registry returned invalid remote exec-server websocket URL `{s}`\n", .{response.url});
             }
@@ -1539,22 +1543,27 @@ fn runRemoteExecutorWebSocket(
     detached_sessions: *std.ArrayList(DetachedExecSession),
 ) !void {
     const parts = try parseRemoteWebSocketUrl(url);
-    const connect_host = remoteWebSocketConnectHost(parts.host);
-    var address = remoteWebSocketAddress(connect_host, parts.port) catch |err| {
-        std.debug.print("remote exec-server websocket supports literal IP hosts or localhost only: {s}\n", .{parts.host});
-        return err;
-    };
     const io = std.Io.Threaded.global_single_threaded.io();
-    var stream = try address.connect(io, .{ .mode = .stream });
-    defer stream.close(io);
+    var remote_ws_connection: remote_ws_client.Connection = undefined;
+    switch (parts.scheme) {
+        .ws => {
+            const connect_host = remoteWebSocketConnectHost(parts.host);
+            var address = remoteWebSocketAddress(connect_host, parts.port) catch |err| {
+                std.debug.print("remote exec-server websocket supports literal IP hosts or localhost only: {s}\n", .{parts.host});
+                return err;
+            };
+            const stream = try address.connect(io, .{ .mode = .stream });
+            remote_ws_connection.initPlain(allocator, io, stream);
+        },
+        .wss => try remote_ws_connection.initTls(allocator, io, parts.host, parts.port),
+    }
+    defer remote_ws_connection.deinit();
 
-    var input_buffer: [64 * 1024]u8 = undefined;
-    var output_buffer: [64 * 1024]u8 = undefined;
-    var reader = stream.reader(io, &input_buffer);
-    var writer = stream.writer(io, &output_buffer);
-    try performRemoteExecutorWebSocketHandshake(allocator, &reader.interface, &writer.interface, parts);
+    const reader = remote_ws_connection.reader();
+    const writer = remote_ws_connection.writer();
+    try performRemoteExecutorWebSocketHandshake(allocator, reader, writer, parts);
 
-    var websocket_output = WebSocketJsonRpcOutput{ .writer = &writer.interface };
+    var websocket_output = WebSocketJsonRpcOutput{ .writer = writer };
     var connection = StdioServer{
         .allocator = allocator,
         .check_stdin_readiness = false,
@@ -1577,7 +1586,7 @@ fn runRemoteExecutorWebSocket(
     };
 
     while (true) {
-        const payload = try readRemoteWebSocketTextFrame(allocator, &reader.interface, &websocket_output) orelse return;
+        const payload = try readRemoteWebSocketTextFrame(allocator, reader, &websocket_output) orelse return;
         defer allocator.free(payload);
         const trimmed = std.mem.trim(u8, payload, " \t\r\n");
         if (trimmed.len == 0) continue;
@@ -1596,9 +1605,16 @@ fn runRemoteExecutorWebSocket(
 }
 
 fn parseRemoteWebSocketUrl(value: []const u8) !RemoteWebSocketUrl {
-    if (std.mem.startsWith(u8, value, "wss://")) return error.RemoteExecutorWssNotImplemented;
-    if (!std.mem.startsWith(u8, value, "ws://")) return error.InvalidRemoteExecutorWebSocketUrl;
-    const rest = value["ws://".len..];
+    const scheme: RemoteWebSocketScheme = if (std.mem.startsWith(u8, value, "ws://"))
+        .ws
+    else if (std.mem.startsWith(u8, value, "wss://"))
+        .wss
+    else
+        return error.InvalidRemoteExecutorWebSocketUrl;
+    const rest = switch (scheme) {
+        .ws => value["ws://".len..],
+        .wss => value["wss://".len..],
+    };
     if (rest.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
     if (std.mem.indexOfScalar(u8, rest, '#') != null) return error.InvalidRemoteExecutorWebSocketUrl;
     const target_start = std.mem.indexOfAny(u8, rest, "/?") orelse rest.len;
@@ -1622,18 +1638,45 @@ fn parseRemoteWebSocketUrl(value: []const u8) !RemoteWebSocketUrl {
     };
     const port: u16 = if (authority[0] == '[') blk: {
         const close_index = std.mem.indexOfScalar(u8, authority, ']') orelse return error.InvalidRemoteExecutorWebSocketUrl;
-        if (close_index + 1 == authority.len) break :blk 80;
+        if (close_index + 1 == authority.len) break :blk defaultRemoteWebSocketPort(scheme);
         const port_text = authority[close_index + 2 ..];
         if (port_text.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
         break :blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteExecutorWebSocketUrl;
     } else blk: {
-        const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':') orelse break :blk 80;
+        const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':') orelse break :blk defaultRemoteWebSocketPort(scheme);
         const port_text = authority[colon_index + 1 ..];
         if (port_text.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
         break :blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidRemoteExecutorWebSocketUrl;
     };
     if (host.len == 0) return error.InvalidRemoteExecutorWebSocketUrl;
-    return .{ .host = host, .port = port, .target = target };
+    return .{ .scheme = scheme, .host = host, .port = port, .target = target };
+}
+
+fn defaultRemoteWebSocketPort(scheme: RemoteWebSocketScheme) u16 {
+    return switch (scheme) {
+        .ws => 80,
+        .wss => 443,
+    };
+}
+
+test "parses remote executor websocket URLs" {
+    const ws = try parseRemoteWebSocketUrl("ws://127.0.0.1/executor?id=1");
+    try std.testing.expectEqual(.ws, ws.scheme);
+    try std.testing.expectEqualStrings("127.0.0.1", ws.host);
+    try std.testing.expectEqual(@as(u16, 80), ws.port);
+    try std.testing.expectEqualStrings("/executor?id=1", ws.target);
+
+    const wss = try parseRemoteWebSocketUrl("wss://remote.example/executor/exec-1?role=executor");
+    try std.testing.expectEqual(.wss, wss.scheme);
+    try std.testing.expectEqualStrings("remote.example", wss.host);
+    try std.testing.expectEqual(@as(u16, 443), wss.port);
+    try std.testing.expectEqualStrings("/executor/exec-1?role=executor", wss.target);
+
+    const explicit_port = try parseRemoteWebSocketUrl("wss://[::1]:9443?role=executor");
+    try std.testing.expectEqual(.wss, explicit_port.scheme);
+    try std.testing.expectEqualStrings("[::1]", explicit_port.host);
+    try std.testing.expectEqual(@as(u16, 9443), explicit_port.port);
+    try std.testing.expectEqualStrings("?role=executor", explicit_port.target);
 }
 
 fn remoteWebSocketConnectHost(host: []const u8) []const u8 {
