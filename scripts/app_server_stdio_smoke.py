@@ -14349,6 +14349,665 @@ def run_user_prompt_submit_plugin_hook_environment_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_session_start_hook_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-session-start-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "session_start_hook.py"
+    hook_log = root / "session_start_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-session-start"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    "transcript_path = Path(payload['transcript_path'])",
+                    "payload['transcript_exists'] = transcript_path.exists()",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'session start context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.SessionStart]]",
+                    'matcher = "(?i)^(?:STARTUP|RESUME)$"',
+                    "",
+                    "[[hooks.SessionStart.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    'statusMessage = "running session hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-session-hook",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-session-hook",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+            assert prompt_hook["eventName"] == "sessionStart"
+            assert prompt_hook["trustStatus"] == "untrusted"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-session-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-session-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "session hook prompt"}],
+                    },
+                },
+            )
+            turn_response = read_json_line(proc, 5)
+            assert turn_response["id"] == "turn-start-with-session-hook"
+            turn_id = turn_response["result"]["turn"]["id"]
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+            assert read_json_line(proc, 5)["method"] == "turn/started"
+
+            hook_started = read_json_line(proc, 5)
+            assert hook_started["method"] == "hook/started"
+            started_run = hook_started["params"]["run"]
+            assert hook_started["params"]["turnId"] == turn_id
+            assert started_run["eventName"] == "sessionStart"
+            assert started_run["scope"] == "thread"
+            assert started_run["source"] == "project"
+            assert started_run["status"] == "running"
+            assert started_run["statusMessage"] == "running session hook"
+
+            hook_completed = read_json_line(proc, 5)
+            assert hook_completed["method"] == "hook/completed"
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["id"] == started_run["id"]
+            assert completed_run["eventName"] == "sessionStart"
+            assert completed_run["scope"] == "thread"
+            assert completed_run["status"] == "completed"
+            assert completed_run["entries"] == [
+                {"kind": "context", "text": "session start context"}
+            ]
+
+            assert read_json_line(proc, 5)["method"] == "item/started"
+            assert read_json_line(proc, 5)["method"] == "item/completed"
+            assert read_json_line(proc, 5)["method"] == "item/started"
+            assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+            assert read_json_line(proc, 5)["method"] == "item/completed"
+            assert read_json_line(proc, 5)["method"] == "turn/completed"
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+
+            hook_inputs = [
+                json.loads(line)
+                for line in hook_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(hook_inputs) == 1
+            hook_input = hook_inputs[0]
+            assert hook_input["session_id"] == thread_id
+            assert "turn_id" not in hook_input
+            assert hook_input["cwd"] == os.path.realpath(cwd)
+            assert hook_input["hook_event_name"] == "SessionStart"
+            assert hook_input["model"] == "gpt-session-start"
+            assert hook_input["permission_mode"] == "bypassPermissions"
+            assert hook_input["source"] == "startup"
+            assert hook_input["transcript_exists"] is True
+
+            assert server.request_bodies
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            assert request_texts_by_role.get("developer") == ["session start context"]
+            assert request_texts_by_role.get("user") == ["session hook prompt"]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_session_start_hook_inline_history_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-session-history-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "session_start_history_hook.py"
+    hook_log = root / "session_start_history_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-session-history"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'history startup context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.SessionStart]]",
+                    'matcher = "startup"',
+                    "",
+                    "[[hooks.SessionStart.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-history-session-hook",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": "ignored-inline-history-thread-id",
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                        "history": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "inline history prompt",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                },
+            )
+            resume = read_json_line(proc, 5)
+            assert resume["id"] == "thread-resume-history-session-hook"
+            thread_id = resume["result"]["thread"]["id"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-history-session-hook",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            prompt_hook = hooks["result"]["data"][0]["hooks"][0]
+            assert prompt_hook["eventName"] == "sessionStart"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-history-session-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-history-session-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "history turn prompt"}],
+                    },
+                },
+            )
+            turn_response = read_json_line(proc, 5)
+            assert turn_response["id"] == "turn-start-with-history-session-hook"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            completed = [
+                message
+                for message in messages
+                if message.get("method") == "hook/completed"
+            ][0]
+            completed_run = completed["params"]["run"]
+            assert completed_run["eventName"] == "sessionStart"
+            assert completed_run["status"] == "completed"
+            assert completed_run["entries"] == [
+                {"kind": "context", "text": "history startup context"}
+            ]
+
+            hook_inputs = [
+                json.loads(line)
+                for line in hook_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(hook_inputs) == 1
+            assert hook_inputs[0]["source"] == "startup"
+            assert len(server.request_bodies) == 1
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            assert request_texts_by_role.get("developer") == ["history startup context"]
+            assert request_texts_by_role.get("user") == [
+                "inline history prompt",
+                "history turn prompt",
+            ]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_session_start_hook_clear_stop_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-session-clear-stop-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    startup_hook = cwd / ".codex" / "startup_session_hook.py"
+    clear_hook = cwd / ".codex" / "clear_session_hook.py"
+    startup_log = root / "startup-hook-ran.txt"
+    clear_log = root / "clear_session_hook_log.jsonl"
+    try:
+        codex_home.mkdir()
+        startup_hook.parent.mkdir(parents=True)
+        cwd.mkdir(exist_ok=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-session-clear-stop"\n',
+            encoding="utf-8",
+        )
+        startup_hook.write_text(
+            "\n".join(
+                [
+                    "from pathlib import Path",
+                    f"Path({json.dumps(str(startup_log))}).write_text('ran', encoding='utf-8')",
+                    "print('startup context')",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        clear_hook.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "import sys",
+                    "payload = json.load(sys.stdin)",
+                    f"Path({json.dumps(str(clear_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'continue': False, 'stopReason': 'clear session stop', 'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'clear session context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.SessionStart]]",
+                    'matcher = "startup"',
+                    "",
+                    "[[hooks.SessionStart.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {startup_hook}"',
+                    "",
+                    "[[hooks.SessionStart]]",
+                    'matcher = "clear"',
+                    "",
+                    "[[hooks.SessionStart.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {clear_hook}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-clear-session-hook",
+                    "method": "thread/start",
+                    "params": {
+                        "cwd": str(cwd),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                        "sessionStartSource": "clear",
+                    },
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            thread = thread_start["result"]["thread"]
+            thread_id = thread["id"]
+            assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-for-clear-session-hook",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            hooks = read_json_line(proc, 5)
+            session_hooks = hooks["result"]["data"][0]["hooks"]
+            assert len(session_hooks) == 2
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "trust-clear-session-hooks",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    hook["key"]: {
+                                        "enabled": True,
+                                        "trusted_hash": hook["currentHash"],
+                                    }
+                                    for hook in session_hooks
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-with-clear-session-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "clear stop prompt"}],
+                    },
+                },
+            )
+            first_turn = read_json_line(proc, 5)
+            assert first_turn["id"] == "turn-start-with-clear-session-hook"
+            assert first_turn["result"]["turn"]["id"] == "turn-0"
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            methods = [message.get("method") for message in messages]
+            assert methods == [
+                "thread/status/changed",
+                "turn/started",
+                "hook/started",
+                "hook/completed",
+                "turn/completed",
+                "thread/status/changed",
+            ]
+            hook_completed = messages[3]
+            completed_run = hook_completed["params"]["run"]
+            assert completed_run["eventName"] == "sessionStart"
+            assert completed_run["scope"] == "thread"
+            assert completed_run["status"] == "stopped"
+            assert completed_run["entries"] == [
+                {"kind": "context", "text": "clear session context"},
+                {"kind": "stop", "text": "clear session stop"},
+            ]
+            assert not startup_log.exists()
+            assert server.request_bodies == []
+
+            clear_inputs = [
+                json.loads(line)
+                for line in clear_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(clear_inputs) == 1
+            assert clear_inputs[0]["source"] == "clear"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-after-clear-session-hook",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "accepted after clear"}],
+                    },
+                },
+            )
+            accepted_turn = read_json_line(proc, 5)
+            assert accepted_turn["id"] == "turn-start-after-clear-session-hook"
+            assert accepted_turn["result"]["turn"]["id"] == "turn-0"
+            accepted_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"]["type"] == "idle"
+                    for message in seen
+                ),
+            )
+            assert all(
+                message.get("method") not in {"hook/started", "hook/completed"}
+                for message in accepted_messages
+            )
+            assert len(server.request_bodies) == 1
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
+            assert request_texts_by_role.get("developer") == ["clear session context"]
+            assert request_texts_by_role.get("user") == ["accepted after clear"]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_user_prompt_submit_hook_block_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-block-", dir="/tmp"))
@@ -37015,6 +37674,12 @@ def main() -> None:
     print("app-server-plugin-rpc-e2e: ok")
     run_hooks_list_rpc_smoke(binary)
     print("app-server-hooks-list-rpc-e2e: ok")
+    run_session_start_hook_notification_smoke(binary)
+    print("app-server-session-start-hook-notification-e2e: ok")
+    run_session_start_hook_inline_history_smoke(binary)
+    print("app-server-session-start-hook-inline-history-e2e: ok")
+    run_session_start_hook_clear_stop_smoke(binary)
+    print("app-server-session-start-hook-clear-stop-e2e: ok")
     run_user_prompt_submit_hook_notification_smoke(binary)
     print("app-server-user-prompt-submit-hook-notification-e2e: ok")
     run_user_prompt_submit_plugin_hook_environment_smoke(binary)
