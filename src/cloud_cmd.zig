@@ -188,6 +188,16 @@ const CloudRuntime = struct {
     }
 };
 
+const EnvironmentRow = struct {
+    id: []const u8,
+    label: ?[]const u8 = null,
+
+    fn deinit(self: EnvironmentRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.label) |label| allocator.free(label);
+    }
+};
+
 fn reportRuntimeNotImplemented(command: Command) !void {
     std.debug.print(
         "codex-zig {s} parsed Rust-compatible options, but Codex Cloud tasks are not implemented yet\n",
@@ -198,8 +208,7 @@ fn reportRuntimeNotImplemented(command: Command) !void {
 
 fn runExec(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const raw_environment = parsed.exec.environment orelse return error.MissingCloudEnvironment;
-    const environment = std.mem.trim(u8, raw_environment, " \t\r\n");
-    if (environment.len == 0) return error.MissingCloudEnvironment;
+    if (std.mem.trim(u8, raw_environment, " \t\r\n").len == 0) return error.MissingCloudEnvironment;
 
     const prompt = try resolveExecPrompt(allocator, parsed.exec.query);
     defer allocator.free(prompt);
@@ -207,13 +216,16 @@ fn runExec(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     const git_ref = try resolveExecGitRef(allocator, parsed.exec.branch);
     defer allocator.free(git_ref);
 
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const environment = try resolveEnvironmentId(allocator, runtime, raw_environment);
+    defer allocator.free(environment);
+
     const starting_diff = try env.getOwned(allocator, "CODEX_STARTING_DIFF");
     defer if (starting_diff) |value| allocator.free(value);
     const body = try buildCreateTaskBody(allocator, environment, prompt, git_ref, parsed.exec.attempts, starting_diff);
     defer allocator.free(body);
-
-    var runtime = try initRuntime(allocator, parsed);
-    defer runtime.deinit(allocator);
 
     const url = try buildTasksCollectionUrl(allocator, runtime.base_url);
     defer allocator.free(url);
@@ -344,6 +356,185 @@ fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
     return error.CloudTaskApplyFailed;
+}
+
+fn resolveEnvironmentId(allocator: std.mem.Allocator, runtime: CloudRuntime, requested: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, requested, " \t\r\n");
+    if (trimmed.len == 0) return error.MissingCloudEnvironment;
+
+    var rows = try listCloudEnvironments(allocator, runtime);
+    defer deinitEnvironmentRows(allocator, &rows);
+    return resolveEnvironmentIdFromRows(allocator, trimmed, rows.items);
+}
+
+fn resolveEnvironmentIdFromRows(allocator: std.mem.Allocator, requested: []const u8, rows: []const EnvironmentRow) ![]const u8 {
+    if (rows.len == 0) return error.NoCloudEnvironments;
+    for (rows) |row| {
+        if (std.mem.eql(u8, row.id, requested)) return allocator.dupe(u8, row.id);
+    }
+
+    var matched_id: ?[]const u8 = null;
+    for (rows) |row| {
+        const label = row.label orelse continue;
+        if (!std.ascii.eqlIgnoreCase(label, requested)) continue;
+        if (matched_id) |id| {
+            if (!std.mem.eql(u8, id, row.id)) return error.CloudEnvironmentLabelAmbiguous;
+        } else {
+            matched_id = row.id;
+        }
+    }
+    if (matched_id) |id| return allocator.dupe(u8, id);
+    return error.CloudEnvironmentNotFound;
+}
+
+fn listCloudEnvironments(allocator: std.mem.Allocator, runtime: CloudRuntime) !std.ArrayList(EnvironmentRow) {
+    var rows = std.ArrayList(EnvironmentRow).empty;
+    errdefer deinitEnvironmentRows(allocator, &rows);
+
+    var origins = try gitOrigins(allocator);
+    defer {
+        for (origins.items) |origin| allocator.free(origin);
+        origins.deinit(allocator);
+    }
+    for (origins.items) |origin| {
+        const owner_repo = parseGitHubOwnerRepo(origin) orelse continue;
+        const url = try buildEnvironmentByRepoUrl(allocator, runtime.base_url, owner_repo.owner, owner_repo.repo);
+        defer allocator.free(url);
+        const body = fetchCloudBackendQuiet(allocator, runtime, url) catch continue;
+        defer allocator.free(body);
+        appendEnvironmentRowsFromJson(allocator, &rows, body) catch continue;
+    }
+
+    const url = try buildEnvironmentsUrl(allocator, runtime.base_url);
+    defer allocator.free(url);
+    const body = if (rows.items.len > 0)
+        fetchCloudBackendQuiet(allocator, runtime, url) catch return rows
+    else
+        try fetchCloudTasks(allocator, runtime, url);
+    defer allocator.free(body);
+    appendEnvironmentRowsFromJson(allocator, &rows, body) catch |parse_err| {
+        if (rows.items.len > 0) return rows;
+        return parse_err;
+    };
+    return rows;
+}
+
+fn deinitEnvironmentRows(allocator: std.mem.Allocator, rows: *std.ArrayList(EnvironmentRow)) void {
+    for (rows.items) |row| row.deinit(allocator);
+    rows.deinit(allocator);
+}
+
+fn appendEnvironmentRowsFromJson(allocator: std.mem.Allocator, rows: *std.ArrayList(EnvironmentRow), body: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return error.InvalidCloudEnvironmentResponse;
+    for (parsed.value.array.items) |item| {
+        if (item != .object) return error.InvalidCloudEnvironmentResponse;
+        const id = valueString(objectField(item, "id")) orelse return error.InvalidCloudEnvironmentResponse;
+        if (id.len == 0) continue;
+        if (environmentRowIndex(rows.items, id)) |index| {
+            if (rows.items[index].label == null) {
+                rows.items[index].label = try dupOptionalString(allocator, valueString(objectField(item, "label")));
+            }
+            continue;
+        }
+        const id_copy = try allocator.dupe(u8, id);
+        errdefer allocator.free(id_copy);
+        const label_copy = try dupOptionalString(allocator, valueString(objectField(item, "label")));
+        errdefer if (label_copy) |label| allocator.free(label);
+        try rows.append(allocator, .{ .id = id_copy, .label = label_copy });
+    }
+}
+
+fn environmentRowIndex(rows: []const EnvironmentRow, id: []const u8) ?usize {
+    for (rows, 0..) |row, index| {
+        if (std.mem.eql(u8, row.id, id)) return index;
+    }
+    return null;
+}
+
+const OwnerRepo = struct {
+    owner: []const u8,
+    repo: []const u8,
+};
+
+fn parseGitHubOwnerRepo(url: []const u8) ?OwnerRepo {
+    var value = std.mem.trim(u8, url, " \t\r\n");
+    if (std.mem.startsWith(u8, value, "ssh://")) value = value["ssh://".len..];
+
+    if (std.mem.indexOf(u8, value, "@github.com:")) |index| {
+        const rest = std.mem.trim(u8, value[index + "@github.com:".len ..], "/");
+        return ownerRepoFromPath(rest);
+    }
+    if (std.mem.indexOf(u8, value, "@github.com/")) |index| {
+        const rest = std.mem.trim(u8, value[index + "@github.com/".len ..], "/");
+        return ownerRepoFromPath(rest);
+    }
+
+    for ([_][]const u8{
+        "https://github.com/",
+        "http://github.com/",
+        "git://github.com/",
+        "github.com/",
+    }) |prefix| {
+        if (std.mem.startsWith(u8, value, prefix)) {
+            return ownerRepoFromPath(value[prefix.len..]);
+        }
+    }
+    return null;
+}
+
+fn ownerRepoFromPath(path: []const u8) ?OwnerRepo {
+    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return null;
+    const owner = path[0..slash];
+    var repo = path[slash + 1 ..];
+    if (std.mem.indexOfAny(u8, repo, "?#")) |index| repo = repo[0..index];
+    repo = trimGitSuffix(repo);
+    if (owner.len == 0 or repo.len == 0) return null;
+    return .{ .owner = owner, .repo = repo };
+}
+
+fn trimGitSuffix(value: []const u8) []const u8 {
+    return if (std.mem.endsWith(u8, value, ".git")) value[0 .. value.len - ".git".len] else value;
+}
+
+fn gitOrigins(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
+    var origins = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (origins.items) |origin| allocator.free(origin);
+        origins.deinit(allocator);
+    }
+
+    if (try runCloudGit(allocator, &.{ "git", "config", "--get-regexp", "remote\\..*\\.url" })) |stdout| {
+        defer allocator.free(stdout);
+        var lines = std.mem.splitScalar(u8, stdout, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            const space = std.mem.indexOfScalar(u8, trimmed, ' ') orelse continue;
+            try appendUniqueOwned(allocator, &origins, std.mem.trim(u8, trimmed[space + 1 ..], " \t\r\n"));
+        }
+        if (origins.items.len > 0) return origins;
+    }
+
+    if (try runCloudGit(allocator, &.{ "git", "remote", "-v" })) |stdout| {
+        defer allocator.free(stdout);
+        var lines = std.mem.splitScalar(u8, stdout, '\n');
+        while (lines.next()) |line| {
+            var parts = std.mem.tokenizeAny(u8, line, " \t\r\n");
+            _ = parts.next() orelse continue;
+            const remote_url = parts.next() orelse continue;
+            try appendUniqueOwned(allocator, &origins, remote_url);
+        }
+    }
+    return origins;
+}
+
+fn appendUniqueOwned(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8), value: []const u8) !void {
+    if (value.len == 0) return;
+    for (values.items) |existing| {
+        if (std.mem.eql(u8, existing, value)) return;
+    }
+    try values.append(allocator, try allocator.dupe(u8, value));
 }
 
 fn resolveExecPrompt(allocator: std.mem.Allocator, query: ?[]const u8) ![]const u8 {
@@ -680,6 +871,10 @@ fn fetchCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []c
     return requestCloudTasks(allocator, runtime, .GET, url, null);
 }
 
+fn fetchCloudBackendQuiet(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []const u8) ![]const u8 {
+    return requestCloudBackend(allocator, runtime, .GET, url, null, false);
+}
+
 fn postCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []const u8, body: []const u8) ![]const u8 {
     return requestCloudTasks(allocator, runtime, .POST, url, body);
 }
@@ -690,6 +885,17 @@ fn requestCloudTasks(
     method: std.http.Method,
     url: []const u8,
     request_body: ?[]const u8,
+) ![]const u8 {
+    return requestCloudBackend(allocator, runtime, method, url, request_body, true);
+}
+
+fn requestCloudBackend(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    method: std.http.Method,
+    url: []const u8,
+    request_body: ?[]const u8,
+    print_failure: bool,
 ) ![]const u8 {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
@@ -725,10 +931,38 @@ fn requestCloudTasks(
     const body = try response_body.toOwnedSlice();
     errdefer allocator.free(body);
     if (@intFromEnum(result.status) < 200 or @intFromEnum(result.status) >= 300) {
-        std.debug.print("Codex Cloud request failed with status {d}: {s}\n", .{ @intFromEnum(result.status), body });
+        if (print_failure) {
+            std.debug.print("Codex Cloud request failed with status {d}: {s}\n", .{ @intFromEnum(result.status), body });
+        }
         return error.CloudRequestFailed;
     }
     return body;
+}
+
+fn buildEnvironmentsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const normalized = try normalizeCloudBackendBaseUrl(allocator, base_url);
+    defer allocator.free(normalized);
+    const trimmed = std.mem.trimEnd(u8, normalized, "/");
+    if (std.mem.indexOf(u8, trimmed, "/backend-api") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/wham/environments", .{trimmed});
+    }
+    if (std.mem.indexOf(u8, trimmed, "/api/codex") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/environments", .{trimmed});
+    }
+    return std.fmt.allocPrint(allocator, "{s}/api/codex/environments", .{trimmed});
+}
+
+fn buildEnvironmentByRepoUrl(allocator: std.mem.Allocator, base_url: []const u8, owner: []const u8, repo: []const u8) ![]const u8 {
+    const normalized = try normalizeCloudBackendBaseUrl(allocator, base_url);
+    defer allocator.free(normalized);
+    const trimmed = std.mem.trimEnd(u8, normalized, "/");
+    if (std.mem.indexOf(u8, trimmed, "/backend-api") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/wham/environments/by-repo/github/{s}/{s}", .{ trimmed, owner, repo });
+    }
+    if (std.mem.indexOf(u8, trimmed, "/api/codex") != null) {
+        return std.fmt.allocPrint(allocator, "{s}/environments/by-repo/github/{s}/{s}", .{ trimmed, owner, repo });
+    }
+    return std.fmt.allocPrint(allocator, "{s}/api/codex/environments/by-repo/github/{s}/{s}", .{ trimmed, owner, repo });
 }
 
 fn buildTasksCollectionUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
@@ -1842,6 +2076,14 @@ test "cloud command normalizes backend and browser task URLs" {
     defer allocator.free(list_url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/tasks/list?task_filter=current&limit=2", list_url);
 
+    const environments_url = try buildEnvironmentsUrl(allocator, "https://chatgpt.com/backend-api/codex/");
+    defer allocator.free(environments_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/environments", environments_url);
+
+    const repo_env_url = try buildEnvironmentByRepoUrl(allocator, "https://api.example.com", "owner", "repo");
+    defer allocator.free(repo_env_url);
+    try std.testing.expectEqualStrings("https://api.example.com/api/codex/environments/by-repo/github/owner/repo", repo_env_url);
+
     const task_api_url = try buildTaskUrl(allocator, "https://chatgpt.com/backend-api/codex/", "task 1");
     defer allocator.free(task_api_url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/tasks/task%201", task_api_url);
@@ -1973,6 +2215,59 @@ test "cloud exec parses created task ids" {
     try std.testing.expectEqualStrings("task-top", top_level);
 
     try std.testing.expectError(error.InvalidCloudTaskResponse, parseCreatedTaskId(allocator, "{\"task\":{}}"));
+}
+
+test "cloud exec resolves environment ids and labels" {
+    const allocator = std.testing.allocator;
+    const rows = [_]EnvironmentRow{
+        .{ .id = "env-1", .label = "Demo Workspace" },
+        .{ .id = "env-2", .label = "Other" },
+    };
+
+    const exact = try resolveEnvironmentIdFromRows(allocator, "env-2", rows[0..]);
+    defer allocator.free(exact);
+    try std.testing.expectEqualStrings("env-2", exact);
+
+    const label = try resolveEnvironmentIdFromRows(allocator, "demo workspace", rows[0..]);
+    defer allocator.free(label);
+    try std.testing.expectEqualStrings("env-1", label);
+
+    try std.testing.expectError(error.CloudEnvironmentNotFound, resolveEnvironmentIdFromRows(allocator, "missing", rows[0..]));
+
+    const ambiguous = [_]EnvironmentRow{
+        .{ .id = "env-1", .label = "Shared" },
+        .{ .id = "env-2", .label = "shared" },
+    };
+    try std.testing.expectError(error.CloudEnvironmentLabelAmbiguous, resolveEnvironmentIdFromRows(allocator, "shared", ambiguous[0..]));
+}
+
+test "cloud exec parses environment rows and GitHub origins" {
+    const allocator = std.testing.allocator;
+
+    var rows = std.ArrayList(EnvironmentRow).empty;
+    defer deinitEnvironmentRows(allocator, &rows);
+    try appendEnvironmentRowsFromJson(
+        allocator,
+        &rows,
+        "[{\"id\":\"env-1\",\"label\":\"Demo\"},{\"id\":\"env-1\",\"label\":\"Ignored\"},{\"id\":\"env-2\"}]",
+    );
+    try std.testing.expectEqual(@as(usize, 2), rows.items.len);
+    try std.testing.expectEqualStrings("env-1", rows.items[0].id);
+    try std.testing.expectEqualStrings("Demo", rows.items[0].label.?);
+    try std.testing.expectEqualStrings("env-2", rows.items[1].id);
+    try std.testing.expect(rows.items[1].label == null);
+
+    const ssh = parseGitHubOwnerRepo("git@github.com:openai/codex.git").?;
+    try std.testing.expectEqualStrings("openai", ssh.owner);
+    try std.testing.expectEqualStrings("codex", ssh.repo);
+
+    const https = parseGitHubOwnerRepo("https://github.com/minghinmatthewlam/codex-zig-port.git").?;
+    try std.testing.expectEqualStrings("minghinmatthewlam", https.owner);
+    try std.testing.expectEqualStrings("codex-zig-port", https.repo);
+
+    const https_query = parseGitHubOwnerRepo("https://github.com/minghinmatthewlam/codex-zig-port.git?tab=readme").?;
+    try std.testing.expectEqualStrings("minghinmatthewlam", https_query.owner);
+    try std.testing.expectEqualStrings("codex-zig-port", https_query.repo);
 }
 
 test "cloud exec git ref honors branch override" {
