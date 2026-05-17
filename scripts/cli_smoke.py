@@ -10,6 +10,7 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,35 @@ def header_value(headers: dict[str, str], name: str) -> Optional[str]:
         if key.lower() == name.lower():
             return value
     return None
+
+
+def generate_localhost_self_signed_cert(root: Path) -> tuple[Path, Path]:
+    cert_path = root / "localhost.crt"
+    key_path = root / "localhost.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+    return cert_path, key_path
 
 
 def captured_header_values(headers: dict[str, list[str]], name: str) -> list[str]:
@@ -252,23 +282,38 @@ class ExecServerSmokeWebSocket:
 
 
 class RemoteExecutorRendezvous:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cert_path: Path | None = None,
+        key_path: Path | None = None,
+        wss_host: str = "localhost",
+    ) -> None:
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)
         self.host = "127.0.0.1"
         self.port = self.listener.getsockname()[1]
-        self.sock: socket.socket | None = None
+        self.cert_path = cert_path
+        self.key_path = key_path
+        self.wss_host = wss_host
+        self.sock: socket.socket | ssl.SSLSocket | None = None
         self.request_target: str | None = None
 
     @property
     def url(self) -> str:
+        if self.cert_path is not None:
+            return f"wss://{self.wss_host}:{self.port}/executor/exec-1?role=executor&sig=abc"
         return f"ws://{self.host}:{self.port}/executor/exec-1?role=executor&sig=abc"
 
     def accept(self, timeout: float = 5.0) -> None:
         self.listener.settimeout(timeout)
         sock, _ = self.listener.accept()
+        if self.cert_path is not None:
+            assert self.key_path is not None
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(str(self.cert_path), str(self.key_path))
+            sock = context.wrap_socket(sock, server_side=True)
         self.sock = sock
         self.sock.settimeout(timeout)
         request = self._recv_until(b"\r\n\r\n")
@@ -5410,6 +5455,77 @@ def run_exec_server_remote_registration_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_server_remote_wss_registration_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-server-remote-wss-", dir="/tmp"))
+    cert_path, key_path = generate_localhost_self_signed_cert(temp_root)
+    rendezvous = RemoteExecutorRendezvous(cert_path, key_path, wss_host="127.0.0.1")
+    registry = ExecServerRemoteRegistryServer(("127.0.0.1", 0), ExecServerRemoteRegistryHandler)
+    registry.request_paths = []
+    registry.request_headers = []
+    registry.request_bodies = []
+    registry.rendezvous_url = rendezvous.url
+    registry.response_payloads = []
+    registry_thread = threading.Thread(target=registry.serve_forever, daemon=True)
+    registry_thread.start()
+    proc: subprocess.Popen[str] | None = None
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env["CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN"] = " registry-token "
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        base_url = f"http://127.0.0.1:{registry.server_port}/"
+        proc = subprocess.Popen(
+            [
+                str(binary.resolve()),
+                "exec-server",
+                "--remote",
+                base_url,
+                "--executor-id",
+                "exec-wss",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        rendezvous.accept(timeout=5)
+        line = wait_for_stderr_line(proc, "registered with executor_id exec-registered", 5)
+        assert "codex exec-server remote executor registration-1 registered" in line
+        assert registry.request_paths == ["/cloud/executor/exec-wss/register"]
+        assert rendezvous.request_target == "/executor/exec-1?role=executor&sig=abc"
+
+        rendezvous.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-wss-init",
+                "method": "initialize",
+                "params": {"clientName": "remote-exec-wss-smoke"},
+            }
+        )
+        init_response = rendezvous.read_json()
+        assert init_response["id"] == "remote-wss-init"
+        assert "sessionId" in init_response["result"]
+        proc.terminate()
+        proc.wait(timeout=5)
+        proc = None
+    finally:
+        rendezvous.close()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        registry.shutdown()
+        registry.server_close()
+        registry_thread.join(timeout=5)
+        shutil.rmtree(temp_root, ignore_errors=True)
+    print("cli-exec-server-remote-wss-registration-e2e: ok")
+
+
 def run_app_command_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-command-", dir="/tmp"))
     try:
@@ -8181,6 +8297,7 @@ def main() -> None:
     run_update_command_smoke(binary)
     run_exec_server_stdio_smoke(binary)
     run_exec_server_remote_registration_smoke(binary)
+    run_exec_server_remote_wss_registration_smoke(binary)
     run_app_command_smoke(binary)
     run_responses_api_proxy_smoke(binary)
     run_features_profile_smoke(binary)

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import errno
+import hashlib
 import json
 import os
 import pty
 import select
 import shutil
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -455,6 +458,35 @@ def wait_for_websocket_bind(proc: subprocess.Popen[str], timeout: float) -> tupl
                 host, port_text = token.removeprefix("ws://").rsplit(":", 1)
                 return host, int(port_text)
     raise AssertionError("timed out waiting for websocket bind address")
+
+
+def generate_localhost_self_signed_cert(root: Path) -> tuple[Path, Path]:
+    cert_path = root / "localhost.crt"
+    key_path = root / "localhost.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+    return cert_path, key_path
 
 
 def remote_control_url(output: bytearray) -> str:
@@ -1442,11 +1474,11 @@ def run_remote_flag_smoke(
 ) -> None:
     remote_env = env.copy()
     remote_env["CODEX_REMOTE_AUTH_TOKEN"] = "  remote-token  "
-    wss_result = subprocess.run(
+    insecure_token_result = subprocess.run(
         [
             str(binary),
             "--remote",
-            "wss://example.com:443",
+            "ws://example.com:4500",
             "--remote-auth-token-env",
             "CODEX_REMOTE_AUTH_TOKEN",
             "--no-alt-screen",
@@ -1457,11 +1489,12 @@ def run_remote_flag_smoke(
         capture_output=True,
         check=False,
     )
-    if wss_result.returncode == 0:
-        raise AssertionError("wss remote TUI smoke unexpectedly succeeded")
-    if "remote app-server TUI does not support `wss://` transport yet" not in wss_result.stderr:
+    if insecure_token_result.returncode == 0:
+        raise AssertionError("non-loopback ws remote auth token smoke unexpectedly succeeded")
+    if "RemoteAuthTokenTransportUnsupported" not in insecure_token_result.stderr:
         raise AssertionError(
-            f"expected wss not-implemented message:\n{wss_result.stderr}"
+            "expected non-loopback ws remote auth token rejection:\n"
+            f"{insecure_token_result.stderr}"
         )
 
     missing_token_result = subprocess.run(
@@ -1589,6 +1622,215 @@ def run_remote_flag_smoke(
         )
 
 
+class WssRemoteTuiServer:
+    def __init__(self, cert_path: Path, key_path: Path) -> None:
+        self.cert_path = cert_path
+        self.key_path = key_path
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.ready = threading.Event()
+        self.error: BaseException | None = None
+        self.requests: list[dict] = []
+        self.headers: dict[str, str] = {}
+        self.sock: ssl.SSLSocket | None = None
+
+    @property
+    def url(self) -> str:
+        return f"wss://localhost:{self.port}"
+
+    def start(self) -> None:
+        self.thread.start()
+        if not self.ready.wait(timeout=5):
+            raise AssertionError("timed out waiting for fake wss remote app-server")
+
+    def close(self) -> None:
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.listener.close()
+
+    def join(self) -> None:
+        self.thread.join(timeout=5)
+        if self.thread.is_alive():
+            raise AssertionError("fake wss remote app-server did not exit")
+        if self.error is not None:
+            raise AssertionError("fake wss remote app-server failed") from self.error
+
+    def _serve(self) -> None:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(self.cert_path), str(self.key_path))
+        try:
+            self.ready.set()
+            raw_sock, _ = self.listener.accept()
+            with context.wrap_socket(raw_sock, server_side=True) as conn:
+                self.sock = conn
+                conn.settimeout(5)
+                request = self._recv_until(conn, b"\r\n\r\n")
+                self.headers = self._parse_headers(request)
+                if self.headers.get("authorization") != "Bearer super-secret-token":
+                    raise AssertionError(f"unexpected wss auth header: {self.headers!r}")
+                key = self.headers.get("sec-websocket-key")
+                if key is None:
+                    raise AssertionError(f"wss websocket request missing key: {request!r}")
+                accept = base64.b64encode(
+                    hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+                ).decode("ascii")
+                conn.sendall(
+                    (
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        f"Sec-WebSocket-Accept: {accept}\r\n"
+                        "\r\n"
+                    ).encode("ascii")
+                )
+                while True:
+                    payload = self._read_frame(conn)
+                    if payload is None:
+                        return
+                    request_json = json.loads(payload.decode("utf-8"))
+                    self.requests.append(request_json)
+                    self._handle_request(conn, request_json)
+        except (AssertionError, OSError, ssl.SSLError) as exc:
+            if self.requests:
+                return
+            self.error = exc
+        except BaseException as exc:
+            self.error = exc
+
+    def _handle_request(self, conn: ssl.SSLSocket, request: dict) -> None:
+        request_id = request.get("id")
+        method = request.get("method")
+        if method == "initialize":
+            self._write_json(conn, {"jsonrpc": "2.0", "id": request_id, "result": {}})
+            return
+        if method == "thread/start":
+            self._write_json(
+                conn,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"thread": {"id": "thread-wss-smoke"}},
+                },
+            )
+            return
+        if method == "turn/start":
+            self._write_json(
+                conn,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"turn": {"id": "turn-wss-smoke"}},
+                },
+            )
+            self._write_json(
+                conn,
+                {
+                    "jsonrpc": "2.0",
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thread-wss-smoke",
+                        "turnId": "turn-wss-smoke",
+                        "delta": "wss answer\n",
+                    },
+                },
+            )
+            self._write_json(
+                conn,
+                {
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-wss-smoke",
+                        "turn": {"id": "turn-wss-smoke"},
+                    },
+                },
+            )
+            return
+        self._write_json(
+            conn,
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"unsupported method {method}"},
+            },
+        )
+
+    @staticmethod
+    def _parse_headers(request: bytes) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for line in request.split(b"\r\n")[1:]:
+            if not line:
+                break
+            name, value = line.decode("ascii").split(":", 1)
+            headers[name.lower()] = value.strip()
+        return headers
+
+    @staticmethod
+    def _recv_until(conn: ssl.SSLSocket, delimiter: bytes) -> bytes:
+        data = b""
+        while delimiter not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    @staticmethod
+    def _recv_exact(conn: ssl.SSLSocket, size: int) -> bytes:
+        data = b""
+        while len(data) < size:
+            chunk = conn.recv(size - len(data))
+            if not chunk:
+                raise AssertionError("wss remote websocket closed unexpectedly")
+            data += chunk
+        return data
+
+    def _write_json(self, conn: ssl.SSLSocket, payload: dict) -> None:
+        self._send_frame(conn, 0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+    @staticmethod
+    def _send_frame(conn: ssl.SSLSocket, opcode: int, payload: bytes) -> None:
+        header = bytearray([0x80 | opcode])
+        if len(payload) <= 125:
+            header.append(len(payload))
+        elif len(payload) <= 0xFFFF:
+            header.append(126)
+            header.extend(len(payload).to_bytes(2, "big"))
+        else:
+            header.append(127)
+            header.extend(len(payload).to_bytes(8, "big"))
+        conn.sendall(bytes(header) + payload)
+
+    def _read_frame(self, conn: ssl.SSLSocket) -> bytes | None:
+        first, second = self._recv_exact(conn, 2)
+        opcode = first & 0x0F
+        length = second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._recv_exact(conn, 2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._recv_exact(conn, 8), "big")
+        masked = (second & 0x80) != 0
+        mask = self._recv_exact(conn, 4) if masked else b""
+        payload = self._recv_exact(conn, length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        if opcode == 0x8:
+            return None
+        if opcode == 0x9:
+            self._send_frame(conn, 0xA, payload)
+            return self._read_frame(conn)
+        if opcode != 0x1:
+            raise AssertionError(f"unexpected wss remote websocket opcode {opcode}")
+        return payload
+
+
 def run_remote_websocket_tui_smoke(
     binary: Path,
     env: dict[str, str],
@@ -1692,6 +1934,69 @@ def run_remote_websocket_tui_smoke(
                 app_server.kill()
                 app_server.wait(timeout=5)
         shutil.rmtree(remote_home, ignore_errors=True)
+
+
+def run_remote_wss_tui_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-remote-wss-tui-", dir="/tmp"))
+    cert_path, key_path = generate_localhost_self_signed_cert(temp_root)
+    wss_server = WssRemoteTuiServer(cert_path, key_path)
+    client = None
+    master_fd = -1
+    try:
+        wss_server.start()
+        client_env = env.copy()
+        client_env["CODEX_REMOTE_AUTH_TOKEN"] = "  super-secret-token  "
+        output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                wss_server.url,
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "--no-alt-screen",
+                "side question from remote wss",
+            ],
+            cwd=workspace,
+            env=client_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, output, b"wss answer", 8)
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote wss TUI smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        if not any(request.get("method") == "turn/start" for request in wss_server.requests):
+            raise AssertionError(f"remote wss TUI did not send turn/start: {wss_server.requests!r}")
+    finally:
+        if client is not None and client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+                client.wait(timeout=5)
+        if master_fd >= 0:
+            os.close(master_fd)
+        wss_server.close()
+        wss_server.join()
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def run_local_remote_control_smoke(
@@ -2664,6 +2969,7 @@ def run_e2e(binary: Path) -> str:
             run_remote_flag_smoke(binary, env, workspace)
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
+            run_remote_wss_tui_smoke(binary, env, workspace)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
             run_remote_initial_prompt_error_smoke(binary, env, workspace)
             run_session_command_option_smoke(binary, env, workspace)
