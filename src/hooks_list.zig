@@ -10,7 +10,7 @@ pub const Source = enum {
     project,
     plugin,
 
-    fn label(self: Source) []const u8 {
+    pub fn label(self: Source) []const u8 {
         return switch (self) {
             .user => "user",
             .project => "project",
@@ -19,12 +19,12 @@ pub const Source = enum {
     }
 };
 
-const TrustStatus = enum {
+pub const TrustStatus = enum {
     untrusted,
     trusted,
     modified,
 
-    fn label(self: TrustStatus) []const u8 {
+    pub fn label(self: TrustStatus) []const u8 {
         return switch (self) {
             .untrusted => "untrusted",
             .trusted => "trusted",
@@ -56,7 +56,7 @@ pub const HookEvent = enum {
         };
     }
 
-    fn jsonLabel(self: HookEvent) []const u8 {
+    pub fn jsonLabel(self: HookEvent) []const u8 {
         return switch (self) {
             .pre_tool_use => "preToolUse",
             .permission_request => "permissionRequest",
@@ -65,6 +65,19 @@ pub const HookEvent = enum {
             .post_compact => "postCompact",
             .session_start => "sessionStart",
             .user_prompt_submit => "userPromptSubmit",
+            .stop => "stop",
+        };
+    }
+
+    pub fn runIdLabel(self: HookEvent) []const u8 {
+        return switch (self) {
+            .pre_tool_use => "pre-tool-use",
+            .permission_request => "permission-request",
+            .post_tool_use => "post-tool-use",
+            .pre_compact => "pre-compact",
+            .post_compact => "post-compact",
+            .session_start => "session-start",
+            .user_prompt_submit => "user-prompt-submit",
             .stop => "stop",
         };
     }
@@ -130,6 +143,10 @@ pub const Hook = struct {
         allocator.free(self.source_path);
         if (self.plugin_id) |value| allocator.free(value);
         allocator.free(self.current_hash);
+    }
+
+    pub fn shouldRun(self: Hook) bool {
+        return self.enabled and self.trust_status == .trusted;
     }
 };
 

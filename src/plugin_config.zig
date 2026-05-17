@@ -100,6 +100,13 @@ pub fn localPluginBaseRoot(allocator: std.mem.Allocator, codex_home: []const u8,
     return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", parts.marketplace, parts.name });
 }
 
+pub fn localPluginDataRoot(allocator: std.mem.Allocator, codex_home: []const u8, plugin_id: []const u8) !?[]const u8 {
+    const parts = splitPluginId(plugin_id) orelse return null;
+    const leaf = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ parts.name, parts.marketplace });
+    defer allocator.free(leaf);
+    return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "data", leaf });
+}
+
 pub fn removePluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
@@ -280,6 +287,9 @@ test "plugin config parses enabled plugin ids and feature flags" {
     try std.testing.expectEqualStrings("test", parts.marketplace);
     try std.testing.expect(isValidPluginId("demo@test"));
     try std.testing.expect(!isValidPluginId("demo/../../oops@test"));
+    const data_root = (try localPluginDataRoot(allocator, "/tmp/codex-home", "demo@test")).?;
+    defer allocator.free(data_root);
+    try std.testing.expectEqualStrings("/tmp/codex-home/plugins/data/demo-test", data_root);
 }
 
 test "plugin config removal drops plugin table and child tables" {
