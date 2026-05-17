@@ -1028,8 +1028,56 @@ def run_unimplemented_command_smoke(
     env: dict[str, str],
     workspace: Path,
 ) -> None:
+    remote_help = subprocess.run(
+        [str(binary), "remote-control", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Start a headless app-server with remote control enabled" not in remote_help.stderr:
+        raise AssertionError(
+            f"expected remote-control help output:\n{remote_help.stderr}"
+        )
+
+    remote_result = subprocess.run(
+        [
+            str(binary),
+            "remote-control",
+            "--disable",
+            "remote_control",
+            "--enable=goals",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if remote_result.returncode == 0:
+        raise AssertionError("remote-control unexpectedly succeeded")
+    if "headless app-server remote control is not implemented yet" not in remote_result.stderr:
+        raise AssertionError(
+            f"expected remote-control transport gap message:\n{remote_result.stderr}"
+        )
+
+    remote_positional_result = subprocess.run(
+        [str(binary), "remote-control", "stop"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if remote_positional_result.returncode == 0:
+        raise AssertionError("remote-control positional arg unexpectedly succeeded")
+    if "UnexpectedRemoteControlArgument" not in remote_positional_result.stderr:
+        raise AssertionError(
+            f"expected remote-control positional-arg rejection:\n{remote_positional_result.stderr}"
+        )
+
     for command in [
-        "remote-control",
         "cloud",
         "cloud-tasks",
     ]:

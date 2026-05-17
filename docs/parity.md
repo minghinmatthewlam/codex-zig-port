@@ -594,6 +594,14 @@ rejects unsupported arguments with Rust-compatible usage text, and stops the
 listener. The PTY smoke keeps the event stream open while sending a controller
 prompt into the running TUI and compares the event snapshot with `/api/state`.
 
+Additional top-level remote-control command coverage: `codex-zig
+remote-control` now has Rust-shaped flag-only help, parses `-c/--config`,
+`--enable`, and `--disable` options, rejects positional arguments such as
+`stop`, and reports that headless app-server remote control is still
+unimplemented. The command appends the `remote_control` feature enablement after
+user-provided feature toggles, matching Rust's headless invocation override
+ordering while the runtime remains planned.
+
 Additional app-server websocket transport coverage: `app-server --listen
 ws://127.0.0.1:0` now binds a plain websocket listener, reports the actual
 bound URL, serves `/readyz` and `/healthz` on the same listener, and exchanges
