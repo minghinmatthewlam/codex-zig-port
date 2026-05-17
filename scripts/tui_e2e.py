@@ -2666,6 +2666,14 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, fork_picker_output, b"started remote thread:", 5)
         send_line(master_fd, "side question from remote slash new")
         wait_for(master_fd, fork_picker_output, b"side answer", 8)
+        send_line(master_fd, "/clear unexpected")
+        wait_for(master_fd, fork_picker_output, b"usage: /clear", 5)
+        clear_mark = len(fork_picker_output)
+        send_line(master_fd, "/clear")
+        wait_for(master_fd, fork_picker_output, b"Codex Zig Remote", 5, clear_mark)
+        wait_for(master_fd, fork_picker_output, b"started remote thread:", 5, clear_mark)
+        send_line(master_fd, "side question from remote slash clear")
+        wait_for(master_fd, fork_picker_output, b"side answer", 8)
         mark = len(fork_picker_output)
         send_line(master_fd, "/quit")
         wait_for(master_fd, fork_picker_output, b"bye", 5, mark)
@@ -2851,6 +2859,18 @@ def run_remote_unix_tui_smoke(
         raise AssertionError("remote TUI slash new carried transcript history from the previous thread")
     if "side question from remote fork picker" in slash_new_body:
         raise AssertionError("remote TUI slash new carried immediate pre-new transcript history")
+    slash_clear_matching = [
+        body
+        for body in bodies
+        if "side question from remote slash clear" in latest_user_text(body.get("input", []))
+    ]
+    if not slash_clear_matching:
+        raise AssertionError("remote TUI slash clear did not send prompt through app-server")
+    slash_clear_body = json.dumps(slash_clear_matching[-1])
+    if "describe attached image from remote tui" in slash_clear_body:
+        raise AssertionError("remote TUI slash clear carried transcript history from the previous thread")
+    if "side question from remote slash new" in slash_clear_body:
+        raise AssertionError("remote TUI slash clear carried immediate pre-clear transcript history")
     image_matching = [
         body
         for body in bodies
