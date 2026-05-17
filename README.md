@@ -133,8 +133,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   timeout handling plus streamed response body-delta notifications over stdio
   and websockets,
   registry-backed remote executor registration through `--remote` /
-  `--executor-id` with bearer-token auth, local `ws://` rendezvous serving, and
-  explicit partial-parity errors for unsupported transports
+  `--executor-id` with bearer-token auth plus local `ws://` and loopback
+  self-signed or public-CA `wss://` rendezvous serving
 - run a minimal app-server JSON-RPC transport over stdio or Unix sockets with
   an `initialize` handshake, keeping Unix socket listeners alive for sequential
   clients
@@ -268,9 +268,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - root app-server `turn/start` model-requested shell tools and `apply_patch`
   edits in the loaded thread cwd when the tool call does not provide an
   explicit workdir
-- run a minimal interactive remote app-server TUI over `--remote unix://PATH`
-  or loopback `--remote ws://HOST:PORT` for new threads, remote resume/fork
-  pickers, `resume --last`, explicit `resume TARGET`, explicit
+- run a minimal interactive remote app-server TUI over `--remote unix://PATH`,
+  loopback `--remote ws://HOST:PORT`, or TLS `--remote wss://HOST:PORT` for
+  new threads, remote resume/fork pickers, `resume --last`, explicit
+  `resume TARGET`, explicit
   `fork ID|PATH`, `fork --last`, text/local-image turns, and websocket
   capability-token auth via `--remote-auth-token-env`
 - start a minimal local remote-control server with `--remote-control` and
