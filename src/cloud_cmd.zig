@@ -89,11 +89,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     parsed.runtime_overrides = mergeRuntimeOverrides(options.runtime_overrides, parsed.runtime_overrides);
 
     switch (parsed.command) {
+        .exec => return runExec(allocator, parsed),
         .list => return runList(allocator, parsed),
         .status => return runStatus(allocator, parsed),
         .apply => return runApply(allocator, parsed),
         .diff => return runDiff(allocator, parsed),
-        .tui, .exec => return reportRuntimeNotImplemented(parsed.command),
+        .tui => return reportRuntimeNotImplemented(parsed.command),
     }
 }
 
@@ -193,6 +194,40 @@ fn reportRuntimeNotImplemented(command: Command) !void {
         .{command.label()},
     );
     return error.CloudCommandNotImplemented;
+}
+
+fn runExec(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
+    const raw_environment = parsed.exec.environment orelse return error.MissingCloudEnvironment;
+    const environment = std.mem.trim(u8, raw_environment, " \t\r\n");
+    if (environment.len == 0) return error.MissingCloudEnvironment;
+
+    const prompt = try resolveExecPrompt(allocator, parsed.exec.query);
+    defer allocator.free(prompt);
+
+    const git_ref = try resolveExecGitRef(allocator, parsed.exec.branch);
+    defer allocator.free(git_ref);
+
+    const starting_diff = try env.getOwned(allocator, "CODEX_STARTING_DIFF");
+    defer if (starting_diff) |value| allocator.free(value);
+    const body = try buildCreateTaskBody(allocator, environment, prompt, git_ref, parsed.exec.attempts, starting_diff);
+    defer allocator.free(body);
+
+    var runtime = try initRuntime(allocator, parsed);
+    defer runtime.deinit(allocator);
+
+    const url = try buildTasksCollectionUrl(allocator, runtime.base_url);
+    defer allocator.free(url);
+    const response = try postCloudTasks(allocator, runtime, url, body);
+    defer allocator.free(response);
+
+    const task_id = try parseCreatedTaskId(allocator, response);
+    defer allocator.free(task_id);
+    const browser_url = try taskUrl(allocator, runtime.base_url, task_id);
+    defer allocator.free(browser_url);
+
+    const rendered = try std.fmt.allocPrint(allocator, "{s}\n", .{browser_url});
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
 }
 
 fn runList(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
@@ -311,6 +346,259 @@ fn runApply(allocator: std.mem.Allocator, parsed: ParsedOptions) !void {
     return error.CloudTaskApplyFailed;
 }
 
+fn resolveExecPrompt(allocator: std.mem.Allocator, query: ?[]const u8) ![]const u8 {
+    if (query) |value| {
+        if (!std.mem.eql(u8, value, "-")) return allocator.dupe(u8, value);
+    } else if (isStdinTty()) {
+        return error.MissingCloudQuery;
+    } else {
+        try cli_utils.writeStderr("Reading query from stdin...\n");
+    }
+
+    var buffer: [4096]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
+    const stdin_text = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    errdefer allocator.free(stdin_text);
+    if (std.mem.trim(u8, stdin_text, " \t\r\n").len == 0) {
+        allocator.free(stdin_text);
+        return error.MissingCloudQuery;
+    }
+    return stdin_text;
+}
+
+fn isStdinTty() bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.File.stdin().isTty(io) catch false;
+}
+
+fn resolveExecGitRef(allocator: std.mem.Allocator, branch_override: ?[]const u8) ![]const u8 {
+    if (branch_override) |branch| {
+        const trimmed = std.mem.trim(u8, branch, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+
+    const current_branch = try currentGitBranch(allocator);
+    defer if (current_branch) |branch| allocator.free(branch);
+    const default_branch = if (current_branch == null) try defaultGitBranch(allocator) else null;
+    defer if (default_branch) |branch| allocator.free(branch);
+    return chooseExecGitRef(allocator, null, current_branch, default_branch);
+}
+
+fn chooseExecGitRef(
+    allocator: std.mem.Allocator,
+    branch_override: ?[]const u8,
+    current_branch: ?[]const u8,
+    default_branch: ?[]const u8,
+) ![]const u8 {
+    if (branch_override) |branch| {
+        const trimmed = std.mem.trim(u8, branch, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    if (current_branch) |branch| {
+        const trimmed = std.mem.trim(u8, branch, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    if (default_branch) |branch| {
+        const trimmed = std.mem.trim(u8, branch, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    return allocator.dupe(u8, "main");
+}
+
+fn currentGitBranch(allocator: std.mem.Allocator) !?[]const u8 {
+    const stdout = (try runCloudGit(allocator, &.{ "git", "branch", "--show-current" })) orelse return null;
+    defer allocator.free(stdout);
+    const branch = std.mem.trim(u8, stdout, " \t\r\n");
+    if (branch.len == 0) return null;
+    return try allocator.dupe(u8, branch);
+}
+
+fn defaultGitBranch(allocator: std.mem.Allocator) !?[]const u8 {
+    if (try runCloudGit(allocator, &.{ "git", "remote" })) |stdout| {
+        defer allocator.free(stdout);
+        var remotes = try prioritizedRemoteNames(allocator, stdout);
+        defer remotes.deinit(allocator);
+        for (remotes.items) |remote| {
+            if (try remoteSymbolicHeadBranch(allocator, remote)) |branch| return branch;
+            if (try remoteShowHeadBranch(allocator, remote)) |branch| return branch;
+        }
+    }
+
+    for ([_][]const u8{ "main", "master" }) |candidate| {
+        const ref = try std.fmt.allocPrint(allocator, "refs/heads/{s}", .{candidate});
+        defer allocator.free(ref);
+        const stdout = (try runCloudGit(allocator, &.{ "git", "rev-parse", "--verify", "--quiet", ref })) orelse continue;
+        allocator.free(stdout);
+        return try allocator.dupe(u8, candidate);
+    }
+
+    return null;
+}
+
+fn prioritizedRemoteNames(allocator: std.mem.Allocator, stdout: []const u8) !std.ArrayList([]const u8) {
+    var remotes = std.ArrayList([]const u8).empty;
+    errdefer remotes.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        const remote = std.mem.trim(u8, line, " \t\r\n");
+        if (std.mem.eql(u8, remote, "origin")) {
+            try remotes.append(allocator, remote);
+        }
+    }
+
+    lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        const remote = std.mem.trim(u8, line, " \t\r\n");
+        if (remote.len == 0 or std.mem.eql(u8, remote, "origin")) continue;
+        try remotes.append(allocator, remote);
+    }
+
+    return remotes;
+}
+
+fn remoteSymbolicHeadBranch(allocator: std.mem.Allocator, remote: []const u8) !?[]const u8 {
+    const remote_head = try std.fmt.allocPrint(allocator, "refs/remotes/{s}/HEAD", .{remote});
+    defer allocator.free(remote_head);
+    const stdout = (try runCloudGit(allocator, &.{ "git", "symbolic-ref", "--quiet", remote_head })) orelse return null;
+    defer allocator.free(stdout);
+    const ref = std.mem.trim(u8, stdout, " \t\r\n");
+    return symbolicRemoteHeadBranch(allocator, remote, ref);
+}
+
+fn symbolicRemoteHeadBranch(allocator: std.mem.Allocator, remote: []const u8, ref: []const u8) !?[]const u8 {
+    const prefix = try std.fmt.allocPrint(allocator, "refs/remotes/{s}/", .{remote});
+    defer allocator.free(prefix);
+    if (std.mem.startsWith(u8, ref, prefix)) {
+        const name = ref[prefix.len..];
+        if (name.len > 0 and !std.mem.eql(u8, name, "HEAD")) return try allocator.dupe(u8, name);
+    }
+    if (std.mem.lastIndexOfScalar(u8, ref, '/')) |index| {
+        const name = ref[index + 1 ..];
+        if (name.len > 0) return try allocator.dupe(u8, name);
+    }
+    return null;
+}
+
+fn remoteShowHeadBranch(allocator: std.mem.Allocator, remote: []const u8) !?[]const u8 {
+    const stdout = (try runCloudGit(allocator, &.{ "git", "remote", "show", remote })) orelse return null;
+    defer allocator.free(stdout);
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        const prefix = "HEAD branch:";
+        if (!std.mem.startsWith(u8, trimmed, prefix)) continue;
+        const name = std.mem.trim(u8, trimmed[prefix.len..], " \t\r\n");
+        if (name.len > 0) return try allocator.dupe(u8, name);
+    }
+    return null;
+}
+
+fn runCloudGit(allocator: std.mem.Allocator, argv: []const []const u8) !?[]const u8 {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var child_env = try cloudGitEnvironment(allocator);
+    defer child_env.deinit();
+
+    const result = std.process.run(allocator, io_instance.io(), .{
+        .argv = argv,
+        .stdout_limit = .limited(128 * 1024),
+        .stderr_limit = .limited(128 * 1024),
+        .environ_map = &child_env,
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    }) catch |err| switch (err) {
+        error.Timeout => return null,
+        else => return err,
+    };
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| if (code != 0) {
+            allocator.free(result.stdout);
+            return null;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return null;
+        },
+    }
+    return result.stdout;
+}
+
+fn cloudGitEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+        const entry = std.mem.span(entry_ptr);
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const key = entry[0..eq];
+        if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+        try result.put(key, entry[eq + 1 ..]);
+    }
+    try result.put("GIT_OPTIONAL_LOCKS", "0");
+    try result.put("GIT_TERMINAL_PROMPT", "0");
+    return result;
+}
+
+fn buildCreateTaskBody(
+    allocator: std.mem.Allocator,
+    environment: []const u8,
+    prompt: []const u8,
+    git_ref: []const u8,
+    attempts: usize,
+    starting_diff: ?[]const u8,
+) ![]const u8 {
+    const environment_json = try std.json.Stringify.valueAlloc(allocator, environment, .{});
+    defer allocator.free(environment_json);
+    const prompt_json = try std.json.Stringify.valueAlloc(allocator, prompt, .{});
+    defer allocator.free(prompt_json);
+    const git_ref_json = try std.json.Stringify.valueAlloc(allocator, git_ref, .{});
+    defer allocator.free(git_ref_json);
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.print(
+        allocator,
+        "{{\"new_task\":{{\"environment_id\":{s},\"branch\":{s},\"run_environment_in_qa_mode\":false}},\"input_items\":[{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"content_type\":\"text\",\"text\":{s}}}]}}",
+        .{ environment_json, git_ref_json, prompt_json },
+    );
+    if (starting_diff) |diff| {
+        if (diff.len > 0) {
+            const diff_json = try std.json.Stringify.valueAlloc(allocator, diff, .{});
+            defer allocator.free(diff_json);
+            try out.print(
+                allocator,
+                ",{{\"type\":\"pre_apply_patch\",\"output_diff\":{{\"diff\":{s}}}}}",
+                .{diff_json},
+            );
+        }
+    }
+    try out.append(allocator, ']');
+    if (attempts > 1) {
+        try out.print(allocator, ",\"metadata\":{{\"best_of_n\":{d}}}", .{attempts});
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn parseCreatedTaskId(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCloudTaskResponse;
+
+    if (objectField(parsed.value, "task")) |task| {
+        if (valueString(objectField(task, "id"))) |id| {
+            if (id.len > 0) return allocator.dupe(u8, id);
+        }
+    }
+    if (valueString(objectField(parsed.value, "id"))) |id| {
+        if (id.len > 0) return allocator.dupe(u8, id);
+    }
+    return error.InvalidCloudTaskResponse;
+}
+
 fn initRuntime(allocator: std.mem.Allocator, parsed: ParsedOptions) !CloudRuntime {
     var cfg = try config.loadWithOptions(allocator, .{ .profile = parsed.profile });
     errdefer cfg.deinit(allocator);
@@ -389,6 +677,20 @@ fn explicitChatGptBaseUrlFromConfigBytes(
 }
 
 fn fetchCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []const u8) ![]const u8 {
+    return requestCloudTasks(allocator, runtime, .GET, url, null);
+}
+
+fn postCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []const u8, body: []const u8) ![]const u8 {
+    return requestCloudTasks(allocator, runtime, .POST, url, body);
+}
+
+fn requestCloudTasks(
+    allocator: std.mem.Allocator,
+    runtime: CloudRuntime,
+    method: std.http.Method,
+    url: []const u8,
+    request_body: ?[]const u8,
+) ![]const u8 {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
 
@@ -414,9 +716,10 @@ fn fetchCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []c
 
     const result = try client.fetch(.{
         .location = .{ .url = url },
-        .method = .GET,
+        .method = method,
         .response_writer = &response_body.writer,
         .extra_headers = headers.items,
+        .payload = request_body,
     });
 
     const body = try response_body.toOwnedSlice();
@@ -426,6 +729,10 @@ fn fetchCloudTasks(allocator: std.mem.Allocator, runtime: CloudRuntime, url: []c
         return error.CloudRequestFailed;
     }
     return body;
+}
+
+fn buildTasksCollectionUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    return cloudTasksPathBase(allocator, base_url);
 }
 
 fn buildListUrl(allocator: std.mem.Allocator, base_url: []const u8, options: ListOptions) ![]const u8 {
@@ -1615,6 +1922,101 @@ test "cloud base URL ignores model provider fallback" {
     const profile_value = try explicitChatGptBaseUrlFromConfigBytes(allocator, profile_override, "work");
     defer allocator.free(profile_value.?);
     try std.testing.expectEqualStrings("https://profile.example/backend-api", profile_value.?);
+}
+
+test "cloud exec builds task creation body" {
+    const allocator = std.testing.allocator;
+
+    const body = try buildCreateTaskBody(allocator, "env-1", "write tests", "feature/cloud", 3, null);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const new_task = objectField(parsed.value, "new_task").?;
+    try std.testing.expectEqualStrings("env-1", valueString(objectField(new_task, "environment_id")).?);
+    try std.testing.expectEqualStrings("feature/cloud", valueString(objectField(new_task, "branch")).?);
+    try std.testing.expectEqual(false, valueBool(objectField(new_task, "run_environment_in_qa_mode")).?);
+
+    const metadata = objectField(parsed.value, "metadata").?;
+    try std.testing.expectEqual(@as(i64, 3), objectField(metadata, "best_of_n").?.integer);
+
+    const items = objectField(parsed.value, "input_items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.array.items.len);
+    const message = items.array.items[0];
+    try std.testing.expectEqualStrings("message", valueString(objectField(message, "type")).?);
+    try std.testing.expectEqualStrings("user", valueString(objectField(message, "role")).?);
+}
+
+test "cloud exec body includes explicit starting diff item" {
+    const allocator = std.testing.allocator;
+
+    const body = try buildCreateTaskBody(allocator, "env-1", "write tests", "feature/cloud", 1, "diff --git a/a b/a\n");
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const items = objectField(parsed.value, "input_items").?;
+    try std.testing.expectEqual(@as(usize, 2), items.array.items.len);
+    const patch = items.array.items[1];
+    try std.testing.expectEqualStrings("pre_apply_patch", valueString(objectField(patch, "type")).?);
+}
+
+test "cloud exec parses created task ids" {
+    const allocator = std.testing.allocator;
+
+    const nested = try parseCreatedTaskId(allocator, "{\"task\":{\"id\":\"task-nested\"}}");
+    defer allocator.free(nested);
+    try std.testing.expectEqualStrings("task-nested", nested);
+
+    const top_level = try parseCreatedTaskId(allocator, "{\"id\":\"task-top\"}");
+    defer allocator.free(top_level);
+    try std.testing.expectEqualStrings("task-top", top_level);
+
+    try std.testing.expectError(error.InvalidCloudTaskResponse, parseCreatedTaskId(allocator, "{\"task\":{}}"));
+}
+
+test "cloud exec git ref honors branch override" {
+    const allocator = std.testing.allocator;
+
+    const branch = try chooseExecGitRef(allocator, " feature/cloud ", null, null);
+    defer allocator.free(branch);
+    try std.testing.expectEqualStrings("feature/cloud", branch);
+
+    const current = try chooseExecGitRef(allocator, null, "feature/current", "default-main");
+    defer allocator.free(current);
+    try std.testing.expectEqualStrings("feature/current", current);
+
+    const default = try chooseExecGitRef(allocator, null, null, "develop");
+    defer allocator.free(default);
+    try std.testing.expectEqualStrings("develop", default);
+
+    const fallback = try chooseExecGitRef(allocator, null, null, null);
+    defer allocator.free(fallback);
+    try std.testing.expectEqualStrings("main", fallback);
+}
+
+test "cloud exec default branch probes origin before other remotes" {
+    const allocator = std.testing.allocator;
+
+    var remotes = try prioritizedRemoteNames(allocator, "upstream\n origin \nfork\n");
+    defer remotes.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), remotes.items.len);
+    try std.testing.expectEqualStrings("origin", remotes.items[0]);
+    try std.testing.expectEqualStrings("upstream", remotes.items[1]);
+    try std.testing.expectEqualStrings("fork", remotes.items[2]);
+}
+
+test "cloud exec remote symbolic head preserves branch path" {
+    const allocator = std.testing.allocator;
+
+    const branch = (try symbolicRemoteHeadBranch(allocator, "origin", "refs/remotes/origin/release/v1")).?;
+    defer allocator.free(branch);
+    try std.testing.expectEqualStrings("release/v1", branch);
+
+    const fallback = (try symbolicRemoteHeadBranch(allocator, "origin", "refs/heads/main")).?;
+    defer allocator.free(fallback);
+    try std.testing.expectEqualStrings("main", fallback);
 }
 
 test "cloud diff refuses non-first current attempt" {
