@@ -153,6 +153,10 @@ pub const Transcript = struct {
         try self.appendMessage(allocator, "assistant", "output_text", text);
     }
 
+    pub fn appendDeveloperMessage(self: *Transcript, allocator: std.mem.Allocator, text: []const u8) !void {
+        try self.appendMessage(allocator, "developer", "input_text", text);
+    }
+
     pub fn appendHistoryItem(self: *Transcript, allocator: std.mem.Allocator, item: api.HistoryItem) !void {
         var owned = api.HistoryItem{ .kind = item.kind };
         errdefer owned.deinit(allocator);
@@ -288,6 +292,7 @@ pub const TurnOptions = struct {
     model_verification_callback: ?ModelVerificationCallback = null,
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
+    developer_messages_after_user: []const []const u8 = &.{},
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
 };
@@ -480,6 +485,9 @@ pub fn runTurnWithOptions(
     options: TurnOptions,
 ) ![]const u8 {
     try transcript.appendUserMessage(allocator, prompt);
+    for (options.developer_messages_after_user) |developer_message| {
+        try transcript.appendDeveloperMessage(allocator, developer_message);
+    }
     if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.started" });
 
     var final_text = std.ArrayList(u8).empty;

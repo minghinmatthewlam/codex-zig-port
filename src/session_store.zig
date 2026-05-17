@@ -660,7 +660,11 @@ fn transcriptFirstUserMessagePreview(transcript: *const session.Transcript) ?[]c
 
 fn transcriptFirstMessagePreview(transcript: *const session.Transcript) ?[]const u8 {
     for (transcript.history.items) |item| {
-        if (item.kind == .message and item.text != null) return item.text.?;
+        if (item.kind != .message or item.text == null) continue;
+        if (item.role) |role| {
+            if (std.mem.eql(u8, role, "developer")) continue;
+        }
+        return item.text.?;
     }
     return null;
 }
@@ -1334,6 +1338,28 @@ test "list sessions includes persisted title metadata" {
     try std.testing.expectEqual(@as(usize, 1), sessions.len);
     try std.testing.expectEqualStrings("001-titled", sessions[0].id);
     try std.testing.expectEqualStrings("important demo", sessions[0].title.?);
+}
+
+test "thread list summary skips developer-only preview context" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.appendDeveloperMessage(allocator, "hidden hook context");
+    try transcript.appendUserMessage(allocator, "visible prompt");
+
+    const path = try createSessionPathForId(allocator, root, "001-developer-context");
+    defer allocator.free(path);
+    try saveTranscript(allocator, path, &transcript);
+
+    var summary = try loadThreadListSummary(allocator, path, "001-developer-context");
+    defer summary.deinit(allocator);
+    try std.testing.expectEqualStrings("visible prompt", summary.preview);
 }
 
 test "list sessions tolerates large untitled transcript lines" {
