@@ -21341,6 +21341,40 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                 "isError": False,
             }
 
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-mcp-never",
+                    "method": "thread/start",
+                    "params": {"ephemeral": True, "approvalPolicy": "never"},
+                },
+            )
+            never_thread_start = read_json_line(proc, 5)
+            assert never_thread_start["id"] == "thread-start-mcp-never"
+            never_thread_id = never_thread_start["result"]["thread"]["id"]
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-call-elicit-never",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": never_thread_id,
+                        "server": "elicitation_docs",
+                        "tool": "confirm",
+                        "arguments": {},
+                    },
+                },
+            )
+            never_direct_tool = read_json_line(proc, 5)
+            assert never_direct_tool["id"] == "mcp-tool-call-elicit-never"
+            assert never_direct_tool["result"]["structuredContent"] == {"accepted": False}
+            assert (
+                never_direct_tool["result"]["content"][0]["text"]
+                == 'unexpected:{"action": "decline"}'
+            )
+
             mcp_tool_event = {
                 "type": "response.output_item.done",
                 "item": {
@@ -21440,6 +21474,61 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                 and item.get("call_id") == "mcp-elicit-call"
                 and item.get("output") == "accepted"
                 for item in followup_request["input"]
+            )
+
+            server.response_payloads.extend(
+                [
+                    (
+                        f"data: {json.dumps(mcp_tool_event, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode(),
+                    (
+                        b'data: {"type":"response.output_text.delta","delta":"mcp elicitation declined"}\n\n'
+                        b"data: [DONE]\n\n"
+                    ),
+                ]
+            )
+            request_count_before_never_turn = len(server.request_bodies)
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-mcp-elicit-never",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": never_thread_id,
+                        "approvalPolicy": "never",
+                        "input": [{"type": "text", "text": "call eliciting mcp tool without prompts"}],
+                    },
+                },
+            )
+            never_turn_start = read_json_line(proc, 5)
+            assert never_turn_start["id"] == "turn-start-mcp-elicit-never"
+            never_turn_id = never_turn_start["result"]["turn"]["id"]
+            never_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == never_turn_id
+                    for message in seen
+                )
+                and any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"] == {"type": "idle"}
+                    for message in seen
+                ),
+            )
+            assert not any(
+                message.get("method") == "mcpServer/elicitation/request"
+                for message in never_messages
+            )
+            never_followup_request = server.request_bodies[request_count_before_never_turn + 1]
+            assert any(
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == "mcp-elicit-call"
+                and item.get("output") == 'unexpected:{"action": "decline"}'
+                for item in never_followup_request["input"]
             )
 
             proc.stdin.close()

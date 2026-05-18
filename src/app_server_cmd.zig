@@ -25690,6 +25690,7 @@ const AppServerMcpElicitationContext = struct {
     transport: ServerRequestTransport,
     thread_id: []const u8,
     turn_id: ?[]const u8,
+    auto_decline: bool = false,
     turn_start_response_payload: ?[]const u8 = null,
     turn_start_response_sent: ?*bool = null,
 };
@@ -26685,6 +26686,7 @@ fn emptyRequestUserInputResult(allocator: std.mem.Allocator, output: []const u8)
 
 fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.ElicitationRequest) !mcp_runtime.ElicitationResponse {
     const context: *AppServerMcpElicitationContext = @ptrCast(@alignCast(ctx));
+    if (context.auto_decline) return emptyMcpElicitationResult(context.allocator, "decline");
     try sendMcpElicitationTurnStartResponse(context);
 
     const request_id = try mcpElicitationAppServerRequestId(context.allocator, request.server_name, request.request_id_json);
@@ -27638,6 +27640,7 @@ fn handleTurnStart(
             .transport = transport,
             .thread_id = thread.id,
             .turn_id = turn_id,
+            .auto_decline = cfg.approval_policy == .never,
             .turn_start_response_payload = response_payload,
             .turn_start_response_sent = &turn_start_response_sent,
         };
@@ -52794,7 +52797,8 @@ fn handleMcpServerToolCall(
     };
 
     if (!isUuidString(params.thread_id)) return renderInvalidThreadId(allocator, id_value, params.thread_id);
-    if (findLoadedThreadIndex(state, params.thread_id) == null) return renderThreadNotFound(allocator, id_value, params.thread_id);
+    const thread_index = findLoadedThreadIndex(state, params.thread_id) orelse return renderThreadNotFound(allocator, id_value, params.thread_id);
+    const thread = &state.loaded_threads.items[thread_index];
 
     const arguments_json = if (params.arguments) |arguments|
         try std.json.Stringify.valueAlloc(allocator, arguments, .{})
@@ -52818,6 +52822,7 @@ fn handleMcpServerToolCall(
             .transport = transport,
             .thread_id = params.thread_id,
             .turn_id = null,
+            .auto_decline = std.mem.eql(u8, thread.approval_policy, "never"),
         };
         break :blk .{
             .elicitation_callback = .{
