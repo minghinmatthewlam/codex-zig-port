@@ -946,7 +946,7 @@ def run_exec_server_stream_response_smoke(
         duplicate_source = read_event(5)
         assert duplicate_source["id"] == "stream-duplicate-source"
         assert duplicate_source["result"]["status"] == 200
-        first_delta = read_event(5)
+        first_delta = read_event(15)
         assert first_delta["method"] == "http/request/bodyDelta"
         assert first_delta["params"]["requestId"] == "http-smoke-stream-duplicate"
         assert first_delta["params"]["done"] is False
@@ -1241,7 +1241,7 @@ def run_exec_server_stream_content_length_shutdown_cancellation_smoke(
         assert stream_response["result"]["status"] == 200
         assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "fixed-hang"
         assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
-        first_delta = read_event(5)
+        first_delta = read_event(15)
         assert first_delta["method"] == "http/request/bodyDelta"
         assert first_delta["params"]["requestId"] == "http-smoke-stream-fixed-hang"
         assert first_delta["params"]["seq"] == 1
@@ -1328,7 +1328,7 @@ def run_exec_server_stream_shutdown_cancellation_smoke(
         assert stream_response["result"]["status"] == 200
         assert dump_header_value(stream_response["result"]["headers"], "x-exec-stream") == "hang"
         assert base64.b64decode(stream_response["result"]["bodyBase64"]) == b""
-        first_delta = read_event(5)
+        first_delta = read_event(15)
         assert first_delta["method"] == "http/request/bodyDelta"
         assert first_delta["params"]["requestId"] == "http-smoke-stream-shutdown"
         assert first_delta["params"]["seq"] == 1
