@@ -1275,6 +1275,14 @@ def run_help_command_smoke(
         raise AssertionError(
             f"expected exec dangerous bypass flag help output:\n{exec_result.stderr}"
         )
+    if "--enable FEATURE" not in exec_result.stderr:
+        raise AssertionError(
+            f"expected exec feature enable flag help output:\n{exec_result.stderr}"
+        )
+    if "--disable FEATURE" not in exec_result.stderr:
+        raise AssertionError(
+            f"expected exec feature disable flag help output:\n{exec_result.stderr}"
+        )
 
     apply_result = subprocess.run(
         [str(binary), "help", "apply"],

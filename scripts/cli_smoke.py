@@ -6119,6 +6119,32 @@ prefix_rule(pattern = ["git", "status"])
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def function_tool_names(request_body: dict) -> set[str]:
+    return {
+        tool["name"]
+        for tool in request_body["tools"]
+        if tool.get("type") == "function" and "name" in tool
+    }
+
+
+def assert_shell_tools_disabled(request_body: dict) -> None:
+    tool_names = function_tool_names(request_body)
+    assert "exec_command" not in tool_names
+    assert "write_stdin" not in tool_names
+    assert "shell" not in tool_names
+    assert "shell_command" not in tool_names
+    assert "apply_patch" in tool_names
+
+
+def assert_shell_tools_enabled(request_body: dict) -> None:
+    tool_names = function_tool_names(request_body)
+    assert "exec_command" in tool_names
+    assert "write_stdin" in tool_names
+    assert "shell" in tool_names
+    assert "shell_command" in tool_names
+    assert "apply_patch" in tool_names
+
+
 def run_exec_review_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-review-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -6193,6 +6219,32 @@ def run_exec_review_smoke(binary: Path) -> None:
         assert "Review the uncommitted changes below." in prompt
         assert "diff --git a/review.txt b/review.txt" in prompt
         assert "+new review target" in prompt
+
+        reviewed_without_shell = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--disable",
+                "shell_tool",
+                "--cd",
+                str(repo),
+                "-c",
+                "review_model=gpt-exec-review",
+                "review",
+                "--uncommitted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert reviewed_without_shell.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[1]["model"] == "gpt-exec-review"
+        assert_shell_tools_disabled(server.request_bodies[1])
     finally:
         server.shutdown()
         server.server_close()
@@ -6249,6 +6301,22 @@ def run_review_stdin_smoke(binary: Path) -> None:
         prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
         assert "Review according to these instructions:" in prompt
         assert "focus on public API regressions" in prompt
+
+        reviewed_without_shell = subprocess.run(
+            [str(binary.resolve()), "--disable", "shell_tool", "review", "-"],
+            cwd=repo,
+            env=env,
+            input="focus on public API regressions\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert reviewed_without_shell.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[1]["model"] == "gpt-review-specialist"
+        assert_shell_tools_disabled(server.request_bodies[1])
     finally:
         server.shutdown()
         server.server_close()
@@ -6267,6 +6335,9 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
                 "exec",
                 "--skip-git-repo-check",
                 "--approval-policy=never",
+                "--enable",
+                "goals",
+                "--disable=shell_tool",
                 "--output-last-message=last.txt",
                 "say",
                 "hi",
@@ -6283,6 +6354,83 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         assert (temp_root / "last.txt").read_text(encoding="utf-8") == "stored reply"
         assert len(server.request_bodies) == 1
         assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "say hi"
+        assert_shell_tools_disabled(server.request_bodies[0])
+
+        root_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--disable",
+                "shell_tool",
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "root",
+                "feature",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert root_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[1]["input"][-1]["content"][0]["text"] == "root feature"
+        assert_shell_tools_disabled(server.request_bodies[1])
+
+        config_path = Path(env["CODEX_HOME"]) / "config.toml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8") + "\n[features]\nshell_tool = false\n",
+            encoding="utf-8",
+        )
+        persisted_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "persisted",
+                "feature",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert persisted_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 3
+        assert server.request_bodies[2]["input"][-1]["content"][0]["text"] == "persisted feature"
+        assert_shell_tools_disabled(server.request_bodies[2])
+
+        ignored_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--ignore-user-config",
+                "-c",
+                f"openai_base_url='{base_url}'",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "ignored",
+                "config",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert ignored_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 4
+        assert server.request_bodies[3]["input"][-1]["content"][0]["text"] == "ignored config"
+        assert_shell_tools_enabled(server.request_bodies[3])
     finally:
         server.shutdown()
         server.server_close()
