@@ -6756,6 +6756,239 @@ def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_web_search_item_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-web-search-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-5.5"\nweb_search = "live"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-web-search-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-web-search",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-web-search"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                web_search_events = [
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "id": "ws-search-1",
+                            "type": "web_search_call",
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "queries": ["weather seattle", "weather tacoma"],
+                            },
+                        },
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "id": "ws-open-1",
+                            "type": "web_search_call",
+                            "status": "completed",
+                            "action": {
+                                "type": "open_page",
+                                "url": "https://example.com",
+                            },
+                        },
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "id": "ws-find-1",
+                            "type": "web_search_call",
+                            "status": "completed",
+                            "action": {
+                                "type": "find_in_page",
+                                "url": "https://example.com/docs",
+                                "pattern": "needle",
+                            },
+                        },
+                    },
+                ]
+                web_search_payload = "".join(
+                    f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                    for event in web_search_events
+                )
+                server.response_payloads.append(
+                    (
+                        web_search_payload
+                        + 'data: {"type":"response.output_text.delta","delta":"web search reply"}\n\n'
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-web-search",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "search the web"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-web-search"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                started = read_json_line(proc, 5)
+                assert started["method"] == "turn/started"
+                user_item_started = read_json_line(proc, 5)
+                assert user_item_started["method"] == "item/started"
+                user_item_completed = read_json_line(proc, 5)
+                assert user_item_completed["method"] == "item/completed"
+
+                def assert_web_search_item(raw_id, raw_action_type, expected_item):
+                    raw_web_search = read_json_line(proc, 5)
+                    assert raw_web_search["method"] == "rawResponseItem/completed"
+                    assert raw_web_search["params"]["threadId"] == thread_id
+                    assert raw_web_search["params"]["turnId"] == "turn-0"
+                    assert raw_web_search["params"]["item"]["id"] == raw_id
+                    assert raw_web_search["params"]["item"]["type"] == "web_search_call"
+                    assert raw_web_search["params"]["item"]["action"]["type"] == raw_action_type
+
+                    web_search_started = read_json_line(proc, 5)
+                    assert web_search_started["method"] == "item/started"
+                    assert isinstance(web_search_started["params"]["startedAtMs"], int)
+                    assert web_search_started["params"]["threadId"] == thread_id
+                    assert web_search_started["params"]["turnId"] == "turn-0"
+                    assert web_search_started["params"]["item"] == expected_item
+
+                    web_search_completed = read_json_line(proc, 5)
+                    assert web_search_completed["method"] == "item/completed"
+                    assert isinstance(web_search_completed["params"]["completedAtMs"], int)
+                    assert web_search_completed["params"]["threadId"] == thread_id
+                    assert web_search_completed["params"]["turnId"] == "turn-0"
+                    assert web_search_completed["params"]["item"] == expected_item
+
+                assert_web_search_item(
+                    "ws-search-1",
+                    "search",
+                    {
+                        "type": "webSearch",
+                        "id": "ws-search-1",
+                        "query": "weather seattle ...",
+                        "action": {
+                            "type": "search",
+                            "query": None,
+                            "queries": ["weather seattle", "weather tacoma"],
+                        },
+                    },
+                )
+                assert_web_search_item(
+                    "ws-open-1",
+                    "open_page",
+                    {
+                        "type": "webSearch",
+                        "id": "ws-open-1",
+                        "query": "https://example.com",
+                        "action": {
+                            "type": "openPage",
+                            "url": "https://example.com",
+                        },
+                    },
+                )
+                assert_web_search_item(
+                    "ws-find-1",
+                    "find_in_page",
+                    {
+                        "type": "webSearch",
+                        "id": "ws-find-1",
+                        "query": "'needle' in https://example.com/docs",
+                        "action": {
+                            "type": "findInPage",
+                            "url": "https://example.com/docs",
+                            "pattern": "needle",
+                        },
+                    },
+                )
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "web search reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == "web search reply"
+                agent_item_completed = read_json_line(proc, 5)
+                assert agent_item_completed["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == ["/responses"]
+                web_search_tool = next(
+                    tool
+                    for tool in server.request_bodies[0]["tools"]
+                    if tool.get("type") == "web_search"
+                )
+                assert web_search_tool["external_web_access"] is True
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_plan_item_notification_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plan-item-", dir="/tmp"))
@@ -38018,6 +38251,8 @@ def main() -> None:
     print("app-server-turn-project-model-controls-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
     print("app-server-turn-plan-updated-notification-e2e: ok")
+    run_turn_web_search_item_notification_smoke(binary)
+    print("app-server-turn-web-search-item-notification-e2e: ok")
     run_turn_plan_item_notification_smoke(binary)
     print("app-server-turn-plan-item-notification-e2e: ok")
     run_turn_plan_item_opt_out_smoke(binary)
