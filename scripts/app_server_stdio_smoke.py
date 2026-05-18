@@ -984,6 +984,12 @@ def mcp_oauth_credential_key(name: str, url: str) -> str:
     return f"{name}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
+def unused_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def seed_memory_state_db(codex_home: Path) -> Path:
     db_path = codex_home / "state_5.sqlite"
     with sqlite3.connect(db_path) as db:
@@ -20043,10 +20049,14 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        callback_port = unused_tcp_port()
+        callback_url = f"http://127.0.0.1:{callback_port}/custom/oauth/callback"
         config_path.write_text(
             "\n".join(
                 [
                     'mcp_oauth_credentials_store = "file"',
+                    f"mcp_oauth_callback_port = {callback_port}",
+                    f"mcp_oauth_callback_url = {json.dumps(callback_url)}",
                     "",
                     "[features]",
                     "plugins = true",
@@ -20249,6 +20259,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert discovery_server.authorization_requests
         auth_query = discovery_server.authorization_requests[-1]
         assert auth_query["scope"] == ["read write"]
+        assert auth_query["redirect_uri"] == [callback_url]
         assert discovery_server.token_requests
         token_body = discovery_server.token_requests[-1]
         assert token_body["grant_type"] == ["authorization_code"]
@@ -20282,6 +20293,10 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             assert oauth_timeout["result"]["authorizationUrl"].startswith(
                 f"{discovery_server.base_url}/oauth/authorize?"
             )
+            timeout_query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(oauth_timeout["result"]["authorizationUrl"]).query
+            )
+            assert timeout_query["redirect_uri"] == [callback_url]
             oauth_timeout_completed = read_json_line(timeout_proc, 5)
             assert oauth_timeout_completed["method"] == "mcpServer/oauthLogin/completed"
             assert oauth_timeout_completed["params"] == {
