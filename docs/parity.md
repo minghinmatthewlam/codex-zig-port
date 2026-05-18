@@ -498,6 +498,8 @@ comma-separated `--scopes` values, discovers OAuth metadata, dynamically
 registers a public client, starts a local browser callback listener, exchanges
 authorization codes with PKCE, and stores Rust-compatible fallback credentials
 in `$CODEX_HOME/.credentials.json` for file-backed and Zig auto-fallback modes.
+The shared OAuth flow honors top-level `mcp_oauth_callback_port` and
+`mcp_oauth_callback_url`, including custom redirect paths.
 `codex-zig mcp logout NAME` validates configured streamable HTTP servers and
 removes matching file-backed OAuth credentials from `$CODEX_HOME/.credentials.json`
 using Rust's fallback credential key format, and on macOS also deletes matching
@@ -509,8 +511,8 @@ OAuth-discovery not-logged-in servers. Runtime streamable HTTP MCP clients use
 file-backed OAuth credentials and, on macOS, Rust-shaped keychain-backed OAuth
 credentials from service `Codex MCP Credentials` when the credential store is
 `auto` or `keyring`. Retrying provider-rejected discovered scopes without
-scopes, configured callback port/URL overrides, cross-platform keyring
-backends, and full app-server OAuth login completion remain planned.
+scopes, cross-platform keyring backends, and full app-server OAuth login
+completion remain planned.
 
 Additional model-facing MCP coverage: Responses turns now advertise configured
 stdio and streamable HTTP MCP tools plus the `list_mcp_resources`,
