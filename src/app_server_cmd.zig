@@ -52858,16 +52858,23 @@ fn spawnMcpServerOauthLoginWorker(
 }
 
 fn mcpServerOauthLoginWorker(allocator: std.mem.Allocator, worker: *McpServerOauthLoginWorker) void {
-    defer {
+    const maybe_error = if (worker.handle.waitAndSave(allocator, worker.timeout_secs)) |_| null else |err| @errorName(err);
+    var notification_storage: [4096]u8 = undefined;
+    var notification_writer = std.Io.Writer.fixed(&notification_storage);
+    writeMcpServerOauthLoginCompletedNotification(&notification_writer, worker.name, maybe_error == null, maybe_error) catch {
         worker.deinit(allocator);
         allocator.destroy(worker);
-    }
-    const maybe_error = if (worker.handle.waitAndSave(allocator, worker.timeout_secs)) |_| null else |err| @errorName(err);
-    const notification = renderMcpServerOauthLoginCompletedNotification(allocator, worker.name, maybe_error == null, maybe_error) catch {
         return;
     };
-    defer allocator.free(notification);
-    worker.completion_target.send(notification) catch {};
+
+    var completion_target = worker.completion_target;
+    worker.completion_target = .stdout;
+    allocator.free(worker.name);
+    worker.handle.deinit(allocator);
+    allocator.destroy(worker);
+
+    completion_target.send(notification_writer.buffer[0..notification_writer.end]) catch {};
+    completion_target.deinit(allocator);
 }
 
 fn renderMcpServerOauthLoginResponse(
@@ -52883,22 +52890,47 @@ fn renderMcpServerOauthLoginResponse(
     return renderJsonRpcResult(allocator, id_value, result.items);
 }
 
-fn renderMcpServerOauthLoginCompletedNotification(
-    allocator: std.mem.Allocator,
+fn writeMcpServerOauthLoginCompletedNotification(
+    writer: *std.Io.Writer,
     name: []const u8,
     success: bool,
     error_message: ?[]const u8,
-) ![]const u8 {
-    var notification = std.ArrayList(u8).empty;
-    errdefer notification.deinit(allocator);
-    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"mcpServer/oauthLogin/completed\",\"params\":{\"name\":");
-    try appendJsonString(allocator, &notification, name);
-    try notification.appendSlice(allocator, ",\"success\":");
-    try notification.appendSlice(allocator, if (success) "true" else "false");
-    try notification.appendSlice(allocator, ",\"error\":");
-    try appendOptionalJsonString(allocator, &notification, error_message);
-    try notification.appendSlice(allocator, "}}");
-    return notification.toOwnedSlice(allocator);
+) !void {
+    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"mcpServer/oauthLogin/completed\",\"params\":{\"name\":");
+    try writeJsonStringLiteral(writer, name);
+    try writer.writeAll(",\"success\":");
+    try writer.writeAll(if (success) "true" else "false");
+    try writer.writeAll(",\"error\":");
+    if (error_message) |message| {
+        try writeJsonStringLiteral(writer, message);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("}}");
+}
+
+fn writeJsonStringLiteral(writer: *std.Io.Writer, value: []const u8) !void {
+    const hex = "0123456789abcdef";
+    try writer.writeByte('"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (byte < 0x20) {
+                    try writer.writeAll("\\u00");
+                    try writer.writeByte(hex[byte >> 4]);
+                    try writer.writeByte(hex[byte & 0x0f]);
+                } else {
+                    try writer.writeByte(byte);
+                }
+            },
+        }
+    }
+    try writer.writeByte('"');
 }
 
 fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
