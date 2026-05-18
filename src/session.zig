@@ -273,6 +273,7 @@ pub const TokenUsageInfo = struct {
 pub const TurnOptions = struct {
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
+    approval_callback: ?tools.ApprovalCallback = null,
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
@@ -685,6 +686,7 @@ fn runToolCall(
         .network_enabled = options.network_enabled,
         .auto_approve = options.auto_approve,
         .prompt_for_approval = options.prompt_for_approval,
+        .approval_callback = options.approval_callback,
         .workdir = options.workdir,
         .background_terminal_owner = options.background_terminal_owner,
         .background_terminal_max_timeout_ms = cfg.background_terminal_max_timeout,

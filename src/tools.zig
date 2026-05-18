@@ -151,14 +151,31 @@ pub const Policy = struct {
     network_enabled: bool = true,
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
+    approval_callback: ?ApprovalCallback = null,
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
     background_terminal_max_timeout_ms: u64 = config.DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS,
 };
 
-const ToolKind = enum {
+pub const ToolKind = enum {
     shell,
     apply_patch,
+};
+
+pub const ApprovalRequest = struct {
+    call_id: []const u8,
+    kind: ToolKind,
+    detail: []const u8,
+};
+
+pub const ApprovalDecision = enum {
+    allow,
+    reject,
+};
+
+pub const ApprovalCallback = struct {
+    ctx: *anyopaque,
+    on_approval_requested: *const fn (ctx: *anyopaque, request: ApprovalRequest) anyerror!ApprovalDecision,
 };
 
 const PermissionDecision = enum {
@@ -223,10 +240,31 @@ fn permissionResult(
 ) !?ToolResult {
     return switch (decidePermission(policy, kind, trusted_read_only)) {
         .allow => null,
-        .prompt => if (try confirm(toolKindLabel(kind), detail)) null else try rejected(allocator, call_id),
+        .prompt => try promptForPermission(allocator, call_id, policy, kind, detail),
         .reject => try rejected(allocator, call_id),
         .block => try blockedBySandbox(allocator, call_id, policy.sandbox_mode),
     };
+}
+
+fn promptForPermission(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    policy: Policy,
+    kind: ToolKind,
+    detail: []const u8,
+) !?ToolResult {
+    if (policy.approval_callback) |callback| {
+        const request = ApprovalRequest{
+            .call_id = call_id,
+            .kind = kind,
+            .detail = detail,
+        };
+        return switch (try callback.on_approval_requested(callback.ctx, request)) {
+            .allow => null,
+            .reject => try rejected(allocator, call_id),
+        };
+    }
+    return if (try confirm(toolKindLabel(kind), detail)) null else try rejected(allocator, call_id);
 }
 
 fn decidePermission(policy: Policy, kind: ToolKind, trusted_read_only: bool) PermissionDecision {
@@ -2402,6 +2440,106 @@ test "untrusted policy allows trusted read-only shell command without prompt" {
     });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.startsWith(u8, result.summary, "exit "));
+}
+
+const TestApprovalContext = struct {
+    decision: ApprovalDecision,
+    expected_call_id: []const u8,
+    expected_kind: ToolKind,
+    expected_detail_substring: []const u8,
+    calls: usize = 0,
+    matched_call_id: bool = false,
+    matched_kind: bool = false,
+    matched_detail: bool = false,
+};
+
+fn recordTestApproval(ctx: *anyopaque, request: ApprovalRequest) anyerror!ApprovalDecision {
+    const context: *TestApprovalContext = @ptrCast(@alignCast(ctx));
+    context.calls += 1;
+    context.matched_call_id = std.mem.eql(u8, request.call_id, context.expected_call_id);
+    context.matched_kind = request.kind == context.expected_kind;
+    context.matched_detail = std.mem.indexOf(u8, request.detail, context.expected_detail_substring) != null;
+    return context.decision;
+}
+
+test "approval callback can allow prompted shell command" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    var context = TestApprovalContext{
+        .decision = .allow,
+        .expected_call_id = "call-approval-allow",
+        .expected_kind = .shell,
+        .expected_detail_substring = "callback-ok > allowed.txt",
+    };
+    const call = api.FunctionCall{
+        .call_id = "call-approval-allow",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"printf callback-ok > allowed.txt\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .on_request,
+        .sandbox_mode = .danger_full_access,
+        .prompt_for_approval = true,
+        .approval_callback = .{
+            .ctx = &context,
+            .on_approval_requested = recordTestApproval,
+        },
+        .workdir = cwd,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expectEqual(@as(usize, 1), context.calls);
+    try std.testing.expect(context.matched_call_id);
+    try std.testing.expect(context.matched_kind);
+    try std.testing.expect(context.matched_detail);
+    const file = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "allowed.txt", allocator, .limited(1024));
+    defer allocator.free(file);
+    try std.testing.expectEqualStrings("callback-ok", file);
+}
+
+test "approval callback can reject prompted shell command" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    var context = TestApprovalContext{
+        .decision = .reject,
+        .expected_call_id = "call-approval-reject",
+        .expected_kind = .shell,
+        .expected_detail_substring = "rejected.txt",
+    };
+    const call = api.FunctionCall{
+        .call_id = "call-approval-reject",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"printf rejected > rejected.txt\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .on_request,
+        .sandbox_mode = .danger_full_access,
+        .prompt_for_approval = true,
+        .approval_callback = .{
+            .ctx = &context,
+            .on_approval_requested = recordTestApproval,
+        },
+        .workdir = cwd,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("rejected", result.summary);
+    try std.testing.expectEqual(@as(usize, 1), context.calls);
+    try std.testing.expect(context.matched_call_id);
+    try std.testing.expect(context.matched_kind);
+    try std.testing.expect(context.matched_detail);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "rejected.txt", .{}));
 }
 
 test "read-only sandbox blocks apply_patch even with auto approval" {
